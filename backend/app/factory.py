@@ -32,6 +32,7 @@ from app.api.routes_portfolio import router as portfolio_router
 from app.api.routes_risk_probe import router as risk_probe_router
 from app.api.routes_metrics import router as metrics_router
 from app.api.routes_ws_prices import router as ws_prices_router
+from app.api.routes_jarvis import router as jarvis_router
 
 if not is_atp_trading_only():
     from app.api.routes_ai import router as ai_router
@@ -319,6 +320,13 @@ def create_app(role: str = "legacy") -> FastAPI:
                 logger.warning("CursorBridge: config log skipped (%s)", e)
         else:
             logger.info("CursorBridge: skipped (ATP_TRADING_ONLY=1)")
+
+        try:
+            from app.jarvis.telegram_control import log_jarvis_telegram_startup_status
+
+            log_jarvis_telegram_startup_status()
+        except Exception as _jarvis_log_err:
+            logger.warning("JarvisTelegram startup log skipped: %s", _jarvis_log_err)
 
         # Verify critical scripts exist (if PRINT_FINGERPRINTS_ON_START is set)
         if os.getenv("PRINT_FINGERPRINTS_ON_START") == "1":
@@ -891,6 +899,7 @@ def create_app(role: str = "legacy") -> FastAPI:
     if github_webhook_router is not None:
         app.include_router(github_webhook_router, prefix="/api", tags=["github"])
     app.include_router(ws_prices_router, prefix="/api", tags=["ws-prices"])
+    app.include_router(jarvis_router)
 
     # Alias health under /api for reverse-proxy setups that expect /api/health
     # Defined AFTER routers so /api/health/system can be matched first

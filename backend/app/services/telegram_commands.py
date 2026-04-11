@@ -5986,6 +5986,26 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         update_id, chat_id, chat_type, sender_id, (text or "")[:60],
     )
 
+    # Jarvis Telegram control: separate allowlists; consumes matching commands before _telegram_authorize.
+    try:
+        from app.jarvis.telegram_control import maybe_handle_jarvis_telegram_message
+
+        if maybe_handle_jarvis_telegram_message(
+            raw_text=raw_text,
+            chat_id=chat_id,
+            actor_user_id=actor_user_id or "",
+            from_user=from_user if isinstance(from_user, dict) else None,
+            send=lambda msg: send_command_response(chat_id, msg),
+        ):
+            logger.info("[TG][ROUTE] update_id=%s handler=jarvis_telegram consumed=1", update_id)
+            return
+    except Exception as _jarvis_hook_err:
+        logger.warning(
+            "JarvisTelegram hook failed (non-fatal) update_id=%s err=%s",
+            update_id,
+            _jarvis_hook_err,
+        )
+
     # Auth (same resolver + rule as callback_query and menu helpers)
     _token_src = get_telegram_token_source()
     auth_ok = _telegram_authorize(chat_id, actor_user_id)
