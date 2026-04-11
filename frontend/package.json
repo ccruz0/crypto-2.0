@@ -16,7 +16,7 @@
     "qa:real-portfolio": "node scripts/real_portfolio_from_state_evidence.cjs"
   },
   "dependencies": {
-    "@tailwindcss/postcss": "^4.1.16",
+    "@tailwindcss/postcss": "^4.2.2",
     "next": "16.0.0",
     "react": "19.2.0",
     "react-dom": "19.2.0",
