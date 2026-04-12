@@ -24,6 +24,20 @@ _UUID_RE = re.compile(
 
 SendFn = Callable[[str], Any]
 
+_TELEGRAM_MAX_LEN = 4000
+
+_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+_SOURCE_FRIENDLY = {
+    "google_search_console": "Search Console",
+    "ga4": "Google Analytics",
+    "google_ads": "Google Ads",
+    "ga4_top_pages": "GA4 top pages",
+    "marketing": "Marketing",
+    "marketing_source_status": "Marketing sources",
+    "ops": "Operations",
+}
+
 
 def _truthy_env(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in ("1", "true", "yes", "on")
@@ -145,6 +159,314 @@ def classify_jarvis_command(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _telegram_clip(text: str, max_len: int = _TELEGRAM_MAX_LEN) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _jarvis_result_has_executor_error(res: dict[str, Any]) -> bool:
+    """True when :func:`execute_plan` / :func:`invoke_registered_tool` returned a failure dict."""
+    return res.get("error") is not None
+
+
+def _looks_like_run_marketing_review_result(res: dict[str, Any]) -> bool:
+    """Shape match for :func:`run_marketing_review` when plan.action is missing or mismatched."""
+    if res.get("tool") == "run_marketing_review":
+        return True
+    return (
+        "analysis_status" in res
+        and "proposal_status" in res
+        and "top_findings" in res
+        and "proposed_actions" in res
+        and "summary" in res
+    )
+
+
+def _unavailable_source_labels(res: dict[str, Any]) -> list[str]:
+    raw = res.get("unavailable_sources") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for x in raw[:10]:
+        if not isinstance(x, str) or not x.strip():
+            continue
+        key = x.strip()
+        out.append(_SOURCE_FRIENDLY.get(key, key.replace("_", " ").title()))
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            deduped.append(s)
+    return deduped
+
+
+def _priority_bracket(priority: str | None) -> str:
+    p = (priority or "medium").strip().lower()
+    if p not in ("high", "medium", "low"):
+        p = "medium"
+    return f"[{p.upper()}]"
+
+
+def _missing_data_bullets(missing: list[Any]) -> list[str]:
+    lines: list[str] = []
+    for m in missing[:20]:
+        if not isinstance(m, dict):
+            continue
+        title = str(m.get("title") or "").strip()
+        src = str(m.get("source") or "").strip()
+        if title:
+            lines.append(title)
+        elif src:
+            lines.append(_SOURCE_FRIENDLY.get(src, src.replace("_", " ").title()))
+    # Dedupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        if line not in seen:
+            seen.add(line)
+            out.append(line)
+    return out
+
+
+def _marketing_insufficient_fallback(res: dict[str, Any]) -> str:
+    missing = list(res.get("missing_data") or [])
+    bullets = _missing_data_bullets(missing)
+    if not bullets:
+        bullets = [
+            "Google Analytics",
+            "Google Ads",
+            "Search Console",
+        ]
+    body = "⚠️ Not enough data to analyze marketing yet.\n\nMissing:\n"
+    body += "\n".join(f"• {b}" for b in bullets[:12])
+    return _telegram_clip(body)
+
+
+def _format_analyze_marketing_opportunities_telegram(res: dict[str, Any]) -> str:
+    if res.get("status") == "unavailable":
+        msg = str(res.get("message") or res.get("reason") or "Marketing analysis unavailable.")
+        detail = str(res.get("detail") or "").strip()
+        if detail:
+            msg = f"{msg}\n{detail[:600]}"
+        return _telegram_clip(f"⚠️ {msg}")
+
+    opps: list[dict[str, Any]] = []
+    for key in ("biggest_opportunities", "conversion_gaps"):
+        for item in res.get(key) or []:
+            if isinstance(item, dict):
+                opps.append(item)
+
+    def _opp_sort_key(d: dict[str, Any]) -> tuple[int, str]:
+        pr = str(d.get("priority") or "medium").lower()
+        return (_PRIORITY_ORDER.get(pr, 1), str(d.get("title") or ""))
+
+    opps.sort(key=_opp_sort_key)
+    opps = opps[:5]
+
+    wastes_raw = res.get("biggest_wastes") or []
+    wastes: list[dict[str, Any]] = [w for w in wastes_raw if isinstance(w, dict)][:5]
+
+    missing_raw = res.get("missing_data") or []
+    missing_items: list[dict[str, Any]] = [m for m in missing_raw if isinstance(m, dict)][:5]
+
+    has_body = bool(opps or wastes or missing_items)
+    overall = str(res.get("status") or "")
+    if not has_body and overall == "insufficient_data":
+        return _marketing_insufficient_fallback(res)
+
+    lines: list[str] = ["🧠 Marketing Analysis", ""]
+
+    if opps:
+        lines.append("Top Opportunities:")
+        for o in opps:
+            pr = _priority_bracket(str(o.get("priority")))
+            title = str(o.get("title") or "(untitled)").strip()
+            summary = str(o.get("summary") or "").strip()
+            lines.append(f"• {pr} {title}")
+            if summary:
+                lines.append(f"  {summary}")
+        lines.append("")
+
+    if wastes:
+        lines.append("Wasted Spend:")
+        for w in wastes:
+            camp = w.get("campaign")
+            page = w.get("page")
+            head = ""
+            if camp:
+                head = str(camp).strip()
+            elif page:
+                head = str(page).strip()
+            else:
+                head = str(w.get("title") or "Campaign").strip()
+            reason = str(w.get("summary") or w.get("title") or "").strip()
+            lines.append(f"• {head}")
+            if reason:
+                lines.append(f"  {reason}")
+        lines.append("")
+
+    if missing_items:
+        lines.append("Missing Data:")
+        for m in missing_items:
+            label = str(m.get("title") or m.get("summary") or "Item").strip()
+            lines.append(f"• {label}")
+        lines.append("")
+
+    while lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) <= 1:
+        return _marketing_insufficient_fallback(res)
+
+    return _telegram_clip("\n".join(lines))
+
+
+def _format_propose_marketing_actions_telegram(res: dict[str, Any]) -> str:
+    if res.get("status") == "unavailable":
+        msg = str(res.get("message") or res.get("reason") or "Action proposals unavailable.")
+        detail = str(res.get("detail") or "").strip()
+        if detail:
+            msg = f"{msg}\n{detail[:600]}"
+        return _telegram_clip(f"⚠️ {msg}")
+
+    actions_raw = res.get("proposed_actions") or []
+    actions: list[dict[str, Any]] = [a for a in actions_raw if isinstance(a, dict)]
+
+    def _act_sort_key(d: dict[str, Any]) -> tuple[int, str]:
+        pr = str(d.get("priority") or "medium").lower()
+        return (_PRIORITY_ORDER.get(pr, 1), str(d.get("title") or ""))
+
+    actions.sort(key=_act_sort_key)
+    actions = actions[:5]
+
+    if not actions:
+        return _marketing_insufficient_fallback(res)
+
+    lines: list[str] = ["🚀 Recommended Actions", ""]
+    for i, a in enumerate(actions, start=1):
+        pr = _priority_bracket(str(a.get("priority")))
+        title = str(a.get("title") or "(untitled)").strip()
+        target = str(a.get("target") or "").strip() or "—"
+        why = str(a.get("reason") or a.get("summary") or "").strip() or "—"
+        lines.append(f"{i}. {pr} {title}")
+        lines.append(f"Target: {target}")
+        lines.append(f"Why: {why}")
+        lines.append("")
+
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    return _telegram_clip("\n".join(lines))
+
+
+def _format_run_marketing_review_error_telegram(res: dict[str, Any]) -> str:
+    """Short runtime error for executor/tool failures (no JSON, no docs)."""
+    err = res.get("error")
+    detail = str(res.get("detail") or "").strip()
+    msg = str(res.get("message") or "").strip()
+    parts: list[str] = ["⚠️ Marketing review failed"]
+    if err:
+        parts.append(f"({err})")
+    if detail:
+        parts.append(detail[:400])
+    elif msg:
+        parts.append(msg[:300])
+    return _telegram_clip(" ".join(parts).strip())
+
+
+def _format_run_marketing_review_telegram(res: dict[str, Any]) -> str:
+    if _jarvis_result_has_executor_error(res):
+        return _format_run_marketing_review_error_telegram(res)
+
+    if res.get("status") == "unavailable":
+        msg = str(res.get("message") or res.get("reason") or "Marketing review unavailable.")
+        detail = str(res.get("detail") or "").strip()
+        if detail:
+            msg = f"{msg}\n{detail[:400]}"
+        return _telegram_clip(f"⚠️ {msg}")
+
+    summary = str(res.get("summary") or "").strip()
+    st = str(res.get("status") or "")
+
+    findings_raw = res.get("top_findings") or []
+    findings: list[dict[str, Any]] = [f for f in findings_raw if isinstance(f, dict)][:5]
+
+    def _prio_key(d: dict[str, Any]) -> tuple[int, str]:
+        pr = str(d.get("priority") or "medium").lower()
+        return (_PRIORITY_ORDER.get(pr, 1), str(d.get("title") or ""))
+
+    findings.sort(key=_prio_key)
+
+    proposed_raw = res.get("proposed_actions") or []
+    proposed: list[dict[str, Any]] = [p for p in proposed_raw if isinstance(p, dict)]
+    proposed.sort(key=_prio_key)
+    proposed = proposed[:5]
+
+    staged_raw = res.get("staged_actions") or []
+    staged_titles: list[str] = []
+    if isinstance(staged_raw, list):
+        for s in staged_raw[:5]:
+            if isinstance(s, dict):
+                t = str(s.get("title") or "").strip()
+                if t:
+                    staged_titles.append(t)
+
+    missing_bullets = _missing_data_bullets(list(res.get("missing_data") or []))
+    src_labels = _unavailable_source_labels(res)
+    missing_combined: list[str] = []
+    seen_m: set[str] = set()
+    for x in missing_bullets + src_labels:
+        if x not in seen_m:
+            seen_m.add(x)
+            missing_combined.append(x)
+    missing_combined = missing_combined[:5]
+
+    limited = (
+        st in ("insufficient_data", "partial")
+        or (not findings and not proposed)
+    )
+
+    if not summary and limited:
+        summary = "Marketing review completed with limited data."
+    elif not summary:
+        summary = "Marketing review completed."
+
+    lines: list[str] = ["🧠 Marketing Review", "", "Summary:", summary, ""]
+
+    if findings:
+        lines.append("Top Findings:")
+        for f in findings:
+            pr = _priority_bracket(str(f.get("priority")))
+            title = str(f.get("title") or "").strip() or "(untitled)"
+            lines.append(f"• {pr} {title}")
+        lines.append("")
+
+    if proposed:
+        lines.append("Proposed Actions:")
+        for p in proposed:
+            pr = _priority_bracket(str(p.get("priority")))
+            title = str(p.get("title") or "").strip() or "(untitled)"
+            lines.append(f"• {pr} {title}")
+        lines.append("")
+
+    if staged_titles:
+        lines.append("Staged:")
+        for t in staged_titles:
+            lines.append(f"• {t}")
+        lines.append("")
+
+    if missing_combined:
+        lines.append("Missing Data:")
+        for m in missing_combined:
+            lines.append(f"• {m}")
+
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    return _telegram_clip("\n".join(lines))
+
+
 def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
     """Short Telegram-safe text (no huge JSON)."""
     if kind == "jarvis":
@@ -153,7 +475,40 @@ def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
         plan = payload.get("plan") or {}
         action = ""
         if isinstance(plan, dict):
-            action = str(plan.get("action") or "")
+            action = str(plan.get("action") or "").strip()
+
+        review_fmt = action == "run_marketing_review" or (
+            isinstance(res, dict) and _looks_like_run_marketing_review_result(res)
+        )
+        if review_fmt:
+            if not isinstance(res, dict):
+                body = "⚠️ Marketing review: no result payload returned."
+                if rid:
+                    body = _telegram_clip(f"{body}\n\nrun {rid}")
+                return _telegram_clip(body)
+            logger.info(
+                "jarvis.telegram.format_run_marketing_review plan_action=%s result_status=%s keys=%s",
+                action or "-",
+                res.get("status"),
+                list(res.keys())[:12],
+            )
+            body = _format_run_marketing_review_telegram(res)
+            if rid:
+                body = _telegram_clip(f"{body}\n\nrun {rid}")
+            return body
+
+        if isinstance(res, dict) and not _jarvis_result_has_executor_error(res):
+            if action == "analyze_marketing_opportunities":
+                body = _format_analyze_marketing_opportunities_telegram(res)
+                if rid:
+                    body = _telegram_clip(f"{body}\n\nrun {rid}")
+                return body
+            if action == "propose_marketing_actions":
+                body = _format_propose_marketing_actions_telegram(res)
+                if rid:
+                    body = _telegram_clip(f"{body}\n\nrun {rid}")
+                return body
+
         status = None
         tool = None
         if isinstance(res, dict):
@@ -172,7 +527,7 @@ def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
         detail = _format_result_snippet(res)
         if detail:
             msg = msg + "\n" + detail
-        return msg[:4000]
+        return _telegram_clip(msg)
 
     if kind == "pending":
         rows = payload.get("approvals") or []

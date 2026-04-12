@@ -242,8 +242,13 @@ def _derive_analysis_status(analysis: dict[str, Any]) -> str:
     return "partial"
 
 
-def run_propose_marketing_actions(*, days_back: int, top_n: int) -> dict[str, Any]:
-    analysis = run_analyze_marketing_opportunities(days_back=days_back, top_n=top_n)
+def build_proposals_from_analysis(
+    analysis: dict[str, Any], *, days_back: int, top_n: int
+) -> dict[str, Any]:
+    """
+    Map a single :func:`run_analyze_marketing_opportunities` result to proposed actions
+    without re-fetching sources (used by orchestration pipelines).
+    """
     business = analysis.get("business") or "Peluquería Cruz"
     unavailable = list(analysis.get("unavailable_sources") or [])
     missing_data = list(analysis.get("missing_data") or [])
@@ -262,7 +267,6 @@ def run_propose_marketing_actions(*, days_back: int, top_n: int) -> dict[str, An
     for m in missing_data:
         proposals.append(_map_missing_data_item(m))
 
-    # Deterministic sort: priority desc, then action_type
     def _sort_key(p: dict[str, Any]) -> tuple[int, str]:
         pr = str(p.get("priority") or "low")
         return (-_PRIORITY_RANK.get(pr, 0), str(p.get("action_type") or ""))
@@ -283,3 +287,8 @@ def run_propose_marketing_actions(*, days_back: int, top_n: int) -> dict[str, An
         "missing_data": missing_data,
         "unavailable_sources": unavailable,
     }
+
+
+def run_propose_marketing_actions(*, days_back: int, top_n: int) -> dict[str, Any]:
+    analysis = run_analyze_marketing_opportunities(days_back=days_back, top_n=top_n)
+    return build_proposals_from_analysis(analysis, days_back=days_back, top_n=top_n)

@@ -22,6 +22,16 @@ _DIRECT_INTENTS: dict[str, tuple[str, str]] = {
     "ready": ("list_ready_for_execution", "ready"),
     "ready for execution": ("list_ready_for_execution", "ready_for_execution"),
     "list ready actions": ("list_ready_for_execution", "list_ready_actions"),
+    "analyze marketing opportunities": (
+        "analyze_marketing_opportunities",
+        "analyze_marketing_opportunities",
+    ),
+    "propose marketing actions": (
+        "propose_marketing_actions",
+        "propose_marketing_actions",
+    ),
+    "run marketing review": ("run_marketing_review", "run_marketing_review"),
+    "marketing review": ("run_marketing_review", "marketing_review"),
 }
 
 

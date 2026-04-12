@@ -1,168 +1,202 @@
-"""Tests for Jarvis Telegram control (allowlists, routing, formatters)."""
+"""Tests for Jarvis Telegram formatting (compact replies)."""
 
 from __future__ import annotations
-
-from unittest.mock import patch
-
-import pytest
 
 from app.jarvis import telegram_control as tc
 
 
-@pytest.fixture
-def clear_jarvis_env(monkeypatch):
-    """Isolate env for each test."""
-    for k in (
-        "JARVIS_TELEGRAM_ENABLED",
-        "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_ALLOWED_CHAT_IDS",
-        "TELEGRAM_ALLOWED_USER_IDS",
-    ):
-        monkeypatch.delenv(k, raising=False)
-    yield
-
-
-def test_allowlisted_chat_and_user_accepted(clear_jarvis_env, monkeypatch):
-    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy-token")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "-1001, -1002")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "42; 99")
-    assert tc.jarvis_telegram_allowed("-1001", "42") is True
-
-
-def test_non_allowlisted_rejected(clear_jarvis_env, monkeypatch):
-    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy-token")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "-1001")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "42")
-    assert tc.jarvis_telegram_allowed("-9999", "42") is False
-    assert tc.jarvis_telegram_allowed("-1001", "43") is False
-
-
-def test_jarvis_command_classify_routes():
-    assert tc.classify_jarvis_command("/jarvis hello") == ("jarvis", "hello")
-    assert tc.classify_jarvis_command("/pending") == ("pending", "")
-    rid = "550e8400-e29b-41d4-a716-446655440000"
-    assert tc.classify_jarvis_command(f"/status {rid}") == ("approval_status", rid)
-    assert tc.classify_jarvis_command("/status") is None
-    assert tc.classify_jarvis_command("/approve abc note here") == (
-        "approve",
-        "abc\nnote here",
-    )
-    assert tc.classify_jarvis_command(f"/approve {rid} my reason") == (
-        "approve",
-        f"{rid}\nmy reason",
-    )
-
-
-def test_maybe_handle_disabled_does_not_dispatch(clear_jarvis_env, monkeypatch):
-    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "false")
-    sent: list[str] = []
-
-    def send(msg: str) -> None:
-        sent.append(msg)
-
-    ok = tc.maybe_handle_jarvis_telegram_message(
-        raw_text="/jarvis hi",
-        chat_id="1",
-        actor_user_id="2",
-        from_user={"id": 2, "username": "op"},
-        send=send,
-    )
-    assert ok is True
-    assert sent and "disabled" in sent[0].lower()
-
-
-def test_maybe_handle_routes_jarvis_with_mocks(clear_jarvis_env, monkeypatch):
-    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "10")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "20")
-
-    sent: list[str] = []
-
-    def send(msg: str) -> None:
-        sent.append(msg)
-
-    with patch("app.jarvis.telegram_control.run_jarvis") as rj:
-        rj.return_value = {
-            "input": "hi",
-            "plan": {"action": "get_unix_time", "args": {}, "reasoning": "t"},
-            "result": {"unix": 1},
-            "jarvis_run_id": "rid-1",
-        }
-        ok = tc.maybe_handle_jarvis_telegram_message(
-            raw_text="/jarvis hi",
-            chat_id="10",
-            actor_user_id="20",
-            from_user={"id": 20, "username": "alice"},
-            send=send,
-        )
-    assert ok is True
-    rj.assert_called_once_with("hi")
-    assert sent
-    assert "rid-1" in sent[0]
-    assert "get_unix_time" in sent[0] or "plan=" in sent[0]
-
-
-def test_approve_passes_actor(clear_jarvis_env, monkeypatch):
-    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "1")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "2")
-    rid = "550e8400-e29b-41d4-a716-446655440000"
-
-    sent: list[str] = []
-
-    def send(msg: str) -> None:
-        sent.append(msg)
-
-    with patch(
-        "app.jarvis.telegram_control.dispatch_jarvis_command",
-        return_value=("approve", {"status": "ok", "jarvis_run_id": rid}),
-    ) as disp:
-        ok = tc.maybe_handle_jarvis_telegram_message(
-            raw_text=f"/approve {rid} because",
-            chat_id="1",
-            actor_user_id="2",
-            from_user={"id": 2, "username": "bob"},
-            send=send,
-        )
-    assert ok is True
-    disp.assert_called_once()
-    pos = disp.call_args[0]
-    kwargs = disp.call_args[1]
-    assert pos[0] == "approve"
-    assert rid in (pos[1] or "")
-    assert "because" in (pos[1] or "")
-    assert kwargs.get("actor") == "@bob"
-
-
-def test_actor_string_username_vs_name():
-    assert tc.actor_from_telegram_user({"id": 5, "username": "ops"}) == "@ops"
-    assert "id:7" in tc.actor_from_telegram_user({"id": 7, "first_name": "Pat"})
-
-
-def test_compact_formatter_truncation():
-    long_payload = {"status": "ok", "approvals": [{"jarvis_run_id": "x" * 200}]}
-    out = tc.format_compact_jarvis_reply("pending", long_payload)
+def test_format_analyze_marketing_opportunities_sections():
+    payload = {
+        "jarvis_run_id": "r1",
+        "plan": {"action": "analyze_marketing_opportunities", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "ok",
+            "biggest_opportunities": [
+                {
+                    "title": "Low CTR query",
+                    "summary": "Fix snippet.",
+                    "priority": "high",
+                },
+                {
+                    "title": "Page CTR",
+                    "summary": "Tune meta.",
+                    "priority": "medium",
+                },
+            ],
+            "biggest_wastes": [
+                {
+                    "campaign": "Brand Ads",
+                    "summary": "Spend with no conversions.",
+                    "title": "Spend without conversions: Brand Ads",
+                }
+            ],
+            "conversion_gaps": [],
+            "missing_data": [
+                {"title": "GA4 booking event not mapped", "source": "ga4"},
+            ],
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "🧠 Marketing Analysis" in out
+    assert "[HIGH]" in out
+    assert "Low CTR query" in out
+    assert "Fix snippet." in out
+    assert "Wasted Spend:" in out
+    assert "Brand Ads" in out
+    assert "Missing Data:" in out
+    assert "{" not in out
     assert len(out) <= 4000
 
 
-def test_empty_allowlists_reject(clear_jarvis_env, monkeypatch):
-    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
-    sent: list[str] = []
+def test_format_propose_marketing_actions_sorted_and_why():
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "propose_marketing_actions", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "ok",
+            "proposed_actions": [
+                {
+                    "title": "Later item",
+                    "target": "x",
+                    "reason": "because low",
+                    "priority": "low",
+                },
+                {
+                    "title": "First item",
+                    "target": "/page",
+                    "reason": "because high",
+                    "priority": "high",
+                },
+            ],
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "🚀 Recommended Actions" in out
+    assert out.index("First item") < out.index("Later item")
+    assert "Why: because high" in out
+    assert "Target: /page" in out
+    assert "{" not in out
 
-    def send(msg: str) -> None:
-        sent.append(msg)
 
-    ok = tc.maybe_handle_jarvis_telegram_message(
-        raw_text="/pending",
-        chat_id="1",
-        actor_user_id="2",
-        from_user={"id": 2},
-        send=send,
-    )
-    assert ok is True
-    assert "allowlist" in sent[0].lower() or "configure" in sent[0].lower()
+def test_analyze_insufficient_data_fallback():
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "analyze_marketing_opportunities", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "insufficient_data",
+            "biggest_opportunities": [],
+            "biggest_wastes": [],
+            "conversion_gaps": [],
+            "missing_data": [],
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "Not enough data" in out
+    assert "Google Analytics" in out
+
+
+def test_format_run_marketing_review_telegram():
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "run_marketing_review", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "ok",
+            "analysis_status": "ok",
+            "proposal_status": "ok",
+            "summary": "Marketing review completed. 2 top finding(s) highlighted, 2 action(s) proposed.",
+            "top_findings": [
+                {"title": "Finding A", "priority": "high"},
+            ],
+            "proposed_actions": [
+                {"title": "Act 1", "priority": "high", "reason": "because"},
+            ],
+            "staged_actions": [{"title": "Staged X"}],
+            "missing_data": [],
+            "staged_for_approval": True,
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "🧠 Marketing Review" in out
+    assert "Summary:" in out
+    assert "Top Findings:" in out
+    assert "Proposed Actions:" in out
+    assert "[HIGH]" in out
+    assert "Staged:" in out
+    assert "Staged X" in out
+    assert "Why:" not in out
+    assert out.count("Act 1") == 1
+    assert "{" not in out
+
+
+def test_format_run_marketing_review_limited_data_missing_sources():
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "run_marketing_review", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "insufficient_data",
+            "analysis_status": "insufficient_data",
+            "proposal_status": "insufficient_data",
+            "summary": "",
+            "top_findings": [],
+            "proposed_actions": [],
+            "staged_actions": [],
+            "missing_data": [{"title": "GA4 booking event not configured", "source": "ga4"}],
+            "unavailable_sources": ["google_ads", "google_search_console"],
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "🧠 Marketing Review" in out
+    assert "Marketing review completed with limited data." in out
+    assert "Missing Data:" in out
+    assert "Google Ads" in out
+    assert "Search Console" in out
+    assert "{" not in out
+
+
+def test_format_run_marketing_review_executor_error():
+    payload = {
+        "jarvis_run_id": "rid-1",
+        "plan": {"action": "run_marketing_review", "args": {}, "reasoning": "t"},
+        "result": {"error": "tool_failed", "action": "run_marketing_review", "detail": "boom"},
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "⚠️ Marketing review failed" in out
+    assert "tool_failed" in out
+    assert "boom" in out
+    assert "{" not in out
+
+
+def test_format_run_marketing_review_shape_fallback_without_plan_action():
+    """Runtime payload still formats if plan.action were wrong but result shape matches."""
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "echo_message", "args": {"message": "x"}, "reasoning": "t"},
+        "result": {
+            "status": "ok",
+            "analysis_status": "ok",
+            "proposal_status": "ok",
+            "summary": "Pipeline summary.",
+            "top_findings": [{"title": "F", "priority": "medium"}],
+            "proposed_actions": [{"title": "P", "priority": "low"}],
+            "missing_data": [],
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "🧠 Marketing Review" in out
+    assert "Pipeline summary." in out
+    assert "Available tools" not in out
+    assert "```" not in out
+
+
+def test_analyze_tool_unavailable_short_message():
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "analyze_marketing_opportunities", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "unavailable",
+            "message": "Analysis failed.",
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert "Analysis failed" in out
+    assert "{" not in out

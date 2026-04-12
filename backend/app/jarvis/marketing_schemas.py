@@ -35,6 +35,18 @@ class ProposeMarketingActionsArgs(AnalyzeMarketingOpportunitiesArgs):
     pass
 
 
+class RunMarketingReviewArgs(BaseModel):
+    """End-to-end marketing review: analyze → propose → optional staging (orchestration)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days_back: int = Field(default=28, ge=1, le=365)
+    top_n: int = Field(default=5, ge=1, le=10)
+    stage_for_approval: bool = False
+    stage_indices: list[int] | None = None
+    reason: str | None = Field(default=None, max_length=4000)
+
+
 class StageMarketingActionForApprovalArgs(AnalyzeMarketingOpportunitiesArgs):
     """Select one or more proposed marketing actions to store as pending approvals."""
 

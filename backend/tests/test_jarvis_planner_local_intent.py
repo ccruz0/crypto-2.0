@@ -38,6 +38,29 @@ def test_ready_for_execution_routes(assert_bedrock_not_called):
     assert out["action"] == "list_ready_for_execution"
 
 
+def test_jarvis_analyze_marketing_opportunities(assert_bedrock_not_called):
+    out = create_plan("/jarvis analyze marketing opportunities", jarvis_run_id="run-m1")
+    assert out["action"] == "analyze_marketing_opportunities"
+    assert out["args"] == {}
+
+
+def test_propose_marketing_actions(assert_bedrock_not_called):
+    out = create_plan("propose marketing actions", jarvis_run_id="run-m2")
+    assert out["action"] == "propose_marketing_actions"
+    assert out["args"] == {}
+
+
+def test_jarvis_run_marketing_review_intent(assert_bedrock_not_called):
+    out = create_plan("/jarvis run marketing review", jarvis_run_id="run-mr")
+    assert out["action"] == "run_marketing_review"
+    assert out["args"] == {}
+
+
+def test_marketing_review_intent(assert_bedrock_not_called):
+    out = create_plan("marketing review", jarvis_run_id="run-mr2")
+    assert out["action"] == "run_marketing_review"
+
+
 def test_unrelated_text_uses_bedrock(monkeypatch):
     calls: list[str] = []
 

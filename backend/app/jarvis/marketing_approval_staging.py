@@ -74,7 +74,8 @@ def _selection_error_result(
     }
 
 
-def run_stage_marketing_action_for_approval(
+def run_stage_marketing_action_for_approval_with_proposal_result(
+    proposal_result: dict[str, Any],
     *,
     days_back: int,
     top_n: int,
@@ -82,7 +83,9 @@ def run_stage_marketing_action_for_approval(
     action_indices: list[int] | None,
     reason: str = "",
 ) -> dict[str, Any]:
-    proposal_result = run_propose_marketing_actions(days_back=days_back, top_n=top_n)
+    """
+    Stage selected indices using an existing proposal result (no second fetch/proposal pass).
+    """
     business = str(proposal_result.get("business") or "Peluquería Cruz")
     proposal_status = str(proposal_result.get("status") or "insufficient_data")
     analysis_status = str(proposal_result.get("analysis_status") or "insufficient_data")
@@ -207,3 +210,22 @@ def run_stage_marketing_action_for_approval(
         "missing_data": missing_data,
         "staging_batch_id": staging_batch_id,
     }
+
+
+def run_stage_marketing_action_for_approval(
+    *,
+    days_back: int,
+    top_n: int,
+    action_index: int | None,
+    action_indices: list[int] | None,
+    reason: str = "",
+) -> dict[str, Any]:
+    proposal_result = run_propose_marketing_actions(days_back=days_back, top_n=top_n)
+    return run_stage_marketing_action_for_approval_with_proposal_result(
+        proposal_result,
+        days_back=days_back,
+        top_n=top_n,
+        action_index=action_index,
+        action_indices=action_indices,
+        reason=reason,
+    )

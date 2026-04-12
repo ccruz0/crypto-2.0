@@ -74,5 +74,20 @@ def run_jarvis(user_input: str, *, memory: JarvisMemory | None = None) -> Jarvis
     except Exception as e:
         logger.exception("jarvis.run save_interaction_failed run_id=%s err=%s", jarvis_run_id, e)
 
-    logger.info("jarvis.run done run_id=%s", jarvis_run_id)
+    if isinstance(result, dict):
+        logger.info(
+            "jarvis.run done run_id=%s plan_action=%s result_status=%s err=%s keys=%s",
+            jarvis_run_id,
+            (plan or {}).get("action"),
+            result.get("status"),
+            result.get("error"),
+            list(result.keys())[:12],
+        )
+    else:
+        logger.info(
+            "jarvis.run done run_id=%s plan_action=%s result_type=%s",
+            jarvis_run_id,
+            (plan or {}).get("action"),
+            type(result).__name__,
+        )
     return out

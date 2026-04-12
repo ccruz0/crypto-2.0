@@ -18,6 +18,7 @@ from app.jarvis.marketing_schemas import (
     ExecuteMarketingProposalArgs,
     MarketingAnalysisWindowArgs,
     ProposeMarketingActionsArgs,
+    RunMarketingReviewArgs,
     StageMarketingActionForApprovalArgs,
     TopPagesByConversionArgs,
 )
@@ -30,6 +31,7 @@ from app.jarvis.marketing_tools import (
     get_top_pages_by_conversion,
     list_marketing_tools_status,
     propose_marketing_actions,
+    run_marketing_review,
     stage_marketing_action_for_approval,
 )
 
@@ -643,6 +645,17 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         args_model=ProposeMarketingActionsArgs,
         policy=ToolPolicy.SAFE,
         description="Marketing Intelligence: deterministic proposed actions from opportunity analysis (read-only; no execution).",
+        category=ToolCategory.READ,
+    ),
+    "run_marketing_review": ToolSpec(
+        name="run_marketing_review",
+        fn=run_marketing_review,
+        args_model=RunMarketingReviewArgs,
+        policy=ToolPolicy.SAFE,
+        description=(
+            "Orchestration: run analyze → propose → optional staging in one pipeline "
+            "(read-only analysis; staging uses internal approval store only)."
+        ),
         category=ToolCategory.READ,
     ),
     "stage_marketing_action_for_approval": ToolSpec(
