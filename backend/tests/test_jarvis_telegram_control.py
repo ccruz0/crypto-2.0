@@ -149,8 +149,58 @@ def test_format_run_marketing_review_limited_data_missing_sources():
     assert "Marketing review completed with limited data." in out
     assert "Missing Data:" in out
     assert "Google Ads" in out
-    assert "Search Console" in out
+    assert "Google Search Console" in out
     assert "{" not in out
+
+
+def test_format_run_marketing_review_merges_gsc_missing_with_unavailable_label():
+    """Missing Data should not repeat GSC as both a title and the short unavailable label."""
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "run_marketing_review", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "insufficient_data",
+            "analysis_status": "insufficient_data",
+            "proposal_status": "insufficient_data",
+            "summary": "",
+            "top_findings": [],
+            "proposed_actions": [],
+            "staged_actions": [],
+            "missing_data": [
+                {"title": "Google Search Console not configured", "source": "google_search_console"},
+            ],
+            "unavailable_sources": ["google_search_console"],
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert out.count("Google Search Console") == 1
+    assert "Missing Data:" in out
+
+
+def test_format_run_marketing_review_proposed_actions_prioritize_setup():
+    payload = {
+        "jarvis_run_id": "",
+        "plan": {"action": "run_marketing_review", "args": {}, "reasoning": "t"},
+        "result": {
+            "status": "ok",
+            "analysis_status": "partial",
+            "proposal_status": "ok",
+            "summary": "S",
+            "top_findings": [],
+            "proposed_actions": [
+                {"title": "Pause low-intent campaign", "priority": "high", "reason": "r1"},
+                {
+                    "title": "Connect Google Search Console for Peluquería Cruz",
+                    "priority": "high",
+                    "reason": "r2",
+                },
+            ],
+            "staged_actions": [],
+            "missing_data": [],
+        },
+    }
+    out = tc.format_compact_jarvis_reply("jarvis", payload)
+    assert out.index("Connect Google Search Console") < out.index("Pause low-intent campaign")
 
 
 def test_format_run_marketing_review_executor_error():

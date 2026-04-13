@@ -12,6 +12,96 @@ from app.jarvis.marketing_opportunity_analysis import run_analyze_marketing_oppo
 
 _PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
 
+# Human-readable names for connect/setup proposals (avoid raw env keys in titles).
+_SOURCE_LABELS = {
+    "google_search_console": "Google Search Console",
+    "ga4": "Google Analytics",
+    "google_ads": "Google Ads",
+    "ga4_top_pages": "Google Analytics",
+    "marketing": "Marketing",
+}
+
+
+def _friendly_source_label(src: str) -> str:
+    s = (src or "").strip().lower()
+    return _SOURCE_LABELS.get(s, s.replace("_", " ").title())
+
+
+def dedupe_missing_data_entries(missing_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Remove overlapping missing-data rows for the same source.
+
+    If ``not_configured`` or ``missing_event_mapping`` exists for a source, drop
+    ``source_unavailable`` rows for that source (setup is the real action).
+    Collapse multiple ``source_unavailable`` rows for one source (e.g. GA4 funnel + top pages)
+    into a single executive line.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for m in missing_data:
+        if not isinstance(m, dict):
+            continue
+        src = str(m.get("source") or "").strip().lower()
+        if not src:
+            src = "_none"
+        groups.setdefault(src, []).append(m)
+
+    out: list[dict[str, Any]] = []
+    for src, items in groups.items():
+        types = [str(x.get("type") or "") for x in items]
+        has_strong = any(t in ("not_configured", "missing_event_mapping") for t in types)
+        if has_strong:
+            items = [x for x in items if str(x.get("type") or "") != "source_unavailable"]
+
+        su = [x for x in items if str(x.get("type") or "") == "source_unavailable"]
+        rest = [x for x in items if str(x.get("type") or "") != "source_unavailable"]
+
+        if len(su) > 1:
+            first = dict(su[0])
+            if src == "ga4":
+                first["title"] = "Google Analytics data not available (funnel / top pages)"
+            elif src == "google_search_console":
+                first["title"] = "Google Search Console data not available"
+            elif src == "google_ads":
+                first["title"] = "Google Ads data not available"
+            else:
+                first["title"] = str(su[0].get("title") or "Data not available")
+            su = [first]
+
+        out.extend(rest)
+        out.extend(su)
+
+    for x in out:
+        if str(x.get("type")) == "not_configured":
+            src = str(x.get("source") or "")
+            t = str(x.get("title") or "")
+            if src and t == f"{src} not configured":
+                x["title"] = f"{_friendly_source_label(src)} not configured"
+
+    return out
+
+
+def _drop_redundant_unavailable_proposals(proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    If a ``Connect <source>`` setup action exists, drop generic ``data not available`` proposals
+    for the same source (near-duplicates).
+    """
+    connect_sources: set[str] = set()
+    for p in proposals:
+        title = str(p.get("title") or "")
+        if title.startswith("Connect ") and "Peluquería" in title:
+            connect_sources.add(str(p.get("source") or "").strip().lower())
+
+    out: list[dict[str, Any]] = []
+    for p in proposals:
+        src = str(p.get("source") or "").strip().lower()
+        title_l = str(p.get("title") or "").lower()
+        if src in connect_sources and (
+            "data not available" in title_l or title_l.endswith(" not available")
+        ):
+            continue
+        out.append(p)
+    return out
+
 
 def _proposed_action(
     *,
@@ -207,9 +297,10 @@ def _map_missing_data_item(m: dict[str, Any]) -> dict[str, Any]:
             supporting_metrics=None,
         )
     if t == "not_configured":
+        label = _friendly_source_label(src)
         return _proposed_action(
             action_type="connect_data_source",
-            title=f"Connect {src} for Peluquería Cruz",
+            title=f"Connect {label} for Peluquería Cruz",
             summary=str(m.get("summary") or "Add credentials and property identifiers in environment configuration."),
             source=src,
             target=src,
@@ -251,7 +342,7 @@ def build_proposals_from_analysis(
     """
     business = analysis.get("business") or "Peluquería Cruz"
     unavailable = list(analysis.get("unavailable_sources") or [])
-    missing_data = list(analysis.get("missing_data") or [])
+    missing_data = dedupe_missing_data_entries(list(analysis.get("missing_data") or []))
 
     proposals: list[dict[str, Any]] = []
 
@@ -267,9 +358,14 @@ def build_proposals_from_analysis(
     for m in missing_data:
         proposals.append(_map_missing_data_item(m))
 
-    def _sort_key(p: dict[str, Any]) -> tuple[int, str]:
+    proposals = _drop_redundant_unavailable_proposals(proposals)
+
+    def _sort_key(p: dict[str, Any]) -> tuple[int, int, str]:
         pr = str(p.get("priority") or "low")
-        return (-_PRIORITY_RANK.get(pr, 0), str(p.get("action_type") or ""))
+        pri = -_PRIORITY_RANK.get(pr, 0)
+        t = str(p.get("title") or "")
+        setup_first = 0 if (t.startswith("Connect ") or "Configure GA4" in t) else 1
+        return (setup_first, pri, str(p.get("action_type") or ""))
 
     proposals.sort(key=_sort_key)
     proposals = proposals[: max(0, top_n)]

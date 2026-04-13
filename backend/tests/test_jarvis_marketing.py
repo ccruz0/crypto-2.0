@@ -376,7 +376,13 @@ def test_stage_marketing_action_single_valid_index(monkeypatch):
         "fetch_google_ads_summary",
         lambda days_back: ms.build_google_ads_waste_sample(days_back=days_back),
     )
-    out = TOOL_SPECS["stage_marketing_action_for_approval"].fn(action_index=0, top_n=10)
+    prop = TOOL_SPECS["propose_marketing_actions"].fn(top_n=10)
+    pause_idx = next(
+        i
+        for i, p in enumerate(prop["proposed_actions"])
+        if p["action_type"] == "pause_or_reduce_budget"
+    )
+    out = TOOL_SPECS["stage_marketing_action_for_approval"].fn(action_index=pause_idx, top_n=10)
     assert out["status"] == "ok"
     assert out["selected_count"] == 1
     staged = out["staged_actions"][0]

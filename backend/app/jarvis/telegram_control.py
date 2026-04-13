@@ -29,10 +29,10 @@ _TELEGRAM_MAX_LEN = 4000
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 _SOURCE_FRIENDLY = {
-    "google_search_console": "Search Console",
+    "google_search_console": "Google Search Console",
     "ga4": "Google Analytics",
     "google_ads": "Google Ads",
-    "ga4_top_pages": "GA4 top pages",
+    "ga4_top_pages": "Google Analytics",
     "marketing": "Marketing",
     "marketing_source_status": "Marketing sources",
     "ops": "Operations",
@@ -209,6 +209,64 @@ def _priority_bracket(priority: str | None) -> str:
     return f"[{p.upper()}]"
 
 
+def _missing_line_bucket(line: str) -> str:
+    """Group display lines that refer to the same marketing source (dedup Telegram output)."""
+    sl = line.lower()
+    if "google ads" in sl:
+        return "ads"
+    if "search console" in sl or "gsc" in sl:
+        return "gsc"
+    if (
+        "google analytics" in sl
+        or " ga4" in sl
+        or sl.startswith("ga4")
+        or ("analytics" in sl and "google" in sl)
+    ):
+        return "ga"
+    return f"other:{line}"
+
+
+def _missing_line_priority(line: str) -> int:
+    """Higher = prefer this line when collapsing duplicates for the same :func:`_missing_line_bucket`."""
+    sl = line.lower()
+    if sl.startswith("connect "):
+        return 100
+    if "configure ga4" in sl or ("configure" in sl and "booking" in sl):
+        return 95
+    if " not configured" in sl:
+        return 85
+    if "data not available" in sl:
+        return 50
+    if len(line) <= 40 and line.count(" ") <= 4:
+        return 30
+    return 45
+
+
+def _dedupe_missing_display_lines(lines: list[str]) -> list[str]:
+    """
+    Collapse overlapping missing-source lines (e.g. ``unavailable_sources`` short labels vs
+    missing-data titles) into one executive line per source bucket.
+    """
+    buckets_order: list[str] = []
+    best: dict[str, tuple[int, str]] = {}
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        b = _missing_line_bucket(line)
+        pr = _missing_line_priority(line)
+        if b not in best:
+            buckets_order.append(b)
+            best[b] = (pr, line)
+            continue
+        old_pr, old_line = best[b]
+        if pr > old_pr:
+            best[b] = (pr, line)
+        elif pr == old_pr and len(line) < len(old_line):
+            best[b] = (pr, line)
+    return [best[b][1] for b in buckets_order]
+
+
 def _missing_data_bullets(missing: list[Any]) -> list[str]:
     lines: list[str] = []
     for m in missing[:20]:
@@ -237,7 +295,7 @@ def _marketing_insufficient_fallback(res: dict[str, Any]) -> str:
         bullets = [
             "Google Analytics",
             "Google Ads",
-            "Search Console",
+            "Google Search Console",
         ]
     body = "⚠️ Not enough data to analyze marketing yet.\n\nMissing:\n"
     body += "\n".join(f"• {b}" for b in bullets[:12])
@@ -400,7 +458,14 @@ def _format_run_marketing_review_telegram(res: dict[str, Any]) -> str:
 
     proposed_raw = res.get("proposed_actions") or []
     proposed: list[dict[str, Any]] = [p for p in proposed_raw if isinstance(p, dict)]
-    proposed.sort(key=_prio_key)
+
+    def _proposed_sort_key(d: dict[str, Any]) -> tuple[int, int, str]:
+        pr = str(d.get("priority") or "medium").lower()
+        t = str(d.get("title") or "")
+        setup_first = 0 if (t.startswith("Connect ") or "Configure GA4" in t) else 1
+        return (setup_first, _PRIORITY_ORDER.get(pr, 1), t)
+
+    proposed.sort(key=_proposed_sort_key)
     proposed = proposed[:5]
 
     staged_raw = res.get("staged_actions") or []
@@ -414,13 +479,7 @@ def _format_run_marketing_review_telegram(res: dict[str, Any]) -> str:
 
     missing_bullets = _missing_data_bullets(list(res.get("missing_data") or []))
     src_labels = _unavailable_source_labels(res)
-    missing_combined: list[str] = []
-    seen_m: set[str] = set()
-    for x in missing_bullets + src_labels:
-        if x not in seen_m:
-            seen_m.add(x)
-            missing_combined.append(x)
-    missing_combined = missing_combined[:5]
+    missing_combined = _dedupe_missing_display_lines(missing_bullets + src_labels)[:5]
 
     limited = (
         st in ("insufficient_data", "partial")
@@ -480,17 +539,33 @@ def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
         review_fmt = action == "run_marketing_review" or (
             isinstance(res, dict) and _looks_like_run_marketing_review_result(res)
         )
+        shape_fallback = bool(
+            review_fmt
+            and isinstance(res, dict)
+            and action != "run_marketing_review"
+            and _looks_like_run_marketing_review_result(res)
+        )
         if review_fmt:
             if not isinstance(res, dict):
+                logger.info(
+                    "jarvis.telegram.format run_id=%s route=run_marketing_review plan_action=%s "
+                    "result_status=None shape_fallback=%s keys=None",
+                    rid or "-",
+                    action or "-",
+                    int(shape_fallback),
+                )
                 body = "⚠️ Marketing review: no result payload returned."
                 if rid:
                     body = _telegram_clip(f"{body}\n\nrun {rid}")
                 return _telegram_clip(body)
             logger.info(
-                "jarvis.telegram.format_run_marketing_review plan_action=%s result_status=%s keys=%s",
+                "jarvis.telegram.format run_id=%s route=run_marketing_review plan_action=%s "
+                "result_status=%s shape_fallback=%s keys=%s",
+                rid or "-",
                 action or "-",
                 res.get("status"),
-                list(res.keys())[:12],
+                int(shape_fallback),
+                list(res.keys()),
             )
             body = _format_run_marketing_review_telegram(res)
             if rid:
@@ -499,11 +574,27 @@ def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
 
         if isinstance(res, dict) and not _jarvis_result_has_executor_error(res):
             if action == "analyze_marketing_opportunities":
+                logger.info(
+                    "jarvis.telegram.format run_id=%s route=analyze_marketing_opportunities "
+                    "plan_action=%s result_status=%s shape_fallback=0 keys=%s",
+                    rid or "-",
+                    action,
+                    res.get("status"),
+                    list(res.keys()),
+                )
                 body = _format_analyze_marketing_opportunities_telegram(res)
                 if rid:
                     body = _telegram_clip(f"{body}\n\nrun {rid}")
                 return body
             if action == "propose_marketing_actions":
+                logger.info(
+                    "jarvis.telegram.format run_id=%s route=propose_marketing_actions "
+                    "plan_action=%s result_status=%s shape_fallback=0 keys=%s",
+                    rid or "-",
+                    action,
+                    res.get("status"),
+                    list(res.keys()),
+                )
                 body = _format_propose_marketing_actions_telegram(res)
                 if rid:
                     body = _telegram_clip(f"{body}\n\nrun {rid}")
@@ -527,6 +618,14 @@ def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
         detail = _format_result_snippet(res)
         if detail:
             msg = msg + "\n" + detail
+        rk = list(res.keys()) if isinstance(res, dict) else None
+        logger.info(
+            "jarvis.telegram.format run_id=%s route=generic plan_action=%s result_status=%s shape_fallback=0 keys=%s",
+            rid or "-",
+            action or "-",
+            (res.get("status") or res.get("error")) if isinstance(res, dict) else None,
+            rk,
+        )
         return _telegram_clip(msg)
 
     if kind == "pending":
