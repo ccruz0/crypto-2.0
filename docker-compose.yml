@@ -165,9 +165,9 @@ services:
     command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload --log-level info --access-log --timeout-keep-alive 30 --timeout-graceful-shutdown 10"
     restart: always
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8002/api/health/ready', timeout=15)"]
       interval: 60s
-      timeout: 5s
+      timeout: 20s
       retries: 3
       start_period: 120s
     deploy:
@@ -210,6 +210,9 @@ services:
       # Single active signal monitor / trading executor (Postgres advisory lock); canary must stay false
       - RUN_SIGNAL_MONITOR=true
       - RUNTIME_ORIGIN=AWS
+      # Secret recovery: allowlisted docker compose recreate (see GET /api/settings/recovery-status)
+      - ENABLE_SECRET_RECOVERY_AUTO_RESTART=${ENABLE_SECRET_RECOVERY_AUTO_RESTART:-false}
+      - DOCKER_COMPOSE_PROJECT_DIR=${DOCKER_COMPOSE_PROJECT_DIR:-}
       # Production default: trading-only (agent/GitHub startup checks off); override via env or secrets/runtime.env
       - ATP_TRADING_ONLY=${ATP_TRADING_ONLY:-1}
       # Required for Crypto.com private API: allow get_account_summary / user-balance (portfolio)
@@ -291,10 +294,11 @@ services:
       - ./docs:/app/docs
       - ./logs:/app/logs
       - aws_trading_config_data:/data
-      # Telegram decrypt: key for TELEGRAM_BOT_TOKEN_ENCRYPTED (secrets/runtime.env)
+      # Mount secrets directory (not only runtime.env): persist uses mkstemp beside the file;
+      # a file-only bind mount makes /app/secrets non-writable for new files → rotate-admin-key 500.
+      - ./secrets:/app/secrets
+      # Telegram decrypt key stays read-only over the directory mount
       - ./secrets/telegram_key:/app/secrets/telegram_key:ro
-      # Optional: mount runtime.env so dashboard modal can persist exchange credentials (host file must be writable by backend user, e.g. chown 10001:10001 secrets/runtime.env)
-      - ./secrets/runtime.env:/app/secrets/runtime.env
     group_add:
       - "0"
     working_dir: /app
@@ -302,12 +306,12 @@ services:
       - "host.docker.internal:host-gateway"
     # Prod must not use --reload; it causes restarts and 502s
     # Single worker: Telegram long-polling + pg advisory lock must not run in two Gunicorn workers (both would
-    # contend on the lock and spam logs). External health checks should call /ping_fast from outside the process.
+    # contend on the lock and spam logs). Liveness: /ping_fast; readiness (DB): /api/health/ready (Docker healthcheck).
     command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
     restart: always
-    # Healthcheck: Python one-liner to avoid bash/shell forks (containerd-shim zombie leak)
+    # Healthcheck: must verify DATABASE_URL — /ping_fast does not touch Postgres and can show healthy with wrong credentials
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8002/api/health/ready', timeout=15)"]
       interval: 120s
       timeout: 20s
       retries: 5
@@ -361,15 +365,16 @@ services:
       - "127.0.0.1:8003:8002"
     volumes:
       - aws_trading_config_data:/data
+      - ./secrets:/app/secrets
       - ./secrets/telegram_key:/app/secrets/telegram_key:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
     restart: "no"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8002/api/health/ready', timeout=15)"]
       interval: 30s
-      timeout: 15s
+      timeout: 20s
       retries: 5
       start_period: 120s
     deploy:

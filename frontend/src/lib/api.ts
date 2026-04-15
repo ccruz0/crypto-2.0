@@ -2658,6 +2658,16 @@ export interface AutomationReadinessPayload {
   note?: string;
 }
 
+/** One row from GET …/secrets-status (masked values only). */
+export interface SecretCatalogItem {
+  env_var: string;
+  label: string;
+  group: string;
+  present: boolean;
+  masked: string;
+  intake_allowed: boolean;
+}
+
 export interface SecretsStatusResponse {
   overall: 'ok' | 'action_required';
   missing: SecretMissingItem[];
@@ -2667,9 +2677,12 @@ export interface SecretsStatusResponse {
     environment: string;
     aws: boolean;
     github_legacy_pat_active: boolean;
+    github_app_client_id_status?: string | null;
   };
   /** While ATP_TRADING_ONLY=1: secrets still needed before switching to automation. Omitted by older backends. */
   automation_readiness?: AutomationReadinessPayload;
+  /** Full allowlisted credential list with masked previews (newer backends). */
+  secrets_catalog?: SecretCatalogItem[];
 }
 
 async function _getJsonAdminPaths<T>(

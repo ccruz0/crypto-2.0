@@ -1,71 +1,59 @@
 'use client';
 
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { getApiUrl } from '@/lib/environment';
 import {
   getSecretsStatus,
   getRecoveryStatus,
   submitSecretIntake,
   applyBackendRecovery,
-  getSystemHealth,
   type SecretsStatusResponse,
-  type SecretMissingItem,
+  type SecretCatalogItem,
   type RecoveryStatusPayload,
-  type DeployGithubAuthSnapshot,
 } from '@/lib/api';
-import GithubAppClientIdModal from '@/components/GithubAppClientIdModal';
+import { getApiUrl } from '@/lib/environment';
 import RotateAdminKeyModal from '@/components/RotateAdminKeyModal';
 
-function mergeMissingLists(a: SecretMissingItem[], b: SecretMissingItem[]): SecretMissingItem[] {
-  const seen = new Set<string>();
-  const out: SecretMissingItem[] = [];
-  for (const m of [...a, ...b]) {
-    if (!seen.has(m.env_var)) {
-      seen.add(m.env_var);
-      out.push(m);
-    }
-  }
-  return out;
+const GROUP_ORDER = ['trading', 'api', 'telegram', 'automation', 'github'];
+
+const GROUP_LABEL: Record<string, string> = {
+  trading: 'Trading (exchange)',
+  api: 'API keys',
+  telegram: 'Telegram',
+  automation: 'Automation (Notion / OpenClaw)',
+  github: 'GitHub',
+};
+
+function sortCatalog(rows: SecretCatalogItem[]): SecretCatalogItem[] {
+  const rank = (g: string) => {
+    const i = GROUP_ORDER.indexOf(g);
+    return i === -1 ? 99 : i;
+  };
+  return [...rows].sort((a, b) => {
+    const rg = rank(a.group) - rank(b.group);
+    if (rg !== 0) return rg;
+    return a.label.localeCompare(b.label);
+  });
 }
 
 /**
- * Action-required UI when registered secrets are missing (automation / AWS GitHub App).
- * Admin key is kept in component state only; secret values are cleared after submit.
+ * Simple admin view: list configured keys (masked), replace into runtime.env via secrets-intake.
  */
 export default function MissingSecretsBanner() {
   const [adminKey, setAdminKey] = useState('');
   const [status, setStatus] = useState<SecretsStatusResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-
-  const [selectedVar, setSelectedVar] = useState<string>('');
-  const [secretValue, setSecretValue] = useState('');
-  const [persistSsm, setPersistSsm] = useState(true);
-  const [submitMsg, setSubmitMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [replaceRow, setReplaceRow] = useState<SecretCatalogItem | null>(null);
+  const [pasteValue, setPasteValue] = useState('');
+  const [persistSsm, setPersistSsm] = useState(false);
+  const [replaceSaving, setReplaceSaving] = useState(false);
+  const [replaceErr, setReplaceErr] = useState<string | null>(null);
+  const [showRotateAdminModal, setShowRotateAdminModal] = useState(false);
   const [recoveryInfo, setRecoveryInfo] = useState<RecoveryStatusPayload | null>(null);
   const [applyMsg, setApplyMsg] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [healthPollMsg, setHealthPollMsg] = useState<string | null>(null);
-  const [showClientIdModal, setShowClientIdModal] = useState(false);
-  const [showRotateAdminModal, setShowRotateAdminModal] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [deployGithubAuth, setDeployGithubAuth] = useState<DeployGithubAuthSnapshot | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getSystemHealth()
-      .then((h) => {
-        if (!cancelled && h.deploy_github_auth) setDeployGithubAuth(h.deploy_github_auth);
-      })
-      .catch(() => {
-        if (!cancelled) setDeployGithubAuth(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!toastMessage) return;
@@ -73,101 +61,69 @@ export default function MissingSecretsBanner() {
     return () => window.clearTimeout(id);
   }, [toastMessage]);
 
-  const loadStatus = useCallback(async (keyOverride?: string) => {
-    const effectiveKey = (keyOverride ?? adminKey).trim();
-    setLoadError(null);
-    setLoading(true);
-    try {
-      const [data, rec, health] = await Promise.all([
-        getSecretsStatus(effectiveKey),
-        getRecoveryStatus(effectiveKey).catch(() => null),
-        getSystemHealth().catch(() => null),
-      ]);
-      setStatus(data);
-      setRecoveryInfo(rec);
-      if (health?.deploy_github_auth) {
-        setDeployGithubAuth(health.deploy_github_auth);
+  const loadStatus = useCallback(
+    async (keyOverride?: string) => {
+      const effectiveKey = (keyOverride ?? adminKey).trim();
+      setLoadError(null);
+      setLoading(true);
+      try {
+        const [data, rec] = await Promise.all([
+          getSecretsStatus(effectiveKey),
+          getRecoveryStatus(effectiveKey).catch(() => null),
+        ]);
+        setStatus(data);
+        setRecoveryInfo(rec);
+      } catch (e) {
+        setStatus(null);
+        setRecoveryInfo(null);
+        setLoadError(e instanceof Error ? e.message : 'Failed to load');
+      } finally {
+        setLoading(false);
       }
-      const readinessMissing =
-        data.automation_readiness?.applicable === true ? (data.automation_readiness.missing ?? []) : [];
-      const merged = mergeMissingLists(data.missing, readinessMissing);
-      if (merged.length > 0) {
-        setSelectedVar((prev) => (merged.some((m) => m.env_var === prev) ? prev : merged[0].env_var));
-      }
-    } catch (e) {
-      setStatus(null);
-      setRecoveryInfo(null);
-      setLoadError(e instanceof Error ? e.message : 'Failed to load status');
-    } finally {
-      setLoading(false);
-    }
-  }, [adminKey]);
+    },
+    [adminKey],
+  );
 
-  const onSubmitOne = async () => {
-    if (!adminKey.trim() || !selectedVar || !secretValue.trim()) {
-      setSubmitMsg({ ok: false, text: 'Admin key, variable, and value are required.' });
-      return;
-    }
-    setSubmitting(true);
-    setSubmitMsg(null);
-    try {
-      const res = await submitSecretIntake(adminKey, selectedVar, secretValue.trim(), persistSsm);
-      setSecretValue('');
-      setSubmitMsg({
-        ok: true,
-        text: res.message || 'Saved.',
-      });
-      await loadStatus();
-    } catch (e) {
-      setSubmitMsg({
-        ok: false,
-        text: e instanceof Error ? e.message : 'Save failed',
-      });
-    } finally {
-      setSubmitting(false);
-    }
+  const catalogRows = useMemo(() => {
+    const raw = status?.secrets_catalog;
+    if (!raw?.length) return [];
+    return sortCatalog(raw);
+  }, [status?.secrets_catalog]);
+
+  const openReplace = (row: SecretCatalogItem) => {
+    setReplaceRow(row);
+    setPasteValue('');
+    setReplaceErr(null);
+    setPersistSsm(row.env_var === 'GITHUB_APP_CLIENT_ID');
   };
 
-  const missing: SecretMissingItem[] = status?.missing ?? [];
-  const readiness = status?.automation_readiness;
-  const readinessApplicable = readiness?.applicable === true;
-  const readinessMissing: SecretMissingItem[] = readinessApplicable ? (readiness?.missing ?? []) : [];
-  const readinessNote = readiness?.note;
-  const combinedForIntake = useMemo(
-    () => mergeMissingLists(missing, readinessMissing),
-    [missing, readinessMissing],
-  );
-  const actionRequired = status?.overall === 'action_required';
-  const canApplyRecovery = Boolean(recoveryInfo?.recovery_runnable);
-  const clientIdStatus = status?.context?.github_app_client_id_status;
-  const showAddGithubClientIdButton = clientIdStatus === 'missing';
-  const clientIdReadinessLabel =
-    clientIdStatus === 'missing'
-      ? 'GitHub App Client ID missing'
-      : clientIdStatus === 'present'
-        ? 'GitHub App Client ID present'
-        : null;
-
-  const deployAuthMainLine =
-    deployGithubAuth?.available &&
-    deployGithubAuth.last_source &&
-    (deployGithubAuth.last_source === 'github_app'
-      ? 'Last deploy auth: GitHub App'
-      : deployGithubAuth.last_source === 'github_token' || deployGithubAuth.last_source === 'legacy_pat'
-        ? 'Last deploy auth: GitHub token'
-        : null);
-
-  const deployAuthErrorCompact = (() => {
-    if (!deployGithubAuth?.available || !deployGithubAuth.last_error?.trim()) return null;
-    const e = deployGithubAuth.last_error.trim();
-    return e.length > 200 ? `${e.slice(0, 200)}…` : e;
-  })();
+  const saveReplace = async () => {
+    if (!replaceRow || !adminKey.trim()) return;
+    const v = pasteValue.trim();
+    if (!v) {
+      setReplaceErr('Paste a value first.');
+      return;
+    }
+    setReplaceSaving(true);
+    setReplaceErr(null);
+    try {
+      await submitSecretIntake(adminKey, replaceRow.env_var, v, persistSsm);
+      setToastMessage(`${replaceRow.env_var} saved to runtime.env`);
+      setReplaceRow(null);
+      await loadStatus();
+    } catch (e) {
+      setReplaceErr(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setReplaceSaving(false);
+    }
+  };
 
   const runApplyRecovery = async () => {
     if (!adminKey.trim()) {
       setApplyMsg('Admin key required.');
       return;
     }
+    if (!recoveryInfo?.recovery_runnable) return;
     setApplying(true);
     setApplyMsg(null);
     setHealthPollMsg(null);
@@ -180,7 +136,7 @@ export default function MissingSecretsBanner() {
         try {
           const ping = await fetch(`${base}/ping_fast`, { cache: 'no-store' });
           if (ping.ok) {
-            setHealthPollMsg('Health check: backend responded OK. Reloading status…');
+            setHealthPollMsg('Backend is up again. Reloading list…');
             await loadStatus();
             return;
           }
@@ -188,16 +144,20 @@ export default function MissingSecretsBanner() {
           /* still down */
         }
       }
-      setHealthPollMsg('Health check: timeout — verify the container manually.');
+      setHealthPollMsg('Still waiting — check the server manually.');
     } catch (e) {
-      setApplyMsg(e instanceof Error ? e.message : 'Apply recovery failed');
+      setApplyMsg(e instanceof Error ? e.message : 'Apply failed');
     } finally {
       setApplying(false);
     }
   };
 
+  const clientIdHint = status?.context?.github_app_client_id_status;
+  const automation = status?.automation_readiness;
+  const blockingMissing = status?.missing?.length ?? 0;
+
   return (
-    <div className="relative mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/40">
+    <div className="relative mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/50">
       {toastMessage && (
         <div
           role="status"
@@ -206,250 +166,200 @@ export default function MissingSecretsBanner() {
           {toastMessage}
         </div>
       )}
-      <GithubAppClientIdModal
-        isOpen={showClientIdModal}
-        onClose={() => setShowClientIdModal(false)}
-        adminKey={adminKey}
-        persistSsm={persistSsm}
-        onSaved={async () => {
-          setToastMessage('Client ID saved');
-          await loadStatus();
-        }}
-      />
       <RotateAdminKeyModal
         isOpen={showRotateAdminModal}
         onClose={() => setShowRotateAdminModal(false)}
         currentAdminKey={adminKey}
         onRotated={async (newKey) => {
           setAdminKey(newKey);
-          setToastMessage('Admin key updated — copy it somewhere safe.');
+          setToastMessage('Admin key updated — save it somewhere safe.');
           await loadStatus(newKey);
         }}
       />
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-            Missing configuration (secrets)
-          </h2>
-          <p className="text-xs text-amber-800 dark:text-amber-200/90">
-            Load status with an admin key to see variables required for the current mode and, when trading-only, what is
-            still needed before automation. Values are sent once and not kept in the UI after submit.
-          </p>
-          {clientIdReadinessLabel && (
-            <p
-              className={`mt-1 text-xs ${
-                clientIdStatus === 'present'
-                  ? 'text-green-700 dark:text-green-400'
-                  : 'text-amber-900 dark:text-amber-100/90'
-              }`}
-            >
-              {clientIdReadinessLabel}
+
+      {replaceRow && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-600 dark:bg-slate-900">
+            <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Replace: {replaceRow.label}</h2>
+            <p className="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{replaceRow.env_var}</p>
+            <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+              Paste the new value. It is written to <span className="font-medium">secrets/runtime.env</span> on the
+              server (and the running process picks it up for most keys). Nothing is stored in the browser after save.
             </p>
-          )}
-          {deployAuthMainLine && (
-            <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">{deployAuthMainLine}</p>
-          )}
-          {!deployAuthMainLine && deployAuthErrorCompact && (
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{deployAuthErrorCompact}</p>
-          )}
-          {deployAuthMainLine && deployAuthErrorCompact && deployGithubAuth?.last_ok !== true && (
-            <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">{deployAuthErrorCompact}</p>
-          )}
+            <textarea
+              value={pasteValue}
+              onChange={(e) => setPasteValue(e.target.value)}
+              rows={4}
+              autoComplete="off"
+              className="mt-3 w-full rounded border border-gray-300 p-2 font-mono text-xs dark:border-gray-600 dark:bg-slate-800"
+              placeholder="New value…"
+            />
+            {replaceRow.env_var === 'GITHUB_APP_CLIENT_ID' && (
+              <label className="mt-2 flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                <input type="checkbox" checked={persistSsm} onChange={(e) => setPersistSsm(e.target.checked)} />
+                Also try AWS SSM (if configured on this host)
+              </label>
+            )}
+            {replaceErr && <p className="mt-2 text-xs text-red-600">{replaceErr}</p>}
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                disabled={replaceSaving}
+                onClick={() => saveReplace()}
+                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {replaceSaving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setReplaceRow(null)}
+                className="rounded border border-gray-300 px-3 py-1.5 text-xs dark:border-gray-600"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
+      )}
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Keys &amp; secrets</h2>
+        <p className="text-xs text-slate-600 dark:text-slate-400">
+          Load once with your admin key. Values show as hidden except the last three characters. Use Replace to update{' '}
+          <span className="font-medium">runtime.env</span>.
+        </p>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+          Admin key
+          <input
+            type="password"
+            autoComplete="off"
+            value={adminKey}
+            onChange={(e) => setAdminKey(e.target.value)}
+            className="ml-2 rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-800"
+            placeholder="X-Admin-Key"
+          />
+        </label>
         <button
           type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
+          disabled={loading}
+          onClick={() => loadStatus()}
+          className="rounded bg-slate-800 px-3 py-1 text-xs text-white hover:bg-slate-700 disabled:opacity-50 dark:bg-slate-700"
         >
-          {expanded ? 'Hide' : 'Open'}
+          {loading ? 'Loading…' : 'Load'}
+        </button>
+        <button
+          type="button"
+          disabled={!adminKey.trim()}
+          onClick={() => setShowRotateAdminModal(true)}
+          className="rounded border border-slate-400 bg-white px-3 py-1 text-xs font-medium text-slate-800 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+        >
+          Change admin key…
         </button>
       </div>
 
-      {expanded && (
-        <div className="mt-3 space-y-3 border-t border-amber-200 pt-3 dark:border-amber-800">
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
-              Admin key
-              <input
-                type="password"
-                autoComplete="off"
-                value={adminKey}
-                onChange={(e) => setAdminKey(e.target.value)}
-                className="ml-2 rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-slate-800"
-                placeholder="X-Admin-Key"
-              />
-            </label>
-            <button
-              type="button"
-              disabled={loading}
-              onClick={() => loadStatus()}
-              className="rounded bg-gray-800 px-3 py-1 text-xs text-white hover:bg-gray-700 disabled:opacity-50"
-            >
-              {loading ? 'Loading…' : 'Load status'}
-            </button>
-            <button
-              type="button"
-              disabled={!adminKey.trim()}
-              onClick={() => setShowRotateAdminModal(true)}
-              className="rounded border border-gray-600 bg-white px-3 py-1 text-xs font-medium text-gray-800 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-500 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-slate-700"
-              title="Requires the current admin key in the field above"
-            >
-              Change admin key…
-            </button>
-          </div>
+      {loadError && <p className="mt-2 text-xs text-red-600">{loadError}</p>}
 
-          {loadError && <p className="text-xs text-red-600">{loadError}</p>}
-
-          {status && (
-            <div className="text-xs space-y-1">
-              <p>
-                <span className="font-medium">Mode:</span> ATP_TRADING_ONLY={String(status.context.atp_trading_only)}{' '}
-                · ENV={status.context.environment} · AWS={String(status.context.aws)} · skipped requirements (not
-                applicable): {status.skipped_count}
-              </p>
-              {status.context.github_legacy_pat_active && (
-                <p className="text-green-700 dark:text-green-400">
-                  Legacy GitHub PAT path active — GitHub App variables may be skipped.
-                </p>
-              )}
-              {showAddGithubClientIdButton && (
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <p className="text-xs text-amber-900 dark:text-amber-100/90">
-                    GitHub App Client ID (recommended for JWT) is not set.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setShowClientIdModal(true)}
-                    className="rounded bg-amber-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-amber-900 dark:bg-amber-700 dark:hover:bg-amber-600"
-                  >
-                    Add GitHub App Client ID
-                  </button>
-                </div>
-              )}
-              {actionRequired ? (
-                <p className="font-medium text-red-700 dark:text-red-400">
-                  Required now: {missing.length} secret(s) missing for enabled features in the current mode.
-                </p>
-              ) : (
-                <p className="font-medium text-green-700 dark:text-green-400">
-                  Required for current mode: no registered secrets missing — trading-only health is not blocked by these
-                  checks.
-                </p>
-              )}
-            </div>
+      {status && (
+        <>
+          {status.overall === 'action_required' && blockingMissing > 0 && (
+            <p className="mt-2 text-xs font-medium text-amber-800 dark:text-amber-200">
+              Some items are still required for the current mode ({blockingMissing}).
+            </p>
           )}
-
-          {missing.length > 0 && (
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-gray-800 dark:text-gray-200">Required for current mode</p>
-              <ul className="max-h-40 list-inside list-disc overflow-y-auto text-xs text-gray-800 dark:text-gray-200">
-                {missing.map((m) => (
-                  <li key={m.env_var}>
-                    <span className="font-mono">{m.env_var}</span> — {m.blocked_service}: {m.why}
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {clientIdHint === 'missing' && (
+            <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">
+              GitHub App Client ID is missing — add it below (GitHub → App → Client ID).
+            </p>
           )}
-
-          {readinessApplicable && readinessMissing.length > 0 && (
-            <div className="rounded border border-sky-200 bg-sky-50 p-3 dark:border-sky-900/60 dark:bg-sky-950/30">
-              <p className="text-xs font-semibold text-sky-900 dark:text-sky-100">
-                Required to enable automation (not blocking current trading-only)
-              </p>
-              <p className="mt-1 text-xs font-medium text-sky-800 dark:text-sky-200">
-                {readinessMissing.length} secret(s) still needed before you can set ATP_TRADING_ONLY=0.
-              </p>
-              {readinessNote && <p className="mt-1 text-xs text-sky-800/90 dark:text-sky-200/90">{readinessNote}</p>}
-              <ul className="mt-2 max-h-40 list-inside list-disc overflow-y-auto text-xs text-sky-950 dark:text-sky-100">
-                {readinessMissing.map((m) => (
-                  <li key={`ar-${m.env_var}`}>
-                    <span className="font-mono">{m.env_var}</span> — {m.blocked_service}: {m.why}
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {automation?.applicable && (automation.missing?.length ?? 0) > 0 && (
+            <p className="mt-1 text-xs text-sky-800 dark:text-sky-200">
+              Before turning off trading-only: {automation.missing?.length} automation secret(s) still empty.
+            </p>
           )}
+        </>
+      )}
 
-          {combinedForIntake.length > 0 && (
-            <div className="space-y-2 rounded border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-slate-900">
-              <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Submit one secret</p>
-              <div className="flex flex-wrap gap-2">
-                <select
-                  value={selectedVar}
-                  onChange={(e) => setSelectedVar(e.target.value)}
-                  className="rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-slate-800"
-                >
-                  {combinedForIntake.map((m) => (
-                    <option key={m.env_var} value={m.env_var}>
-                      {m.env_var}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  value={secretValue}
-                  onChange={(e) => setSecretValue(e.target.value)}
-                  className="min-w-[200px] flex-1 rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-slate-800"
-                  placeholder="Secret value (cleared after save)"
-                />
-              </div>
-              <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-                <input
-                  type="checkbox"
-                  checked={persistSsm}
-                  onChange={(e) => setPersistSsm(e.target.checked)}
-                />
-                Also persist to SSM when supported (recommended on AWS for GitHub App keys)
-              </label>
-              <button
-                type="button"
-                disabled={submitting || !secretValue.trim()}
-                onClick={onSubmitOne}
-                className="rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                {submitting ? 'Saving…' : 'Save secret'}
-              </button>
-              {submitMsg && (
-                <p className={`text-xs ${submitMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{submitMsg.text}</p>
-              )}
-            </div>
-          )}
-
-          {recoveryInfo && (
-            <div className="rounded border border-gray-200 bg-white p-3 text-xs dark:border-gray-700 dark:bg-slate-900">
-              <p className="font-medium text-gray-700 dark:text-gray-300">Apply recovery (restart)</p>
-              <p className="mt-1 text-gray-600 dark:text-gray-400">
-                Automatic recreate only when the server sets ENABLE_SECRET_RECOVERY_AUTO_RESTART and
-                DOCKER_COMPOSE_PROJECT_DIR (host repo path). No arbitrary commands.
-              </p>
-              <p className="mt-1 text-gray-600 dark:text-gray-400">
-                Server: auto_restart={String(recoveryInfo.auto_restart_enabled)} · compose_project=
-                {String(recoveryInfo.compose_project_configured)} · runnable={String(recoveryInfo.recovery_runnable)}
-              </p>
-              {canApplyRecovery && (
-                <button
-                  type="button"
-                  disabled={applying || !adminKey.trim()}
-                  onClick={runApplyRecovery}
-                  className="mt-2 rounded bg-amber-700 px-3 py-1 text-xs text-white hover:bg-amber-800 disabled:opacity-50"
-                >
-                  {applying ? 'Applying…' : 'Apply & recreate backend-aws'}
-                </button>
-              )}
-              {!recoveryInfo.recovery_runnable && (
-                <p className="mt-2 text-amber-800 dark:text-amber-300">
-                  Configure the host env for backend-aws, then reload. See docker-compose.yml (DOCKER_COMPOSE_PROJECT_DIR,
-                  ENABLE_SECRET_RECOVERY_AUTO_RESTART).
-                </p>
-              )}
-              {applyMsg && <p className="mt-2 text-gray-700 dark:text-gray-300">{applyMsg}</p>}
-              {healthPollMsg && <p className="mt-1 text-green-700 dark:text-green-400">{healthPollMsg}</p>}
-            </div>
-          )}
+      {catalogRows.length > 0 && (
+        <div className="mt-4 overflow-x-auto rounded border border-slate-200 bg-white dark:border-slate-600 dark:bg-slate-950">
+          <table className="w-full min-w-[520px] border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-100 dark:border-slate-600 dark:bg-slate-800">
+                <th className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">Setting</th>
+                <th className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">Variable</th>
+                <th className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">Stored value</th>
+                <th className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200"> </th>
+              </tr>
+            </thead>
+            <tbody>
+              {catalogRows.map((row) => (
+                <tr key={row.env_var} className="border-b border-slate-100 dark:border-slate-800">
+                  <td className="px-3 py-2 text-slate-800 dark:text-slate-100">
+                    <div className="font-medium">{row.label}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      {GROUP_LABEL[row.group] || row.group}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 font-mono text-[11px] text-slate-600 dark:text-slate-300">{row.env_var}</td>
+                  <td className="px-3 py-2 font-mono text-[11px] text-slate-700 dark:text-slate-200">{row.masked}</td>
+                  <td className="px-3 py-2">
+                    {row.intake_allowed ? (
+                      <button
+                        type="button"
+                        disabled={!adminKey.trim()}
+                        onClick={() => openReplace(row)}
+                        className="rounded border border-blue-600 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-40 dark:border-blue-500 dark:text-blue-300 dark:hover:bg-slate-800"
+                      >
+                        Replace…
+                      </button>
+                    ) : (
+                      <span className="text-[10px] text-slate-400">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
+
+      {status && !catalogRows.length && (
+        <p className="mt-3 text-xs text-slate-600 dark:text-slate-400">
+          This server build does not expose the full secrets list yet. Update the backend and reload.
+        </p>
+      )}
+
+      <details className="mt-4 rounded border border-slate-200 bg-white p-3 text-xs dark:border-slate-600 dark:bg-slate-950">
+        <summary className="cursor-pointer font-medium text-slate-700 dark:text-slate-200">
+          Advanced: recovery restart
+        </summary>
+        {recoveryInfo && (
+          <div className="mt-2 space-y-2 text-slate-600 dark:text-slate-400">
+            <p>
+              Auto-restart: {String(recoveryInfo.auto_restart_enabled)} · compose:{' '}
+              {String(recoveryInfo.compose_project_configured)} · runnable: {String(recoveryInfo.recovery_runnable)}
+            </p>
+            {recoveryInfo.recovery_runnable && (
+              <button
+                type="button"
+                disabled={applying || !adminKey.trim()}
+                onClick={runApplyRecovery}
+                className="rounded bg-amber-700 px-2 py-1 text-xs text-white hover:bg-amber-800 disabled:opacity-50"
+              >
+                {applying ? 'Applying…' : 'Apply & recreate backend-aws'}
+              </button>
+            )}
+            {applyMsg && <p className="text-slate-700 dark:text-slate-300">{applyMsg}</p>}
+            {healthPollMsg && <p className="text-green-700 dark:text-green-400">{healthPollMsg}</p>}
+          </div>
+        )}
+      </details>
     </div>
   );
 }

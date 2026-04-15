@@ -6,6 +6,7 @@ Uses same container path convention as dashboard intake when RUNTIME_ENV_PATH un
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -68,15 +69,40 @@ def persist_env_var_value(env_var: str, value: str, *, path: str | None = None) 
         new_lines.append(f"{key}={val}")
 
     text = "\n".join(new_lines) + "\n"
-    fd, tmp = tempfile.mkstemp(prefix="runtime.", suffix=".env.tmp", dir=str(p.parent))
+    tmp: str | None = None
+    tmp_in_parent = False
     try:
+        # Prefer temp file next to target (atomic os.replace). A file-only bind mount
+        # for runtime.env often makes the parent dir non-writable for new files; fall
+        # back to system temp. If replace from /tmp then fails (EXDEV, no rename into dir,
+        # or permission), fall back to direct write (still updates the mounted file).
+        try:
+            fd, tmp = tempfile.mkstemp(prefix="runtime.", suffix=".env.tmp", dir=str(p.parent))
+            tmp_in_parent = True
+        except OSError:
+            fd, tmp = tempfile.mkstemp(prefix="runtime.", suffix=".env.tmp", dir=tempfile.gettempdir())
         os.close(fd)
         Path(tmp).write_text(text, encoding="utf-8")
-        os.replace(tmp, p)
-    except Exception:
         try:
-            Path(tmp).unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+            os.replace(tmp, p)
+        except OSError as exc:
+            if tmp_in_parent:
+                raise
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except OSError:
+                pass
+            tmp = None
+            if exc.errno in (errno.EXDEV, errno.EACCES, errno.EPERM):
+                p.write_text(text, encoding="utf-8")
+            else:
+                raise
+        else:
+            tmp = None
+    finally:
+        if tmp:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except OSError:
+                pass
     logger.info("jarvis.runtime_env.persisted env_var=%s path=%s", key, str(p))
