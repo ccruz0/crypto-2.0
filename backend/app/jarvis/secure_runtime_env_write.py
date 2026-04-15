@@ -105,4 +105,21 @@ def persist_env_var_value(env_var: str, value: str, *, path: str | None = None) 
                 Path(tmp).unlink(missing_ok=True)
             except OSError:
                 pass
-    logger.info("jarvis.runtime_env.persisted env_var=%s path=%s", key, str(p))
+    # Long-lived workers (e.g. gunicorn) load env_file at startup only. Marketing intake and
+    # gsc_status() read os.getenv; mirror the persisted value into the process or the next
+    # step still thinks the variable is unset despite a successful disk write.
+    try:
+        os.environ[key] = val
+    except Exception as exc:
+        logger.warning(
+            "jarvis.runtime_env.environ_export_failed env_var=%s err=%s",
+            key,
+            type(exc).__name__,
+        )
+    logger.info(
+        "jarvis.runtime_env.persisted env_var=%s path=%s value_len=%d getenv_nonempty=%s",
+        key,
+        str(p),
+        len(val),
+        bool((os.getenv(key) or "").strip()),
+    )

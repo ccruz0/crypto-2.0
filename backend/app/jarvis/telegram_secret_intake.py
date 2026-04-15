@@ -7,6 +7,7 @@ Never logs or returns raw secret values. Uses ``secure_runtime_env_write`` + cat
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -108,15 +109,30 @@ def _persist_and_resume(
     if not key or not ev:
         raise ValueError("missing_meta")
 
+    raw_stripped = raw_value.strip()
     _validate_value(key, raw_value)
 
+    logger.info(
+        "jarvis.secret_intake.persist_attempt setting_key=%s env_var=%s value_len=%d",
+        key,
+        ev,
+        len(raw_stripped),
+    )
     try:
-        persist_env_var_value(ev, raw_value.strip(), path=st.secret_runtime_env_path)
+        persist_env_var_value(ev, raw_stripped, path=st.secret_runtime_env_path)
     except ValueError:
         raise
     except Exception as e:
         logger.warning("jarvis.secret_intake.persist_failed key=%s err=%s", key, type(e).__name__)
         raise ValueError("persist_failed") from e
+
+    proc_ok = bool((os.getenv(ev) or "").strip())
+    logger.info(
+        "jarvis.secret_intake.persist_ok setting_key=%s env_var=%s getenv_nonempty=%s",
+        key,
+        ev,
+        proc_ok,
+    )
 
     resume_action = (st.pending_pipeline_to_resume or "").strip() or "run_marketing_review"
     resume_args = dict(st.pending_pipeline_args or {})

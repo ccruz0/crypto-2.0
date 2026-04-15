@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from app.jarvis import telegram_control as tc
 
 
@@ -179,6 +181,7 @@ def test_secure_secret_intake_telegram_path_no_echo(tmp_path):
     content = (tmp_path / "runtime.env").read_text(encoding="utf-8")
     assert "JARVIS_GOOGLE_ADS_DEVELOPER_TOKEN=" in content
     assert secret in content
+    assert os.environ.get("JARVIS_GOOGLE_ADS_DEVELOPER_TOKEN") == secret
 
 
 def test_secret_intake_cancel_during_choose(tmp_path):
