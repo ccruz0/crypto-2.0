@@ -1,16 +1,20 @@
 'use client';
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { getApiUrl } from '@/lib/environment';
 import {
   getSecretsStatus,
   getRecoveryStatus,
   submitSecretIntake,
   applyBackendRecovery,
+  getSystemHealth,
   type SecretsStatusResponse,
   type SecretMissingItem,
   type RecoveryStatusPayload,
+  type DeployGithubAuthSnapshot,
 } from '@/lib/api';
+import GithubAppClientIdModal from '@/components/GithubAppClientIdModal';
+import RotateAdminKeyModal from '@/components/RotateAdminKeyModal';
 
 function mergeMissingLists(a: SecretMissingItem[], b: SecretMissingItem[]): SecretMissingItem[] {
   const seen = new Set<string>();
@@ -44,17 +48,46 @@ export default function MissingSecretsBanner() {
   const [applyMsg, setApplyMsg] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [healthPollMsg, setHealthPollMsg] = useState<string | null>(null);
+  const [showClientIdModal, setShowClientIdModal] = useState(false);
+  const [showRotateAdminModal, setShowRotateAdminModal] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [deployGithubAuth, setDeployGithubAuth] = useState<DeployGithubAuthSnapshot | null>(null);
 
-  const loadStatus = useCallback(async () => {
+  useEffect(() => {
+    let cancelled = false;
+    getSystemHealth()
+      .then((h) => {
+        if (!cancelled && h.deploy_github_auth) setDeployGithubAuth(h.deploy_github_auth);
+      })
+      .catch(() => {
+        if (!cancelled) setDeployGithubAuth(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!toastMessage) return;
+    const id = window.setTimeout(() => setToastMessage(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [toastMessage]);
+
+  const loadStatus = useCallback(async (keyOverride?: string) => {
+    const effectiveKey = (keyOverride ?? adminKey).trim();
     setLoadError(null);
     setLoading(true);
     try {
-      const [data, rec] = await Promise.all([
-        getSecretsStatus(adminKey),
-        getRecoveryStatus(adminKey).catch(() => null),
+      const [data, rec, health] = await Promise.all([
+        getSecretsStatus(effectiveKey),
+        getRecoveryStatus(effectiveKey).catch(() => null),
+        getSystemHealth().catch(() => null),
       ]);
       setStatus(data);
       setRecoveryInfo(rec);
+      if (health?.deploy_github_auth) {
+        setDeployGithubAuth(health.deploy_github_auth);
+      }
       const readinessMissing =
         data.automation_readiness?.applicable === true ? (data.automation_readiness.missing ?? []) : [];
       const merged = mergeMissingLists(data.missing, readinessMissing);
@@ -106,6 +139,29 @@ export default function MissingSecretsBanner() {
   );
   const actionRequired = status?.overall === 'action_required';
   const canApplyRecovery = Boolean(recoveryInfo?.recovery_runnable);
+  const clientIdStatus = status?.context?.github_app_client_id_status;
+  const showAddGithubClientIdButton = clientIdStatus === 'missing';
+  const clientIdReadinessLabel =
+    clientIdStatus === 'missing'
+      ? 'GitHub App Client ID missing'
+      : clientIdStatus === 'present'
+        ? 'GitHub App Client ID present'
+        : null;
+
+  const deployAuthMainLine =
+    deployGithubAuth?.available &&
+    deployGithubAuth.last_source &&
+    (deployGithubAuth.last_source === 'github_app'
+      ? 'Last deploy auth: GitHub App'
+      : deployGithubAuth.last_source === 'github_token' || deployGithubAuth.last_source === 'legacy_pat'
+        ? 'Last deploy auth: GitHub token'
+        : null);
+
+  const deployAuthErrorCompact = (() => {
+    if (!deployGithubAuth?.available || !deployGithubAuth.last_error?.trim()) return null;
+    const e = deployGithubAuth.last_error.trim();
+    return e.length > 200 ? `${e.slice(0, 200)}…` : e;
+  })();
 
   const runApplyRecovery = async () => {
     if (!adminKey.trim()) {
@@ -141,7 +197,35 @@ export default function MissingSecretsBanner() {
   };
 
   return (
-    <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/40">
+    <div className="relative mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/40">
+      {toastMessage && (
+        <div
+          role="status"
+          className="fixed bottom-4 right-4 z-[110] rounded-md bg-green-800 px-4 py-2 text-xs font-medium text-white shadow-lg dark:bg-green-900"
+        >
+          {toastMessage}
+        </div>
+      )}
+      <GithubAppClientIdModal
+        isOpen={showClientIdModal}
+        onClose={() => setShowClientIdModal(false)}
+        adminKey={adminKey}
+        persistSsm={persistSsm}
+        onSaved={async () => {
+          setToastMessage('Client ID saved');
+          await loadStatus();
+        }}
+      />
+      <RotateAdminKeyModal
+        isOpen={showRotateAdminModal}
+        onClose={() => setShowRotateAdminModal(false)}
+        currentAdminKey={adminKey}
+        onRotated={async (newKey) => {
+          setAdminKey(newKey);
+          setToastMessage('Admin key updated — copy it somewhere safe.');
+          await loadStatus(newKey);
+        }}
+      />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
@@ -151,6 +235,26 @@ export default function MissingSecretsBanner() {
             Load status with an admin key to see variables required for the current mode and, when trading-only, what is
             still needed before automation. Values are sent once and not kept in the UI after submit.
           </p>
+          {clientIdReadinessLabel && (
+            <p
+              className={`mt-1 text-xs ${
+                clientIdStatus === 'present'
+                  ? 'text-green-700 dark:text-green-400'
+                  : 'text-amber-900 dark:text-amber-100/90'
+              }`}
+            >
+              {clientIdReadinessLabel}
+            </p>
+          )}
+          {deployAuthMainLine && (
+            <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">{deployAuthMainLine}</p>
+          )}
+          {!deployAuthMainLine && deployAuthErrorCompact && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{deployAuthErrorCompact}</p>
+          )}
+          {deployAuthMainLine && deployAuthErrorCompact && deployGithubAuth?.last_ok !== true && (
+            <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">{deployAuthErrorCompact}</p>
+          )}
         </div>
         <button
           type="button"
@@ -183,6 +287,15 @@ export default function MissingSecretsBanner() {
             >
               {loading ? 'Loading…' : 'Load status'}
             </button>
+            <button
+              type="button"
+              disabled={!adminKey.trim()}
+              onClick={() => setShowRotateAdminModal(true)}
+              className="rounded border border-gray-600 bg-white px-3 py-1 text-xs font-medium text-gray-800 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-500 dark:bg-slate-800 dark:text-gray-100 dark:hover:bg-slate-700"
+              title="Requires the current admin key in the field above"
+            >
+              Change admin key…
+            </button>
           </div>
 
           {loadError && <p className="text-xs text-red-600">{loadError}</p>}
@@ -198,6 +311,20 @@ export default function MissingSecretsBanner() {
                 <p className="text-green-700 dark:text-green-400">
                   Legacy GitHub PAT path active — GitHub App variables may be skipped.
                 </p>
+              )}
+              {showAddGithubClientIdButton && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-amber-900 dark:text-amber-100/90">
+                    GitHub App Client ID (recommended for JWT) is not set.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowClientIdModal(true)}
+                    className="rounded bg-amber-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-amber-900 dark:bg-amber-700 dark:hover:bg-amber-600"
+                  >
+                    Add GitHub App Client ID
+                  </button>
+                </div>
               )}
               {actionRequired ? (
                 <p className="font-medium text-red-700 dark:text-red-400">
@@ -217,7 +344,7 @@ export default function MissingSecretsBanner() {
               <p className="text-xs font-medium text-gray-800 dark:text-gray-200">Required for current mode</p>
               <ul className="max-h-40 list-inside list-disc overflow-y-auto text-xs text-gray-800 dark:text-gray-200">
                 {missing.map((m) => (
-                  <li key={m.id}>
+                  <li key={m.env_var}>
                     <span className="font-mono">{m.env_var}</span> — {m.blocked_service}: {m.why}
                   </li>
                 ))}
@@ -236,7 +363,7 @@ export default function MissingSecretsBanner() {
               {readinessNote && <p className="mt-1 text-xs text-sky-800/90 dark:text-sky-200/90">{readinessNote}</p>}
               <ul className="mt-2 max-h-40 list-inside list-disc overflow-y-auto text-xs text-sky-950 dark:text-sky-100">
                 {readinessMissing.map((m) => (
-                  <li key={`ar-${m.id}`}>
+                  <li key={`ar-${m.env_var}`}>
                     <span className="font-mono">{m.env_var}</span> — {m.blocked_service}: {m.why}
                   </li>
                 ))}

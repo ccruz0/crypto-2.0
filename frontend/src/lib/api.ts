@@ -2672,22 +2672,41 @@ export interface SecretsStatusResponse {
   automation_readiness?: AutomationReadinessPayload;
 }
 
-export async function getSecretsStatus(adminKey: string): Promise<SecretsStatusResponse> {
+async function _getJsonAdminPaths<T>(
+  paths: string[],
+  adminKey: string,
+): Promise<T> {
   const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (adminKey.trim()) {
     headers['X-Admin-Key'] = adminKey.trim();
   }
-  const res = await fetch(`${apiUrl}/settings/secrets-status`, {
-    method: 'GET',
-    headers,
-    cache: 'no-store',
-  });
-  if (!res.ok) {
+  let lastErr: Error | null = null;
+  for (const path of paths) {
+    const res = await fetch(`${apiUrl}${path}`, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      return res.json() as Promise<T>;
+    }
     const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `HTTP ${res.status}`);
+    const detail = (err as { detail?: string }).detail || `HTTP ${res.status}`;
+    lastErr = new Error(detail);
+    if (detail === 'Not Found' || detail.startsWith('HTTP 404')) {
+      continue;
+    }
+    throw lastErr;
   }
-  return res.json() as Promise<SecretsStatusResponse>;
+  throw lastErr || new Error('Not Found');
+}
+
+export async function getSecretsStatus(adminKey: string): Promise<SecretsStatusResponse> {
+  return _getJsonAdminPaths<SecretsStatusResponse>(
+    ['/admin/secrets-status', '/monitoring/secrets-status', '/settings/secrets-status'],
+    adminKey,
+  );
 }
 
 export interface SecretIntakeResponse {
@@ -2707,27 +2726,17 @@ export interface SecretIntakeResponse {
 
 export interface RecoveryStatusPayload {
   auto_restart_enabled: boolean;
-  compose_project_configured: boolean;
+  compose_project_configured?: boolean;
   recovery_runnable: boolean;
-  allowed_target: string;
+  allowed_target?: string;
+  note?: string;
 }
 
 export async function getRecoveryStatus(adminKey: string): Promise<RecoveryStatusPayload> {
-  const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (adminKey.trim()) {
-    headers['X-Admin-Key'] = adminKey.trim();
-  }
-  const res = await fetch(`${apiUrl}/settings/recovery-status`, {
-    method: 'GET',
-    headers,
-    cache: 'no-store',
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `HTTP ${res.status}`);
-  }
-  return res.json() as Promise<RecoveryStatusPayload>;
+  return _getJsonAdminPaths<RecoveryStatusPayload>(
+    ['/admin/recovery-status', '/monitoring/recovery-status', '/settings/recovery-status'],
+    adminKey,
+  );
 }
 
 export interface ApplyRecoveryResponse {
@@ -2738,20 +2747,30 @@ export interface ApplyRecoveryResponse {
 
 export async function applyBackendRecovery(adminKey: string): Promise<ApplyRecoveryResponse> {
   const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
-  const res = await fetch(`${apiUrl}/settings/apply-recovery`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Admin-Key': adminKey.trim(),
-    },
-    body: JSON.stringify({ target: 'backend-aws' }),
-    cache: 'no-store',
-  });
-  if (!res.ok) {
+  const paths = ['/admin/recovery-apply', '/settings/apply-recovery'];
+  let lastErr: Error | null = null;
+  for (const path of paths) {
+    const res = await fetch(`${apiUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Admin-Key': adminKey.trim(),
+      },
+      body: JSON.stringify({ target: 'backend-aws' }),
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      return res.json() as Promise<ApplyRecoveryResponse>;
+    }
     const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `HTTP ${res.status}`);
+    const detail = (err as { detail?: string }).detail || `HTTP ${res.status}`;
+    lastErr = new Error(detail);
+    if (detail === 'Not Found' || detail.startsWith('HTTP 404')) {
+      continue;
+    }
+    throw lastErr;
   }
-  return res.json() as Promise<ApplyRecoveryResponse>;
+  throw lastErr || new Error('Not Found');
 }
 
 export async function submitSecretIntake(
@@ -2765,17 +2784,28 @@ export async function submitSecretIntake(
     'X-Admin-Key': adminKey.trim(),
   };
   const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
-  const res = await fetch(`${apiUrl}/settings/secrets-intake`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ env_var: envVar, value, persist_ssm: persistSsm }),
-    cache: 'no-store',
-  });
-  if (!res.ok) {
+  const body = JSON.stringify({ env_var: envVar, value, persist_ssm: persistSsm });
+  const paths = ['/admin/secrets-intake', '/settings/secrets-intake'];
+  let lastErr: Error | null = null;
+  for (const path of paths) {
+    const res = await fetch(`${apiUrl}${path}`, {
+      method: 'POST',
+      headers,
+      body,
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      return res.json() as Promise<SecretIntakeResponse>;
+    }
     const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `HTTP ${res.status}`);
+    const detail = (err as { detail?: string }).detail || `HTTP ${res.status}`;
+    lastErr = new Error(detail);
+    if (detail === 'Not Found' || detail.startsWith('HTTP 404')) {
+      continue;
+    }
+    throw lastErr;
   }
-  return res.json() as Promise<SecretIntakeResponse>;
+  throw lastErr || new Error('Not Found');
 }
 
 export async function testTelegram(adminKey: string): Promise<TestTelegramResponse> {
@@ -2811,4 +2841,25 @@ export async function testTelegram(adminKey: string): Promise<TestTelegramRespon
     console.error('❌ testTelegram: Error:', errorMsg);
     return { ok: false, error: errorMsg };
   }
+}
+
+export async function rotateAdminKey(
+  currentAdminKey: string,
+  newAdminKey: string,
+): Promise<{ ok: boolean; message?: string }> {
+  const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
+  const res = await fetch(`${apiUrl}/admin/rotate-admin-key`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Admin-Key': currentAdminKey.trim(),
+    },
+    body: JSON.stringify({ new_admin_key: newAdminKey }),
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<{ ok: boolean; message?: string }>;
 }

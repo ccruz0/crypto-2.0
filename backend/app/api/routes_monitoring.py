@@ -1,6 +1,6 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
 # pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, cast, String, text
@@ -85,6 +85,30 @@ def _create_notion_incidents_for_health_failure(health: Dict[str, Any]) -> None:
             details=f"market_data={md.get('status')}; market_updater={mu.get('status')}.",
         )
         log.info("Monitoring failure triggered Notion incident: Market data health check failed")
+
+
+@router.get("/health/ready", name="health_ready")
+async def health_ready_endpoint(db: Session = Depends(get_db)):
+    """
+    Readiness probe: HTTP 200 only if DATABASE_URL can execute SELECT 1.
+    Use for Docker healthcheck — unlike /ping_fast, this fails when DB credentials or Postgres are wrong.
+    """
+    try:
+        from app.services.system_health import run_db_connectivity_check
+
+        run_db_connectivity_check(db)
+        return JSONResponse(
+            content={"status": "ready", "db": "up"},
+            status_code=200,
+            headers=_NO_CACHE_HEADERS,
+        )
+    except Exception as e:
+        log.warning("health/ready: database check failed: %s", e)
+        return JSONResponse(
+            content={"status": "not_ready", "db": "down"},
+            status_code=503,
+            headers=_NO_CACHE_HEADERS,
+        )
 
 
 @router.get("/health/system", name="get_system_health")
@@ -3657,3 +3681,24 @@ async def get_forensic_audit(
         log.error(f"Error running forensic audit: {e}", exc_info=True)
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Error running forensic audit: {str(e)}")
+
+
+@router.get("/monitoring/secrets-status")
+def monitoring_secrets_status_compat(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    """
+    Same payload as GET /api/admin/secrets-status, mounted on the monitoring router so older
+    deployments that shipped monitoring but not the admin secrets route still work behind /api.
+    """
+    from app.api.routes_admin import verify_admin_key, compute_admin_secrets_status_dict
+
+    verify_admin_key(x_admin_key)
+    return compute_admin_secrets_status_dict()
+
+
+@router.get("/monitoring/recovery-status")
+def monitoring_recovery_status_compat(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    """Alias for GET /api/admin/recovery-status (same auth and payload)."""
+    from app.api.routes_admin import verify_admin_key, compute_admin_recovery_dict
+
+    verify_admin_key(x_admin_key)
+    return compute_admin_recovery_dict()

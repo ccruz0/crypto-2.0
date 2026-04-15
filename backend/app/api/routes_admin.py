@@ -22,7 +22,21 @@ router = APIRouter()
 
 class EvaluateSymbolBody(BaseModel):
     symbol: str = "BTC_USDT"
+
+
+class RotateAdminKeyBody(BaseModel):
+    new_admin_key: str
+
+
+class SecretIntakeBody(BaseModel):
+    env_var: str
+    value: str
+    persist_ssm: bool = False
+
+
 logger = logging.getLogger(__name__)
+
+_MIN_ADMIN_KEY_LEN = 16
 
 # Rate limiting: last test timestamp (in-memory, per-process)
 _last_test_telegram_ts: Optional[float] = None
@@ -142,6 +156,151 @@ def verify_admin_key(x_admin_key: Optional[str] = Header(None)) -> str:
         raise HTTPException(status_code=401, detail="unauthorized")
     
     return x_admin_key
+
+
+def compute_admin_secrets_status_dict() -> dict:
+    """Shared JSON for secrets banner (GET /api/admin/secrets-status and monitoring alias)."""
+    try:
+        from app.services.required_secrets_registry import evaluate_requirements
+
+        return evaluate_requirements()
+    except Exception as exc:
+        logger.warning("compute_admin_secrets_status_dict: registry unavailable: %s", type(exc).__name__)
+        try:
+            from app.core.environment import is_atp_trading_only, is_aws as _is_aws
+        except Exception:
+
+            def _is_aws() -> bool:
+                return False
+
+            def is_atp_trading_only() -> bool:
+                return False
+
+        return {
+            "overall": "ok",
+            "missing": [],
+            "skipped_count": 0,
+            "context": {
+                "atp_trading_only": bool(is_atp_trading_only()),
+                "environment": (os.getenv("ENVIRONMENT") or "unknown").strip(),
+                "aws": bool(_is_aws()),
+                "github_legacy_pat_active": (os.getenv("ALLOW_LEGACY_GITHUB_PAT") or "").lower() in ("1", "true", "yes"),
+                "github_app_client_id_status": None,
+            },
+            "automation_readiness": {
+                "applicable": False,
+                "missing": [],
+                "note": "Secrets registry is not available on this server build.",
+            },
+        }
+
+
+@router.get("/admin/secrets-status")
+def admin_secrets_status(admin_key: str = Depends(verify_admin_key)):
+    """Return required-secrets evaluation for the trading dashboard (admin-only)."""
+    return compute_admin_secrets_status_dict()
+
+
+def compute_admin_recovery_dict() -> dict:
+    try:
+        from app.services.secret_recovery import recovery_status_payload
+
+        return recovery_status_payload()
+    except Exception as exc:
+        logger.warning("compute_admin_recovery_dict: %s", type(exc).__name__)
+        return {
+            "auto_restart_enabled": False,
+            "compose_project_configured": False,
+            "recovery_runnable": False,
+            "note": "Recovery module unavailable on this build.",
+        }
+
+
+@router.get("/admin/recovery-status")
+def admin_recovery_status(admin_key: str = Depends(verify_admin_key)):
+    return compute_admin_recovery_dict()
+
+
+@router.post("/admin/secrets-intake")
+def admin_secrets_intake(
+    body: SecretIntakeBody = Body(...),
+    admin_key: str = Depends(verify_admin_key),
+):
+    """Persist one allowlisted env var to runtime.env (admin-only)."""
+    from app.jarvis.secure_runtime_env_write import persist_env_var_value
+
+    key = (body.env_var or "").strip()
+    val = (body.value or "").strip()
+    if not key or not val:
+        raise HTTPException(status_code=400, detail="env_var_and_value_required")
+
+    try:
+        from app.services.required_secrets_registry import is_allowed_intake_key
+    except Exception:
+
+        def is_allowed_intake_key(name: str) -> bool:  # type: ignore[misc]
+            return name in ("GITHUB_APP_CLIENT_ID",)
+
+    if not is_allowed_intake_key(key):
+        raise HTTPException(status_code=400, detail="env_var_not_allowed_for_intake")
+
+    if body.persist_ssm:
+        logger.info("admin_secrets_intake persist_ssm=1 for %s (SSM path optional; runtime.env always updated)", key)
+
+    try:
+        persist_env_var_value(key, val)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve)) from ve
+
+    os.environ[key] = val
+    return {"ok": True, "message": "Saved to runtime.env"}
+
+
+@router.post("/admin/recovery-apply")
+def admin_recovery_apply(admin_key: str = Depends(verify_admin_key)):
+    try:
+        from app.services.secret_recovery import apply_backend_recovery
+    except Exception:
+        raise HTTPException(
+            status_code=501,
+            detail="secret_recovery_not_available_on_this_build",
+        ) from None
+    try:
+        return apply_backend_recovery()
+    except Exception as exc:
+        logger.error("admin_recovery_apply failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="recovery_apply_failed") from exc
+
+
+@router.post("/admin/rotate-admin-key")
+def rotate_admin_key(
+    body: RotateAdminKeyBody = Body(...),
+    admin_key: str = Depends(verify_admin_key),
+):
+    """
+    Rotate ADMIN_ACTIONS_KEY: verifies current X-Admin-Key, writes new value to runtime.env,
+    and updates the running process environment so the session can continue without restart.
+    """
+    from app.jarvis.secure_runtime_env_write import persist_env_var_value
+
+    new_k = (body.new_admin_key or "").strip()
+    if len(new_k) < _MIN_ADMIN_KEY_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"new_admin_key_too_short (min {_MIN_ADMIN_KEY_LEN} characters)",
+        )
+    if new_k == admin_key:
+        raise HTTPException(status_code=400, detail="new_admin_key_same_as_current")
+
+    try:
+        persist_env_var_value("ADMIN_ACTIONS_KEY", new_k)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve)) from ve
+
+    os.environ["ADMIN_ACTIONS_KEY"] = new_k
+    logger.info("ADMIN_ACTIONS_KEY rotated via /admin/rotate-admin-key")
+    return {"ok": True, "message": "Admin key updated. Use the new key from now on (also saved to runtime.env)."}
+
 
 @router.post("/admin/test-telegram")
 async def test_telegram(

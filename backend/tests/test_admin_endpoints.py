@@ -91,6 +91,46 @@ def test_test_telegram_rate_limit(client, mock_admin_key, mock_telegram_notifier
         assert "rate_limited" in response2.json()["detail"].lower()
 
 
+@patch("app.jarvis.secure_runtime_env_write.persist_env_var_value")
+def test_rotate_admin_key_success(mock_persist, client, mock_admin_key):
+    """Rotating admin key updates env and accepts the new key on subsequent calls."""
+    new_key = "new-admin-key-1234567890"
+    r1 = client.post(
+        "/admin/rotate-admin-key",
+        headers={"X-Admin-Key": "test-admin-key-123"},
+        json={"new_admin_key": new_key},
+    )
+    assert r1.status_code == 200
+    assert r1.json().get("ok") is True
+    mock_persist.assert_called_once()
+
+    r2 = client.post(
+        "/admin/test-telegram",
+        headers={"X-Admin-Key": new_key},
+    )
+    assert r2.status_code == 200
+
+
+def test_rotate_admin_key_wrong_current_key(client, mock_admin_key):
+    r = client.post(
+        "/admin/rotate-admin-key",
+        headers={"X-Admin-Key": "wrong"},
+        json={"new_admin_key": "new-admin-key-1234567890"},
+    )
+    assert r.status_code == 401
+
+
+@patch("app.jarvis.secure_runtime_env_write.persist_env_var_value")
+def test_rotate_admin_key_too_short(mock_persist, client, mock_admin_key):
+    r = client.post(
+        "/admin/rotate-admin-key",
+        headers={"X-Admin-Key": "test-admin-key-123"},
+        json={"new_admin_key": "short"},
+    )
+    assert r.status_code == 400
+    mock_persist.assert_not_called()
+
+
 def test_test_telegram_disabled(client, mock_admin_key):
     """Test that disabled Telegram returns ok: false"""
     with patch("app.api.routes_admin.telegram_notifier") as mock:
