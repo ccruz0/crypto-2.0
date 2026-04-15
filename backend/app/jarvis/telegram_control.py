@@ -3,6 +3,9 @@ Telegram control surface for Jarvis (thin layer over orchestrator + tools).
 
 Uses the same bot token and polling loop as app.services.telegram_commands — this
 module only handles routing and formatting, not getUpdates.
+
+``format_compact_jarvis_reply`` does not render ``resume_plan``; callers execute it
+via ``execute_jarvis_resume_plan`` (e.g. after ``process_jarvis_telegram_message``).
 """
 
 from __future__ import annotations
@@ -10,8 +13,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+import uuid
 from typing import Any, Callable
 
+from app.jarvis.executor import execute_plan
 from app.jarvis.orchestrator import run_jarvis
 from app.jarvis.tools import TOOL_SPECS
 
@@ -25,6 +30,100 @@ _UUID_RE = re.compile(
 SendFn = Callable[[str], Any]
 
 _TELEGRAM_MAX_LEN = 4000
+
+
+def process_jarvis_telegram_message(
+    raw: str,
+    chat_id: str,
+    user_id: str,
+    *,
+    runtime_env_path: str | None = None,
+) -> dict[str, Any]:
+    """
+    Run secure marketing secret/plain intake if active for this chat/user.
+
+    Returns a dict with at least ``dialog_message`` when consumed, optionally ``resume_plan``.
+    Callers must enforce allowlists before invoking (see ``try_process_jarvis_secret_intake_for_telegram_update``).
+    """
+    from app.jarvis.telegram_secret_intake import handle_secret_intake_turn
+
+    out = handle_secret_intake_turn(
+        raw,
+        chat_id=chat_id,
+        user_id=user_id,
+        runtime_env_path_override=runtime_env_path,
+    )
+    if out is None:
+        return {}
+    return out
+
+
+def execute_jarvis_resume_plan(resume_plan: dict[str, Any], *, actor: str) -> dict[str, Any]:
+    """
+    Execute a persisted planner-shaped dict (e.g. after secret save) on the normal executor path.
+    Never includes raw secret values; ``actor`` is audit-only.
+    """
+    _ = actor
+    jarvis_run_id = str(uuid.uuid4())
+    action = str((resume_plan or {}).get("action") or "").strip()
+    raw_args = (resume_plan or {}).get("args")
+    args: dict[str, Any] = dict(raw_args) if isinstance(raw_args, dict) else {}
+    plan: dict[str, Any] = {
+        "action": action,
+        "args": args,
+        "reasoning": "telegram_secret_intake_resume",
+    }
+    result = execute_plan(plan, jarvis_run_id=jarvis_run_id)
+    return {
+        "jarvis_run_id": jarvis_run_id,
+        "plan": plan,
+        "result": result,
+    }
+
+
+def try_process_jarvis_secret_intake_for_telegram_update(
+    *,
+    raw_text: str,
+    chat_id: str,
+    actor_user_id: str,
+    from_user: dict[str, Any] | None,
+    send: SendFn,
+) -> bool:
+    """
+    If marketing secret intake consumes this line, send dialog (and resume pipeline when applicable).
+
+    Returns True when the Telegram update should not continue through generic routing.
+    """
+    if not (raw_text or "").strip():
+        return False
+    if not is_jarvis_telegram_enabled():
+        return False
+    if not jarvis_telegram_token_present():
+        return False
+    if not jarvis_allowlists_configured():
+        return False
+    if not jarvis_telegram_allowed(chat_id, actor_user_id):
+        return False
+
+    out = process_jarvis_telegram_message((raw_text or "").strip(), chat_id, actor_user_id or "")
+    if not out:
+        return False
+
+    dialog = out.get("dialog_message")
+    if dialog is None or not str(dialog).strip():
+        return False
+
+    dm = str(dialog).strip()
+    resume = out.get("resume_plan")
+    if isinstance(resume, dict) and str(resume.get("action") or "").strip():
+        send(_telegram_clip(dm))
+        actor = actor_from_telegram_user(from_user)
+        payload = execute_jarvis_resume_plan(resume, actor=actor)
+        send(format_compact_jarvis_reply("jarvis", payload))
+        return True
+
+    send(format_compact_jarvis_reply("jarvis", {"dialog_message": dm, "plan": {}, "result": None}))
+    return True
 
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -168,6 +267,59 @@ def _telegram_clip(text: str, max_len: int = _TELEGRAM_MAX_LEN) -> str:
 def _jarvis_result_has_executor_error(res: dict[str, Any]) -> bool:
     """True when :func:`execute_plan` / :func:`invoke_registered_tool` returned a failure dict."""
     return res.get("error") is not None
+
+
+_ATP_PRIORITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+def _dedupe_and_sort_atp_actions(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        msg = str(item.get("message") or "").strip()
+        if not msg:
+            continue
+        key = " ".join(msg.lower().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        pr = str(item.get("priority") or "LOW").upper()
+        if pr not in _ATP_PRIORITY_ORDER:
+            pr = "LOW"
+        row = {"message": msg, "priority": pr}
+        src = item.get("source")
+        if src:
+            row["source"] = str(src)
+        out.append(row)
+    out.sort(key=lambda d: (_ATP_PRIORITY_ORDER.get(str(d.get("priority")), 99), d.get("message")))
+    return out
+
+
+def _format_run_atp_system_review_telegram(res: dict[str, Any]) -> str:
+    if _jarvis_result_has_executor_error(res):
+        err = res.get("error")
+        detail = str(res.get("detail") or "").strip()
+        return _telegram_clip(
+            f"🧠 ATP System Review\n\nError: {err}\n{detail[:400]}".strip()
+        )
+
+    summary = str(res.get("summary") or "").strip() or "—"
+    actions = _dedupe_and_sort_atp_actions(res.get("actions"))[:7]
+
+    lines: list[str] = ["🧠 ATP System Review", "", "Summary:", summary, "", "Actions:"]
+    if not actions:
+        lines.append("• (none)")
+    else:
+        for a in actions:
+            pr = str(a.get("priority") or "LOW").upper()
+            msg = str(a.get("message") or "").strip()
+            lines.append(f"• [{pr}] {msg[:280]}")
+
+    return _telegram_clip("\n".join(lines))
 
 
 def _looks_like_run_marketing_review_result(res: dict[str, Any]) -> bool:
@@ -529,12 +681,36 @@ def _format_run_marketing_review_telegram(res: dict[str, Any]) -> str:
 def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
     """Short Telegram-safe text (no huge JSON)."""
     if kind == "jarvis":
+        dm0 = payload.get("dialog_message")
+        if dm0 is not None and str(dm0).strip():
+            return _telegram_clip(str(dm0).strip())
         rid = str(payload.get("jarvis_run_id") or "")
         res = payload.get("result")
         plan = payload.get("plan") or {}
         action = ""
         if isinstance(plan, dict):
             action = str(plan.get("action") or "").strip()
+
+        atp_review = action == "run_atp_system_review" or (
+            isinstance(res, dict)
+            and isinstance(res.get("actions"), list)
+            and "summary" in res
+            and "environment" in res
+            and "scope" in res
+        )
+        if atp_review:
+            if not isinstance(res, dict):
+                body = "🧠 ATP System Review\n\nNo result payload."
+            else:
+                logger.info(
+                    "jarvis.telegram.format run_id=%s route=run_atp_system_review keys=%s",
+                    rid or "-",
+                    list(res.keys()),
+                )
+                body = _format_run_atp_system_review_telegram(res)
+            if rid:
+                body = _telegram_clip(f"{body}\n\nrun {rid}")
+            return _telegram_clip(body)
 
         review_fmt = action == "run_marketing_review" or (
             isinstance(res, dict) and _looks_like_run_marketing_review_result(res)
@@ -790,3 +966,103 @@ def maybe_handle_jarvis_telegram_message(
         logger.exception("JarvisTelegram: dispatch failed: %s", e)
         send(f"❌ Jarvis error: {e!s}"[:500])
     return True
+
+
+_DIALOG_ROUTER_HINT_RE = re.compile(
+    r"(marketing|website|web site|landing|seo|conversion|google ads|analytics|"
+    r"analiz|analis|analyze|review|mejorar|improve|audit|recommend|qué mejorar|que mejorar|"
+    r"sitio|página web|pagina web|peluquer|peluqueria|salon|barbershop|"
+    r"mi web|tu web)",
+    re.IGNORECASE,
+)
+
+
+def _dialog_router_prepare_operator_text(user_text: str) -> tuple[str, bool]:
+    """
+    Return ``(text_for_run_jarvis, hinted)`` for operator private-chat free text.
+
+    When ``hinted`` is True, a short prefix nudges the existing planner toward marketing /
+    website tools (no new Bedrock configuration). Plain text still reaches ``run_jarvis`` unchanged.
+    """
+    t = (user_text or "").strip()
+    if len(t) > 3500:
+        t = t[:3500]
+    if not t:
+        return "", False
+    if not _DIALOG_ROUTER_HINT_RE.search(t):
+        return t, False
+    prefix = (
+        "Operator Telegram chat: the user is asking about their website, local business presence, "
+        "or marketing improvements. Prefer marketing analysis or review tools when appropriate.\n\n"
+    )
+    return prefix + t, True
+
+
+def try_route_jarvis_operator_free_text_dialog(
+    *,
+    raw_text: str,
+    chat_id: str,
+    actor_user_id: str,
+    chat_type: str,
+    from_user: dict[str, Any] | None,
+    send: SendFn,
+) -> bool:
+    """
+    Route authorized **private** operator free text through the same ``run_jarvis`` path as
+    ``/jarvis …`` (after secret intake has declined to consume the line).
+
+    Returns True when this update should not fall through to legacy non-command ignore.
+    """
+    text = (raw_text or "").strip()
+    if not text or text.startswith("/"):
+        return False
+    if str(chat_type or "").strip().lower() != "private":
+        logger.info(
+            "jarvis.telegram.free_text skip chat_id=%s reason=non_private chat_type=%s",
+            chat_id,
+            chat_type or "?",
+        )
+        return False
+    if not is_jarvis_telegram_enabled():
+        return False
+    if not jarvis_telegram_token_present():
+        return False
+    if not jarvis_allowlists_configured():
+        return False
+    if not jarvis_telegram_allowed(chat_id, actor_user_id):
+        logger.info(
+            "jarvis.telegram.free_text skip chat_id=%s reason=not_jarvis_allowlisted",
+            chat_id,
+        )
+        return False
+
+    routed, hinted = _dialog_router_prepare_operator_text(text)
+    if not routed:
+        return False
+
+    logger.info(
+        "jarvis.telegram.free_text route chat_id=%s dialog_router_hinted=%s chars=%s",
+        chat_id,
+        int(hinted),
+        len(text),
+    )
+    actor = actor_from_telegram_user(from_user)
+    try:
+        fmt_kind, payload = dispatch_jarvis_command("jarvis", routed, actor=actor)
+        reply = format_compact_jarvis_reply(fmt_kind, payload)
+        send(reply)
+        logger.info(
+            "jarvis.telegram.free_text consumed chat_id=%s fmt_kind=%s run_id=%s",
+            chat_id,
+            fmt_kind,
+            str((payload or {}).get("jarvis_run_id") or "")[:36] or "-",
+        )
+        return True
+    except Exception as e:
+        logger.exception(
+            "jarvis.telegram.free_text dispatch_failed chat_id=%s err=%s",
+            chat_id,
+            type(e).__name__,
+        )
+        send(_telegram_clip(f"❌ Jarvis error: {e!s}"[:500]))
+        return True

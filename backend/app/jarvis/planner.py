@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from typing import Any
 
 from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
@@ -42,6 +44,87 @@ def _normalize_direct_intent_input(user_input: str) -> str:
         t = t[7:].strip()
     t = " ".join(t.split())
     return t.lower()
+
+
+def _intent_source_label(user_input: str) -> str:
+    t = (user_input or "").strip().lower()
+    return "slash_command" if t.startswith("/jarvis") else "free_text"
+
+
+def _fold_marketing_probe(user_input: str) -> str:
+    """Lowercase, strip accents, drop /jarvis, collapse punctuation to spaces (for regex probes)."""
+    t = (user_input or "").strip()
+    if t.lower().startswith("/jarvis"):
+        t = t[7:].strip()
+    t = t.lower()
+    t = "".join(
+        c for c in unicodedata.normalize("NFD", t) if unicodedata.category(c) != "Mn"
+    )
+    t = re.sub(r"[/]+", " ", t)
+    t = re.sub(r"[^\w\s]+", " ", t)
+    return " ".join(t.split())
+
+
+# Loose multi-word stems (not exact full-string match); folded text is accent-stripped ASCII-ish.
+_LOOSE_MARKETING_PHRASES = re.compile(
+    r"(review\s+my\s+marketing|analyze\s+my\s+marketing|analyze\s+my\s+website|"
+    r"marketing\s+analysis|website\s+analysis|"
+    r"what\s+should\s+i\s+improve(\s+on)?\s+my\s+(web\s+)?site\b|"
+    r"analiza\s+mi\s+web|analiza\s+mi\s+marketing|revisa\s+mi\s+web|"
+    r"que\s+puedo\s+mejorar(\s+en)?\s+mi\s+(web|marketing|sitio)|"
+    r"que\s+mejorar(\s+en)?\s+mi\s+(web|marketing|sitio))",
+    re.IGNORECASE,
+)
+
+_MARKETING_DOMAIN = re.compile(
+    r"\b(marketing|website|web\s*site|webpage|mi\s+web|sitio(\s+web)?|pagina(\s+web)?|"
+    r"landing|seo|sem|google\s+ads|google\s+analytics|search\s+console|\bga4\b|\bgsc\b|"
+    r"conversion|conversions|campaign|campaigns|ads|anuncios|publicidad|peluqueria|peluquerias)\b",
+    re.IGNORECASE,
+)
+
+_MARKETING_ACTION = re.compile(
+    r"\b(review|revisa|revisar|analyze|analyse|analiz|audit|auditar|mejorar|improve|"
+    r"recommend|recomienda|suggest|suger|analysis|analisis|informe|report|reports|overview|"
+    r"what\s+should|que\s+puedo|dime\s+que|"
+    r"help\s+me(\s+to)?(\s+with)?(\s+my)?(\s+web|\s+marketing|\s+site)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _try_fuzzy_marketing_review_plan(user_input: str, jarvis_run_id: str) -> dict[str, Any] | None:
+    """
+    Deterministic marketing / website review routing (no Bedrock).
+
+    Uses phrase stems and (domain-keyword AND action-keyword) heuristics.
+    """
+    folded = _fold_marketing_probe(user_input)
+    if not folded:
+        return None
+    rid = (jarvis_run_id or "").strip() or "-"
+    source = _intent_source_label(user_input)
+    match_kind = ""
+    if _LOOSE_MARKETING_PHRASES.search(folded):
+        match_kind = "phrase"
+    elif _MARKETING_DOMAIN.search(folded) and _MARKETING_ACTION.search(folded):
+        match_kind = "keyword_pair"
+    else:
+        return None
+
+    p = PlanValidated(
+        action="run_marketing_review",
+        args={},
+        reasoning=f"fuzzy_marketing_intent:{match_kind}",
+    )
+    out = p.model_dump()
+    logger.info(
+        "jarvis.planner.intent_detected=marketing source=%s run_id=%s match=%s chars=%s",
+        source,
+        rid,
+        match_kind,
+        len(folded),
+    )
+    return out
 
 
 def _try_local_direct_plan(user_input: str, jarvis_run_id: str) -> dict[str, Any] | None:
@@ -91,6 +174,14 @@ def _fallback_plan(user_input: str, reason: str) -> dict[str, Any]:
         out = p.model_dump()
         logger.info("jarvis.planner.fallback reason=%s action=%s", reason, out.get("action"))
         return out
+    fuzzy = _try_fuzzy_marketing_review_plan(user_input, "-")
+    if fuzzy is not None:
+        logger.info(
+            "jarvis.planner.fallback reason=%s overridden_by=marketing_intent action=%s",
+            reason,
+            fuzzy.get("action"),
+        )
+        return fuzzy
     p = PlanValidated(
         action="echo_message",
         args={"message": f"[planner fallback] {reason}: {user_input[:500]}"},
@@ -134,6 +225,10 @@ def create_plan(
     direct = _try_local_direct_plan(text, rid)
     if direct is not None:
         return direct
+
+    fuzzy = _try_fuzzy_marketing_review_plan(text, rid)
+    if fuzzy is not None:
+        return fuzzy
 
     tools_block = _tool_lines_for_prompt()
     context_block = ""

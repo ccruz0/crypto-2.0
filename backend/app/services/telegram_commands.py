@@ -391,12 +391,20 @@ def _emit_duplicate_poller_ops_alert(reason: str, token_actual: Optional[str] = 
     _POLLER_CONFLICT_ALERT_LAST_TS[key] = now
 
     operator_kv = _duplicate_poller_operator_kv(token_actual)
-    message = (
-        "🚨 <b>Telegram Poller Conflict</b>\n"
-        f"<b>reason:</b> {reason}\n"
-        f"<b>details:</b> <code>{operator_kv}</code>\n"
-        "<b>action:</b> run <code>backend/scripts/diag/detect_telegram_consumers.sh</code>"
-    )
+    if reason == "advisory_lock_busy":
+        message = (
+            "⚠️ <b>Telegram poller lock busy</b> (advisory)\n"
+            "<i>Often benign: another long-poll cycle may still be running on this DB session.</i>\n"
+            f"<b>details:</b> <code>{operator_kv}</code>\n"
+            "<b>if persistent:</b> <code>backend/scripts/diag/detect_telegram_consumers.sh</code>"
+        )
+    else:
+        message = (
+            "🚨 <b>Telegram Poller Conflict</b>\n"
+            f"<b>reason:</b> {reason}\n"
+            f"<b>details:</b> <code>{operator_kv}</code>\n"
+            "<b>action:</b> run <code>backend/scripts/diag/detect_telegram_consumers.sh</code>"
+        )
     try:
         telegram_notifier.send_message(message, origin="AWS" if is_aws_runtime() else None, chat_destination="ops")
     except Exception as exc:
@@ -5945,17 +5953,76 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             )
         )
     )
-    logger.info(
-        "[TG][UPDATE] raw_text=%r update_id=%s update_source=%s",
-        (raw_text or "")[:220],
-        update_id,
-        _update_msg_source,
-    )
-    if not raw_text.startswith("/"):
+    chat_early = message.get("chat", {})
+    chat_id_early = str(chat_early.get("id", ""))
+    from_user_early = message.get("from", {}) or {}
+    sender_chat_early = message.get("sender_chat") or {}
+    actor_user_id_early = _resolve_actor_user_id(from_user_early, sender_chat_early, chat_id_early)
+
+    if raw_text.startswith("/"):
         logger.info(
-            "[TG][ROUTE] update_id=%s selected=message_non_command_ignored text_preview=%s",
+            "[TG][UPDATE] raw_text=%r update_id=%s update_source=%s",
+            (raw_text or "")[:220],
             update_id,
-            raw_text[:80],
+            _update_msg_source,
+        )
+    else:
+        logger.info(
+            "[TG][UPDATE] non_command_text_len=%s update_id=%s update_source=%s",
+            len(raw_text),
+            update_id,
+            _update_msg_source,
+        )
+
+    if not raw_text.startswith("/"):
+        try:
+            from app.jarvis.telegram_control import try_process_jarvis_secret_intake_for_telegram_update
+
+            if try_process_jarvis_secret_intake_for_telegram_update(
+                raw_text=raw_text,
+                chat_id=chat_id_early,
+                actor_user_id=actor_user_id_early or "",
+                from_user=from_user_early if isinstance(from_user_early, dict) else None,
+                send=lambda msg: send_command_response(chat_id_early, msg),
+            ):
+                logger.info(
+                    "[TG][ROUTE] update_id=%s handler=jarvis_secret_intake consumed=1",
+                    update_id,
+                )
+                return
+        except Exception as _secret_hook_err:
+            logger.warning(
+                "jarvis_secret_intake hook failed (non-fatal) update_id=%s err=%s",
+                update_id,
+                _secret_hook_err,
+            )
+        try:
+            from app.jarvis.telegram_control import try_route_jarvis_operator_free_text_dialog
+
+            chat_type_early = str(chat_early.get("type") or "")
+            if try_route_jarvis_operator_free_text_dialog(
+                raw_text=raw_text,
+                chat_id=chat_id_early,
+                actor_user_id=actor_user_id_early or "",
+                chat_type=chat_type_early,
+                from_user=from_user_early if isinstance(from_user_early, dict) else None,
+                send=lambda msg: send_command_response(chat_id_early, msg),
+            ):
+                logger.info(
+                    "[TG][ROUTE] update_id=%s handler=jarvis_free_text_dialog consumed=1",
+                    update_id,
+                )
+                return
+        except Exception as _jarvis_ft_err:
+            logger.warning(
+                "jarvis_free_text_dialog hook failed (non-fatal) update_id=%s err=%s",
+                update_id,
+                _jarvis_ft_err,
+            )
+        logger.info(
+            "[TG][ROUTE] update_id=%s selected=message_non_command_ignored text_len=%s",
+            update_id,
+            len(raw_text),
         )
         return
     if raw_text.startswith("task_project:"):
@@ -5985,6 +6052,29 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         "[TG][CHAT] update_id=%s chat_id=%s chat_type=%s sender_id=%s text_preview=%s",
         update_id, chat_id, chat_type, sender_id, (text or "")[:60],
     )
+
+    # Jarvis secure marketing intake (also for slash-prefixed lines): before Jarvis command dispatch/formatting.
+    try:
+        from app.jarvis.telegram_control import try_process_jarvis_secret_intake_for_telegram_update
+
+        if try_process_jarvis_secret_intake_for_telegram_update(
+            raw_text=raw_text,
+            chat_id=chat_id,
+            actor_user_id=actor_user_id or "",
+            from_user=from_user if isinstance(from_user, dict) else None,
+            send=lambda msg: send_command_response(chat_id, msg),
+        ):
+            logger.info(
+                "[TG][ROUTE] update_id=%s handler=jarvis_secret_intake consumed=1",
+                update_id,
+            )
+            return
+    except Exception as _jarvis_secret_slash_err:
+        logger.warning(
+            "jarvis_secret_intake hook failed (non-fatal) update_id=%s err=%s",
+            update_id,
+            _jarvis_secret_slash_err,
+        )
 
     # Jarvis Telegram control: separate allowlists; consumes matching commands before _telegram_authorize.
     try:
