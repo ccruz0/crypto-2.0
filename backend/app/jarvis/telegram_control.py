@@ -119,7 +119,16 @@ def try_process_jarvis_secret_intake_for_telegram_update(
         send(_telegram_clip(dm))
         actor = actor_from_telegram_user(from_user)
         payload = execute_jarvis_resume_plan(resume, actor=actor)
-        send(format_compact_jarvis_reply("jarvis", payload))
+        text2 = format_compact_jarvis_reply("jarvis", payload)
+        extra = _build_marketing_intake_followup(
+            chat_id=chat_id,
+            actor_user_id=actor_user_id,
+            fmt_kind="jarvis",
+            payload=payload,
+        )
+        if extra:
+            text2 = _telegram_clip(text2.rstrip() + "\n\n---\n" + extra)
+        send(text2)
         return True
 
     send(format_compact_jarvis_reply("jarvis", {"dialog_message": dm, "plan": {}, "result": None}))
@@ -333,6 +342,181 @@ def _looks_like_run_marketing_review_result(res: dict[str, Any]) -> bool:
         and "proposed_actions" in res
         and "summary" in res
     )
+
+
+def _marketing_result_missing_data(res: Any) -> list[Any]:
+    if not isinstance(res, dict):
+        return []
+    md = res.get("missing_data")
+    return list(md) if isinstance(md, list) else []
+
+
+def _catalog_keys_for_marketing_source(source: str) -> list[str]:
+    s = (source or "").strip()
+    if s == "google_search_console":
+        return ["search_console_site_url"]
+    if s == "ga4":
+        return ["ga4_property_id", "ga4_credentials_json"]
+    if s == "google_ads":
+        return ["google_ads_customer_id", "google_ads_developer_token"]
+    return []
+
+
+def _first_unset_catalog_key(keys: list[str]) -> str | None:
+    from app.jarvis.marketing_settings_catalog import get_setting_meta
+
+    for key in keys:
+        meta = get_setting_meta(key)
+        if not meta:
+            continue
+        ev = str(meta.get("env_var") or "").strip()
+        if not ev:
+            continue
+        if not (os.getenv(ev) or "").strip():
+            return key
+    return None
+
+
+def pick_first_marketing_intake_setting_key(missing_data: list[Any]) -> str | None:
+    """
+    Map missing_data entries to one catalog setting to resolve next (unset env only).
+
+    Order follows the analysis list (first actionable gap wins).
+    """
+    from app.jarvis.marketing_settings_catalog import get_setting_meta
+
+    for m in missing_data:
+        if not isinstance(m, dict):
+            continue
+        t = str(m.get("type") or "").strip()
+        src = str(m.get("source") or "").strip()
+
+        if t == "missing_event_mapping":
+            key = "ga4_booking_event_name"
+            if get_setting_meta(key) and _first_unset_catalog_key([key]):
+                return key
+            continue
+
+        picked = _first_unset_catalog_key(_catalog_keys_for_marketing_source(src))
+        if picked:
+            return picked
+
+    return None
+
+
+def _intake_resume_plan_from_payload(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Return (action, args) for re-running the marketing tool after intake saves."""
+    plan = payload.get("plan") or {}
+    action = ""
+    args: dict[str, Any] = {}
+    if isinstance(plan, dict):
+        action = str(plan.get("action") or "").strip()
+        raw = plan.get("args")
+        if isinstance(raw, dict):
+            args = dict(raw)
+
+    res = payload.get("result")
+    resd: dict[str, Any] = dict(res) if isinstance(res, dict) else {}
+
+    if action == "run_marketing_review":
+        out: dict[str, Any] = {}
+        for k in ("days_back", "top_n", "reason", "stage_for_approval", "stage_indices"):
+            if k in args:
+                out[k] = args[k]
+        return "run_marketing_review", out
+
+    if action == "analyze_marketing_opportunities":
+        out2: dict[str, Any] = {}
+        for k in ("days_back", "top_n"):
+            if k in args:
+                out2[k] = args[k]
+            elif k in resd:
+                out2[k] = resd[k]
+        return "analyze_marketing_opportunities", out2
+
+    if _looks_like_run_marketing_review_result(resd):
+        return (
+            "run_marketing_review",
+            {
+                "days_back": int(resd.get("days_back") or 30),
+                "top_n": int(resd.get("top_n") or 10),
+            },
+        )
+
+    if (
+        isinstance(resd.get("missing_data"), list)
+        and resd.get("missing_data")
+        and (
+            "biggest_opportunities" in resd
+            or "conversion_gaps" in resd
+            or str(resd.get("status") or "") == "insufficient_data"
+        )
+    ):
+        out3: dict[str, Any] = {}
+        for k in ("days_back", "top_n"):
+            if k in resd:
+                out3[k] = resd[k]
+        if out3:
+            return "analyze_marketing_opportunities", out3
+
+    return "run_marketing_review", {"days_back": 30, "top_n": 10}
+
+
+def _build_marketing_intake_followup(
+    *,
+    chat_id: str,
+    actor_user_id: str,
+    fmt_kind: str,
+    payload: dict[str, Any],
+    runtime_env_path: str | None = None,
+) -> str:
+    """
+    If marketing output shows configurable gaps, begin secure intake and return text to append.
+
+    Used for any Telegram Jarvis reply (slash or free-text) so operators are prompted consistently.
+    """
+    if fmt_kind != "jarvis":
+        return ""
+    if not is_jarvis_telegram_enabled() or not jarvis_telegram_token_present():
+        return ""
+    if not jarvis_allowlists_configured() or not jarvis_telegram_allowed(chat_id, actor_user_id):
+        return ""
+    if payload.get("dialog_message"):
+        return ""
+
+    res = payload.get("result")
+    missing = _marketing_result_missing_data(res)
+    if not missing:
+        return ""
+
+    from app.jarvis.dialog_state import get_state
+    from app.jarvis.telegram_secret_intake import begin_marketing_setting_intake
+
+    st = get_state(chat_id, actor_user_id)
+    if st is not None and (st.pending_secret_key or "").strip() and (st.pending_secret_phase or "").strip():
+        return ""
+
+    setting_key = pick_first_marketing_intake_setting_key(missing)
+    if not setting_key:
+        return ""
+
+    resume_action, resume_args = _intake_resume_plan_from_payload(payload)
+    try:
+        return begin_marketing_setting_intake(
+            chat_id,
+            actor_user_id,
+            setting_key=setting_key,
+            resume_action=resume_action,
+            resume_args=resume_args,
+            runtime_env_path_override=runtime_env_path,
+        ).strip()
+    except Exception as e:
+        logger.warning(
+            "jarvis.telegram.intake_begin_failed chat_id=%s err=%s",
+            chat_id,
+            type(e).__name__,
+        )
+        return ""
 
 
 def _unavailable_source_labels(res: dict[str, Any]) -> list[str]:
@@ -961,6 +1145,14 @@ def maybe_handle_jarvis_telegram_message(
     try:
         fmt_kind, payload = dispatch_jarvis_command(kind, args, actor=actor)
         text = format_compact_jarvis_reply(fmt_kind, payload)
+        extra = _build_marketing_intake_followup(
+            chat_id=chat_id,
+            actor_user_id=actor_user_id,
+            fmt_kind=fmt_kind,
+            payload=payload,
+        )
+        if extra:
+            text = _telegram_clip(text.rstrip() + "\n\n---\n" + extra)
         send(text)
     except Exception as e:
         logger.exception("JarvisTelegram: dispatch failed: %s", e)
@@ -1050,6 +1242,14 @@ def try_route_jarvis_operator_free_text_dialog(
     try:
         fmt_kind, payload = dispatch_jarvis_command("jarvis", routed, actor=actor)
         reply = format_compact_jarvis_reply(fmt_kind, payload)
+        extra = _build_marketing_intake_followup(
+            chat_id=chat_id,
+            actor_user_id=actor_user_id,
+            fmt_kind=fmt_kind,
+            payload=payload,
+        )
+        if extra:
+            reply = _telegram_clip(reply.rstrip() + "\n\n---\n" + extra)
         send(reply)
         logger.info(
             "jarvis.telegram.free_text consumed chat_id=%s fmt_kind=%s run_id=%s",

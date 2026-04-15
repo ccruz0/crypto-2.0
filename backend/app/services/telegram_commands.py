@@ -391,20 +391,22 @@ def _emit_duplicate_poller_ops_alert(reason: str, token_actual: Optional[str] = 
     _POLLER_CONFLICT_ALERT_LAST_TS[key] = now
 
     operator_kv = _duplicate_poller_operator_kv(token_actual)
+    # Same-process overlap: scheduler ticks while getUpdates long-polls. Do not send to Telegram:
+    # many hosts set TELEGRAM_CHAT_ID_OPS equal to the operator DM, so this reads as spam next to Jarvis.
     if reason == "advisory_lock_busy":
-        message = (
-            "⚠️ <b>Telegram poller lock busy</b> (advisory)\n"
-            "<i>Often benign: another long-poll cycle may still be running on this DB session.</i>\n"
-            f"<b>details:</b> <code>{operator_kv}</code>\n"
-            "<b>if persistent:</b> <code>backend/scripts/diag/detect_telegram_consumers.sh</code>"
+        logger.warning(
+            "[TG][ALERT] duplicate_telegram_poller_suspected reason=advisory_lock_busy "
+            "(telegram suppressed — usually scheduler vs in-flight long poll) %s",
+            operator_kv,
         )
-    else:
-        message = (
-            "🚨 <b>Telegram Poller Conflict</b>\n"
-            f"<b>reason:</b> {reason}\n"
-            f"<b>details:</b> <code>{operator_kv}</code>\n"
-            "<b>action:</b> run <code>backend/scripts/diag/detect_telegram_consumers.sh</code>"
-        )
+        return
+
+    message = (
+        "🚨 <b>Telegram Poller Conflict</b>\n"
+        f"<b>reason:</b> {reason}\n"
+        f"<b>details:</b> <code>{operator_kv}</code>\n"
+        "<b>action:</b> run <code>backend/scripts/diag/detect_telegram_consumers.sh</code>"
+    )
     try:
         telegram_notifier.send_message(message, origin="AWS" if is_aws_runtime() else None, chat_destination="ops")
     except Exception as exc:

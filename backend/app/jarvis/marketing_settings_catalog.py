@@ -13,6 +13,12 @@ SettingMeta = dict[str, Any]
 # is_secret=True → secure Telegram path (dashboard | telegram choice).
 # is_secret=False → value may be requested directly in the next message.
 MARKETING_SETTINGS: dict[str, SettingMeta] = {
+    "ga4_booking_event_name": {
+        "label": "GA4 booking/conversion event name",
+        "is_secret": False,
+        "env_var": "JARVIS_GA4_BOOKING_EVENT_NAME",
+        "validation": "non_empty",
+    },
     "ga4_property_id": {
         "label": "Google Analytics Property ID",
         "is_secret": False,

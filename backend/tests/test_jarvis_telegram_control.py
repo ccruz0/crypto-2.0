@@ -97,6 +97,48 @@ def test_process_jarvis_telegram_message_empty_without_intake():
     assert tc.process_jarvis_telegram_message("hello", "9", "9") == {}
 
 
+def test_pick_first_marketing_intake_setting_key_prefers_gsc_when_unset(monkeypatch):
+    monkeypatch.delenv("JARVIS_GSC_SITE_URL", raising=False)
+    md = [{"type": "not_configured", "source": "google_search_console", "title": "GSC not configured"}]
+    assert tc.pick_first_marketing_intake_setting_key(md) == "search_console_site_url"
+
+
+def test_build_marketing_intake_followup_after_marketing_review(monkeypatch):
+    from app.jarvis.dialog_state import reset_store_for_tests
+
+    reset_store_for_tests()
+    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "8670073083:test-token-12345678901234567890")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "9")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "9")
+    monkeypatch.delenv("JARVIS_GSC_SITE_URL", raising=False)
+
+    payload = {
+        "plan": {"action": "run_marketing_review", "args": {"days_back": 14, "top_n": 5}},
+        "result": {
+            "status": "partial",
+            "analysis_status": "partial",
+            "proposal_status": "ok",
+            "top_findings": [],
+            "proposed_actions": [],
+            "missing_data": [
+                {"type": "not_configured", "source": "google_search_console", "title": "GSC not configured"}
+            ],
+            "summary": "Marketing review completed with limited data.",
+            "days_back": 14,
+            "top_n": 5,
+        },
+    }
+    out = tc._build_marketing_intake_followup(
+        chat_id="9",
+        actor_user_id="9",
+        fmt_kind="jarvis",
+        payload=payload,
+    )
+    assert "I'm missing" in out
+    assert "next message" in out.lower()
+
+
 def test_secure_secret_intake_telegram_path_no_echo(tmp_path):
     from app.jarvis.dialog_state import get_state, reset_store_for_tests
     from app.jarvis.telegram_secret_intake import begin_marketing_setting_intake, handle_secret_intake_turn
