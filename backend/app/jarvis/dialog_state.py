@@ -6,13 +6,27 @@ Bounded entries + TTL. Never store raw secret values after processing.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 _MAX_ENTRIES = 500
 _TTL_SECONDS = 86400
-_SECRET_INTAKE_TTL_SECONDS = 900  # 15m for pending secret flows
+
+
+def _secret_intake_ttl_seconds() -> float:
+    """
+    How long a marketing secret/plain intake session may sit idle before expiring.
+
+    Default 24h so operators can step away; override with JARVIS_TELEGRAM_INTAKE_TTL_SECONDS (300–604800).
+    """
+    raw = (os.getenv("JARVIS_TELEGRAM_INTAKE_TTL_SECONDS") or "").strip()
+    try:
+        v = int(raw) if raw else 86400
+    except ValueError:
+        v = 86400
+    return float(max(300, min(v, 604800)))
 
 
 @dataclass
@@ -37,6 +51,7 @@ class DialogState:
     pending_pipeline_to_resume: str | None = None
     pending_pipeline_args: dict[str, Any] = field(default_factory=dict)
     secret_intake_started_at: float | None = None
+    secret_intake_last_activity_at: float | None = None
     secret_runtime_env_path: str | None = None
 
 
@@ -52,9 +67,10 @@ def _secret_flow_active(st: DialogState) -> bool:
 
 
 def _secret_intake_deadline(st: DialogState) -> float | None:
-    if st.secret_intake_started_at is None:
+    base = st.secret_intake_last_activity_at or st.secret_intake_started_at
+    if base is None:
         return None
-    return float(st.secret_intake_started_at) + _SECRET_INTAKE_TTL_SECONDS
+    return float(base) + _secret_intake_ttl_seconds()
 
 
 def get_state(chat_id: str, user_id: str) -> DialogState | None:
@@ -65,6 +81,12 @@ def get_state(chat_id: str, user_id: str) -> DialogState | None:
     deadline = _secret_intake_deadline(st)
     if _secret_flow_active(st) and deadline is not None and time.time() > deadline:
         _clear_secret_portion(st)
+        try:
+            from app.jarvis.marketing_intake_persist import delete_marketing_intake_state
+
+            delete_marketing_intake_state(chat_id, user_id)
+        except Exception:
+            pass
         if not _any_dialog_left(st):
             _store.pop(dialog_key(chat_id, user_id), None)
             return None
@@ -92,16 +114,22 @@ def _clear_secret_portion(st: DialogState) -> None:
     st.pending_pipeline_to_resume = None
     st.pending_pipeline_args = {}
     st.secret_intake_started_at = None
+    st.secret_intake_last_activity_at = None
     st.secret_runtime_env_path = None
 
 
 def clear_secret_intake_only(chat_id: str, user_id: str) -> None:
     st = _store.get(dialog_key(chat_id, user_id))
-    if st is None:
-        return
-    _clear_secret_portion(st)
-    if not _any_dialog_left(st):
-        _store.pop(dialog_key(chat_id, user_id), None)
+    if st is not None:
+        _clear_secret_portion(st)
+        if not _any_dialog_left(st):
+            _store.pop(dialog_key(chat_id, user_id), None)
+    try:
+        from app.jarvis.marketing_intake_persist import delete_marketing_intake_state
+
+        delete_marketing_intake_state(chat_id, user_id)
+    except Exception:
+        pass
 
 
 def _any_dialog_left(st: DialogState) -> bool:

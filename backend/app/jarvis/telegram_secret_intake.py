@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.jarvis.dialog_state import DialogState, clear_secret_intake_only, get_state, set_state
+from app.jarvis.marketing_intake_persist import try_hydrate_secret_intake_from_db, upsert_marketing_intake_state
 from app.jarvis.marketing_settings_catalog import get_setting_meta, is_secret_setting
 from app.jarvis.secure_runtime_env_write import persist_env_var_value
 
@@ -78,13 +79,16 @@ def begin_marketing_setting_intake(
     st.pending_secret_type = "secret" if is_secret_setting(setting_key) else "non_secret"
     st.pending_pipeline_to_resume = resume_action
     st.pending_pipeline_args = dict(resume_args or {})
-    st.created_at = time.time()
-    st.secret_intake_started_at = time.time()
+    now = time.time()
+    st.created_at = now
+    st.secret_intake_started_at = now
+    st.secret_intake_last_activity_at = now
     st.secret_runtime_env_path = runtime_env_path_override
 
     if st.pending_secret_type == "secret":
         st.pending_secret_phase = "choose"
         set_state(chat_id, user_id, st)
+        upsert_marketing_intake_state(chat_id, user_id, st)
         return (
             f"I'm missing {st.pending_secret_label}.\n"
             "Reply `dashboard` to add it there, or `telegram` to provide it here securely."
@@ -92,6 +96,7 @@ def begin_marketing_setting_intake(
 
     st.pending_secret_phase = "await_value"
     set_state(chat_id, user_id, st)
+    upsert_marketing_intake_state(chat_id, user_id, st)
     return (
         f"I'm missing {st.pending_secret_label}.\n"
         "Reply with the value in your next message (I won't repeat it back)."
@@ -159,9 +164,18 @@ def handle_secret_intake_turn(
     Returns a payload dict for the bot (``dialog_message``, optional ``resume_plan``) or ``None``.
     Never includes the submitted secret in any string field.
     """
+    try:
+        try_hydrate_secret_intake_from_db(chat_id, user_id)
+    except Exception:
+        logger.debug("jarvis.secret_intake.hydrate_skipped", exc_info=True)
+
     st = get_state(chat_id, user_id)
     if st is None or not (st.pending_secret_key and st.pending_secret_phase):
         return None
+
+    st.secret_intake_last_activity_at = time.time()
+    set_state(chat_id, user_id, st)
+    upsert_marketing_intake_state(chat_id, user_id, st)
 
     text = (raw or "").strip()
     low = _norm(text)
@@ -184,6 +198,7 @@ def handle_secret_intake_turn(
         if low in _CHOICE_TELEGRAM:
             st.pending_secret_phase = "await_value"
             set_state(chat_id, user_id, st)
+            upsert_marketing_intake_state(chat_id, user_id, st)
             return {"dialog_message": "Send the value in your next message. I will not repeat it back."}
         return {
             "dialog_message": "Reply `dashboard` or `telegram` (or say cancel)."

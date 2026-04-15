@@ -118,7 +118,21 @@ def try_process_jarvis_secret_intake_for_telegram_update(
     if isinstance(resume, dict) and str(resume.get("action") or "").strip():
         send(_telegram_clip(dm))
         actor = actor_from_telegram_user(from_user)
-        payload = execute_jarvis_resume_plan(resume, actor=actor)
+        try:
+            payload = execute_jarvis_resume_plan(resume, actor=actor)
+        except Exception as e:
+            logger.exception(
+                "jarvis.telegram.intake_resume_failed chat_id=%s action=%s",
+                chat_id,
+                str((resume or {}).get("action") or "")[:80],
+            )
+            send(
+                _telegram_clip(
+                    "Saved your value, but the follow-up marketing run failed "
+                    f"({type(e).__name__}). Send your marketing request again (for example /jarvis …)."
+                )
+            )
+            return True
         text2 = format_compact_jarvis_reply("jarvis", payload)
         extra = _build_marketing_intake_followup(
             chat_id=chat_id,

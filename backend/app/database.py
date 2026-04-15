@@ -1,4 +1,5 @@
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.pool import NullPool
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
@@ -106,6 +107,45 @@ else:
     logger.warning("SessionLocal is None - database not available")
 
 Base = declarative_base()
+
+
+def _aws_startup_db_connectivity_check() -> None:
+    """
+    Production AWS backend: fail fast if DATABASE_URL cannot reach Postgres (no retries).
+    Uses a short TCP connect timeout and a single SELECT 1; does not use the main pool.
+    """
+    if engine is None or not database_url.startswith("postgresql://"):
+        return
+    if settings.ENVIRONMENT != "aws" or settings.RUNTIME_ORIGIN != "AWS":
+        return
+    if os.getenv("ENVIRONMENT") in ("test",) or os.getenv("APP_ENV") in ("test",):
+        return
+    ping_engine = create_engine(
+        database_url,
+        poolclass=NullPool,
+        connect_args={
+            "connect_timeout": 3,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+        },
+    )
+    try:
+        with ping_engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        logger.info("DB connectivity check passed")
+    except Exception as e:
+        logger.error("DB connectivity check failed")
+        raise RuntimeError(
+            "Cannot connect to PostgreSQL at startup (AWS runtime). "
+            "Verify DATABASE_URL, network to host 'db', and Postgres health."
+        ) from e
+    finally:
+        ping_engine.dispose()
+
+
+_aws_startup_db_connectivity_check()
 
 
 def create_db_session() -> Session:
@@ -299,6 +339,55 @@ def ensure_telegram_update_dedup_table(engine_to_use) -> bool:
         return False
 
 
+def ensure_jarvis_marketing_intake_table(engine_to_use) -> bool:
+    """
+    Persist Telegram marketing intake metadata (no secret values) across gunicorn worker restarts.
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_marketing_intake_table: engine is None")
+        return False
+    tname = "jarvis_marketing_intake_state"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis marketing intake)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                chat_id VARCHAR(128) NOT NULL,
+                                user_id VARCHAR(128) NOT NULL,
+                                payload TEXT NOT NULL,
+                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                PRIMARY KEY (chat_id, user_id)
+                            )
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                chat_id VARCHAR(128) NOT NULL,
+                                user_id VARCHAR(128) NOT NULL,
+                                payload TEXT NOT NULL,
+                                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                PRIMARY KEY (chat_id, user_id)
+                            )
+                            """
+                        )
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_marketing_intake_table failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_optional_columns(db_engine=None):
     """
     Ensure optional columns exist in critical tables.
@@ -360,6 +449,12 @@ def ensure_optional_columns(db_engine=None):
             )
     except Exception as dedup_err:
         logger.warning("Could not ensure telegram_update_dedup table: %s", dedup_err)
+
+    try:
+        if ensure_jarvis_marketing_intake_table(engine_to_use):
+            logger.info("[BOOT] jarvis_marketing_intake_state table OK")
+    except Exception as intake_err:
+        logger.warning("Could not ensure jarvis_marketing_intake_state table: %s", intake_err)
 
     watchlist_table = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
         WatchlistItem, "__tablename__", "watchlist_items"
