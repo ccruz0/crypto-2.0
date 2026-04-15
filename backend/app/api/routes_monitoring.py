@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, cast as typing_cast
 from datetime import datetime, timezone, timedelta
+from pydantic import BaseModel
 
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
@@ -3702,3 +3703,31 @@ def monitoring_recovery_status_compat(x_admin_key: Optional[str] = Header(None, 
 
     verify_admin_key(x_admin_key)
     return compute_admin_recovery_dict()
+
+
+class SecretIntakeBodyMonitoring(BaseModel):
+    """Body for POST /api/monitoring/secrets-intake (mirrors routes_admin.SecretIntakeBody)."""
+
+    env_var: str
+    value: str
+    persist_ssm: bool = False
+
+
+@router.post("/monitoring/secrets-intake")
+def monitoring_secrets_intake_compat(
+    body: SecretIntakeBodyMonitoring,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """
+    Same behaviour as POST /api/admin/secrets-intake, on the monitoring router.
+    Use when the dashboard must fall back the same way as GET …/secrets-status.
+    """
+    from app.api.routes_admin import SecretIntakeBody, verify_admin_key, perform_secrets_intake
+
+    verify_admin_key(x_admin_key)
+    payload = SecretIntakeBody(
+        env_var=body.env_var,
+        value=body.value,
+        persist_ssm=body.persist_ssm,
+    )
+    return perform_secrets_intake(payload)

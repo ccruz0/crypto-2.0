@@ -2798,7 +2798,7 @@ export async function submitSecretIntake(
   };
   const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
   const body = JSON.stringify({ env_var: envVar, value, persist_ssm: persistSsm });
-  const paths = ['/admin/secrets-intake', '/settings/secrets-intake'];
+  const paths = ['/admin/secrets-intake', '/monitoring/secrets-intake', '/settings/secrets-intake'];
   let lastErr: Error | null = null;
   for (const path of paths) {
     const res = await fetch(`${apiUrl}${path}`, {
@@ -2811,7 +2811,12 @@ export async function submitSecretIntake(
       return res.json() as Promise<SecretIntakeResponse>;
     }
     const err = await res.json().catch(() => ({}));
-    const detail = (err as { detail?: string }).detail || `HTTP ${res.status}`;
+    const eo = err as { detail?: string; message?: string; error?: string };
+    const detail =
+      (typeof eo.detail === 'string' ? eo.detail : Array.isArray(eo.detail) ? JSON.stringify(eo.detail) : '') ||
+      eo.message ||
+      eo.error ||
+      `HTTP ${res.status}`;
     lastErr = new Error(detail);
     if (detail === 'Not Found' || detail.startsWith('HTTP 404')) {
       continue;

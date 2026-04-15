@@ -221,12 +221,11 @@ def admin_recovery_status(admin_key: str = Depends(verify_admin_key)):
     return compute_admin_recovery_dict()
 
 
-@router.post("/admin/secrets-intake")
-def admin_secrets_intake(
-    body: SecretIntakeBody = Body(...),
-    admin_key: str = Depends(verify_admin_key),
-):
-    """Persist one allowlisted env var to runtime.env (admin-only)."""
+def perform_secrets_intake(body: SecretIntakeBody) -> dict:
+    """
+    Persist one allowlisted env var to runtime.env (shared by /admin and /monitoring routes).
+    Caller must have verified X-Admin-Key already.
+    """
     from app.jarvis.secure_runtime_env_write import persist_env_var_value
 
     key = (body.env_var or "").strip()
@@ -245,15 +244,30 @@ def admin_secrets_intake(
         raise HTTPException(status_code=400, detail="env_var_not_allowed_for_intake")
 
     if body.persist_ssm:
-        logger.info("admin_secrets_intake persist_ssm=1 for %s (SSM path optional; runtime.env always updated)", key)
+        logger.info("secrets_intake persist_ssm=1 for %s (SSM path optional; runtime.env always updated)", key)
 
     try:
         persist_env_var_value(key, val)
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve)) from ve
+    except OSError as exc:
+        logger.error("secrets_intake persist OSError env_var=%s: %s", key, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="runtime_env_write_failed (check permissions on secrets/ and runtime.env)",
+        ) from exc
 
     os.environ[key] = val
     return {"ok": True, "message": "Saved to runtime.env"}
+
+
+@router.post("/admin/secrets-intake")
+def admin_secrets_intake(
+    body: SecretIntakeBody = Body(...),
+    _verified: str = Depends(verify_admin_key),
+):
+    """Persist one allowlisted env var to runtime.env (admin-only)."""
+    return perform_secrets_intake(body)
 
 
 @router.post("/admin/recovery-apply")
