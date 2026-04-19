@@ -16,6 +16,11 @@ import re
 import uuid
 from typing import Any, Callable
 
+from app.jarvis.autonomous_orchestrator import (
+    handle_mission_command,
+    is_autonomous_jarvis_enabled,
+    run_autonomous_jarvis_from_telegram,
+)
 from app.jarvis.executor import execute_plan
 from app.jarvis.orchestrator import run_jarvis
 from app.jarvis.tools import TOOL_SPECS
@@ -261,6 +266,9 @@ def classify_jarvis_command(text: str) -> tuple[str, str] | None:
     if cmd == "/jarvis":
         tail = t[len("/jarvis") :].strip()
         return ("jarvis", tail)
+    if cmd == "/mission":
+        tail = t[len("/mission") :].strip()
+        return ("mission", tail)
     if cmd == "/pending":
         return ("pending", "")
     if cmd == "/status" and rest1:
@@ -1068,13 +1076,30 @@ def _format_result_snippet(res: Any) -> str:
     return str(res)[:500]
 
 
-def dispatch_jarvis_command(kind: str, args: str, *, actor: str) -> tuple[str, dict[str, Any]]:
+def dispatch_jarvis_command(
+    kind: str,
+    args: str,
+    *,
+    actor: str,
+    chat_id: str = "",
+) -> tuple[str, dict[str, Any]]:
     """
     Run Jarvis control action. Returns (kind_for_formatter, result_dict).
     """
     if kind == "jarvis":
+        if is_autonomous_jarvis_enabled():
+            autonomous = run_autonomous_jarvis_from_telegram(
+                text=(args or "").strip(),
+                actor=actor,
+                chat_id=chat_id,
+            )
+            return ("jarvis", dict(autonomous))
         out = run_jarvis((args or "").strip())
         return ("jarvis", dict(out))
+
+    if kind == "mission":
+        payload = handle_mission_command(raw_args=args, actor=actor, chat_id=chat_id)
+        return ("jarvis", dict(payload))
 
     if kind == "pending":
         fn = TOOL_SPECS["list_pending_approvals"].fn
@@ -1157,7 +1182,7 @@ def maybe_handle_jarvis_telegram_message(
     kind, args = classified
     actor = actor_from_telegram_user(from_user)
     try:
-        fmt_kind, payload = dispatch_jarvis_command(kind, args, actor=actor)
+        fmt_kind, payload = dispatch_jarvis_command(kind, args, actor=actor, chat_id=chat_id)
         text = format_compact_jarvis_reply(fmt_kind, payload)
         extra = _build_marketing_intake_followup(
             chat_id=chat_id,
@@ -1254,7 +1279,7 @@ def try_route_jarvis_operator_free_text_dialog(
     )
     actor = actor_from_telegram_user(from_user)
     try:
-        fmt_kind, payload = dispatch_jarvis_command("jarvis", routed, actor=actor)
+        fmt_kind, payload = dispatch_jarvis_command("jarvis", routed, actor=actor, chat_id=chat_id)
         reply = format_compact_jarvis_reply(fmt_kind, payload)
         extra = _build_marketing_intake_followup(
             chat_id=chat_id,

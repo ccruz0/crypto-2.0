@@ -13,6 +13,9 @@ from __future__ import annotations
 import os
 from datetime import date, timedelta
 from typing import Any
+from app.services.google_integrations_readiness import (
+    get_google_integration_readiness_item_for_jarvis,
+)
 
 # --- Environment variable names (document for operators) ---
 
@@ -179,7 +182,52 @@ def _base_unavailable(
     }
 
 
+def _google_readiness_guard_unavailable(
+    *,
+    integration: str,
+    source: str,
+    days_back: int,
+) -> dict[str, Any] | None:
+    item = get_google_integration_readiness_item_for_jarvis(integration)
+    if not isinstance(item, dict):
+        return None
+
+    status = str(item.get("status") or "").strip()
+    if status == "ready":
+        return None
+
+    title = str(item.get("title") or integration)
+    message = str(item.get("message") or f"{title} is not ready.").strip()
+    reason_map = {
+        "missing_upload": "readiness_missing_upload",
+        "missing_setting": "readiness_missing_setting",
+        "invalid": "readiness_invalid",
+        "validation_unavailable": "readiness_validation_unavailable",
+    }
+    reason = reason_map.get(status, "readiness_not_ready")
+    action = str(item.get("action_label") or "").strip() or None
+    detail = message
+    if action:
+        detail = f"{message} Next step: {action}."
+    return _base_unavailable(
+        source=source,
+        reason=reason,
+        message=detail,
+        configured=False,
+        available=False,
+        days_back=days_back,
+    )
+
+
 def fetch_search_console_summary(days_back: int) -> dict[str, Any]:
+    readiness_block = _google_readiness_guard_unavailable(
+        integration="gsc",
+        source="google_search_console",
+        days_back=days_back,
+    )
+    if readiness_block is not None:
+        return readiness_block
+
     st = gsc_status()
     if not st["configured"]:
         return _base_unavailable(
@@ -220,6 +268,14 @@ def fetch_search_console_summary(days_back: int) -> dict[str, Any]:
 
 
 def fetch_ga4_booking_funnel(days_back: int) -> dict[str, Any]:
+    readiness_block = _google_readiness_guard_unavailable(
+        integration="ga4",
+        source="ga4",
+        days_back=days_back,
+    )
+    if readiness_block is not None:
+        return readiness_block
+
     st = ga4_status()
     event = _env(ENV_GA4_BOOKING_EVENT)
     if not st["configured"]:
@@ -273,6 +329,14 @@ def fetch_ga4_booking_funnel(days_back: int) -> dict[str, Any]:
 
 
 def fetch_google_ads_summary(days_back: int) -> dict[str, Any]:
+    readiness_block = _google_readiness_guard_unavailable(
+        integration="google_ads",
+        source="google_ads",
+        days_back=days_back,
+    )
+    if readiness_block is not None:
+        return readiness_block
+
     st = google_ads_status()
     if not st["configured"]:
         return _base_unavailable(
@@ -315,6 +379,15 @@ def fetch_top_pages_by_conversion(days_back: int, limit: int) -> dict[str, Any]:
     """
     Strongest/weakest pages by conversion behavior requires GA4 (and booking event mapping) in this layer.
     """
+    readiness_block = _google_readiness_guard_unavailable(
+        integration="ga4",
+        source="ga4",
+        days_back=days_back,
+    )
+    if readiness_block is not None:
+        readiness_block["limit"] = limit
+        return readiness_block
+
     st = ga4_status()
     event = _env(ENV_GA4_BOOKING_EVENT)
     if not st["configured"]:

@@ -1546,6 +1546,59 @@ def send_command_response(chat_id: str, message: str) -> bool:
             return False
 
 
+def send_telegram_message_with_markup(
+    chat_id: str,
+    text: str,
+    *,
+    reply_markup: Optional[Dict[str, Any]] = None,
+    parse_mode: Optional[str] = "HTML",
+) -> bool:
+    """
+    Send a Telegram message with optional inline keyboard or ForceReply markup.
+
+    Used by Jarvis mission UX; ``parse_mode=None`` sends plain text (safe for arbitrary content).
+    """
+    if not TELEGRAM_ENABLED:
+        logger.debug("Telegram disabled: skipping send_telegram_message_with_markup")
+        return False
+    token = _get_effective_bot_token()
+    if not token:
+        logger.warning("[TG] No bot token available for send_telegram_message_with_markup")
+        return False
+    if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
+        text = text[: TELEGRAM_MAX_MESSAGE_LENGTH - 50] + "\n\n… [truncated]"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
+        if response.status_code != 200:
+            error_data = response.json() if response.content else {}
+            logger.error(
+                "[TG][ERROR] sendMessage markup failed: status=%s chat_id=%s error=%s",
+                response.status_code,
+                chat_id,
+                error_data,
+            )
+            if parse_mode:
+                payload.pop("parse_mode", None)
+                response2 = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
+                if response2.status_code == 200:
+                    return True
+            return False
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error("[TG][ERROR] send_telegram_message_with_markup failed: %s", e)
+        return False
+
+
 def _task_telegram_reply(
     chat_id: str,
     message: str,
@@ -5120,7 +5173,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         # Exclude task_project:* — data is identical for every user/chat; global dedup would ACK but
         # skip task creation and user confirmation (silent failure for legitimate clicks).
         _cb_for_callback_dedup = (callback_data or "").strip()
-        if _cb_for_callback_dedup and _cb_for_callback_dedup != "noop" and not _cb_for_callback_dedup.startswith("task_project:"):
+        if (
+            _cb_for_callback_dedup
+            and _cb_for_callback_dedup != "noop"
+            and not _cb_for_callback_dedup.startswith("task_project:")
+            and not _cb_for_callback_dedup.startswith("jm:")
+        ):
             now = time.time()
             if _cb_for_callback_dedup in PROCESSED_CALLBACK_DATA:
                 last_processed = PROCESSED_CALLBACK_DATA[_cb_for_callback_dedup]
@@ -5165,7 +5223,69 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             f"[TG][CALLBACK] Processing callback_data='{callback_data}' from chat_id={chat_id}, "
             f"actor_user_id={actor_user_id}, clicker_user_id={user_id}, username={username}, message_id={message_id}"
         )
-        
+
+        _cb_raw = (callback_data or "").strip()
+        if _cb_raw.startswith("jm:"):
+            from app.jarvis.telegram_control import (
+                is_jarvis_telegram_enabled,
+                jarvis_allowlists_configured,
+                jarvis_telegram_allowed,
+                jarvis_telegram_token_present,
+            )
+            from app.jarvis.telegram_mission_inline import handle_jarvis_mission_telegram_callback
+
+            def _jarvis_mission_send(msg: str) -> None:
+                send_command_response(chat_id, msg)
+
+            if (
+                not is_jarvis_telegram_enabled()
+                or not jarvis_telegram_token_present()
+                or not jarvis_allowlists_configured()
+                or not jarvis_telegram_allowed(chat_id, actor_user_id)
+            ):
+                try:
+                    token = _get_effective_bot_token()
+                    if token and callback_query_id:
+                        http_post(
+                            f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                            json={"callback_query_id": callback_query_id},
+                            timeout=5,
+                            calling_module="telegram_commands",
+                        )
+                except Exception:
+                    pass
+                send_command_response(
+                    chat_id,
+                    "⛔ Acciones de misión no permitidas: chat o usuario fuera de la lista (mismas reglas que /mission).",
+                )
+                return
+
+            if callback_query_id:
+                PROCESSED_CALLBACK_IDS.add(callback_query_id)
+                if len(PROCESSED_CALLBACK_IDS) > 1000:
+                    old_ids = list(PROCESSED_CALLBACK_IDS)[:500]
+                    PROCESSED_CALLBACK_IDS.difference_update(old_ids)
+            try:
+                token = _get_effective_bot_token()
+                if token and callback_query_id:
+                    http_post(
+                        f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                        json={"callback_query_id": callback_query_id},
+                        timeout=5,
+                        calling_module="telegram_commands",
+                    )
+            except Exception:
+                pass
+
+            handle_jarvis_mission_telegram_callback(
+                chat_id=chat_id,
+                user_id=user_id,
+                from_user=from_user,
+                callback_data=_cb_raw,
+                send=_jarvis_mission_send,
+            )
+            return
+
         if not _telegram_authorize(chat_id, actor_user_id):
             _chat_type = chat.get("type", "unknown")
             _chat_title = chat.get("title", "") or "(empty)"
@@ -5997,6 +6117,27 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 "jarvis_secret_intake hook failed (non-fatal) update_id=%s err=%s",
                 update_id,
                 _secret_hook_err,
+            )
+        try:
+            from app.jarvis.telegram_mission_inline import try_consume_pending_jarvis_mission_input
+
+            if try_consume_pending_jarvis_mission_input(
+                raw_text=raw_text,
+                chat_id=chat_id_early,
+                actor_user_id=actor_user_id_early or "",
+                from_user=from_user_early if isinstance(from_user_early, dict) else None,
+                send=lambda msg: send_command_response(chat_id_early, msg),
+            ):
+                logger.info(
+                    "[TG][ROUTE] update_id=%s handler=jarvis_mission_pending_input consumed=1",
+                    update_id,
+                )
+                return
+        except Exception as _jm_pending_err:
+            logger.warning(
+                "jarvis_mission_pending_input hook failed (non-fatal) update_id=%s err=%s",
+                update_id,
+                _jm_pending_err,
             )
         try:
             from app.jarvis.telegram_control import try_route_jarvis_operator_free_text_dialog
