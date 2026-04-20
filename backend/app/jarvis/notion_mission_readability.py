@@ -71,12 +71,17 @@ def notion_executive_display_fields(
         PERICO_DEFAULT_TARGET_PROJECT,
         infer_perico_target_project,
         is_perico_marked_prompt,
+        is_perico_software_mission_prompt,
         parse_perico_task_type_from_prompt,
     )
 
     mp = mission_prompt or ""
     spec = (specialist_agent or "").strip().lower()
-    is_perico = spec == "perico" or is_perico_marked_prompt(mp)
+    is_perico = (
+        spec == "perico"
+        or is_perico_marked_prompt(mp)
+        or is_perico_software_mission_prompt(mp)
+    )
     if is_perico:
         op_line = extract_operator_request_line(mp)
         first = op_line.splitlines()[0].strip() if op_line else ""

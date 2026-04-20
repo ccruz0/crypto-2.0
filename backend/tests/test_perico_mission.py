@@ -12,8 +12,11 @@ from app.jarvis.perico_mission import (
     build_perico_deliverables_snapshot,
     build_perico_mission_prompt,
     classify_perico_task_type,
+    format_perico_closure_key_result,
+    format_perico_closure_status_display,
     infer_perico_target_project,
     is_perico_marked_prompt,
+    is_perico_software_mission_prompt,
     parse_perico_task_type_from_prompt,
 )
 
@@ -55,6 +58,30 @@ def test_classify_perico_task_type():
     assert classify_perico_task_type("refactor limpiar") == "refactor"
     assert classify_perico_task_type("investiga por qué falla") == "diagnostics"
     assert classify_perico_task_type("arregla integración webhook que falla") == "integration_fix"
+
+
+def test_classify_perico_crypto_tests_prompt_is_bugfix_not_diagnostics():
+    text = (
+        "Hay un problema con los tests en crypto-2.0. Algunos están fallando. "
+        "Investiga la causa, aplica un parche mínimo si tiene sentido y ejecuta pytest para validar. "
+        "No hagas deploy."
+    )
+    assert classify_perico_task_type(text) == "bugfix"
+
+
+def test_is_perico_software_mission_prompt_without_agent_marker():
+    full = build_perico_mission_prompt(user_text="fix tests")
+    assert is_perico_software_mission_prompt(full) is True
+    stripped = full.replace(PERICO_AGENT_MARKER, "").lstrip()
+    assert is_perico_software_mission_prompt(stripped) is True
+
+
+def test_google_ads_mission_heuristic_skips_perico_boilerplate_without_marker():
+    orch = JarvisAutonomousOrchestrator()
+    p = build_perico_mission_prompt(user_text="fix tests").replace(PERICO_AGENT_MARKER, "").lstrip()
+    assert (
+        orch._is_google_ads_mission(prompt=p, strategy={"actions": [], "source": "bedrock"}) is False
+    )
 
 
 def test_parse_perico_task_type_from_wrapped_prompt():
@@ -154,7 +181,7 @@ def test_evaluate_goal_bugfix_pytest_fail_after_retry_not_satisfied():
     assert "perico_bugfix_tests_failed" in g.get("missing_items", [])
 
 
-def test_evaluate_goal_bugfix_diagnosis_only_with_inspection():
+def test_evaluate_goal_bugfix_diagnosis_only_insufficient_without_patch():
     mp = build_perico_mission_prompt(user_text="error raro en modulo X")
     ex = {
         "executed": [
@@ -165,8 +192,8 @@ def test_evaluate_goal_bugfix_diagnosis_only_with_inspection():
         ]
     }
     g = evaluate_goal_satisfaction(mission_prompt=mp, execution=ex)
-    assert g["satisfied"] is True
-    assert g.get("reason") == "perico_bugfix_diagnosis_only"
+    assert g["satisfied"] is False
+    assert "perico_bugfix_patch_missing" in g.get("missing_items", [])
 
 
 def test_evaluate_goal_bugfix_no_inspection_not_satisfied():
@@ -336,3 +363,76 @@ def test_perico_deliverables_deploy_sensitive_heuristic():
     )
     assert snap["deploy_sensitive"] is True
     assert snap["objective_satisfied"] is True
+
+
+def test_format_perico_closure_status_and_key_result_fixed():
+    snap = {
+        "software_closure_state": "fixed",
+        "validation_result_summary": "pytest (última pasada): OK",
+    }
+    assert format_perico_closure_status_display(snap) == "FIXED"
+    ex = {
+        "executed": [
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"pytest": True, "tests_ok": True, "tests_total": 40, "tests_failed": 0},
+            }
+        ]
+    }
+    kr = format_perico_closure_key_result(snap, ex)
+    assert "verde" in kr.lower()
+    assert "40" in kr
+
+
+def test_format_perico_closure_blocked_includes_counts():
+    snap = {
+        "software_closure_state": "blocked",
+        "validation_result_summary": "pytest (última pasada): falló",
+    }
+    assert format_perico_closure_status_display(snap) == "BLOCKED"
+    ex = {
+        "executed": [
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"pytest": True, "tests_ok": False, "tests_total": 12, "tests_failed": 3},
+            }
+        ]
+    }
+    kr = format_perico_closure_key_result(snap, ex)
+    assert "3" in kr and "12" in kr
+
+
+def test_perico_done_dialog_message_uses_closure_not_review_summary():
+    orch = JarvisAutonomousOrchestrator()
+    mp = build_perico_mission_prompt(user_text="arreglar tests crypto")
+    execution = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "result": {"ok": True, "operation": "read", "path": "/r/x.py", "content": "1"},
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "x.py"}},
+            {
+                "action_type": "perico_run_pytest",
+                "result": {
+                    "ok": True,
+                    "pytest": True,
+                    "tests_ok": True,
+                    "tests_total": 5,
+                    "tests_failed": 0,
+                    "cmd": ["pytest", "-q"],
+                },
+            },
+        ]
+    }
+    text = orch._format_perico_done_dialog_message(  # noqa: SLF001
+        mission_id="mid",
+        prompt=mp,
+        execution=execution,
+        review={"summary": "Mission completed with safe actions and validation checks."},
+        goal_satisfied=True,
+        perico_deliverables_snapshot=None,
+    )
+    assert "Estado: FIXED" in text
+    assert "Tests en verde" in text
+    assert "Mission completed with safe actions" not in text

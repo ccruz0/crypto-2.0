@@ -203,40 +203,8 @@ def evaluate_perico_marked_goal_satisfaction(
     pytest_rows = [x for x in executed if str(x.get("action_type") or "").strip().lower() == "perico_run_pytest"]
     inspected = perico_has_repo_inspection(executed)
 
-    if patch_ok:
-        if not pytest_rows:
-            return {
-                "satisfied": False,
-                "missing_items": ["perico_bugfix_validation_missing"],
-                "reason": "perico_bugfix_rubric",
-                "auto_retry_recommended": False,
-                "evaluator_domain": "perico_bugfix",
-            }
-        last = pytest_rows[-1].get("result") if isinstance(pytest_rows[-1].get("result"), dict) else {}
-        if not last.get("pytest"):
-            return {
-                "satisfied": False,
-                "missing_items": ["perico_bugfix_pytest_incomplete"],
-                "reason": "perico_bugfix_rubric",
-                "auto_retry_recommended": False,
-                "evaluator_domain": "perico_bugfix",
-            }
-        if not last.get("tests_ok"):
-            return {
-                "satisfied": False,
-                "missing_items": ["perico_bugfix_tests_failed"],
-                "reason": "perico_bugfix_rubric",
-                "auto_retry_recommended": False,
-                "evaluator_domain": "perico_bugfix",
-            }
-        return {
-            "satisfied": True,
-            "missing_items": [],
-            "reason": "perico_bugfix_rubric",
-            "auto_retry_recommended": False,
-            "evaluator_domain": "perico_bugfix",
-        }
-
+    # Bugfix / integration_fix must *close* the loop: inspect → patch aplicado → pytest en verde.
+    # No "solo diagnóstico" como objetivo cumplido para estos tipos.
     if not inspected:
         return {
             "satisfied": False,
@@ -245,10 +213,43 @@ def evaluate_perico_marked_goal_satisfaction(
             "auto_retry_recommended": False,
             "evaluator_domain": "perico_bugfix",
         }
+    if not patch_ok:
+        return {
+            "satisfied": False,
+            "missing_items": ["perico_bugfix_patch_missing"],
+            "reason": "perico_bugfix_rubric",
+            "auto_retry_recommended": False,
+            "evaluator_domain": "perico_bugfix",
+        }
+    if not pytest_rows:
+        return {
+            "satisfied": False,
+            "missing_items": ["perico_bugfix_validation_missing"],
+            "reason": "perico_bugfix_rubric",
+            "auto_retry_recommended": False,
+            "evaluator_domain": "perico_bugfix",
+        }
+    last = pytest_rows[-1].get("result") if isinstance(pytest_rows[-1].get("result"), dict) else {}
+    if not last.get("pytest"):
+        return {
+            "satisfied": False,
+            "missing_items": ["perico_bugfix_pytest_incomplete"],
+            "reason": "perico_bugfix_rubric",
+            "auto_retry_recommended": False,
+            "evaluator_domain": "perico_bugfix",
+        }
+    if not last.get("tests_ok"):
+        return {
+            "satisfied": False,
+            "missing_items": ["perico_bugfix_tests_failed"],
+            "reason": "perico_bugfix_rubric",
+            "auto_retry_recommended": False,
+            "evaluator_domain": "perico_bugfix",
+        }
     return {
         "satisfied": True,
         "missing_items": [],
-        "reason": "perico_bugfix_diagnosis_only",
+        "reason": "perico_bugfix_rubric",
         "auto_retry_recommended": False,
         "evaluator_domain": "perico_bugfix",
     }
@@ -256,6 +257,22 @@ def evaluate_perico_marked_goal_satisfaction(
 
 def is_perico_marked_prompt(prompt: str) -> bool:
     return PERICO_AGENT_MARKER in (prompt or "")
+
+
+def is_perico_software_mission_prompt(prompt: str) -> bool:
+    """
+    True for Perico software missions, including when the ``[AGENT:PERICO_SOFTWARE]`` prefix
+    was lost but the wrapped body remains.
+
+    This prevents analytics heuristics (e.g. substring ``google ads``) from matching the
+    static Perico instructions that mention marketing scope.
+    """
+    if is_perico_marked_prompt(prompt):
+        return True
+    low = (prompt or "").lower()
+    if "operator software task:" not in low:
+        return False
+    return "registered perico tools" in low or "[perico_task_type:" in low
 
 
 def parse_perico_task_type_from_prompt(mission_prompt: str) -> str:
@@ -299,11 +316,73 @@ def infer_perico_target_project(user_text: str) -> str | None:
     return None
 
 
+def _perico_wants_bugfix_closure(low: str) -> bool:
+    """
+    True when the operator asks to fix + validate (patch/pytest), not investigation-only.
+
+    Must run *before* the diagnostics shortcut so phrases like "Investiga la causa" do not
+    alone force ``diagnostics`` when the user also asks for a patch and pytest.
+    """
+    has_tests = any(
+        w in low for w in ("test", "tests", "pytest", "unit test", "pruebas", "prueba")
+    )
+    has_patch = any(
+        w in low
+        for w in (
+            "parche",
+            "patch",
+            "aplica un parche",
+            "apply patch",
+            "cambio mínimo",
+            "cambio minimo",
+            "minimal patch",
+        )
+    )
+    has_pytest_cmd = any(
+        w in low for w in ("pytest", "ejecuta pytest", "corre pytest", "run pytest")
+    )
+    has_validate = any(w in low for w in ("validar", "validate", "validación", "validacion"))
+    has_problem = any(
+        w in low
+        for w in (
+            "hay un problema",
+            "there is a problem",
+            "están fallando",
+            "estan fallando",
+            "fallan",
+            "fallando",
+            "failing",
+            "broken",
+        )
+    )
+    has_fix = any(
+        w in low
+        for w in (
+            "arregla",
+            "fix",
+            "corrige",
+            "corregir",
+            "soluciona",
+            "resolve",
+            "bug",
+            "error",
+            "fallo",
+            "falla",
+        )
+    )
+    if has_patch and (has_pytest_cmd or has_validate or has_tests):
+        return True
+    if has_tests and has_problem and (has_fix or has_patch or has_pytest_cmd or has_validate):
+        return True
+    if any(w in low for w in ("investiga", "investigar")) and has_patch and (
+        has_pytest_cmd or has_validate or has_tests
+    ):
+        return True
+    return False
+
+
 def classify_perico_task_type(user_text: str) -> str:
     low = (user_text or "").lower()
-    # Diagnostics before bugfix: phrases like "por qué falla" are investigation-first.
-    if any(x in low for x in ("investiga", "investigar", "por qué", "why", "diagn")):
-        return "diagnostics"
     integ = any(
         x in low
         for x in (
@@ -331,6 +410,11 @@ def classify_perico_task_type(user_text: str) -> str:
         )
     ):
         return "integration_fix"
+    if _perico_wants_bugfix_closure(low):
+        return "integration_fix" if integ else "bugfix"
+    # Investigation-only (no explicit patch/pytest validation loop in the ask).
+    if any(x in low for x in ("investiga", "investigar", "por qué", "por que", "why", "diagn")):
+        return "diagnostics"
     if any(x in low for x in ("bug", "falla", "error", "fix", "arregla", "broken", "traceback")):
         return "bugfix"
     if any(x in low for x in ("test", "pytest", "unit test", "fallan los tests")):
@@ -515,9 +599,14 @@ def build_perico_deliverables_snapshot(
             else:
                 software_closure_state = "partially_fixed"
         elif has_inspection:
-            software_closure_state = "fixed"
+            # Bugfix sin parche aplicado nunca es "fixed" (coherente con evaluate_perico_marked_goal_satisfaction).
+            software_closure_state = "blocked"
         else:
             software_closure_state = "blocked"
+        if software_closure_state not in {"fixed", "partially_fixed", "blocked"}:
+            raise RuntimeError(
+                f"Invalid Perico bugfix software_closure_state: {software_closure_state!r}"
+            )
 
     return {
         "target_project": target or PERICO_DEFAULT_TARGET_PROJECT,
@@ -541,6 +630,79 @@ def build_perico_deliverables_snapshot(
         "retry_reason": retry_reason[:600] if retry_reason else "",
         "software_closure_state": software_closure_state,
     }
+
+
+def _pytest_numeric_stats_from_execution(execution: dict[str, Any] | None) -> tuple[int | None, int | None]:
+    """tests_total / tests_failed from the last perico_run_pytest row (if present)."""
+    ex = execution if isinstance(execution, dict) else {}
+    rows = [x for x in (ex.get("executed") or []) if isinstance(x, dict)]
+    pytest_rows = [x for x in rows if str(x.get("action_type") or "").strip().lower() == "perico_run_pytest"]
+    if not pytest_rows:
+        return None, None
+    last = pytest_rows[-1].get("result")
+    if not isinstance(last, dict):
+        return None, None
+    tt_raw, tf_raw = last.get("tests_total"), last.get("tests_failed")
+    try:
+        tt_i = int(tt_raw) if tt_raw is not None else None
+    except (TypeError, ValueError):
+        tt_i = None
+    try:
+        tf_i = int(tf_raw) if tf_raw is not None else None
+    except (TypeError, ValueError):
+        tf_i = None
+    return tt_i, tf_i
+
+
+def format_perico_closure_status_display(snap: dict[str, Any]) -> str:
+    """
+    Token for Estado: in Notion [EXEC_SUMMARY] and Telegram (bugfix-style closure).
+
+    Returns "" when ``software_closure_state`` is absent; caller may use "Completada".
+    """
+    cs = snap.get("software_closure_state")
+    if not cs:
+        return ""
+    key = str(cs).strip().lower()
+    return {
+        "fixed": "FIXED",
+        "partially_fixed": "PARTIALLY_FIXED",
+        "blocked": "BLOCKED",
+    }.get(key, key.upper())
+
+
+def format_perico_closure_key_result(snap: dict[str, Any], execution: dict[str, Any] | None) -> str:
+    """
+    Resultado clave derived from ``software_closure_state`` and pytest stats — not generic review copy.
+    """
+    cs_raw = snap.get("software_closure_state")
+    cs = str(cs_raw).strip().lower() if cs_raw else ""
+    vrs = (snap.get("validation_result_summary") or "").strip()
+    tt, tf = _pytest_numeric_stats_from_execution(execution)
+    count_suffix = ""
+    if tt is not None and tf is not None:
+        count_suffix = f" ({int(tf)} fallidos de {int(tt)} tests)"
+    elif tt is not None:
+        count_suffix = f" ({int(tt)} tests en total)"
+
+    if cs == "fixed":
+        return f"Tests en verde. El problema está resuelto.{count_suffix}"[:900]
+    if cs == "partially_fixed":
+        msg = (
+            "El problema está parcialmente resuelto: pytest no cerró con un resultado claro "
+            "(revisar salida o reintentar validación)."
+        )
+        if vrs:
+            msg = f"{msg} {vrs}"
+        return msg[:900]
+    if cs == "blocked":
+        base = "No se pudo cerrar el objetivo con la validación actual."
+        if vrs:
+            base = f"{base} {vrs}"
+        return (base + count_suffix)[:900]
+    if vrs:
+        return vrs[:900]
+    return "Misión Perico completada; el detalle técnico queda en Notion."[:900]
 
 
 def perico_try_auto_pytest_retry(execution: dict[str, Any]) -> list[dict[str, Any]]:

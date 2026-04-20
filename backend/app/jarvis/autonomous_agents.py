@@ -37,6 +37,29 @@ _PERICO_REGISTERED_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+
+def _skipped_vague_perico_placeholder(action: dict[str, Any], *, mission_prompt: str) -> bool:
+    """
+    Skip fluffy planner rows ('prepare for…') on Perico missions — force concrete perico_* tools.
+    """
+    if not is_perico_marked_prompt(mission_prompt):
+        return False
+    at = str(action.get("action_type") or "").strip().lower()
+    if at in _PERICO_REGISTERED_TOOLS:
+        return False
+    if at.startswith("diagnose_"):
+        return False
+    blob = f"{action.get('title', '')} {action.get('rationale', '')}".lower()
+    needles = (
+        "prepare for potential",
+        "prepare for",
+        "prepare potential",
+        "get ready to",
+        "plan to run",
+    )
+    return any(n in blob for n in needles)
+
+
 _OPS_DIAG_ACTION_BY_SOURCE: dict[str, str] = {
     "google ads": "diagnose_google_ads_setup",
     "google analytics": "diagnose_ga4_setup",
@@ -478,6 +501,22 @@ class ExecutionAgent:
                 "execution_mode": mode,
                 "priority_score": int(action.get("priority_score", 0) or 0),
             }
+            if _skipped_vague_perico_placeholder(action, mission_prompt=mission_prompt):
+                executed.append(
+                    {
+                        **row,
+                        "status": "skipped",
+                        "result": {
+                            "ok": False,
+                            "error": "vague_placeholder_action",
+                            "message": (
+                                "Acción demasiado vaga; en misiones Perico usa perico_repo_read, "
+                                "perico_apply_patch o perico_run_pytest."
+                            ),
+                        },
+                    }
+                )
+                continue
             if mode == "auto_execute":
                 action_type = str(action.get("action_type") or "").strip().lower()
                 if _is_google_ads_diagnostic_action(action):
@@ -1022,6 +1061,16 @@ def _is_google_ads_diagnostic_action(action: dict[str, Any]) -> bool:
     )
 
 
+def _execution_uses_perico_repo_tools(execution: dict[str, Any]) -> bool:
+    for row in execution.get("executed") or []:
+        if not isinstance(row, dict):
+            continue
+        at = str(row.get("action_type") or "").strip().lower()
+        if at.startswith("perico_"):
+            return True
+    return False
+
+
 class ReviewAgent:
     name = "review"
 
@@ -1029,6 +1078,11 @@ class ReviewAgent:
         _ = plan
         ok = bool(execution.get("executed")) and not bool(execution.get("needs_approval"))
         if ok:
+            if _execution_uses_perico_repo_tools(execution):
+                return {
+                    "passed": True,
+                    "summary": "Perico ejecutó herramientas de repo; el cierre operativo va en goal_check / perico_deliverables.",
+                }
             return {
                 "passed": True,
                 "summary": "Mission completed with safe actions and validation checks.",

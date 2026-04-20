@@ -10,7 +10,7 @@ from app.jarvis.notion_mission_readability import (
     human_mission_status,
     notion_executive_display_fields,
 )
-from app.jarvis.perico_mission import build_perico_mission_prompt
+from app.jarvis.perico_mission import PERICO_AGENT_MARKER, build_perico_mission_prompt
 from app.jarvis.telegram_mission_markup import build_jarvis_mission_inline_markup
 
 
@@ -69,3 +69,14 @@ def test_notion_executive_display_strips_perico_wrapped_prompt():
         task_type=nf["task_type"],
     )
     assert "[AGENT:PERICO" not in plain
+
+
+def test_notion_executive_fields_strip_marker_but_keep_operator_line_objective():
+    full = build_perico_mission_prompt(
+        user_text="Hay un problema con los tests. Aplica parche y pytest.",
+    )
+    stripped = full.replace(PERICO_AGENT_MARKER, "").lstrip()
+    nf = notion_executive_display_fields(stripped, specialist_agent=None)
+    assert nf["agent"] == "Perico"
+    assert "Registered Perico tools" not in nf["objective"]
+    assert "Hay un problema" in nf["objective"] or "tests" in nf["objective"].lower()

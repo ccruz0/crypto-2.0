@@ -64,7 +64,10 @@ from app.jarvis.notion_mission_service import NotionMissionService
 from app.jarvis.perico_mission import (
     build_perico_deliverables_snapshot,
     build_perico_mission_prompt,
+    format_perico_closure_key_result,
+    format_perico_closure_status_display,
     is_perico_marked_prompt,
+    is_perico_software_mission_prompt,
     perico_should_block_for_operator_input,
     perico_try_auto_pytest_retry,
 )
@@ -507,14 +510,21 @@ class JarvisAutonomousOrchestrator:
             mission_id, "Nueva respuesta del operador; se reanuda la misión."
         )
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="resuming with new input")
-        prompt = f"{mission.get('details', '')}\n\nUser input:\n{input_text}"
+        details = str(mission.get("details") or "")
+        task_title = str(mission.get("task") or "")
+        prompt = f"{details}\n\nUser input:\n{input_text}"
+        is_perico_resume = (
+            is_perico_marked_prompt(prompt)
+            or "[AGENT:PERICO" in details
+            or task_title.strip().lower().startswith("perico:")
+        )
         return self._run_pipeline(
             mission_id=mission_id,
             prompt=prompt,
             actor=actor,
             chat_id=chat_id,
             external_input=input_text,
-            specialist_agent=("perico" if is_perico_marked_prompt(prompt) else None),
+            specialist_agent=("perico" if is_perico_resume else None),
         )
 
     def _merge_google_ads_mutation_proposals(
@@ -531,7 +541,7 @@ class JarvisAutonomousOrchestrator:
         2) reduce_campaign_budget — same mission gate + softer heuristics (only if no pause)
         3) resume_campaign — explicit operator intent only + PAUSED row in diagnostic (only if no pause/budget)
         """
-        if is_perico_marked_prompt(prompt):
+        if is_perico_software_mission_prompt(prompt):
             return execution
         diag = extract_google_ads_readonly_diagnostic_result(execution)
         if not diag:
@@ -636,7 +646,11 @@ class JarvisAutonomousOrchestrator:
     ) -> dict[str, Any]:
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="planner started")
         self.notion.append_readability_timeline(mission_id, "Planificador iniciado.")
-        active_perico = (specialist_agent or "").strip().lower() == "perico" or is_perico_marked_prompt(prompt)
+        active_perico = (
+            (specialist_agent or "").strip().lower() == "perico"
+            or is_perico_marked_prompt(prompt)
+            or is_perico_software_mission_prompt(prompt)
+        )
         nf = notion_executive_display_fields(prompt, specialist_agent=specialist_agent)
         if active_perico:
             self.notion.append_readability_timeline(
@@ -708,7 +722,8 @@ class JarvisAutonomousOrchestrator:
             strategy=strategy,
         )
         self.notion.append_agent_output(mission_id, agent_name="ops", content=_dump(ops_output))
-        self.telegram.send_ops_report(chat_id, ops_output)
+        if not active_perico:
+            self.telegram.send_ops_report(chat_id, ops_output)
         baseline_by_title: dict[str, dict[str, Any]] = {}
         for action in (strategy.get("actions") or []):
             if not isinstance(action, dict):
@@ -728,6 +743,7 @@ class JarvisAutonomousOrchestrator:
         retry_phase = 0
         execution: dict[str, Any] = {}
         goal_eval: dict[str, Any] = {"satisfied": True, "missing_items": [], "reason": "init"}
+        perico_snap: dict[str, Any] | None = None
         while True:
             execution = self.executor.run(
                 strategy={"actions": non_ops_actions, "source": strategy.get("source")},
@@ -765,14 +781,14 @@ class JarvisAutonomousOrchestrator:
             break
 
         if active_perico:
-            snap = build_perico_deliverables_snapshot(
+            perico_snap = build_perico_deliverables_snapshot(
                 mission_prompt=prompt,
                 plan=plan,
                 execution=execution,
                 goal_satisfied=bool(goal_eval.get("satisfied")),
                 retry_attempted=bool(execution.get("_perico_auto_pytest_retry_applied")),
             )
-            self.notion.append_agent_output(mission_id, agent_name="perico_deliverables", content=_dump(snap))
+            self.notion.append_agent_output(mission_id, agent_name="perico_deliverables", content=_dump(perico_snap))
             if goal_eval.get("satisfied"):
                 block_msg = perico_should_block_for_operator_input(execution)
                 if block_msg:
@@ -990,14 +1006,23 @@ class JarvisAutonomousOrchestrator:
                 ops_output=ops_output,
                 execution=execution,
                 review=review,
+                goal_eval=goal_eval,
+                perico_deliverables_snapshot=perico_snap,
             )
             self.notion.append_readability_timeline(mission_id, "Revisión superada; misión completada.")
+            if active_perico and isinstance(perico_snap, dict):
+                closure_status = format_perico_closure_status_display(perico_snap)
+                exec_summary_status = closure_status or human_mission_status(MISSION_STATUS_DONE)
+                key_res_exec = format_perico_closure_key_result(perico_snap, execution)
+            else:
+                exec_summary_status = human_mission_status(MISSION_STATUS_DONE)
+                key_res_exec = str(review.get("summary") or "Completada correctamente.")[:500]
             self.notion.append_readability_executive_summary(
                 mission_id,
                 objective=nf["objective"],
-                status=human_mission_status(MISSION_STATUS_DONE),
+                status=exec_summary_status,
                 what_jarvis_did=summarize_execution_for_readability(execution),
-                key_result=str(review.get("summary") or "Completada correctamente.")[:500],
+                key_result=key_res_exec,
                 next_step="El detalle completo está en Notion; abajo quedan los logs técnicos.",
                 agent=nf["agent"],
                 project=nf["project"],
@@ -1048,7 +1073,18 @@ class JarvisAutonomousOrchestrator:
         ops_output: dict[str, Any],
         execution: dict[str, Any],
         review: dict[str, Any],
+        goal_eval: dict[str, Any] | None = None,
+        perico_deliverables_snapshot: dict[str, Any] | None = None,
     ) -> str:
+        if is_perico_software_mission_prompt(prompt):
+            return self._format_perico_done_dialog_message(
+                mission_id=mission_id,
+                prompt=prompt,
+                execution=execution,
+                review=review,
+                goal_satisfied=bool((goal_eval or {}).get("satisfied", True)),
+                perico_deliverables_snapshot=perico_deliverables_snapshot,
+            )
         lines: list[str] = [f"Misión lista. Ref. interna: {mission_id}"]
         plan_source = str(plan.get("source") or "unknown")
         research_source = str((research or {}).get("source") or "n/a")
@@ -1096,7 +1132,43 @@ class JarvisAutonomousOrchestrator:
         # Align with Telegram send_command_response / _telegram_clip headroom for long read-only reports.
         return "\n".join(lines)[:3900]
 
+    def _format_perico_done_dialog_message(
+        self,
+        *,
+        mission_id: str,
+        prompt: str,
+        execution: dict[str, Any],
+        review: dict[str, Any],
+        goal_satisfied: bool = True,
+        perico_deliverables_snapshot: dict[str, Any] | None = None,
+    ) -> str:
+        """Telegram cierre para Perico: sin heurísticas Google Ads/GA4 del prompt interno."""
+        _ = review
+        snap = perico_deliverables_snapshot or build_perico_deliverables_snapshot(
+            mission_prompt=prompt,
+            plan=None,
+            execution=execution,
+            goal_satisfied=goal_satisfied,
+            retry_attempted=bool((execution or {}).get("_perico_auto_pytest_retry_applied")),
+        )
+        closure_token = format_perico_closure_status_display(snap)
+        estado_line = closure_token if closure_token else "COMPLETADA"
+        key_result = format_perico_closure_key_result(snap, execution)
+        lines = [
+            f"Perico — Ref.: {mission_id}",
+            f"Estado: {estado_line}",
+            f"Resultado clave: {key_result}",
+        ]
+        if snap.get("validation_command"):
+            lines.append(f"Comando validación: {str(snap['validation_command'])[:320]}")
+        kr = (snap.get("root_cause_summary") or "").strip()
+        if kr:
+            lines.append(f"Contexto técnico: {kr[:450]}")
+        return "\n".join(lines)[:3900]
+
     def _is_google_ads_mission(self, *, prompt: str, strategy: dict[str, Any]) -> bool:
+        if is_perico_software_mission_prompt(prompt):
+            return False
         parts = [str(prompt or "")]
         for action in (strategy.get("actions") or []):
             if not isinstance(action, dict):
@@ -1108,6 +1180,8 @@ class JarvisAutonomousOrchestrator:
         return "google ads" in haystack or "google_ads" in haystack
 
     def _is_ga4_mission(self, *, prompt: str, strategy: dict[str, Any]) -> bool:
+        if is_perico_software_mission_prompt(prompt):
+            return False
         parts = [str(prompt or "")]
         for action in (strategy.get("actions") or []):
             if not isinstance(action, dict):
