@@ -3,13 +3,99 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
+
+from app.jarvis.perico_tools import perico_repo_root
 
 # Machine-readable prefix; must not be stripped before analytics / Google Ads merge guards.
 PERICO_AGENT_MARKER = "[AGENT:PERICO_SOFTWARE]"
 
 # Phase 1 default: this monorepo (tests, Telegram/Jarvis integration live here).
 PERICO_DEFAULT_TARGET_PROJECT = "crypto-2.0"
+
+
+def _format_validation_command(pytest_rows: list[dict[str, Any]]) -> str:
+    """Human-readable command line from the last perico_run_pytest result (or params fallback)."""
+    if not pytest_rows:
+        return ""
+    row = pytest_rows[-1]
+    res = row.get("result") if isinstance(row.get("result"), dict) else {}
+    cmd = res.get("cmd")
+    if isinstance(cmd, list) and cmd:
+        return " ".join(str(x) for x in cmd)[:2000]
+    params = dict(row.get("params") or {}) if isinstance(row.get("params"), dict) else {}
+    parts = ["python3", "-m", "pytest", "-q", "--tb=no"]
+    rel = str(params.get("relative_path") or "").strip()
+    if rel:
+        parts.append(rel)
+    extra = str(params.get("extra_args") or "").strip()
+    if extra:
+        parts.extend(extra.split())
+    return " ".join(parts)[:2000]
+
+
+def _collect_suspected_files(executed: list[dict[str, Any]]) -> list[str]:
+    """
+    Minimal safe hints: grep hit paths, explicit read targets, patch targets.
+
+    Paths are repo-relative strings when possible; capped and deduped.
+    """
+    root = perico_repo_root()
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(raw: str) -> None:
+        p = (raw or "").strip().replace("\\", "/")
+        if not p or ".." in p.split("/"):
+            return
+        if p.startswith("/"):
+            try:
+                p = str(Path(p).resolve().relative_to(root))
+            except Exception:
+                p = Path(p).name
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+
+    for row in executed:
+        at = str(row.get("action_type") or "").strip().lower()
+        res = row.get("result") if isinstance(row.get("result"), dict) else {}
+        params = dict(row.get("params") or {}) if isinstance(row.get("params"), dict) else {}
+        if at != "perico_repo_read" or not res.get("ok"):
+            continue
+        op = str(res.get("operation") or "").strip().lower()
+        if op == "grep":
+            for m in (res.get("matches") or [])[:35]:
+                if isinstance(m, dict):
+                    add(str(m.get("path") or ""))
+        elif op == "read":
+            rp = str(params.get("relative_path") or "").strip()
+            if rp:
+                add(rp)
+            else:
+                full = str(res.get("path") or "").strip()
+                if full:
+                    try:
+                        add(str(Path(full).resolve().relative_to(root)))
+                    except Exception:
+                        add(Path(full).name)
+        elif op == "list":
+            rp = str(params.get("relative_path") or "").strip()
+            if rp and rp not in (".", ""):
+                add(rp.rstrip("/") + "/")
+
+    for row in executed:
+        at = str(row.get("action_type") or "").strip().lower()
+        if at != "perico_apply_patch":
+            continue
+        res = row.get("result") if isinstance(row.get("result"), dict) else {}
+        params = dict(row.get("params") or {}) if isinstance(row.get("params"), dict) else {}
+        rp = str(res.get("relative_path") or params.get("relative_path") or "").strip()
+        if rp:
+            add(rp)
+
+    return out[:25]
 
 
 def is_perico_marked_prompt(prompt: str) -> bool:
@@ -172,10 +258,13 @@ def build_perico_deliverables_snapshot(
         else:
             validation_run = "perico_run_pytest_incomplete"
 
+    suspected = _collect_suspected_files(executed)
+    validation_command = _format_validation_command(pytest_rows)
+
     return {
         "target_project": target or PERICO_DEFAULT_TARGET_PROJECT,
         "task_type": task_type,
-        "suspected_files": [],
+        "suspected_files": suspected,
         "files_touched": sorted(set(files_touched))[:40],
         "diff_summary": "\n---\n".join(diff_parts)[:8000] if diff_parts else "",
         "tests_passed": tests_passed,
@@ -183,6 +272,7 @@ def build_perico_deliverables_snapshot(
         "retry_attempted": bool(retry_attempted),
         "patch_applied": patch_applied,
         "validation_run": validation_run,
+        "validation_command": validation_command,
         "objective_satisfied": (bool(goal_satisfied) if goal_satisfied is not None else None),
         "deploy_sensitive": deploy_sensitive,
     }

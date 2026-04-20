@@ -49,7 +49,7 @@ Concrete tool names and permissions remain whatever `TOOL_SPECS` and Bedrock-pro
 7. **Retry**: core pipeline allows **one** analytics corrective retry via `should_attempt_goal_retry` + `build_corrective_readonly_analytics_action` — **disabled** for Perico-marked prompts. Other “retries” are operator-driven (`continue_after_input`, new user text).
 8. **Return**: `dialog_message` / `telegram_compact_reply_suppressed` / `waiting_for_approval` / `done` exactly like any Jarvis mission.
 
-After execution, the orchestrator appends **`perico_deliverables`** JSON via `build_perico_deliverables_snapshot` → `NotionMissionService.append_agent_output(..., agent_name="perico_deliverables")`.
+After execution, the orchestrator appends **`perico_deliverables`** JSON via `build_perico_deliverables_snapshot` → `NotionMissionService.append_agent_output(..., agent_name="perico_deliverables")`. The snapshot includes **`validation_command`** (last `perico_run_pytest` argv string) and **`suspected_files`** (heuristic from grep hits, read targets, list dir hints, and patched paths).
 
 ## Definition of done (practical)
 

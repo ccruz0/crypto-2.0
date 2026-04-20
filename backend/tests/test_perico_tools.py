@@ -179,7 +179,14 @@ def test_deliverables_includes_files_and_tests_flag():
             },
             {
                 "action_type": "perico_run_pytest",
-                "result": {"ok": True, "pytest": True, "tests_ok": True, "exit_code": 0},
+                "params": {"relative_path": "tests/test_x.py", "extra_args": "-q"},
+                "result": {
+                    "ok": True,
+                    "pytest": True,
+                    "tests_ok": True,
+                    "exit_code": 0,
+                    "cmd": ["python3", "-m", "pytest", "-q", "--tb=no", "tests/test_x.py", "-q"],
+                },
             },
         ]
     }
@@ -194,3 +201,43 @@ def test_deliverables_includes_files_and_tests_flag():
     assert snap["tests_passed"] is True
     assert snap["retry_attempted"] is True
     assert "a.py" in snap["files_touched"]
+    assert snap.get("validation_command")
+    assert "pytest" in snap["validation_command"]
+    assert "tests/test_x.py" in snap["validation_command"]
+    assert "a.py" in snap["suspected_files"]
+
+
+def test_deliverables_suspected_files_from_grep_and_read():
+    mp = build_perico_mission_prompt(user_text="investigar telegram")
+    execution = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "params": {"operation": "grep", "relative_path": "backend/app", "pattern": "Telegram"},
+                "result": {
+                    "ok": True,
+                    "operation": "grep",
+                    "matches": [
+                        {"path": "backend/app/jarvis/telegram_control.py", "line": 10, "text": "x"},
+                        {"path": "backend/app/jarvis/telegram_service.py", "line": 2, "text": "y"},
+                    ],
+                },
+            },
+            {
+                "action_type": "perico_repo_read",
+                "params": {"operation": "read", "relative_path": "README.md"},
+                "result": {"ok": True, "operation": "read", "path": "/tmp/README.md", "content": "# x"},
+            },
+        ]
+    }
+    snap = build_perico_deliverables_snapshot(
+        mission_prompt=mp,
+        plan={},
+        execution=execution,
+        goal_satisfied=True,
+    )
+    sf = snap.get("suspected_files") or []
+    assert "backend/app/jarvis/telegram_control.py" in sf
+    assert "backend/app/jarvis/telegram_service.py" in sf
+    assert "README.md" in sf
+    assert snap.get("validation_command") == ""
