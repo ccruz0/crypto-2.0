@@ -44,11 +44,12 @@ class TelegramMissionService:
             return self.send_message(chat_id, text)
 
     def send_approval_request(self, chat_id: str, mission_id: str, summary: str) -> bool:
+        # Headroom for Google Ads pause (metrics + rule + benefit) while staying under Telegram clip.
+        body = (summary or "").strip()[:2200] or "(sin resumen)"
         msg = (
             "Hace falta tu visto bueno antes de seguir.\n\n"
-            f"Qué está en juego:\n{summary[:700] or '(sin resumen)'}\n\n"
-            f"Referencia interna: {mission_id}\n\n"
-            "Usa los botones o, si prefieres, /mission approve o /mission reject con ese id."
+            f"{body}\n\n"
+            f"Ref.: {mission_id}"
         )
         ok = self._send_with_mission_buttons(
             chat_id,
@@ -119,5 +120,11 @@ def _approval_hint(action_type: str) -> str:
         return "¿Apruebas reiniciar el backend para cargar la nueva configuración?"
     if at == "update_runtime_env":
         return "¿Apruebas actualizar variables de entorno en runtime y reiniciar el backend?"
+    if at == "google_ads_pause_campaign":
+        return "¿Apruebas pausar la campaña de Google Ads indicada? (solo lectura hasta ahora; la pausa es la única mutación propuesta)"
+    if at == "google_ads_reduce_campaign_budget":
+        return "¿Apruebas reducir el presupuesto diario de la campaña indicada en el porcentaje propuesto? (reversible; revisa el bloque de métricas y reglas arriba)"
+    if at == "google_ads_resume_campaign":
+        return "¿Apruebas reactivar la campaña en pausa? Al aprobar pasará a ENABLED y puede generar coste al instante."
     return ""
 

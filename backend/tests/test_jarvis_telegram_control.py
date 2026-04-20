@@ -92,6 +92,48 @@ def test_format_dialog_message_short_circuits():
     assert tc.format_compact_jarvis_reply("jarvis", payload) == "Hello"
 
 
+def test_format_compact_suppressed_avoids_duplicate_plain_text_after_structured_telegram():
+    """Orchestrator sends approval/input via inline markup; compact reply must not echo the same block."""
+    payload = {
+        "dialog_message": "This would duplicate the approval body already sent with buttons.",
+        "telegram_compact_reply_suppressed": True,
+        "ok": True,
+        "status": "waiting_for_approval",
+    }
+    assert tc.format_compact_jarvis_reply("jarvis", payload) == ""
+
+
+def test_format_compact_suppressed_false_still_prefers_dialog_message():
+    payload = {
+        "dialog_message": "Fallback plain text when structured send failed.",
+        "telegram_compact_reply_suppressed": False,
+    }
+    assert tc.format_compact_jarvis_reply("jarvis", payload) == "Fallback plain text when structured send failed."
+
+
+def test_maybe_handle_jarvis_telegram_skips_send_when_compact_reply_empty(monkeypatch):
+    sent: list[str] = []
+
+    def _send(text: str) -> None:
+        sent.append(text)
+
+    monkeypatch.setattr(tc, "dispatch_jarvis_command", lambda *a, **k: ("jarvis", {"telegram_compact_reply_suppressed": True, "dialog_message": ""}))
+    monkeypatch.setattr(tc, "is_jarvis_telegram_enabled", lambda: True)
+    monkeypatch.setattr(tc, "jarvis_telegram_token_present", lambda: True)
+    monkeypatch.setattr(tc, "jarvis_allowlists_configured", lambda: True)
+    monkeypatch.setattr(tc, "jarvis_telegram_allowed", lambda _c, _u: True)
+    monkeypatch.setattr(tc, "_build_marketing_intake_followup", lambda **kw: "")
+    consumed = tc.maybe_handle_jarvis_telegram_message(
+        raw_text="/mission status x",
+        chat_id="1",
+        actor_user_id="1",
+        from_user=None,
+        send=_send,
+    )
+    assert consumed is True
+    assert sent == []
+
+
 def test_process_jarvis_telegram_message_empty_without_intake():
     from app.jarvis.dialog_state import reset_store_for_tests
 

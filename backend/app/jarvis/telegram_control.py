@@ -887,6 +887,9 @@ def _format_run_marketing_review_telegram(res: dict[str, Any]) -> str:
 def format_compact_jarvis_reply(kind: str, payload: dict[str, Any]) -> str:
     """Short Telegram-safe text (no huge JSON)."""
     if kind == "jarvis":
+        # Orchestrator already sent structured Telegram (inline buttons / ForceReply); skip duplicate chat line.
+        if bool((payload or {}).get("telegram_compact_reply_suppressed")):
+            return ""
         dm0 = payload.get("dialog_message")
         if dm0 is not None and str(dm0).strip():
             return _telegram_clip(str(dm0).strip())
@@ -1192,7 +1195,8 @@ def maybe_handle_jarvis_telegram_message(
         )
         if extra:
             text = _telegram_clip(text.rstrip() + "\n\n---\n" + extra)
-        send(text)
+        if (text or "").strip():
+            send(text)
     except Exception as e:
         logger.exception("JarvisTelegram: dispatch failed: %s", e)
         send(f"❌ Jarvis error: {e!s}"[:500])
@@ -1289,7 +1293,8 @@ def try_route_jarvis_operator_free_text_dialog(
         )
         if extra:
             reply = _telegram_clip(reply.rstrip() + "\n\n---\n" + extra)
-        send(reply)
+        if (reply or "").strip():
+            send(reply)
         logger.info(
             "jarvis.telegram.free_text consumed chat_id=%s fmt_kind=%s run_id=%s",
             chat_id,

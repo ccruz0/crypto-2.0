@@ -57,10 +57,21 @@ class _FakeNotion:
     def append_technical_detail_marker(self, mission_id: str, title: str = "") -> None:
         self.events.append((mission_id, "technical_marker", title))
 
+    def append_pending_approval_payload(self, mission_id: str, *, actions: list) -> None:
+        self.events.append((mission_id, "pending_approval_payload", str(len(actions or []))))
+
+    def get_latest_pending_approval_actions(self, mission_id: str) -> list[dict]:
+        _ = mission_id
+        return []
+
 
 class _FakeTelegram:
     def __init__(self) -> None:
         self.sent: list[str] = []
+
+    def send_message(self, chat_id: str, text: str) -> bool:
+        self.sent.append(f"{chat_id}:msg:{text[:200]}")
+        return True
 
     def send_approval_request(self, chat_id: str, mission_id: str, summary: str) -> bool:
         self.sent.append(f"{chat_id}:{mission_id}:{summary}")
@@ -167,6 +178,8 @@ def test_orchestrator_pauses_for_approval():
 
     assert out["status"] == MISSION_STATUS_WAITING_FOR_APPROVAL
     assert fake_notion.state == MISSION_STATUS_WAITING_FOR_APPROVAL
+    assert out.get("telegram_compact_reply_suppressed") is True
+    assert not str(out.get("dialog_message") or "").strip()
     assert fake_tg.sent, "approval message must be sent to telegram"
     assert any(ev[1] == "strategy" for ev in fake_notion.events), "strategy output must be written to Notion"
     assert any(ev[1] == "outcome_evaluator" for ev in fake_notion.events), "outcome evaluation must be logged"

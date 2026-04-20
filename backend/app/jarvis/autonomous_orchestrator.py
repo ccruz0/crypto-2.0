@@ -7,6 +7,8 @@ import logging
 import os
 from typing import Any
 
+from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
+from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
 from app.jarvis.autonomous_agents import (
     ExecutionAgent,
     OutcomeEvaluatorAgent,
@@ -14,6 +16,24 @@ from app.jarvis.autonomous_agents import (
     ResearchAgent,
     ReviewAgent,
     StrategyAgent,
+)
+from app.jarvis.google_ads_budget_proposals import (
+    build_google_ads_reduce_campaign_budget_actions,
+    format_google_ads_budget_reduce_approval_summary,
+)
+from app.jarvis.google_ads_mutations import (
+    run_google_ads_pause_campaign,
+    run_google_ads_reduce_campaign_budget,
+    run_google_ads_resume_campaign,
+)
+from app.jarvis.google_ads_resume_proposals import (
+    build_google_ads_resume_campaign_actions,
+    format_google_ads_resume_approval_summary,
+    google_ads_resume_mission_intent,
+)
+from app.jarvis.google_ads_pause_proposals import (
+    extract_google_ads_readonly_diagnostic_result,
+    format_google_ads_pause_approval_summary,
 )
 from app.jarvis.ops_agent import OPS_ACTION_TYPES, OpsAgent
 from app.jarvis.autonomous_schemas import (
@@ -42,6 +62,26 @@ from app.jarvis.notion_mission_service import NotionMissionService
 from app.jarvis.telegram_service import TelegramMissionService
 
 logger = logging.getLogger(__name__)
+
+
+def _format_combined_approval_summary(actions: list[dict[str, Any]]) -> str:
+    """Human-readable approval text; Google Ads pause uses metrics + trigger rule."""
+    parts: list[str] = []
+    for x in actions[:4]:
+        if not isinstance(x, dict):
+            continue
+        at = str(x.get("action_type") or "").strip().lower()
+        if at == "google_ads_pause_campaign":
+            parts.append(format_google_ads_pause_approval_summary(x))
+        elif at == "google_ads_reduce_campaign_budget":
+            parts.append(format_google_ads_budget_reduce_approval_summary(x))
+        elif at == "google_ads_resume_campaign":
+            parts.append(format_google_ads_resume_approval_summary(x))
+        else:
+            t = str(x.get("title") or "").strip()
+            if t:
+                parts.append(t)
+    return "\n\n".join(parts) if parts else "critical action requested"
 
 
 def _dump(value: Any) -> str:
@@ -106,6 +146,7 @@ class JarvisAutonomousOrchestrator:
         actor: str,
         chat_id: str,
         reason: str = "",
+        pending_actions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         mission = self.notion.get_mission(mission_id)
         if mission is None:
@@ -133,6 +174,273 @@ class JarvisAutonomousOrchestrator:
                     f"(Ref. interna: {mission_id})"
                 ),
             }
+        actions_src = pending_actions
+        if actions_src is None:
+            actions_src = self.notion.get_latest_pending_approval_actions(mission_id)
+        pause_actions = [
+            a
+            for a in (actions_src or [])
+            if isinstance(a, dict)
+            and str(a.get("action_type") or "").strip().lower() == "google_ads_pause_campaign"
+        ]
+        if pause_actions:
+            self.notion.append_readability_timeline(
+                mission_id, "Aprobación concedida; ejecutando pausa de campaña (Google Ads)."
+            )
+            self.notion.transition_state(
+                mission_id,
+                to_state=MISSION_STATUS_EXECUTING,
+                note=f"approval granted by {actor}; google_ads_pause_campaign",
+            )
+            row = pause_actions[0]
+            params = dict(row.get("params") or {})
+            result = run_google_ads_pause_campaign(params)
+            self.notion.append_agent_output(mission_id, agent_name="execution_approved_mutation", content=_dump(result))
+            self.notion.append_readability_timeline(
+                mission_id,
+                (
+                    f"Pausa de campaña ejecutada (ok={bool(result.get('ok'))}). "
+                    f"{str(result.get('error_message') or '')[:200]}"
+                ).strip(),
+            )
+            self.notion.append_event(
+                mission_id,
+                event="google_ads_pause_campaign",
+                detail=f"ok={bool(result.get('ok'))} campaign_id={params.get('campaign_id')}",
+            )
+            cname = str(params.get("campaign_name") or "la campaña").strip()
+            if result.get("ok"):
+                self.telegram.send_message(
+                    chat_id,
+                    f"Campaña {cname} pausada correctamente. (Ref. interna: {mission_id})",
+                )
+                execution_payload = {
+                    "executed": [
+                        {
+                            "title": str(row.get("title") or "Pausar campaña"),
+                            "action_type": "google_ads_pause_campaign",
+                            "status": "executed",
+                            "result": result,
+                        }
+                    ],
+                    "needs_approval": False,
+                }
+                self.notion.transition_state(mission_id, to_state=MISSION_STATUS_REVIEWING, note="post-approval review")
+                review = self.reviewer.run(plan={}, execution=execution_payload)
+                self.notion.append_agent_output(mission_id, agent_name="review", content=_dump(review))
+                self.notion.transition_state(mission_id, to_state=MISSION_STATUS_DONE, note="pause completed")
+                return {
+                    "ok": True,
+                    "mission_id": mission_id,
+                    "status": MISSION_STATUS_DONE,
+                    "dialog_message": (
+                        f"Campaña {cname} pausada correctamente. (Ref. interna: {mission_id})"
+                    ),
+                    "result": {"execution": execution_payload, "review": review},
+                }
+            err = str(result.get("error_message") or "error desconocido")
+            self.telegram.send_message(
+                chat_id,
+                f"No se pudo pausar la campaña: {err[:500]} (Ref. interna: {mission_id})",
+            )
+            self.notion.transition_state(mission_id, to_state=MISSION_STATUS_FAILED, note="google_ads_pause_failed")
+            return {
+                "ok": False,
+                "mission_id": mission_id,
+                "status": MISSION_STATUS_FAILED,
+                "dialog_message": f"No se pudo pausar la campaña: {err[:700]} (Ref. interna: {mission_id})",
+                "result": {"execution": {"executed": [{"action_type": "google_ads_pause_campaign", "result": result}]}},
+            }
+
+        budget_actions = [
+            a
+            for a in (actions_src or [])
+            if isinstance(a, dict)
+            and str(a.get("action_type") or "").strip().lower() == "google_ads_reduce_campaign_budget"
+        ]
+        if budget_actions:
+            self.notion.append_readability_timeline(
+                mission_id, "Aprobación concedida; ajustando presupuesto diario (Google Ads)."
+            )
+            self.notion.transition_state(
+                mission_id,
+                to_state=MISSION_STATUS_EXECUTING,
+                note=f"approval granted by {actor}; google_ads_reduce_campaign_budget",
+            )
+            brow = budget_actions[0]
+            bparams = dict(brow.get("params") or {})
+            bresult = run_google_ads_reduce_campaign_budget(bparams)
+            self.notion.append_agent_output(
+                mission_id, agent_name="execution_approved_mutation", content=_dump(bresult)
+            )
+            self.notion.append_readability_timeline(
+                mission_id,
+                (
+                    f"Ajuste de presupuesto ejecutado (ok={bool(bresult.get('ok'))}). "
+                    f"{str(bresult.get('error_message') or '')[:200]}"
+                ).strip(),
+            )
+            self.notion.append_event(
+                mission_id,
+                event="google_ads_reduce_campaign_budget",
+                detail=f"ok={bool(bresult.get('ok'))} campaign_id={bparams.get('campaign_id')}",
+            )
+            bname = str(bparams.get("campaign_name") or "la campaña").strip()
+            pct_disp = bparams.get("reduction_percent", 20)
+            cur_amt = str(bparams.get("current_budget_amount") or "")
+            new_amt = str(bparams.get("proposed_budget_amount") or "")
+            if bresult.get("ok"):
+                self.telegram.send_message(
+                    chat_id,
+                    (
+                        f"Presupuesto de «{bname}» reducido un {pct_disp}% respecto al tope diario anterior "
+                        f"(antes ~{cur_amt}, objetivo propuesto ~{new_amt}; mismo id de cuenta). "
+                        f"(Ref. interna: {mission_id})"
+                    ),
+                )
+                execution_payload = {
+                    "executed": [
+                        {
+                            "title": str(brow.get("title") or "Reducir presupuesto"),
+                            "action_type": "google_ads_reduce_campaign_budget",
+                            "status": "executed",
+                            "result": bresult,
+                        }
+                    ],
+                    "needs_approval": False,
+                }
+                self.notion.transition_state(mission_id, to_state=MISSION_STATUS_REVIEWING, note="post-approval review")
+                review = self.reviewer.run(plan={}, execution=execution_payload)
+                self.notion.append_agent_output(mission_id, agent_name="review", content=_dump(review))
+                self.notion.transition_state(mission_id, to_state=MISSION_STATUS_DONE, note="budget_reduce completed")
+                return {
+                    "ok": True,
+                    "mission_id": mission_id,
+                    "status": MISSION_STATUS_DONE,
+                    "dialog_message": (
+                        f"Presupuesto de «{bname}» reducido un {pct_disp}% correctamente. "
+                        f"(Ref. interna: {mission_id})"
+                    ),
+                    "result": {"execution": execution_payload, "review": review},
+                }
+            berr = str(bresult.get("error_message") or "error desconocido")
+            self.telegram.send_message(
+                chat_id,
+                f"No se pudo ajustar el presupuesto: {berr[:500]} (Ref. interna: {mission_id})",
+            )
+            self.notion.transition_state(
+                mission_id, to_state=MISSION_STATUS_FAILED, note="google_ads_budget_reduce_failed"
+            )
+            return {
+                "ok": False,
+                "mission_id": mission_id,
+                "status": MISSION_STATUS_FAILED,
+                "dialog_message": f"No se pudo ajustar el presupuesto: {berr[:700]} (Ref. interna: {mission_id})",
+                "result": {
+                    "execution": {
+                        "executed": [{"action_type": "google_ads_reduce_campaign_budget", "result": bresult}]
+                    }
+                },
+            }
+
+        resume_actions = [
+            a
+            for a in (actions_src or [])
+            if isinstance(a, dict)
+            and str(a.get("action_type") or "").strip().lower() == "google_ads_resume_campaign"
+        ]
+        if resume_actions:
+            self.notion.append_readability_timeline(
+                mission_id, "Aprobación concedida; reactivando campaña (Google Ads)."
+            )
+            self.notion.transition_state(
+                mission_id,
+                to_state=MISSION_STATUS_EXECUTING,
+                note=f"approval granted by {actor}; google_ads_resume_campaign",
+            )
+            rrow = resume_actions[0]
+            rparams = dict(rrow.get("params") or {})
+            rresult = run_google_ads_resume_campaign(rparams)
+            self.notion.append_agent_output(
+                mission_id, agent_name="execution_approved_mutation", content=_dump(rresult)
+            )
+            self.notion.append_readability_timeline(
+                mission_id,
+                (
+                    f"Reactivación de campaña ejecutada (ok={bool(rresult.get('ok'))}). "
+                    f"{str(rresult.get('error_message') or '')[:200]}"
+                ).strip(),
+            )
+            self.notion.append_event(
+                mission_id,
+                event="google_ads_resume_campaign",
+                detail=f"ok={bool(rresult.get('ok'))} campaign_id={rparams.get('campaign_id')} no_op={bool(rresult.get('no_op'))}",
+            )
+            rname = str(rparams.get("campaign_name") or "la campaña").strip()
+            if rresult.get("ok"):
+                if rresult.get("no_op"):
+                    self.telegram.send_message(
+                        chat_id,
+                        (
+                            f"La campaña «{rname}» ya estaba ENABLED; no hubo cambios en Google Ads. "
+                            f"(Ref. interna: {mission_id})"
+                        ),
+                    )
+                else:
+                    self.telegram.send_message(
+                        chat_id,
+                        (
+                            f"Campaña «{rname}» reactivada (ENABLED). Puede generar coste de inmediato. "
+                            f"(Ref. interna: {mission_id})"
+                        ),
+                    )
+                execution_payload = {
+                    "executed": [
+                        {
+                            "title": str(rrow.get("title") or "Reactivar campaña"),
+                            "action_type": "google_ads_resume_campaign",
+                            "status": "executed",
+                            "result": rresult,
+                        }
+                    ],
+                    "needs_approval": False,
+                }
+                self.notion.transition_state(mission_id, to_state=MISSION_STATUS_REVIEWING, note="post-approval review")
+                review = self.reviewer.run(plan={}, execution=execution_payload)
+                self.notion.append_agent_output(mission_id, agent_name="review", content=_dump(review))
+                self.notion.transition_state(mission_id, to_state=MISSION_STATUS_DONE, note="resume_completed")
+                dm = (
+                    f"La campaña «{rname}» ya estaba ENABLED; sin cambios. (Ref. interna: {mission_id})"
+                    if rresult.get("no_op")
+                    else f"Campaña «{rname}» reactivada correctamente. (Ref. interna: {mission_id})"
+                )
+                return {
+                    "ok": True,
+                    "mission_id": mission_id,
+                    "status": MISSION_STATUS_DONE,
+                    "dialog_message": dm,
+                    "result": {"execution": execution_payload, "review": review},
+                }
+            rerr = str(rresult.get("error_message") or "error desconocido")
+            self.telegram.send_message(
+                chat_id,
+                f"No se pudo reactivar la campaña: {rerr[:500]} (Ref. interna: {mission_id})",
+            )
+            self.notion.transition_state(
+                mission_id, to_state=MISSION_STATUS_FAILED, note="google_ads_resume_failed"
+            )
+            return {
+                "ok": False,
+                "mission_id": mission_id,
+                "status": MISSION_STATUS_FAILED,
+                "dialog_message": f"No se pudo reactivar la campaña: {rerr[:700]} (Ref. interna: {mission_id})",
+                "result": {
+                    "execution": {
+                        "executed": [{"action_type": "google_ads_resume_campaign", "result": rresult}]
+                    }
+                },
+            }
+
         self.notion.append_readability_timeline(mission_id, "Aprobación concedida; cerrando el flujo autorizado.")
         self.notion.transition_state(
             mission_id,
@@ -181,6 +489,111 @@ class JarvisAutonomousOrchestrator:
             external_input=input_text,
         )
 
+    def _merge_google_ads_mutation_proposals(
+        self,
+        *,
+        mission_id: str,
+        prompt: str,
+        execution: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        After read-only Google Ads diagnostics, optionally queue approval-gated mutations (never mutate here):
+
+        1) pause_campaign — strict readonly Google Ads analytics mission + heuristics
+        2) reduce_campaign_budget — same mission gate + softer heuristics (only if no pause)
+        3) resume_campaign — explicit operator intent only + PAUSED row in diagnostic (only if no pause/budget)
+        """
+        diag = extract_google_ads_readonly_diagnostic_result(execution)
+        if not diag:
+            return execution
+
+        spec = (
+            infer_analytics_deliverables(prompt)
+            if readonly_analytics_prompt_sufficient(prompt)
+            else None
+        )
+        ads_mission = bool(spec and getattr(spec, "domain", "") == "google_ads")
+
+        existing_types = {
+            str(x.get("action_type") or "").strip().lower()
+            for x in (execution.get("waiting_for_approval") or [])
+            if isinstance(x, dict)
+        }
+        if {
+            "google_ads_pause_campaign",
+            "google_ads_reduce_campaign_budget",
+            "google_ads_resume_campaign",
+        }.intersection(existing_types):
+            return execution
+
+        pause_actions: list[dict[str, Any]] = []
+        if ads_mission:
+            pause_actions = StrategyAgent.propose_google_ads_pause_from_readonly_diagnostic(diag) or []
+        if pause_actions:
+            exec2 = self.executor.run(
+                strategy={"actions": pause_actions, "source": "deterministic_pause_proposal"},
+                mission_prompt=prompt,
+            )
+            wa = [x for x in (execution.get("waiting_for_approval") or []) if isinstance(x, dict)]
+            wa.extend([x for x in (exec2.get("waiting_for_approval") or []) if isinstance(x, dict)])
+            execution = dict(execution)
+            execution["waiting_for_approval"] = wa
+            execution["needs_approval"] = bool(wa) or bool(execution.get("needs_approval"))
+            summaries = [str(x.get("title") or "") for x in wa[:6] if str(x.get("title") or "").strip()]
+            execution["approval_summary"] = "; ".join(summaries) if summaries else str(
+                execution.get("approval_summary") or ""
+            )
+            self.notion.append_readability_timeline(
+                mission_id,
+                "Propuesta determinista: pausar una campaña según métricas (requiere tu aprobación).",
+            )
+            return execution
+
+        budget_actions: list[dict[str, Any]] = []
+        if ads_mission:
+            budget_actions = build_google_ads_reduce_campaign_budget_actions(diag) or []
+        if budget_actions:
+            exec2 = self.executor.run(
+                strategy={"actions": budget_actions, "source": "deterministic_budget_reduce_proposal"},
+                mission_prompt=prompt,
+            )
+            wa = [x for x in (execution.get("waiting_for_approval") or []) if isinstance(x, dict)]
+            wa.extend([x for x in (exec2.get("waiting_for_approval") or []) if isinstance(x, dict)])
+            execution = dict(execution)
+            execution["waiting_for_approval"] = wa
+            execution["needs_approval"] = bool(wa) or bool(execution.get("needs_approval"))
+            summaries = [str(x.get("title") or "") for x in wa[:6] if str(x.get("title") or "").strip()]
+            execution["approval_summary"] = "; ".join(summaries) if summaries else str(
+                execution.get("approval_summary") or ""
+            )
+            self.notion.append_readability_timeline(
+                mission_id,
+                "Propuesta determinista: reducir presupuesto diario de una campaña (requiere tu aprobación).",
+            )
+            return execution
+
+        if google_ads_resume_mission_intent(prompt):
+            resume_actions = build_google_ads_resume_campaign_actions(diag, prompt)
+            if resume_actions:
+                exec2 = self.executor.run(
+                    strategy={"actions": resume_actions, "source": "deterministic_resume_intent"},
+                    mission_prompt=prompt,
+                )
+                wa = [x for x in (execution.get("waiting_for_approval") or []) if isinstance(x, dict)]
+                wa.extend([x for x in (exec2.get("waiting_for_approval") or []) if isinstance(x, dict)])
+                execution = dict(execution)
+                execution["waiting_for_approval"] = wa
+                execution["needs_approval"] = bool(wa) or bool(execution.get("needs_approval"))
+                summaries = [str(x.get("title") or "") for x in wa[:6] if str(x.get("title") or "").strip()]
+                execution["approval_summary"] = "; ".join(summaries) if summaries else str(
+                    execution.get("approval_summary") or ""
+                )
+                self.notion.append_readability_timeline(
+                    mission_id,
+                    "Propuesta por intención explícita: reactivar campaña en pausa (requiere tu aprobación).",
+                )
+        return execution
+
     def _run_pipeline(
         self,
         *,
@@ -214,16 +627,21 @@ class JarvisAutonomousOrchestrator:
                 key_result=str(plan.get("objective") or summarize_plan_for_readability(plan))[:500],
                 next_step="Responder en Telegram (botones o mensaje normal).",
             )
-            self.telegram.send_input_request(chat_id, mission_id, clarify)
+            clarify_sent = bool(self.telegram.send_input_request(chat_id, mission_id, clarify))
             return {
                 "ok": True,
                 "mission_id": mission_id,
                 "status": MISSION_STATUS_WAITING_FOR_INPUT,
                 "dialog_message": (
-                    f"{clarify}\n\n"
-                    "Pulsa «Responder» o escribe aquí. "
-                    f"(Ref. interna: {mission_id})"
+                    ""
+                    if clarify_sent
+                    else (
+                        f"{clarify}\n\n"
+                        "Pulsa «Responder» o escribe aquí. "
+                        f"(Ref. interna: {mission_id})"
+                    )
                 ),
+                "telegram_compact_reply_suppressed": clarify_sent,
             }
 
         research: dict[str, Any] | None = None
@@ -300,6 +718,17 @@ class JarvisAutonomousOrchestrator:
                 continue
             break
 
+        if goal_eval.get("satisfied"):
+            wa_before = len(execution.get("waiting_for_approval") or [])
+            execution = self._merge_google_ads_mutation_proposals(
+                mission_id=mission_id,
+                prompt=prompt,
+                execution=execution,
+            )
+            wa_after = len(execution.get("waiting_for_approval") or [])
+            if wa_after > wa_before:
+                self.notion.append_agent_output(mission_id, agent_name="execution", content=_dump(execution))
+
         if not goal_eval.get("satisfied"):
             self.notion.transition_state(
                 mission_id,
@@ -318,16 +747,21 @@ class JarvisAutonomousOrchestrator:
                 blocked=shortfall[:500],
                 next_step="Responder con el detalle que falta (botón «Responder» o mensaje normal).",
             )
-            self.telegram.send_input_request(chat_id, mission_id, shortfall)
+            shortfall_sent = bool(self.telegram.send_input_request(chat_id, mission_id, shortfall))
             return {
                 "ok": True,
                 "mission_id": mission_id,
                 "status": MISSION_STATUS_WAITING_FOR_INPUT,
                 "dialog_message": (
-                    f"{shortfall}\n\n"
-                    "Pulsa «Responder» o escribe aquí. "
-                    f"(Ref. interna: {mission_id})"
+                    ""
+                    if shortfall_sent
+                    else (
+                        f"{shortfall}\n\n"
+                        "Pulsa «Responder» o escribe aquí. "
+                        f"(Ref. interna: {mission_id})"
+                    )
                 ),
+                "telegram_compact_reply_suppressed": shortfall_sent,
             }
 
         # Post-execution outcome evaluation (can run on same cycle or next cycle in future revisions).
@@ -367,15 +801,20 @@ class JarvisAutonomousOrchestrator:
                 blocked=prompt_text[:500],
                 next_step="Responder por Telegram («Responder» o mensaje en este chat).",
             )
-            self.telegram.send_input_request(chat_id, mission_id, prompt_text)
+            input_sent = bool(self.telegram.send_input_request(chat_id, mission_id, prompt_text))
             return {
                 "ok": True,
                 "mission_id": mission_id,
                 "status": MISSION_STATUS_WAITING_FOR_INPUT,
                 "dialog_message": (
-                    f"{prompt_text}\n\n"
-                    f"Pulsa «Responder» o contesta aquí. (Ref. interna: {mission_id})"
+                    ""
+                    if input_sent
+                    else (
+                        f"{prompt_text}\n\n"
+                        f"Pulsa «Responder» o contesta aquí. (Ref. interna: {mission_id})"
+                    )
                 ),
+                "telegram_compact_reply_suppressed": input_sent,
             }
 
         combined_waiting_approval = [
@@ -384,15 +823,17 @@ class JarvisAutonomousOrchestrator:
             if isinstance(x, dict)
         ] + [x for x in (execution.get("waiting_for_approval") or []) if isinstance(x, dict)]
         if combined_waiting_approval:
-            summary = "; ".join(str(x.get("title") or "") for x in combined_waiting_approval[:4]) or "critical action requested"
+            self.notion.append_pending_approval_payload(mission_id, actions=combined_waiting_approval)
+            summary = _format_combined_approval_summary(combined_waiting_approval)
+            note = (summary.split("\n", 1)[0] if summary else "")[:300]
             self.notion.transition_state(
                 mission_id,
                 to_state=MISSION_STATUS_WAITING_FOR_APPROVAL,
-                note=summary[:300],
+                note=note or summary[:300],
             )
             self.notion.append_readability_timeline(
                 mission_id,
-                "En pausa: hace falta tu visto bueno antes de acciones sensibles o críticas.",
+                "Pendiente de tu aprobación en Telegram (mensaje con botones en este chat).",
             )
             self.notion.append_readability_executive_summary(
                 mission_id,
@@ -400,17 +841,25 @@ class JarvisAutonomousOrchestrator:
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_APPROVAL),
                 what_jarvis_did=summarize_execution_for_readability(execution),
                 blocked="Sin tu aprobación no puedo seguir con este paso.",
-                next_step="Aprobar o rechazar en Telegram (botones o comandos /mission).",
+                next_step="Aprobar o rechazar con los botones del mensaje anterior o con /mission.",
             )
-            self.telegram.send_approval_request(chat_id, mission_id, summary)
+            approval_sent = bool(self.telegram.send_approval_request(chat_id, mission_id, summary))
             return {
                 "ok": True,
                 "mission_id": mission_id,
                 "status": MISSION_STATUS_WAITING_FOR_APPROVAL,
+                # Single Telegram UX: structured approval already sent above; avoid duplicate plain-text follow-up.
                 "dialog_message": (
-                    f"Antes de acciones críticas necesito tu decisión.\n{summary[:500]}\n\n"
-                    "Usa los botones o /mission approve / /mission reject con el id de la misión."
+                    ""
+                    if approval_sent
+                    else (
+                        "Hace falta tu visto bueno antes de seguir.\n\n"
+                        f"{summary[:2200]}\n\n"
+                        f"Ref.: {mission_id}\n"
+                        "Si los botones no llegaron, usa /mission approve o /mission reject con este id."
+                    )
                 ),
+                "telegram_compact_reply_suppressed": approval_sent,
             }
 
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_REVIEWING, note="review started")
