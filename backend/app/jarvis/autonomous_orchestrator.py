@@ -59,6 +59,11 @@ from app.jarvis.notion_mission_readability import (
     human_mission_status,
 )
 from app.jarvis.notion_mission_service import NotionMissionService
+from app.jarvis.perico_mission import (
+    build_perico_deliverables_snapshot,
+    build_perico_mission_prompt,
+    is_perico_marked_prompt,
+)
 from app.jarvis.telegram_service import TelegramMissionService
 
 logger = logging.getLogger(__name__)
@@ -119,7 +124,14 @@ class JarvisAutonomousOrchestrator:
         self.reviewer = reviewer or ReviewAgent()
         self.telegram = telegram or TelegramMissionService()
 
-    def run_new_mission(self, *, prompt: str, actor: str, chat_id: str) -> dict[str, Any]:
+    def run_new_mission(
+        self,
+        *,
+        prompt: str,
+        actor: str,
+        chat_id: str,
+        specialist_agent: str | None = None,
+    ) -> dict[str, Any]:
         if not self.notion.configured():
             return {
                 "ok": False,
@@ -128,14 +140,25 @@ class JarvisAutonomousOrchestrator:
                     "(NOTION_API_KEY y base de tareas / NOTION_TASK_DB)."
                 ),
             }
-        mission = self.notion.create_mission(prompt=prompt, actor=actor)
+        user_prompt = (prompt or "").strip()
+        spec = (specialist_agent or "").strip().lower() or None
+        effective_prompt = (
+            build_perico_mission_prompt(user_text=user_prompt) if spec == "perico" else user_prompt
+        )
+        mission = self.notion.create_mission(
+            prompt=effective_prompt,
+            actor=actor,
+            specialist_agent=spec,
+            operator_short_prompt=user_prompt if spec == "perico" else None,
+        )
         mission_id = str(mission["mission_id"])
         return self._run_pipeline(
             mission_id=mission_id,
-            prompt=prompt,
+            prompt=effective_prompt,
             actor=actor,
             chat_id=chat_id,
             external_input="",
+            specialist_agent=spec,
         )
 
     def continue_after_approval(
@@ -487,6 +510,7 @@ class JarvisAutonomousOrchestrator:
             actor=actor,
             chat_id=chat_id,
             external_input=input_text,
+            specialist_agent=("perico" if is_perico_marked_prompt(prompt) else None),
         )
 
     def _merge_google_ads_mutation_proposals(
@@ -503,6 +527,8 @@ class JarvisAutonomousOrchestrator:
         2) reduce_campaign_budget — same mission gate + softer heuristics (only if no pause)
         3) resume_campaign — explicit operator intent only + PAUSED row in diagnostic (only if no pause/budget)
         """
+        if is_perico_marked_prompt(prompt):
+            return execution
         diag = extract_google_ads_readonly_diagnostic_result(execution)
         if not diag:
             return execution
@@ -602,9 +628,16 @@ class JarvisAutonomousOrchestrator:
         actor: str,
         chat_id: str,
         external_input: str,
+        specialist_agent: str | None = None,
     ) -> dict[str, Any]:
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="planner started")
         self.notion.append_readability_timeline(mission_id, "Planificador iniciado.")
+        active_perico = (specialist_agent or "").strip().lower() == "perico" or is_perico_marked_prompt(prompt)
+        if active_perico:
+            self.notion.append_readability_timeline(
+                mission_id,
+                "Perico (software): bucle inspectar → hipótesis → parche mínimo → validar; sin deploy automático a producción.",
+            )
         plan = self.planner.run(prompt)
         self.notion.append_technical_detail_marker(mission_id, "Salida en bruto del planificador y agentes")
         self.notion.append_agent_output(mission_id, agent_name="planner", content=_dump(plan))
@@ -717,6 +750,15 @@ class JarvisAutonomousOrchestrator:
                 non_ops_actions = [build_corrective_readonly_analytics_action(domain)]
                 continue
             break
+
+        if active_perico:
+            snap = build_perico_deliverables_snapshot(
+                mission_prompt=prompt,
+                plan=plan,
+                execution=execution,
+                goal_satisfied=bool(goal_eval.get("satisfied")),
+            )
+            self.notion.append_agent_output(mission_id, agent_name="perico_deliverables", content=_dump(snap))
 
         if goal_eval.get("satisfied"):
             wa_before = len(execution.get("waiting_for_approval") or [])
@@ -1205,6 +1247,12 @@ class JarvisAutonomousOrchestrator:
 def run_autonomous_jarvis_from_telegram(*, text: str, actor: str, chat_id: str) -> dict[str, Any]:
     orch = JarvisAutonomousOrchestrator()
     return orch.run_new_mission(prompt=text, actor=actor, chat_id=chat_id)
+
+
+def run_perico_from_telegram(*, text: str, actor: str, chat_id: str) -> dict[str, Any]:
+    """Explicit software-specialist entrypoint (same mission system as Jarvis)."""
+    orch = JarvisAutonomousOrchestrator()
+    return orch.run_new_mission(prompt=text, actor=actor, chat_id=chat_id, specialist_agent="perico")
 
 
 def handle_mission_command(*, raw_args: str, actor: str, chat_id: str) -> dict[str, Any]:

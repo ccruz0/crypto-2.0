@@ -18,8 +18,8 @@ class _FakeNotion:
     def configured(self) -> bool:
         return True
 
-    def create_mission(self, *, prompt: str, actor: str) -> dict:
-        _ = prompt, actor
+    def create_mission(self, *, prompt: str, actor: str, **kwargs) -> dict:
+        _ = prompt, actor, kwargs
         return {"mission_id": self.id, "status": self.state}
 
     def get_mission(self, mission_id: str) -> dict | None:

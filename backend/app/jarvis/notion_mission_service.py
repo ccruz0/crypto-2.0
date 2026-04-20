@@ -61,14 +61,32 @@ class NotionMissionService:
     def configured(self) -> bool:
         return bool(self._api_key)
 
-    def create_mission(self, *, prompt: str, actor: str) -> dict[str, Any]:
-        title = f"Misión: {prompt[:96]}".strip()
-        details = (
-            f"Misión Jarvis (autónoma)\n\n"
-            f"Actor: {actor or 'desconocido'}\n"
-            f"Creada: {_utc_now_iso()}\n"
-            f"Petición:\n{prompt[:1500]}"
-        )
+    def create_mission(
+        self,
+        *,
+        prompt: str,
+        actor: str,
+        specialist_agent: str | None = None,
+        operator_short_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        if (specialist_agent or "").strip().lower() == "perico":
+            op = (operator_short_prompt or prompt).strip()
+            title = f"Perico: {op[:96]}".strip() or "Perico: (sin texto)"
+            details = (
+                "Misión Jarvis — especialista Perico (software)\n\n"
+                f"Actor: {actor or 'desconocido'}\n"
+                f"Creada: {_utc_now_iso()}\n"
+                f"Petición del operador:\n{op[:900]}\n\n"
+                f"Contexto ampliado (truncado):\n{prompt[:1500]}"
+            )
+        else:
+            title = f"Misión: {prompt[:96]}".strip()
+            details = (
+                f"Misión Jarvis (autónoma)\n\n"
+                f"Actor: {actor or 'desconocido'}\n"
+                f"Creada: {_utc_now_iso()}\n"
+                f"Petición:\n{prompt[:1500]}"
+            )
         created = create_notion_task(
             title=title,
             project="Automation",
@@ -145,6 +163,78 @@ class NotionMissionService:
         if detail:
             msg = f"{msg} :: {detail}"
         self._append_comment(mission_id, msg[:1900])
+
+    def append_pending_approval_payload(self, mission_id: str, *, actions: list[dict[str, Any]]) -> None:
+        """Persist structured actions awaiting Telegram approval (read back on approve)."""
+        rows = [a for a in actions if isinstance(a, dict)][:5]
+        if not rows:
+            return
+        payload = {"version": 1, "actions": rows}
+        try:
+            body = json.dumps(payload, ensure_ascii=True)[:1600]
+        except Exception:
+            body = "{}"
+        self._append_comment(mission_id, f"[PENDING_APPROVAL_ACTIONS] {body}")
+
+    def get_latest_pending_approval_actions(self, mission_id: str) -> list[dict[str, Any]]:
+        """Best-effort: scan Notion page blocks for the last [PENDING_APPROVAL_ACTIONS] JSON."""
+        if not self._api_key:
+            return []
+        texts: list[str] = []
+        cursor: str | None = None
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                while True:
+                    url = f"{NOTION_API_BASE}/blocks/{mission_id}/children?page_size=100"
+                    if cursor:
+                        url = f"{url}&start_cursor={cursor}"
+                    resp = client.get(url, headers=_headers(self._api_key))
+                    if resp.status_code != 200:
+                        break
+                    data = resp.json()
+                    for block in data.get("results") or []:
+                        if not isinstance(block, dict):
+                            continue
+                        t = self._block_plain_text(block)
+                        if t:
+                            texts.append(t)
+                    if not data.get("has_more"):
+                        break
+                    cursor = data.get("next_cursor")
+                    if not cursor:
+                        break
+        except Exception as exc:
+            logger.debug("jarvis.pending_approval_fetch_failed mission_id=%s err=%s", mission_id, exc)
+            return []
+        last_payload: dict[str, Any] | None = None
+        for line in texts:
+            idx = line.find("[PENDING_APPROVAL_ACTIONS]")
+            if idx < 0:
+                continue
+            raw = line[idx + len("[PENDING_APPROVAL_ACTIONS]") :].strip()
+            try:
+                last_payload = json.loads(raw)
+            except Exception:
+                continue
+        if not isinstance(last_payload, dict):
+            return []
+        acts = last_payload.get("actions")
+        if not isinstance(acts, list):
+            return []
+        return [x for x in acts if isinstance(x, dict)]
+
+    def _block_plain_text(self, block: dict[str, Any]) -> str:
+        for key in ("paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item", "numbered_list_item"):
+            node = block.get(key)
+            if not isinstance(node, dict):
+                continue
+            parts: list[str] = []
+            for rt in node.get("rich_text") or []:
+                if not isinstance(rt, dict):
+                    continue
+                parts.append(str(rt.get("plain_text") or ""))
+            return "".join(parts).strip()
+        return ""
 
     def append_action_baseline(self, mission_id: str, *, action: dict[str, Any]) -> None:
         payload = {

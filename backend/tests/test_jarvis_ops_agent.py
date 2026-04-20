@@ -228,8 +228,8 @@ class _FakeNotion:
     def configured(self) -> bool:
         return True
 
-    def create_mission(self, *, prompt: str, actor: str) -> dict:
-        _ = prompt, actor
+    def create_mission(self, *, prompt: str, actor: str, **kwargs) -> dict:
+        _ = prompt, actor, kwargs
         return {"mission_id": self.id, "status": self.state}
 
     def get_mission(self, mission_id: str) -> dict | None:
@@ -268,10 +268,21 @@ class _FakeNotion:
     def append_technical_detail_marker(self, mission_id: str, title: str = "") -> None:
         self.events.append((mission_id, "technical_marker", title))
 
+    def append_pending_approval_payload(self, mission_id: str, *, actions: list) -> None:
+        self.events.append((mission_id, "pending_approval_payload", str(len(actions or []))))
+
+    def get_latest_pending_approval_actions(self, mission_id: str) -> list[dict]:
+        _ = mission_id
+        return []
+
 
 class _FakeTelegram:
     def __init__(self) -> None:
         self.messages: list[str] = []
+
+    def send_message(self, chat_id: str, text: str) -> bool:
+        self.messages.append(f"msg:{chat_id}:{text[:200]}")
+        return True
 
     def send_approval_request(self, chat_id: str, mission_id: str, summary: str) -> bool:
         self.messages.append(f"approval:{chat_id}:{mission_id}:{summary}")

@@ -14,6 +14,7 @@ from app.jarvis.analytics_prompt_gates import (
     extract_explicit_top_rank,
     readonly_analytics_prompt_sufficient,
 )
+from app.jarvis.perico_mission import is_perico_marked_prompt
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,8 @@ def infer_analytics_deliverables(prompt: str) -> AnalyticsMissionSpec | None:
     the prompt omits an explicit window or rank (see inferred_* flags).
     """
     text = (prompt or "").strip()
+    if is_perico_marked_prompt(text):
+        return None
     if not readonly_analytics_prompt_sufficient(text):
         return None
     domain = detect_readonly_analytics_domain(text)

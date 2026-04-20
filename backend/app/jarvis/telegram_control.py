@@ -20,6 +20,7 @@ from app.jarvis.autonomous_orchestrator import (
     handle_mission_command,
     is_autonomous_jarvis_enabled,
     run_autonomous_jarvis_from_telegram,
+    run_perico_from_telegram,
 )
 from app.jarvis.executor import execute_plan
 from app.jarvis.orchestrator import run_jarvis
@@ -266,6 +267,9 @@ def classify_jarvis_command(text: str) -> tuple[str, str] | None:
     if cmd == "/jarvis":
         tail = t[len("/jarvis") :].strip()
         return ("jarvis", tail)
+    if cmd == "/perico":
+        tail = t[len("/perico") :].strip()
+        return ("perico", tail)
     if cmd == "/mission":
         tail = t[len("/mission") :].strip()
         return ("mission", tail)
@@ -1099,6 +1103,33 @@ def dispatch_jarvis_command(
             return ("jarvis", dict(autonomous))
         out = run_jarvis((args or "").strip())
         return ("jarvis", dict(out))
+
+    if kind == "perico":
+        if not is_autonomous_jarvis_enabled():
+            return (
+                "jarvis",
+                {
+                    "ok": False,
+                    "dialog_message": (
+                        "Perico usa el mismo modo autónomo que Jarvis. "
+                        "Habilita JARVIS_AUTONOMOUS_ENABLED para lanzar misiones /perico."
+                    ),
+                },
+            )
+        task = (args or "").strip()
+        if not task:
+            return (
+                "jarvis",
+                {
+                    "ok": False,
+                    "dialog_message": (
+                        "Uso: /perico <tarea de software>\n"
+                        "Ejemplo: /perico Revisa por qué fallan las entregas a Telegram en el backend ATP."
+                    ),
+                },
+            )
+        payload = run_perico_from_telegram(text=task, actor=actor, chat_id=chat_id)
+        return ("jarvis", dict(payload))
 
     if kind == "mission":
         payload = handle_mission_command(raw_args=args, actor=actor, chat_id=chat_id)

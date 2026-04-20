@@ -16,6 +16,7 @@ from app.jarvis.analytics_mission_deliverables import (
     deliverables_to_dict,
     infer_analytics_deliverables,
 )
+from app.jarvis.perico_mission import is_perico_marked_prompt
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
 
 
@@ -366,6 +367,8 @@ def should_attempt_goal_retry(*, mission_prompt: str, goal_eval: dict[str, Any],
     if goal_eval.get("satisfied"):
         return False
     if not goal_eval.get("auto_retry_recommended"):
+        return False
+    if is_perico_marked_prompt(mission_prompt):
         return False
     return readonly_analytics_prompt_sufficient(mission_prompt)
 
