@@ -63,6 +63,8 @@ from app.jarvis.perico_mission import (
     build_perico_deliverables_snapshot,
     build_perico_mission_prompt,
     is_perico_marked_prompt,
+    perico_should_block_for_operator_input,
+    perico_try_auto_pytest_retry,
 )
 from app.jarvis.telegram_service import TelegramMissionService
 
@@ -752,13 +754,52 @@ class JarvisAutonomousOrchestrator:
             break
 
         if active_perico:
+            extra_py = perico_try_auto_pytest_retry(execution)
+            if extra_py:
+                execution.setdefault("executed", []).extend(extra_py)
             snap = build_perico_deliverables_snapshot(
                 mission_prompt=prompt,
                 plan=plan,
                 execution=execution,
                 goal_satisfied=bool(goal_eval.get("satisfied")),
+                retry_attempted=bool(extra_py),
             )
             self.notion.append_agent_output(mission_id, agent_name="perico_deliverables", content=_dump(snap))
+            if goal_eval.get("satisfied"):
+                block_msg = perico_should_block_for_operator_input(execution)
+                if block_msg:
+                    self.notion.transition_state(
+                        mission_id,
+                        to_state=MISSION_STATUS_WAITING_FOR_INPUT,
+                        note="perico_validation_incomplete",
+                    )
+                    self.notion.append_readability_timeline(
+                        mission_id,
+                        "Perico: validación incompleta o tests en rojo; se pide intervención del operador.",
+                    )
+                    self.notion.append_readability_executive_summary(
+                        mission_id,
+                        objective=prompt[:1200],
+                        status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
+                        what_jarvis_did="Perico aplicó o intentó cambios pero no se cumple el criterio de cierre software.",
+                        blocked=block_msg[:500],
+                        next_step="Indica cómo seguir o ajusta el alcance (botón «Responder» o mensaje normal).",
+                    )
+                    gate_sent = bool(self.telegram.send_input_request(chat_id, mission_id, block_msg))
+                    return {
+                        "ok": True,
+                        "mission_id": mission_id,
+                        "status": MISSION_STATUS_WAITING_FOR_INPUT,
+                        "dialog_message": (
+                            ""
+                            if gate_sent
+                            else (
+                                f"{block_msg}\n\n"
+                                f"Pulsa «Responder» o escribe aquí. (Ref. interna: {mission_id})"
+                            )
+                        ),
+                        "telegram_compact_reply_suppressed": gate_sent,
+                    }
 
         if goal_eval.get("satisfied"):
             wa_before = len(execution.get("waiting_for_approval") or [])

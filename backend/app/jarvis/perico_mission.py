@@ -78,6 +78,11 @@ def build_perico_mission_prompt(*, user_text: str) -> str:
         "5) Run or request validation (tests/checks) when possible.\n"
         "6) Decide whether the stated engineering objective is satisfied; if not, retry safely once.\n"
         "7) If a step would be production- or deploy-sensitive, mark it as requiring explicit human approval.\n\n"
+        "Registered Perico tools (use these exact action_type strings with auto_execute):\n"
+        "- perico_repo_read — params: operation=list|read|grep, relative_path (repo-relative), "
+        "pattern (grep only), max_results.\n"
+        "- perico_apply_patch — params: relative_path, old_text, new_text; host must set PERICO_WRITE_ENABLED=1.\n"
+        "- perico_run_pytest — params: relative_path (optional tests path under backend/), extra_args, timeout_seconds.\n\n"
         "Operator software task:\n"
         f"{raw}"
     )
@@ -89,11 +94,10 @@ def build_perico_deliverables_snapshot(
     plan: dict[str, Any] | None,
     execution: dict[str, Any] | None,
     goal_satisfied: bool | None,
+    retry_attempted: bool = False,
 ) -> dict[str, Any]:
     """
-    Minimal structured view for Notion / logs (phase 1; heuristic).
-
-    ``suspected_files`` is reserved for future tool output; kept empty when unknown.
+    Structured view for Notion / logs (phase 1; derived from execution rows).
     """
     mp = (mission_prompt or "").strip()
     user_line = ""
@@ -111,6 +115,7 @@ def build_perico_deliverables_snapshot(
 
     exec0 = execution if isinstance(execution, dict) else {}
     executed = [x for x in (exec0.get("executed") or []) if isinstance(x, dict)]
+
     def _row_text(x: dict[str, Any]) -> str:
         return " ".join(
             str(x.get(k) or "")
@@ -118,6 +123,11 @@ def build_perico_deliverables_snapshot(
         ).lower()
 
     patch_applied = any(
+        str(x.get("action_type") or "").strip().lower() == "perico_apply_patch"
+        and isinstance(x.get("result"), dict)
+        and bool((x.get("result") or {}).get("ok"))
+        for x in executed
+    ) or any(
         w in _row_text(x)
         for x in executed
         for w in ("patch", "write_file", "apply_patch", "edit_file", "git apply")
@@ -129,23 +139,132 @@ def build_perico_deliverables_snapshot(
         for w in ("deploy", "production", "ssm_send", "kubectl", "terraform apply")
     )
 
-    validation_run = "unknown"
+    files_touched: list[str] = []
+    diff_parts: list[str] = []
+    errors_detected: list[str] = []
+    pytest_rows: list[dict[str, Any]] = []
     for row in executed:
-        r = row.get("result")
-        if isinstance(r, dict) and (r.get("pytest") or r.get("tests_ok") is not None):
-            validation_run = "pytest_signal_in_result"
-            break
         at = str(row.get("action_type") or "").strip().lower()
-        if "test" in at or "pytest" in at:
-            validation_run = f"action:{at}"
-            break
+        res = row.get("result") if isinstance(row.get("result"), dict) else {}
+        if at == "perico_repo_read" and res.get("ok") and res.get("operation") == "read" and res.get("path"):
+            files_touched.append(str(res.get("path")))
+        if at == "perico_apply_patch" and res.get("ok"):
+            rp = str(res.get("relative_path") or "").strip()
+            if rp:
+                files_touched.append(rp)
+            dp = str(res.get("diff_preview") or "").strip()
+            if dp:
+                diff_parts.append(dp[:2000])
+        if at == "perico_run_pytest":
+            pytest_rows.append(row)
+            if not res.get("ok") or res.get("tests_ok") is False:
+                err = (res.get("stderr_tail") or res.get("stdout_tail") or res.get("error") or "").strip()
+                if err:
+                    errors_detected.append(err[:2500])
+
+    tests_passed: bool | None = None
+    validation_run = "unknown"
+    if pytest_rows:
+        last = pytest_rows[-1].get("result")
+        if isinstance(last, dict) and last.get("pytest"):
+            tests_passed = bool(last.get("tests_ok"))
+            validation_run = "perico_run_pytest"
+        else:
+            validation_run = "perico_run_pytest_incomplete"
 
     return {
         "target_project": target or PERICO_DEFAULT_TARGET_PROJECT,
         "task_type": task_type,
         "suspected_files": [],
+        "files_touched": sorted(set(files_touched))[:40],
+        "diff_summary": "\n---\n".join(diff_parts)[:8000] if diff_parts else "",
+        "tests_passed": tests_passed,
+        "errors_detected": errors_detected[:6],
+        "retry_attempted": bool(retry_attempted),
         "patch_applied": patch_applied,
         "validation_run": validation_run,
         "objective_satisfied": (bool(goal_satisfied) if goal_satisfied is not None else None),
         "deploy_sensitive": deploy_sensitive,
     }
+
+
+def perico_try_auto_pytest_retry(execution: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    If a patch succeeded and a single pytest run failed, invoke pytest once more with the same params.
+
+    Returns new pseudo-execution rows to append (empty if no retry).
+    """
+    from app.jarvis.executor import invoke_registered_tool, is_invoke_error_payload
+
+    rows = [x for x in (execution.get("executed") or []) if isinstance(x, dict)]
+    patch_ok = any(
+        str(x.get("action_type") or "").strip().lower() == "perico_apply_patch"
+        and isinstance(x.get("result"), dict)
+        and bool((x.get("result") or {}).get("ok"))
+        for x in rows
+    )
+    pytest_rows = [x for x in rows if str(x.get("action_type") or "").strip().lower() == "perico_run_pytest"]
+    if not patch_ok or len(pytest_rows) != 1:
+        return []
+    r0 = pytest_rows[0]
+    res0 = r0.get("result") if isinstance(r0.get("result"), dict) else {}
+    if not res0.get("pytest") or res0.get("tests_ok"):
+        return []
+    params = dict(r0.get("params") or {})
+    raw = invoke_registered_tool("perico_run_pytest", params, jarvis_run_id=None)
+    if is_invoke_error_payload(raw) or not isinstance(raw, dict):
+        synth = {
+            "title": "Automatic pytest retry (Perico)",
+            "action_type": "perico_run_pytest",
+            "params": params,
+            "execution_mode": "auto_execute",
+            "priority_score": 50,
+            "status": "failed",
+            "result": raw if isinstance(raw, dict) else {"error": "non_dict_result"},
+        }
+        return [synth]
+    synth = {
+        "title": "Automatic pytest retry (Perico)",
+        "action_type": "perico_run_pytest",
+        "params": params,
+        "execution_mode": "auto_execute",
+        "priority_score": 50,
+        "status": "executed" if raw.get("ok") and raw.get("tests_ok") else "failed",
+        "result": raw,
+    }
+    return [synth]
+
+
+def perico_should_block_for_operator_input(execution: dict[str, Any]) -> str | None:
+    """
+    Software completion gate: patch requires validation; repeated pytest failure needs operator.
+
+    Returns a Spanish operator message or None to continue the pipeline.
+    """
+    rows = [x for x in (execution.get("executed") or []) if isinstance(x, dict)]
+    patch_ok = any(
+        str(x.get("action_type") or "").strip().lower() == "perico_apply_patch"
+        and isinstance(x.get("result"), dict)
+        and bool((x.get("result") or {}).get("ok"))
+        for x in rows
+    )
+    pytest_rows = [x for x in rows if str(x.get("action_type") or "").strip().lower() == "perico_run_pytest"]
+    if patch_ok and not pytest_rows:
+        return (
+            "Perico aplicó un parche pero no hay resultado de `perico_run_pytest`. "
+            "Ejecuta tests (misma misión con una acción perico_run_pytest) o indica por qué no aplican."
+        )
+    if not pytest_rows:
+        return None
+    last = pytest_rows[-1].get("result")
+    if not isinstance(last, dict) or not last.get("pytest"):
+        return None
+    if last.get("tests_ok"):
+        return None
+    if len(pytest_rows) >= 2:
+        tail = str(last.get("stderr_tail") or last.get("combined_tail") or "")[:1200]
+        return (
+            "Tras un reintento automático, pytest sigue en rojo. "
+            f"Revisa el error o ajusta el alcance.\n\nÚltima salida (truncada):\n{tail or '(sin detalle)'}"
+        )
+    return None

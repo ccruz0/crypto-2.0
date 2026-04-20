@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.jarvis.action_policy import (
     DEFAULT_EXECUTION_MODE,
@@ -16,12 +19,22 @@ from app.jarvis.action_policy import (
 from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
 from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
+from app.jarvis.executor import invoke_registered_tool, is_invoke_error_payload
 from app.jarvis.ga4_readonly_analytics import run_ga4_readonly_analytics
+from app.jarvis.perico_mission import is_perico_marked_prompt
 from app.jarvis.setup_diagnostics import (
     diagnose_ga4_setup_bundle,
     diagnose_gsc_setup_bundle,
     flatten_ga4_execution_result,
     flatten_gsc_execution_result,
+)
+
+_PERICO_REGISTERED_TOOLS: frozenset[str] = frozenset(
+    {
+        "perico_repo_read",
+        "perico_apply_patch",
+        "perico_run_pytest",
+    }
 )
 
 _OPS_DIAG_ACTION_BY_SOURCE: dict[str, str] = {
@@ -429,6 +442,13 @@ class StrategyAgent:
         )
         return [row[1] for row in merged]
 
+    @staticmethod
+    def propose_google_ads_pause_from_readonly_diagnostic(diag: dict[str, Any]) -> list[dict[str, Any]]:
+        """Strategy-layer hook: deterministic pause proposals from read-only Ads metrics (no mutations)."""
+        from app.jarvis.google_ads_pause_proposals import build_google_ads_pause_campaign_actions
+
+        return build_google_ads_pause_campaign_actions(diag)
+
 
 class ExecutionAgent:
     name = "execution"
@@ -449,6 +469,8 @@ class ExecutionAgent:
         waiting_input: list[dict[str, Any]] = []
         for action in strategy_actions:
             mode = str(action.get("execution_mode") or DEFAULT_EXECUTION_MODE).strip().lower()
+            if mode == "approval_required":
+                mode = "requires_approval"
             row = {
                 "title": str(action.get("title") or "").strip(),
                 "action_type": str(action.get("action_type") or "analysis"),
@@ -488,6 +510,46 @@ class ExecutionAgent:
                     bundle = diagnose_gsc_setup_bundle(params)
                     flat = flatten_gsc_execution_result(bundle)
                     executed.append({**row, "status": "executed", "result": flat})
+                elif action_type in _PERICO_REGISTERED_TOOLS:
+                    if not is_perico_marked_prompt(mission_prompt):
+                        executed.append(
+                            {
+                                **row,
+                                "status": "skipped",
+                                "result": {
+                                    "ok": False,
+                                    "error": "perico_tools_require_perico_mission",
+                                    "message": "Use /perico or a prompt containing the Perico software marker.",
+                                },
+                            }
+                        )
+                    else:
+                        params = dict(row.get("params") or {})
+                        raw = invoke_registered_tool(action_type, params, jarvis_run_id=None)
+                        if is_invoke_error_payload(raw):
+                            executed.append(
+                                {
+                                    **row,
+                                    "status": "failed",
+                                    "result": raw,
+                                }
+                            )
+                        elif isinstance(raw, dict) and raw.get("ok") is False:
+                            executed.append(
+                                {
+                                    **row,
+                                    "status": "failed",
+                                    "result": raw,
+                                }
+                            )
+                        else:
+                            executed.append(
+                                {
+                                    **row,
+                                    "status": "executed",
+                                    "result": raw if isinstance(raw, dict) else {"value": raw},
+                                }
+                            )
                 else:
                     executed.append(row)
             elif mode == "requires_input":
@@ -568,40 +630,107 @@ def _ads_ctr_percent(ctr: Any) -> str:
     return f"{c * 100:.2f}%"
 
 
+def _campaign_metric_row_from_search_row(row: Any, *, include_budget_fields: bool) -> dict[str, Any] | None:
+    camp = getattr(row, "campaign", None)
+    met = getattr(row, "metrics", None)
+    if camp is None or met is None:
+        return None
+    name = str(getattr(camp, "name", "") or "").strip()
+    if not name:
+        return None
+    cid_raw = getattr(camp, "id", None)
+    try:
+        cid = int(cid_raw) if cid_raw is not None else 0
+    except (TypeError, ValueError):
+        cid = 0
+    st = getattr(camp, "status", None)
+    status_name = ""
+    if st is not None:
+        status_name = str(getattr(st, "name", None) or st or "").strip()
+    impr = int(getattr(met, "impressions", 0) or 0)
+    clk = int(getattr(met, "clicks", 0) or 0)
+    conv = float(getattr(met, "conversions", 0.0) or 0.0)
+    out: dict[str, Any] = {
+        "campaign_id": cid,
+        "name": name,
+        "status": status_name,
+        "cost": _ads_money_from_micros(getattr(met, "cost_micros", 0)),
+        "impressions": impr,
+        "clicks": clk,
+        "ctr": _ads_ctr_percent(getattr(met, "ctr", 0.0)),
+        "conversions": conv,
+    }
+    if include_budget_fields:
+        budget_rn = ""
+        cb_ref = getattr(camp, "campaign_budget", None)
+        if cb_ref is not None:
+            budget_rn = str(cb_ref).strip()
+        cb_msg = getattr(row, "campaign_budget", None)
+        amt = 0
+        exp_shared = False
+        if cb_msg is not None:
+            if not budget_rn:
+                budget_rn = str(getattr(cb_msg, "resource_name", "") or "").strip()
+            try:
+                amt = int(getattr(cb_msg, "amount_micros", 0) or 0)
+            except (TypeError, ValueError):
+                amt = 0
+            es = getattr(cb_msg, "explicitly_shared", None)
+            if es is not None:
+                try:
+                    exp_shared = bool(es)
+                except Exception:
+                    exp_shared = False
+        out["campaign_budget_resource_name"] = budget_rn
+        out["budget_amount_micros"] = amt
+        out["budget_explicitly_shared"] = exp_shared
+    return out
+
+
 def _fetch_readonly_campaign_metrics_last_30d(ga_service: Any, client: Any, customer_id: str) -> list[dict[str, Any]]:
-    """Read-only GAQL: top campaigns by spend for LAST_30_DAYS (no mutations)."""
-    req = client.get_type("SearchGoogleAdsRequest")
-    req.customer_id = customer_id
-    req.query = (
+    """Read-only GAQL: top campaigns by spend for LAST_30_DAYS (no mutations).
+
+    Tries an extended query (daily budget fields) first; on API error falls back to the
+    legacy metrics-only query so analytics missions keep working.
+    """
+    extended_query = (
+        "SELECT campaign.id, campaign.name, campaign.status, campaign.campaign_budget, "
+        "campaign_budget.amount_micros, campaign_budget.resource_name, campaign_budget.explicitly_shared, "
+        "metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.conversions "
+        "FROM campaign "
+        "WHERE segments.date DURING LAST_30_DAYS AND campaign.status IN ('ENABLED', 'PAUSED') "
+        "ORDER BY metrics.cost_micros DESC LIMIT 10"
+    )
+    narrow_query = (
         "SELECT campaign.id, campaign.name, metrics.cost_micros, metrics.impressions, "
         "metrics.clicks, metrics.ctr, metrics.conversions "
         "FROM campaign "
         "WHERE segments.date DURING LAST_30_DAYS AND campaign.status IN ('ENABLED', 'PAUSED') "
         "ORDER BY metrics.cost_micros DESC LIMIT 10"
     )
-    rows_out: list[dict[str, Any]] = []
-    for row in ga_service.search(request=req):
-        camp = getattr(row, "campaign", None)
-        met = getattr(row, "metrics", None)
-        if camp is None or met is None:
-            continue
-        name = str(getattr(camp, "name", "") or "").strip()
-        if not name:
-            continue
-        impr = int(getattr(met, "impressions", 0) or 0)
-        clk = int(getattr(met, "clicks", 0) or 0)
-        conv = float(getattr(met, "conversions", 0.0) or 0.0)
-        rows_out.append(
-            {
-                "name": name,
-                "cost": _ads_money_from_micros(getattr(met, "cost_micros", 0)),
-                "impressions": impr,
-                "clicks": clk,
-                "ctr": _ads_ctr_percent(getattr(met, "ctr", 0.0)),
-                "conversions": conv,
-            }
-        )
-    return rows_out
+    for use_budget, query in ((True, extended_query), (False, narrow_query)):
+        req = client.get_type("SearchGoogleAdsRequest")
+        req.customer_id = customer_id
+        req.query = query
+        rows_out: list[dict[str, Any]] = []
+        try:
+            for row in ga_service.search(request=req):
+                built = _campaign_metric_row_from_search_row(row, include_budget_fields=use_budget)
+                if built:
+                    rows_out.append(built)
+            if use_budget and not rows_out:
+                continue
+            return rows_out
+        except Exception as exc:
+            if use_budget:
+                logger.warning(
+                    "jarvis.google_ads.extended_metrics_query_failed customer_id=%s err=%s; falling_back",
+                    customer_id,
+                    exc,
+                )
+                continue
+            raise
+    return []
 
 
 def _readonly_analytics_insights(rows: list[dict[str, Any]]) -> tuple[list[str], list[str], str]:

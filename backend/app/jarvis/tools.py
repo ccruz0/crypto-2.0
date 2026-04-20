@@ -22,6 +22,9 @@ from app.jarvis.marketing_schemas import (
     StageMarketingActionForApprovalArgs,
     TopPagesByConversionArgs,
 )
+from app.jarvis.perico_tools import perico_apply_patch as perico_apply_patch_impl
+from app.jarvis.perico_tools import perico_repo_read as perico_repo_read_impl
+from app.jarvis.perico_tools import perico_run_pytest as perico_run_pytest_impl
 from app.jarvis.marketing_tools import (
     analyze_marketing_opportunities,
     execute_marketing_proposal,
@@ -134,6 +137,31 @@ class ExecuteReadyActionArgs(BaseModel):
 
     jarvis_run_id: str = Field(..., min_length=1, max_length=128)
     actor: str = Field(default="", max_length=256)
+
+
+class PericoRepoReadArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: str = Field(..., description="list | read | grep")
+    relative_path: str = Field(default="", max_length=1024)
+    pattern: str = Field(default="", max_length=512)
+    max_results: int = Field(default=80, ge=1, le=200)
+
+
+class PericoApplyPatchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: str = Field(..., min_length=1, max_length=1024)
+    old_text: str = Field(..., min_length=1, max_length=50_000)
+    new_text: str = Field(default="", max_length=50_000)
+
+
+class PericoRunPytestArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: str = Field(default="", max_length=1024)
+    extra_args: str = Field(default="", max_length=512)
+    timeout_seconds: int = Field(default=180, ge=15, le=900)
 
 
 ToolFn = Callable[..., Any]
@@ -357,6 +385,40 @@ def reject_pending_action(**kwargs: Any) -> dict[str, Any]:
         jarvis_run_id=args.jarvis_run_id,
         reason=args.reason,
         actor=args.actor,
+    )
+
+
+def perico_repo_read(**kwargs: Any) -> dict[str, Any]:
+    """Perico: list/read/grep under PERICO_REPO_ROOT (default crypto-2.0)."""
+    args = PericoRepoReadArgs.model_validate(kwargs)
+    op = (args.operation or "").strip().lower()
+    if op not in ("list", "read", "grep"):
+        return {"ok": False, "error": "invalid_operation", "allowed": ["list", "read", "grep"]}
+    return perico_repo_read_impl(
+        operation=op,
+        relative_path=args.relative_path,
+        pattern=args.pattern,
+        max_results=args.max_results,
+    )
+
+
+def perico_apply_patch(**kwargs: Any) -> dict[str, Any]:
+    """Perico: single-occurrence UTF-8 text replace (requires PERICO_WRITE_ENABLED)."""
+    args = PericoApplyPatchArgs.model_validate(kwargs)
+    return perico_apply_patch_impl(
+        relative_path=args.relative_path,
+        old_text=args.old_text,
+        new_text=args.new_text,
+    )
+
+
+def perico_run_pytest(**kwargs: Any) -> dict[str, Any]:
+    """Perico: run pytest under repo backend/ (cwd); optional path and extra args."""
+    args = PericoRunPytestArgs.model_validate(kwargs)
+    return perico_run_pytest_impl(
+        relative_path=args.relative_path,
+        extra_args=args.extra_args,
+        timeout_seconds=args.timeout_seconds,
     )
 
 
@@ -707,6 +769,43 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         description="Placeholder for restricted operations (always denied by executor).",
         category=ToolCategory.TRADING,
         risk_level=ToolRiskLevel.CRITICAL,
+        allowed_envs=ALL_JARVIS_ENVS,
+    ),
+    "perico_repo_read": ToolSpec(
+        name="perico_repo_read",
+        fn=perico_repo_read,
+        args_model=PericoRepoReadArgs,
+        policy=ToolPolicy.SAFE,
+        description=(
+            "Perico: read-only repo access — list directory, read text file, or grep simple pattern "
+            "(paths confined to PERICO_REPO_ROOT)."
+        ),
+        category=ToolCategory.READ,
+        allowed_envs=ALL_JARVIS_ENVS,
+    ),
+    "perico_apply_patch": ToolSpec(
+        name="perico_apply_patch",
+        fn=perico_apply_patch,
+        args_model=PericoApplyPatchArgs,
+        policy=ToolPolicy.SAFE,
+        description=(
+            "Perico: apply minimal single-occurrence text patch (UTF-8). "
+            "Requires PERICO_WRITE_ENABLED=1; paths confined to PERICO_REPO_ROOT."
+        ),
+        category=ToolCategory.WRITE,
+        risk_level=ToolRiskLevel.MEDIUM,
+        allowed_envs=ALL_JARVIS_ENVS,
+    ),
+    "perico_run_pytest": ToolSpec(
+        name="perico_run_pytest",
+        fn=perico_run_pytest,
+        args_model=PericoRunPytestArgs,
+        policy=ToolPolicy.SAFE,
+        description=(
+            "Perico: run pytest -q from repo backend/ (or repo root if no backend/). "
+            "Optional relative_path (tests file or dir) and extra_args."
+        ),
+        category=ToolCategory.READ,
         allowed_envs=ALL_JARVIS_ENVS,
     ),
 }
