@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.jarvis.analytics_mission_deliverables import (
+    deliverables_to_dict,
+    infer_analytics_deliverables,
+)
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
 from app.jarvis.mission_goal_quality import (
     build_corrective_google_ads_diagnose_action,
@@ -28,6 +32,96 @@ GSC_ANALYTICS_FULL = (
     "Review Google Search Console for the last 28 days. Return top 15 queries and landing pages with "
     "clicks, impressions, CTR, and average position metrics, top issues, and opportunities. Read-only only."
 )
+
+GOOGLE_ADS_ES_REVIEW_PAUSE_HINT = (
+    "Revisa mis campañas de Google Ads y dime si hay alguna que debería pausar. Solo lectura."
+)
+
+
+def test_spanish_google_ads_review_readonly_passes_strict_gate():
+    assert readonly_analytics_prompt_sufficient(GOOGLE_ADS_ES_REVIEW_PAUSE_HINT) is True
+
+
+def test_spanish_google_ads_infer_default_timeframe_and_top_rank():
+    spec = infer_analytics_deliverables(GOOGLE_ADS_ES_REVIEW_PAUSE_HINT)
+    assert spec is not None
+    assert spec.domain == "google_ads"
+    assert spec.inferred_timeframe is True
+    assert spec.inferred_top_rank is True
+    assert spec.timeframe_label == "last 30 days"
+    assert spec.top_rank == 10
+    d = deliverables_to_dict(spec)
+    assert d["inferred_timeframe"] is True
+    assert d["inferred_top_rank"] is True
+
+
+def test_spanish_google_ads_explicit_window_skips_time_inference():
+    p = (
+        "Revisa mis campañas de Google Ads de los últimos 14 días y dime si hay alguna que debería pausar. "
+        "Solo lectura."
+    )
+    assert readonly_analytics_prompt_sufficient(p) is True
+    spec = infer_analytics_deliverables(p)
+    assert spec is not None
+    assert spec.inferred_timeframe is False
+    assert "14" in spec.timeframe_label
+    assert spec.inferred_top_rank is True
+    assert spec.top_rank == 10
+
+
+def test_vague_long_google_ads_readonly_without_review_still_rejected():
+    p = (
+        "Haz algo con Google Ads en solo lectura por favor extiende el texto lo suficiente como para "
+        "cumplir el mínimo de longitud que exige el sistema y no agregamos verbo de revisión explícita."
+    )
+    assert readonly_analytics_prompt_sufficient(p) is False
+
+
+def test_mutating_google_ads_pause_intent_without_readonly_still_rejected():
+    p = (
+        "Pausa todas las campañas de Google Ads de inmediato sin revisar métricas y avisa cuando haya "
+        "terminado el trabajo en bloques de varias palabras para cumplir longitud mínima del prompt aquí."
+    )
+    assert readonly_analytics_prompt_sufficient(p) is False
+
+
+def test_goal_eval_deliverables_include_inferred_default_flags_for_spanish_prompt():
+    execution = {
+        "executed": [
+            {
+                "action_type": "diagnose_google_ads_setup",
+                "result": {
+                    "auth_ok": True,
+                    "campaign_fetch_ok": True,
+                    "analytics_top_campaigns": [
+                        {
+                            "name": "A",
+                            "cost": "1",
+                            "impressions": 1,
+                            "clicks": 1,
+                            "ctr": "1%",
+                            "conversions": 0.0,
+                        }
+                    ],
+                    "analytics_summary": "ok",
+                    "analytics_issues": ["i"],
+                    "analytics_opportunities": ["o"],
+                },
+            }
+        ]
+    }
+    g = evaluate_goal_satisfaction(mission_prompt=GOOGLE_ADS_ES_REVIEW_PAUSE_HINT, execution=execution)
+    assert g["satisfied"] is True
+    deliv = g.get("deliverables") or {}
+    assert deliv.get("inferred_timeframe") is True
+    assert deliv.get("inferred_top_rank") is True
+
+
+def test_well_specified_english_google_ads_deliverables_do_not_mark_inferred_defaults():
+    spec = infer_analytics_deliverables(GOOGLE_ADS_FULL)
+    assert spec is not None
+    assert spec.inferred_timeframe is False
+    assert spec.inferred_top_rank is False
 
 
 def test_well_specified_google_ads_prompt_passes_goal_when_metrics_present():
