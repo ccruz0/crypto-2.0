@@ -23,6 +23,16 @@ def test_classify_perico_command():
     assert tc.classify_jarvis_command("/perico") == ("perico", "")
 
 
+def test_classify_perico_normalizes_zw_and_at_bot():
+    from app.jarvis.telegram_control import classify_jarvis_command, normalize_telegram_slash_command
+
+    assert classify_jarvis_command("\u200b/perico fix bug") == ("perico", "fix bug")
+    assert classify_jarvis_command(normalize_telegram_slash_command("/perico@SomeBotName tail")) == (
+        "perico",
+        "tail",
+    )
+
+
 def test_build_perico_mission_prompt_contains_marker_and_default_project():
     p = build_perico_mission_prompt(user_text="revisa tests")
     assert PERICO_AGENT_MARKER in p

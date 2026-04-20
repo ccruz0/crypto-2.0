@@ -242,14 +242,33 @@ def log_jarvis_telegram_startup_status() -> None:
         )
 
 
+# Zero-width / invisible chars that break command token matching (must match telegram_commands router).
+_ZW_INVISIBLE = "\u200b\u200c\u200d\ufeff"
+
+
 def _normalize_command_text(text: str) -> str:
     t = (text or "").strip()
+    if t and any(c in t for c in _ZW_INVISIBLE):
+        t = "".join(c for c in t if c not in _ZW_INVISIBLE).strip()
     if "@" in t and t.startswith("/"):
         try:
             t = re.sub(r"@\S+", "", t).strip() or t
         except Exception:
             t = t.split("@", 1)[0].strip()
     return t
+
+
+def normalize_telegram_slash_command(text: str) -> str:
+    """
+    Single entry normalization for slash commands before Jarvis/ATP routing.
+
+    Handles fullwidth slash (some clients), zero-width chars, and @bot suffixes.
+    Used by telegram_commands.handle_telegram_update so /perico and /jarvis match reliably.
+    """
+    t = (text or "").strip()
+    if t.startswith("\uff0f"):
+        t = "/" + t[1:].lstrip()
+    return _normalize_command_text(t)
 
 
 def classify_jarvis_command(text: str) -> tuple[str, str] | None:
@@ -263,6 +282,9 @@ def classify_jarvis_command(text: str) -> tuple[str, str] | None:
     parts = t.split(None, 2)
     cmd = (parts[0] or "").lower()
     rest1 = (parts[1] or "").strip() if len(parts) > 1 else ""
+    # Telegram @BotName suffix: "/jarvis@bot" -> cmd is not "/jarvis" until @ stripped above; defensive split
+    if "@" in cmd and cmd.startswith("/"):
+        cmd = cmd.split("@", 1)[0].strip().lower()
 
     if cmd == "/jarvis":
         tail = t[len("/jarvis") :].strip()

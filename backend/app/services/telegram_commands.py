@@ -25,6 +25,7 @@ from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
 from app.utils.http_client import http_get, http_post, requests_exceptions
 from app.utils.telegram_token_loader import get_telegram_token, get_telegram_token_dev, get_telegram_token_source, mask_token
+from app.jarvis.telegram_control import normalize_telegram_slash_command
 
 logger = logging.getLogger(__name__)
 
@@ -1811,6 +1812,8 @@ ATP Alerts = alerts-only. Claw = OpenClaw-native only.
 
 /start - Show welcome message and command list
 /help - Show this help message
+/jarvis &lt;prompt&gt; - Jarvis autonomous mission (marketing/diagnostics; requires JARVIS_AUTONOMOUS_ENABLED)
+/perico &lt;prompt&gt; - Perico software specialist (repo/tools/pytest; requires JARVIS_AUTONOMOUS_ENABLED)
 /task &lt;description&gt; - Create Notion task from Telegram. Example: /task Investigate why alerts are not sent
 /status - Get bot status report (system, trading status, settings)
 /portfolio - List all open orders and active positions
@@ -6056,10 +6059,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 type(message.get("caption")).__name__,
             )
             return
-    raw_text = (raw_body or "").strip()
-    # Some clients send fullwidth slash (U+FF0F) instead of ASCII /
-    if raw_text.startswith("\uff0f"):
-        raw_text = "/" + raw_text[1:].lstrip()
+    raw_text = normalize_telegram_slash_command((raw_body or "").strip())
     if not raw_text:
         return
     _update_msg_source = (
@@ -6579,9 +6579,42 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         )
                         ok = send_command_response(chat_id, f"❌ Task error: {str(task_err)[:200]}")
                 else:
+                    # Fallback: Jarvis/Perico hooks run before auth; if they raised or text differed from
+                    # post-auth `text`, classify again and dispatch (same path as maybe_handle_jarvis_telegram_message).
+                    try:
+                        from app.jarvis.telegram_control import (
+                            classify_jarvis_command,
+                            maybe_handle_jarvis_telegram_message,
+                        )
+
+                        if classify_jarvis_command(text) is not None:
+                            logger.info(
+                                "[TG][ROUTE] jarvis_unknown_fallback_try update_id=%s chat_id=%s text_repr=%r",
+                                update_id,
+                                chat_id,
+                                (text or "")[:160],
+                            )
+                            if maybe_handle_jarvis_telegram_message(
+                                raw_text=text,
+                                chat_id=chat_id,
+                                actor_user_id=actor_user_id or "",
+                                from_user=from_user if isinstance(from_user, dict) else None,
+                                send=lambda msg: send_command_response(chat_id, msg),
+                            ):
+                                logger.info(
+                                    "[TG][ROUTE] update_id=%s handler=jarvis_telegram_fallback consumed=1",
+                                    update_id,
+                                )
+                                return
+                    except Exception as _jarvis_fb_err:
+                        logger.warning(
+                            "jarvis unknown-branch fallback failed (non-fatal) update_id=%s err=%s",
+                            update_id,
+                            _jarvis_fb_err,
+                        )
                     logger.warning(
                         "[TG][UNKNOWN] telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
-                        update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
+                        update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:120]),
                     )
                     logger.info("[TG][HANDLER] handler=unknown executing")
                     ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
