@@ -18,6 +18,7 @@ from app.jarvis.notion_mission_readability import (
     format_executive_summary_block,
     format_timeline_line,
     human_mission_status,
+    notion_executive_display_fields,
 )
 from app.services.notion_task_reader import get_notion_task_by_id
 from app.services.notion_tasks import create_notion_task
@@ -104,12 +105,16 @@ class NotionMissionService:
             f"[MISSION_STATE] {MISSION_STATUS_RECEIVED} actor={actor or 'unknown'}",
         )
         self._set_mission_state_property(mission_id, MISSION_STATUS_RECEIVED)
+        nf = notion_executive_display_fields(prompt, specialist_agent=specialist_agent)
         self.append_readability_executive_summary(
             mission_id,
-            objective=prompt[:1200],
+            objective=nf["objective"],
             status=human_mission_status(MISSION_STATUS_RECEIVED),
             what_jarvis_did="Misión creada en Notion y puesta en cola.",
             next_step="Jarvis lanzará el planificador y seguirá el flujo.",
+            agent=nf["agent"],
+            project=nf["project"],
+            task_type=nf["task_type"],
         )
         self.append_readability_timeline(mission_id, "Misión registrada en Notion.")
         return {
@@ -258,6 +263,9 @@ class NotionMissionService:
         key_result: str = "",
         blocked: str = "",
         next_step: str = "",
+        agent: str = "",
+        project: str = "",
+        task_type: str = "",
     ) -> None:
         """Operator-facing summary block; does not replace technical [AGENT_OUTPUT] logs."""
         body = format_executive_summary_block(
@@ -267,6 +275,9 @@ class NotionMissionService:
             key_result=key_result,
             blocked=blocked,
             next_step=next_step,
+            agent=agent,
+            project=project,
+            task_type=task_type,
         )
         if body.strip():
             self._append_comment(mission_id, body)

@@ -54,9 +54,11 @@ from app.jarvis.mission_goal_quality import (
     should_attempt_goal_retry,
 )
 from app.jarvis.notion_mission_readability import (
-    summarize_execution_for_readability,
-    summarize_plan_for_readability,
     human_mission_status,
+    notion_executive_display_fields,
+    summarize_execution_for_readability,
+    summarize_perico_pending_approval_for_notion,
+    summarize_plan_for_readability,
 )
 from app.jarvis.notion_mission_service import NotionMissionService
 from app.jarvis.perico_mission import (
@@ -635,6 +637,7 @@ class JarvisAutonomousOrchestrator:
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="planner started")
         self.notion.append_readability_timeline(mission_id, "Planificador iniciado.")
         active_perico = (specialist_agent or "").strip().lower() == "perico" or is_perico_marked_prompt(prompt)
+        nf = notion_executive_display_fields(prompt, specialist_agent=specialist_agent)
         if active_perico:
             self.notion.append_readability_timeline(
                 mission_id,
@@ -656,11 +659,14 @@ class JarvisAutonomousOrchestrator:
             )
             self.notion.append_readability_executive_summary(
                 mission_id,
-                objective=prompt[:1200],
+                objective=nf["objective"],
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
                 what_jarvis_did="El planificador necesita un poco más de contexto para avanzar con seguridad.",
                 key_result=str(plan.get("objective") or summarize_plan_for_readability(plan))[:500],
                 next_step="Responder en Telegram (botones o mensaje normal).",
+                agent=nf["agent"],
+                project=nf["project"],
+                task_type=nf["task_type"],
             )
             clarify_sent = bool(self.telegram.send_input_request(chat_id, mission_id, clarify))
             return {
@@ -781,11 +787,14 @@ class JarvisAutonomousOrchestrator:
                     )
                     self.notion.append_readability_executive_summary(
                         mission_id,
-                        objective=prompt[:1200],
+                        objective=nf["objective"],
                         status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
                         what_jarvis_did="Perico aplicó o intentó cambios pero no se cumple el criterio de cierre software.",
                         blocked=block_msg[:500],
                         next_step="Indica cómo seguir o ajusta el alcance (botón «Responder» o mensaje normal).",
+                        agent=nf["agent"],
+                        project=nf["project"],
+                        task_type=nf["task_type"],
                     )
                     gate_sent = bool(self.telegram.send_input_request(chat_id, mission_id, block_msg))
                     return {
@@ -826,11 +835,14 @@ class JarvisAutonomousOrchestrator:
             )
             self.notion.append_readability_executive_summary(
                 mission_id,
-                objective=prompt[:1200],
+                objective=nf["objective"],
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
                 what_jarvis_did="Se ejecutó la misión, pero el objetivo declarado sigue sin cubrirse del todo.",
                 blocked=shortfall[:500],
                 next_step="Responder con el detalle que falta (botón «Responder» o mensaje normal).",
+                agent=nf["agent"],
+                project=nf["project"],
+                task_type=nf["task_type"],
             )
             shortfall_sent = bool(self.telegram.send_input_request(chat_id, mission_id, shortfall))
             return {
@@ -880,11 +892,14 @@ class JarvisAutonomousOrchestrator:
             )
             self.notion.append_readability_executive_summary(
                 mission_id,
-                objective=prompt[:1200],
+                objective=nf["objective"],
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
                 what_jarvis_did="La ejecución se detuvo: una acción necesita más contexto.",
                 blocked=prompt_text[:500],
                 next_step="Responder por Telegram («Responder» o mensaje en este chat).",
+                agent=nf["agent"],
+                project=nf["project"],
+                task_type=nf["task_type"],
             )
             input_sent = bool(self.telegram.send_input_request(chat_id, mission_id, prompt_text))
             return {
@@ -920,13 +935,27 @@ class JarvisAutonomousOrchestrator:
                 mission_id,
                 "Pendiente de tu aprobación en Telegram (mensaje con botones en este chat).",
             )
+            if active_perico:
+                wj_approval, nxt_approval = summarize_perico_pending_approval_for_notion(
+                    execution, combined_waiting_approval
+                )
+                blk_approval = "Hay un paso que solo puede ejecutarse tras tu aprobación en Telegram."
+            else:
+                wj_approval = summarize_execution_for_readability(execution)
+                nxt_approval = (
+                    "Aprobar o rechazar con los botones del mensaje anterior o con /mission."
+                )
+                blk_approval = "Sin tu aprobación no puedo seguir con este paso."
             self.notion.append_readability_executive_summary(
                 mission_id,
-                objective=prompt[:1200],
+                objective=nf["objective"],
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_APPROVAL),
-                what_jarvis_did=summarize_execution_for_readability(execution),
-                blocked="Sin tu aprobación no puedo seguir con este paso.",
-                next_step="Aprobar o rechazar con los botones del mensaje anterior o con /mission.",
+                what_jarvis_did=wj_approval,
+                blocked=blk_approval,
+                next_step=nxt_approval,
+                agent=nf["agent"],
+                project=nf["project"],
+                task_type=nf["task_type"],
             )
             approval_sent = bool(self.telegram.send_approval_request(chat_id, mission_id, summary))
             return {
@@ -965,11 +994,14 @@ class JarvisAutonomousOrchestrator:
             self.notion.append_readability_timeline(mission_id, "Revisión superada; misión completada.")
             self.notion.append_readability_executive_summary(
                 mission_id,
-                objective=prompt[:1200],
+                objective=nf["objective"],
                 status=human_mission_status(MISSION_STATUS_DONE),
                 what_jarvis_did=summarize_execution_for_readability(execution),
                 key_result=str(review.get("summary") or "Completada correctamente.")[:500],
                 next_step="El detalle completo está en Notion; abajo quedan los logs técnicos.",
+                agent=nf["agent"],
+                project=nf["project"],
+                task_type=nf["task_type"],
             )
             return {
                 "ok": True,

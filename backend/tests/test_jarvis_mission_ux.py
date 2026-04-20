@@ -8,7 +8,9 @@ from app.jarvis.notion_mission_readability import (
     format_executive_summary_block,
     format_timeline_line,
     human_mission_status,
+    notion_executive_display_fields,
 )
+from app.jarvis.perico_mission import build_perico_mission_prompt
 from app.jarvis.telegram_mission_markup import build_jarvis_mission_inline_markup
 
 
@@ -30,9 +32,15 @@ def test_executive_summary_and_timeline_tags():
         what_jarvis_did="Ran planner",
         key_result="Needs scope",
         next_step="Reply",
+        agent="Perico",
+        project="crypto-2.0",
+        task_type="validación",
     )
     assert "[EXEC_SUMMARY]" in s
     assert "Objetivo:" in s and "Analyze Ads" in s
+    assert "Agente: Perico" in s
+    assert "Proyecto: crypto-2.0" in s
+    assert "Tipo de tarea: validación" in s
     assert "Qué hizo Jarvis:" in s
     tl = format_timeline_line("Planner started.")
     assert tl.startswith("[TIMELINE]")
@@ -41,3 +49,23 @@ def test_executive_summary_and_timeline_tags():
 def test_human_mission_status_labels():
     assert "respuesta" in human_mission_status("waiting_for_input").lower()
     assert human_mission_status("done") == "Completada"
+
+
+def test_notion_executive_display_strips_perico_wrapped_prompt():
+    wrapped = build_perico_mission_prompt(user_text="Validar tests en crypto-2.0")
+    nf = notion_executive_display_fields(wrapped, specialist_agent="perico")
+    assert "[AGENT:" not in nf["objective"]
+    assert "Registered Perico tools" not in nf["objective"]
+    assert "Validar tests" in nf["objective"] or "crypto-2.0" in nf["objective"]
+    assert nf["agent"] == "Perico"
+    assert nf["project"]
+    assert nf["task_type"] == "validación"
+
+    plain = format_executive_summary_block(
+        objective=nf["objective"],
+        status="Recibida",
+        agent=nf["agent"],
+        project=nf["project"],
+        task_type=nf["task_type"],
+    )
+    assert "[AGENT:PERICO" not in plain
