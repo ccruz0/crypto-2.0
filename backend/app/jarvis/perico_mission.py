@@ -98,8 +98,184 @@ def _collect_suspected_files(executed: list[dict[str, Any]]) -> list[str]:
     return out[:25]
 
 
+def _perico_executed_rows(execution: dict[str, Any] | None) -> list[dict[str, Any]]:
+    ex = execution if isinstance(execution, dict) else {}
+    return [x for x in (ex.get("executed") or []) if isinstance(x, dict)]
+
+
+def perico_has_repo_inspection(executed: list[dict[str, Any]]) -> bool:
+    """True when Perico actually inspected the repo (read, list, or grep with hits)."""
+    for row in executed:
+        if str(row.get("action_type") or "").strip().lower() != "perico_repo_read":
+            continue
+        res = row.get("result") if isinstance(row.get("result"), dict) else {}
+        if not res.get("ok"):
+            continue
+        op = str(res.get("operation") or "").strip().lower()
+        if op == "read":
+            return True
+        if op == "list":
+            return True
+        if op == "grep":
+            matches = res.get("matches") or []
+            if isinstance(matches, list) and any(isinstance(m, dict) and str(m.get("path") or "").strip() for m in matches):
+                return True
+    return False
+
+
+def _perico_patch_attempted(executed: list[dict[str, Any]]) -> bool:
+    return any(str(x.get("action_type") or "").strip().lower() == "perico_apply_patch" for x in executed)
+
+
+def _perico_hypothesis_heuristic(*, plan: dict[str, Any] | None, executed: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    if isinstance(plan, dict):
+        obj = str(plan.get("objective") or "").strip()
+        if len(obj) > 12:
+            parts.append(obj[:420])
+    for row in executed:
+        if str(row.get("action_type") or "").strip().lower() not in (
+            "perico_repo_read",
+            "perico_apply_patch",
+            "perico_run_pytest",
+        ):
+            continue
+        for key in ("rationale", "title"):
+            chunk = str(row.get(key) or "").strip()
+            if len(chunk) > 15:
+                parts.append(chunk[:220])
+        if len(parts) >= 3:
+            break
+    text = " | ".join(parts)[:900] if parts else ""
+    return text or "(sin hipótesis textual explícita en acciones ejecutadas)"
+
+
+def _perico_root_cause_heuristic(
+    *,
+    task_type: str,
+    patch_applied: bool,
+    tests_passed: bool | None,
+    has_inspection: bool,
+    errors_detected: list[str],
+) -> str:
+    if patch_applied and tests_passed is True:
+        return "Parche aplicado y validación pytest en verde (alcance acotado al repo)."
+    if patch_applied and tests_passed is False:
+        tail = (errors_detected[0] if errors_detected else "")[:400]
+        return (
+            "Parche aplicado pero pytest sigue en rojo tras el intento de validación; "
+            f"revisar salida. {tail}".strip()
+        )
+    if patch_applied and tests_passed is None:
+        return "Parche aplicado; resultado de pytest incompleto o no registrado."
+    if is_perico_bugfix_rubric_task(task_type) and has_inspection:
+        return "Sin parche aplicado; inspección de repositorio realizada (cierre tipo diagnóstico / sin cambio de código)."
+    if has_inspection:
+        return "Inspección de repositorio realizada; sin parche aplicado en esta misión."
+    return "Sin inspección clara del repo ni parche aplicado en el registro de ejecución."
+
+
+def evaluate_perico_marked_goal_satisfaction(
+    *, mission_prompt: str, execution: dict[str, Any] | None
+) -> dict[str, Any]:
+    """
+    Strict objective check for bugfix/integration_fix Perico missions.
+
+    Other Perico task types keep satisfied=True (no analytics-style rubric).
+    """
+    executed = _perico_executed_rows(execution)
+    task_type = parse_perico_task_type_from_prompt(mission_prompt)
+    if not is_perico_bugfix_rubric_task(task_type):
+        return {
+            "satisfied": True,
+            "missing_items": [],
+            "reason": "perico_no_bugfix_rubric",
+            "auto_retry_recommended": False,
+            "evaluator_domain": "perico_software",
+        }
+
+    patch_ok = any(
+        str(x.get("action_type") or "").strip().lower() == "perico_apply_patch"
+        and isinstance(x.get("result"), dict)
+        and bool((x.get("result") or {}).get("ok"))
+        for x in executed
+    )
+    pytest_rows = [x for x in executed if str(x.get("action_type") or "").strip().lower() == "perico_run_pytest"]
+    inspected = perico_has_repo_inspection(executed)
+
+    if patch_ok:
+        if not pytest_rows:
+            return {
+                "satisfied": False,
+                "missing_items": ["perico_bugfix_validation_missing"],
+                "reason": "perico_bugfix_rubric",
+                "auto_retry_recommended": False,
+                "evaluator_domain": "perico_bugfix",
+            }
+        last = pytest_rows[-1].get("result") if isinstance(pytest_rows[-1].get("result"), dict) else {}
+        if not last.get("pytest"):
+            return {
+                "satisfied": False,
+                "missing_items": ["perico_bugfix_pytest_incomplete"],
+                "reason": "perico_bugfix_rubric",
+                "auto_retry_recommended": False,
+                "evaluator_domain": "perico_bugfix",
+            }
+        if not last.get("tests_ok"):
+            return {
+                "satisfied": False,
+                "missing_items": ["perico_bugfix_tests_failed"],
+                "reason": "perico_bugfix_rubric",
+                "auto_retry_recommended": False,
+                "evaluator_domain": "perico_bugfix",
+            }
+        return {
+            "satisfied": True,
+            "missing_items": [],
+            "reason": "perico_bugfix_rubric",
+            "auto_retry_recommended": False,
+            "evaluator_domain": "perico_bugfix",
+        }
+
+    if not inspected:
+        return {
+            "satisfied": False,
+            "missing_items": ["perico_bugfix_inspection_missing"],
+            "reason": "perico_bugfix_rubric",
+            "auto_retry_recommended": False,
+            "evaluator_domain": "perico_bugfix",
+        }
+    return {
+        "satisfied": True,
+        "missing_items": [],
+        "reason": "perico_bugfix_diagnosis_only",
+        "auto_retry_recommended": False,
+        "evaluator_domain": "perico_bugfix",
+    }
+
+
 def is_perico_marked_prompt(prompt: str) -> bool:
     return PERICO_AGENT_MARKER in (prompt or "")
+
+
+def parse_perico_task_type_from_prompt(mission_prompt: str) -> str:
+    """Task type from [PERICO_TASK_TYPE: …] marker; falls back to classifying operator line."""
+    mp = (mission_prompt or "").strip()
+    m = re.search(r"\[PERICO_TASK_TYPE:\s*([^\]]+)\]", mp)
+    if m:
+        return m.group(1).strip()
+    user_line = ""
+    if "Operator software task:" in mp:
+        user_line = mp.split("Operator software task:", 1)[-1].strip()
+    else:
+        user_line = mp
+    return classify_perico_task_type(user_line)
+
+
+def is_perico_bugfix_rubric_task(task_type: str) -> bool:
+    """Strict software-done rubric (inspection + validation when patching)."""
+    t = (task_type or "").strip().lower()
+    return t in ("bugfix", "integration_fix")
 
 
 def infer_perico_target_project(user_text: str) -> str | None:
@@ -128,6 +304,33 @@ def classify_perico_task_type(user_text: str) -> str:
     # Diagnostics before bugfix: phrases like "por qué falla" are investigation-first.
     if any(x in low for x in ("investiga", "investigar", "por qué", "why", "diagn")):
         return "diagnostics"
+    integ = any(
+        x in low
+        for x in (
+            "integración",
+            "integracion",
+            "integration",
+            "webhook",
+            "endpoint",
+        )
+    )
+    if integ and any(
+        x in low
+        for x in (
+            "bug",
+            "falla",
+            "error",
+            "fix",
+            "arregla",
+            "broken",
+            "traceback",
+            "no envía",
+            "no envia",
+            "no llega",
+            "fallo",
+        )
+    ):
+        return "integration_fix"
     if any(x in low for x in ("bug", "falla", "error", "fix", "arregla", "broken", "traceback")):
         return "bugfix"
     if any(x in low for x in ("test", "pytest", "unit test", "fallan los tests")):
@@ -146,6 +349,15 @@ def build_perico_mission_prompt(*, user_text: str) -> str:
     raw = (user_text or "").strip()
     hint = infer_perico_target_project(raw) or PERICO_DEFAULT_TARGET_PROJECT
     task_type = classify_perico_task_type(raw)
+    bugfix_rubric = is_perico_bugfix_rubric_task(task_type)
+    bugfix_extra = ""
+    if bugfix_rubric:
+        bugfix_extra = (
+            "\nBugfix / integration-fix closure (this task type is strictly validated):\n"
+            "- State a short hypothesis before patching; after changes, summarize root cause vs symptom.\n"
+            "- If you change code: apply a minimal patch, then run perico_run_pytest until green or stop after one safe retry path.\n"
+            "- If you do not change code: still inspect the repo (read/grep) and explain why no patch is justified.\n"
+        )
     return (
         f"{PERICO_AGENT_MARKER}\n"
         f"[PERICO_TARGET_PROJECT_HINT: {hint}]\n"
@@ -163,7 +375,8 @@ def build_perico_mission_prompt(*, user_text: str) -> str:
         "4) Propose or apply a minimal patch only when justified.\n"
         "5) Run or request validation (tests/checks) when possible.\n"
         "6) Decide whether the stated engineering objective is satisfied; if not, retry safely once.\n"
-        "7) If a step would be production- or deploy-sensitive, mark it as requiring explicit human approval.\n\n"
+        "7) If a step would be production- or deploy-sensitive, mark it as requiring explicit human approval.\n"
+        f"{bugfix_extra}"
         "Registered Perico tools (use these exact action_type strings with auto_execute):\n"
         "- perico_repo_read — params: operation=list|read|grep, relative_path (repo-relative), "
         "pattern (grep only), max_results.\n"
@@ -260,6 +473,51 @@ def build_perico_deliverables_snapshot(
 
     suspected = _collect_suspected_files(executed)
     validation_command = _format_validation_command(pytest_rows)
+    has_inspection = perico_has_repo_inspection(executed)
+    fix_attempted = _perico_patch_attempted(executed)
+    hypothesis_summary = _perico_hypothesis_heuristic(plan=plan, executed=executed)
+    root_cause_summary = _perico_root_cause_heuristic(
+        task_type=task_type,
+        patch_applied=patch_applied,
+        tests_passed=tests_passed,
+        has_inspection=has_inspection,
+        errors_detected=errors_detected,
+    )
+    if not pytest_rows:
+        validation_result_summary = "pytest no ejecutado en esta misión"
+    elif validation_run == "perico_run_pytest_incomplete":
+        validation_result_summary = "pytest lanzado pero el resultado quedó incompleto"
+    elif tests_passed is True:
+        validation_result_summary = "pytest (última pasada): OK"
+    elif tests_passed is False:
+        validation_result_summary = "pytest (última pasada): falló"
+    else:
+        validation_result_summary = "pytest: estado desconocido"
+
+    retry_reason = ""
+    if retry_attempted:
+        last_res = pytest_rows[-1].get("result") if pytest_rows else {}
+        if isinstance(last_res, dict) and last_res.get("retry_reason"):
+            retry_reason = str(last_res["retry_reason"])[:500]
+        else:
+            retry_reason = "Reintento automático de pytest tras el primer fallo (mismos parámetros)."
+
+    software_closure_state: str | None = None
+    if is_perico_bugfix_rubric_task(task_type):
+        gate = perico_should_block_for_operator_input(exec0)
+        if gate:
+            software_closure_state = "blocked"
+        elif patch_applied:
+            if tests_passed is True:
+                software_closure_state = "fixed"
+            elif tests_passed is False:
+                software_closure_state = "blocked"
+            else:
+                software_closure_state = "partially_fixed"
+        elif has_inspection:
+            software_closure_state = "fixed"
+        else:
+            software_closure_state = "blocked"
 
     return {
         "target_project": target or PERICO_DEFAULT_TARGET_PROJECT,
@@ -275,6 +533,13 @@ def build_perico_deliverables_snapshot(
         "validation_command": validation_command,
         "objective_satisfied": (bool(goal_satisfied) if goal_satisfied is not None else None),
         "deploy_sensitive": deploy_sensitive,
+        "bugfix_rubric": is_perico_bugfix_rubric_task(task_type),
+        "root_cause_summary": root_cause_summary[:1200],
+        "hypothesis_summary": hypothesis_summary[:1200],
+        "fix_attempted": fix_attempted,
+        "validation_result_summary": validation_result_summary[:500],
+        "retry_reason": retry_reason[:600] if retry_reason else "",
+        "software_closure_state": software_closure_state,
     }
 
 
@@ -302,7 +567,10 @@ def perico_try_auto_pytest_retry(execution: dict[str, Any]) -> list[dict[str, An
         return []
     params = dict(r0.get("params") or {})
     raw = invoke_registered_tool("perico_run_pytest", params, jarvis_run_id=None)
+    rr = "Reintento automático de pytest tras el primer fallo (mismos parámetros)."
     if is_invoke_error_payload(raw) or not isinstance(raw, dict):
+        base = dict(raw) if isinstance(raw, dict) else {"error": "non_dict_result"}
+        base["retry_reason"] = rr
         synth = {
             "title": "Automatic pytest retry (Perico)",
             "action_type": "perico_run_pytest",
@@ -310,9 +578,11 @@ def perico_try_auto_pytest_retry(execution: dict[str, Any]) -> list[dict[str, An
             "execution_mode": "auto_execute",
             "priority_score": 50,
             "status": "failed",
-            "result": raw if isinstance(raw, dict) else {"error": "non_dict_result"},
+            "result": base,
         }
         return [synth]
+    merged = dict(raw)
+    merged["retry_reason"] = rr
     synth = {
         "title": "Automatic pytest retry (Perico)",
         "action_type": "perico_run_pytest",
@@ -320,7 +590,7 @@ def perico_try_auto_pytest_retry(execution: dict[str, Any]) -> list[dict[str, An
         "execution_mode": "auto_execute",
         "priority_score": 50,
         "status": "executed" if raw.get("ok") and raw.get("tests_ok") else "failed",
-        "result": raw,
+        "result": merged,
     }
     return [synth]
 

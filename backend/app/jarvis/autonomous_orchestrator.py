@@ -727,6 +727,11 @@ class JarvisAutonomousOrchestrator:
                 strategy={"actions": non_ops_actions, "source": strategy.get("source")},
                 mission_prompt=prompt,
             )
+            if active_perico:
+                extra_py = perico_try_auto_pytest_retry(execution)
+                if extra_py:
+                    execution.setdefault("executed", []).extend(extra_py)
+                    execution["_perico_auto_pytest_retry_applied"] = True
             exec_tag = "execution" if retry_phase == 0 else "execution_retry"
             self.notion.append_agent_output(mission_id, agent_name=exec_tag, content=_dump(execution))
             goal_eval = evaluate_goal_satisfaction(mission_prompt=prompt, execution=execution)
@@ -754,15 +759,12 @@ class JarvisAutonomousOrchestrator:
             break
 
         if active_perico:
-            extra_py = perico_try_auto_pytest_retry(execution)
-            if extra_py:
-                execution.setdefault("executed", []).extend(extra_py)
             snap = build_perico_deliverables_snapshot(
                 mission_prompt=prompt,
                 plan=plan,
                 execution=execution,
                 goal_satisfied=bool(goal_eval.get("satisfied")),
-                retry_attempted=bool(extra_py),
+                retry_attempted=bool(execution.get("_perico_auto_pytest_retry_applied")),
             )
             self.notion.append_agent_output(mission_id, agent_name="perico_deliverables", content=_dump(snap))
             if goal_eval.get("satisfied"):

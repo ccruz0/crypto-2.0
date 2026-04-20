@@ -16,7 +16,7 @@ from app.jarvis.analytics_mission_deliverables import (
     deliverables_to_dict,
     infer_analytics_deliverables,
 )
-from app.jarvis.perico_mission import is_perico_marked_prompt
+from app.jarvis.perico_mission import evaluate_perico_marked_goal_satisfaction, is_perico_marked_prompt
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
 
 
@@ -380,6 +380,8 @@ def evaluate_goal_satisfaction(*, mission_prompt: str, execution: dict[str, Any]
     When no rubric applies, returns satisfied=True so existing missions keep current behavior.
     """
     prompt = (mission_prompt or "").strip()
+    if is_perico_marked_prompt(prompt):
+        return evaluate_perico_marked_goal_satisfaction(mission_prompt=prompt, execution=execution)
     spec = infer_analytics_deliverables(prompt)
     if spec is None:
         return {"satisfied": True, "missing_items": [], "reason": "no_strict_rubric", "auto_retry_recommended": False}
@@ -486,6 +488,10 @@ def format_goal_shortfall_user_message(goal: dict[str, Any]) -> str:
         "gsc_readonly_analytics_unavailable": "filas de analítica de Search Console en solo lectura (puede que este build no exponga informes en vivo)",
         "gsc_summary": "un resumen cuantitativo breve de Search Console",
         "gsc_insights": "al menos un hallazgo concreto en Search Console (problema u oportunidad)",
+        "perico_bugfix_validation_missing": "validación pytest tras un parche (misión tipo bugfix)",
+        "perico_bugfix_pytest_incomplete": "resultado completo de pytest tras el parche",
+        "perico_bugfix_tests_failed": "tests en verde tras el parche (incluido el reintento automático cuando aplica)",
+        "perico_bugfix_inspection_missing": "inspección del repo (read/grep/list con resultados) antes de cerrar",
     }
     parts = [human.get(m, m.replace("_", " ")) for m in missing if isinstance(m, str)]
     detail = ", ".join(parts[:5]) if parts else "lo que pedías en la misión"

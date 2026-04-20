@@ -216,7 +216,9 @@ def test_planner_requires_input_sends_natural_clarification_not_rigid_block(monk
     assert out["status"] == MISSION_STATUS_WAITING_FOR_INPUT
     msg = out["dialog_message"]
     assert "Provide missing constraints" not in msg
-    assert "Before I start" in msg or "?" in msg
+    # When Telegram accepts the inline prompt, dialog_message is intentionally empty.
+    combined = msg + "\n" + "\n".join(getattr(tg, "sent", []) or [])
+    assert "Before I start" in combined or "?" in combined
 
 
 def test_mutating_mission_still_pauses_for_approval_not_done():

@@ -205,6 +205,30 @@ def test_deliverables_includes_files_and_tests_flag():
     assert "pytest" in snap["validation_command"]
     assert "tests/test_x.py" in snap["validation_command"]
     assert "a.py" in snap["suspected_files"]
+    assert snap.get("software_closure_state") is None
+    assert snap.get("bugfix_rubric") is False
+
+
+def test_deliverables_retry_reason_after_auto_pytest():
+    mp = build_perico_mission_prompt(user_text="x")
+    execution = {
+        "executed": [
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "a.py"}},
+            {
+                "action_type": "perico_run_pytest",
+                "params": {"relative_path": "tests/t.py"},
+                "result": {"ok": True, "pytest": True, "tests_ok": True, "exit_code": 0, "retry_reason": "auto"},
+            },
+        ]
+    }
+    snap = build_perico_deliverables_snapshot(
+        mission_prompt=mp,
+        plan={},
+        execution=execution,
+        goal_satisfied=True,
+        retry_attempted=True,
+    )
+    assert snap.get("retry_reason")
 
 
 def test_deliverables_suspected_files_from_grep_and_read():

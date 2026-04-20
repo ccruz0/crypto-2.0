@@ -6,6 +6,7 @@ from app.jarvis import telegram_control as tc
 from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
 from app.jarvis.autonomous_orchestrator import JarvisAutonomousOrchestrator
 from app.jarvis.mission_goal_quality import should_attempt_goal_retry
+from app.jarvis.mission_goal_quality import evaluate_goal_satisfaction
 from app.jarvis.perico_mission import (
     PERICO_AGENT_MARKER,
     build_perico_deliverables_snapshot,
@@ -13,6 +14,7 @@ from app.jarvis.perico_mission import (
     classify_perico_task_type,
     infer_perico_target_project,
     is_perico_marked_prompt,
+    parse_perico_task_type_from_prompt,
 )
 
 
@@ -42,6 +44,199 @@ def test_classify_perico_task_type():
     assert classify_perico_task_type("corre pytest") == "validation"
     assert classify_perico_task_type("refactor limpiar") == "refactor"
     assert classify_perico_task_type("investiga por qué falla") == "diagnostics"
+    assert classify_perico_task_type("arregla integración webhook que falla") == "integration_fix"
+
+
+def test_parse_perico_task_type_from_wrapped_prompt():
+    mp = build_perico_mission_prompt(user_text="arregla integración webhook que falla")
+    assert parse_perico_task_type_from_prompt(mp) == "integration_fix"
+
+
+def test_evaluate_goal_bugfix_patch_and_pytest_green():
+    mp = build_perico_mission_prompt(user_text="hay un bug en login")
+    ex = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "params": {"operation": "read", "relative_path": "a.py"},
+                "result": {"ok": True, "operation": "read", "path": "/tmp/a.py", "content": "x"},
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "a.py"}},
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"ok": True, "pytest": True, "tests_ok": True, "exit_code": 0},
+            },
+        ]
+    }
+    g = evaluate_goal_satisfaction(mission_prompt=mp, execution=ex)
+    assert g["satisfied"] is True
+    assert g.get("evaluator_domain") == "perico_bugfix"
+
+
+def test_evaluate_goal_bugfix_patch_without_pytest_not_satisfied():
+    mp = build_perico_mission_prompt(user_text="fix bug en auth")
+    ex = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "result": {"ok": True, "operation": "read", "path": "/x", "content": "1"},
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "a.py"}},
+        ]
+    }
+    g = evaluate_goal_satisfaction(mission_prompt=mp, execution=ex)
+    assert g["satisfied"] is False
+    assert "perico_bugfix_validation_missing" in g.get("missing_items", [])
+
+
+def test_evaluate_goal_bugfix_pytest_fail_then_retry_success():
+    mp = build_perico_mission_prompt(user_text="bug en parser")
+    ex = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "result": {"ok": True, "operation": "read", "path": "/r/p.py", "content": "x"},
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "p.py"}},
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"ok": True, "pytest": True, "tests_ok": False, "exit_code": 1},
+            },
+            {
+                "action_type": "perico_run_pytest",
+                "title": "Automatic pytest retry (Perico)",
+                "result": {"ok": True, "pytest": True, "tests_ok": True, "exit_code": 0},
+            },
+        ]
+    }
+    g = evaluate_goal_satisfaction(mission_prompt=mp, execution=ex)
+    assert g["satisfied"] is True
+
+
+def test_evaluate_goal_bugfix_pytest_fail_after_retry_not_satisfied():
+    mp = build_perico_mission_prompt(user_text="bug en parser")
+    ex = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "result": {"ok": True, "operation": "grep", "matches": [{"path": "p.py", "line": 1, "text": "x"}]},
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "p.py"}},
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"ok": True, "pytest": True, "tests_ok": False, "exit_code": 1},
+            },
+            {
+                "action_type": "perico_run_pytest",
+                "title": "Automatic pytest retry (Perico)",
+                "result": {
+                    "ok": True,
+                    "pytest": True,
+                    "tests_ok": False,
+                    "exit_code": 1,
+                    "retry_reason": "x",
+                },
+            },
+        ]
+    }
+    g = evaluate_goal_satisfaction(mission_prompt=mp, execution=ex)
+    assert g["satisfied"] is False
+    assert "perico_bugfix_tests_failed" in g.get("missing_items", [])
+
+
+def test_evaluate_goal_bugfix_diagnosis_only_with_inspection():
+    mp = build_perico_mission_prompt(user_text="error raro en modulo X")
+    ex = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "result": {"ok": True, "operation": "read", "path": "/repo/x.py", "content": "ok"},
+            },
+        ]
+    }
+    g = evaluate_goal_satisfaction(mission_prompt=mp, execution=ex)
+    assert g["satisfied"] is True
+    assert g.get("reason") == "perico_bugfix_diagnosis_only"
+
+
+def test_evaluate_goal_bugfix_no_inspection_not_satisfied():
+    mp = build_perico_mission_prompt(user_text="fix bug z")
+    g = evaluate_goal_satisfaction(mission_prompt=mp, execution={"executed": []})
+    assert g["satisfied"] is False
+    assert "perico_bugfix_inspection_missing" in g.get("missing_items", [])
+
+
+def test_bugfix_deliverables_blocked_when_pytest_red():
+    mp = build_perico_mission_prompt(user_text="fix bug en modulo z")
+    execution = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "result": {"ok": True, "operation": "read", "path": "/r/a.py", "content": "1"},
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "a.py"}},
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"ok": True, "pytest": True, "tests_ok": False, "exit_code": 1, "stderr_tail": "E"},
+            },
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"ok": True, "pytest": True, "tests_ok": False, "exit_code": 1},
+            },
+        ]
+    }
+    snap = build_perico_deliverables_snapshot(
+        mission_prompt=mp,
+        plan={"objective": "Arreglar regresión"},
+        execution=execution,
+        goal_satisfied=False,
+        retry_attempted=True,
+    )
+    assert snap.get("software_closure_state") == "blocked"
+    assert snap.get("bugfix_rubric") is True
+    assert "fall" in (snap.get("validation_result_summary") or "").lower()
+
+
+def test_bugfix_deliverables_include_summaries_and_closure():
+    mp = build_perico_mission_prompt(user_text="arregla fallo tests")
+    plan = {"objective": "Corregir aserción rota en módulo foo"}
+    execution = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "title": "Leer foo.py",
+                "rationale": "Ubicar la aserción incorrecta",
+                "params": {"operation": "read", "relative_path": "foo.py"},
+                "result": {"ok": True, "operation": "read", "path": "/r/foo.py", "content": "1"},
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "foo.py"}},
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"ok": True, "pytest": True, "tests_ok": True, "exit_code": 0, "cmd": ["pytest", "t.py"]},
+            },
+        ]
+    }
+    snap = build_perico_deliverables_snapshot(
+        mission_prompt=mp,
+        plan=plan,
+        execution=execution,
+        goal_satisfied=True,
+        retry_attempted=False,
+    )
+    assert snap.get("bugfix_rubric") is True
+    assert snap.get("software_closure_state") == "fixed"
+    assert "pytest" in (snap.get("validation_result_summary") or "").lower()
+    assert snap.get("fix_attempted") is True
+    assert "Corregir" in (snap.get("hypothesis_summary") or "")
+    assert snap.get("root_cause_summary")
+    assert snap.get("retry_reason") == ""
+
+
+def test_evaluate_goal_non_bugfix_perico_lenient():
+    mp = build_perico_mission_prompt(user_text="corre pytest en backend")
+    g = evaluate_goal_satisfaction(mission_prompt=mp, execution={"executed": []})
+    assert g["satisfied"] is True
+    assert g.get("reason") == "perico_no_bugfix_rubric"
 
 
 def test_infer_analytics_deliverables_skips_perico_marked_prompt():
