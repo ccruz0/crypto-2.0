@@ -17,6 +17,7 @@ from app.jarvis.perico_mission import (
     infer_perico_target_project,
     is_perico_marked_prompt,
     is_perico_software_mission_prompt,
+    normalize_perico_strategy_actions,
     parse_perico_task_type_from_prompt,
 )
 
@@ -67,6 +68,9 @@ def test_classify_perico_crypto_tests_prompt_is_bugfix_not_diagnostics():
         "No hagas deploy."
     )
     assert classify_perico_task_type(text) == "bugfix"
+    mp = build_perico_mission_prompt(user_text=text)
+    assert parse_perico_task_type_from_prompt(mp) == "bugfix"
+    assert "[PERICO_TASK_TYPE: bugfix]" in mp
 
 
 def test_is_perico_software_mission_prompt_without_agent_marker():
@@ -436,3 +440,181 @@ def test_perico_done_dialog_message_uses_closure_not_review_summary():
     assert "Estado: FIXED" in text
     assert "Tests en verde" in text
     assert "Mission completed with safe actions" not in text
+
+
+def test_perico_should_skip_nonconcrete_prepare_row():
+    from app.jarvis.perico_mission import perico_should_skip_nonconcrete_strategy_action
+
+    mp = build_perico_mission_prompt(user_text="fix login bug")
+    action = {
+        "title": "Prepare for potential code changes",
+        "rationale": "",
+        "action_type": "analysis",
+        "params": {},
+        "execution_mode": "auto_execute",
+        "priority_score": 10,
+    }
+    assert perico_should_skip_nonconcrete_strategy_action(action, mission_prompt=mp) is True
+
+
+def test_perico_should_skip_code_change_empty_patch_bugfix():
+    from app.jarvis.perico_mission import perico_should_skip_nonconcrete_strategy_action
+
+    mp = build_perico_mission_prompt(user_text="arregla integración webhook que falla")
+    action = {
+        "title": "Apply change",
+        "action_type": "code_change",
+        "params": {"relative_path": "x.py"},
+        "execution_mode": "auto_execute",
+        "priority_score": 10,
+    }
+    assert perico_should_skip_nonconcrete_strategy_action(action, mission_prompt=mp) is True
+
+
+def test_perico_should_not_skip_concrete_perico_repo_read():
+    from app.jarvis.perico_mission import perico_should_skip_nonconcrete_strategy_action
+
+    mp = build_perico_mission_prompt(user_text="bug")
+    action = {
+        "title": "grep foo",
+        "action_type": "perico_repo_read",
+        "params": {"operation": "grep", "pattern": "foo"},
+        "execution_mode": "auto_execute",
+        "priority_score": 10,
+    }
+    assert perico_should_skip_nonconcrete_strategy_action(action, mission_prompt=mp) is False
+
+
+def test_summarize_execution_for_operator_bugfix_prefers_perico_rows():
+    from app.jarvis.notion_mission_readability import summarize_execution_for_operator
+
+    mp = build_perico_mission_prompt(user_text="arregla tests rotos")
+    ex = {
+        "executed": [
+            {
+                "action_type": "analysis",
+                "title": "Prepare for potential fix",
+                "status": "skipped",
+                "result": {"ok": False},
+            },
+            {
+                "action_type": "perico_repo_read",
+                "title": "Leer tests",
+                "status": "executed",
+                "result": {"ok": True},
+            },
+        ]
+    }
+    s = summarize_execution_for_operator(ex, mission_prompt=mp)
+    assert "Prepare" not in s
+    assert "Leer tests" in s or "Inspección" in s
+
+
+def test_normalize_perico_maps_ops_config_read_to_repo_read_auto_execute():
+    mp = build_perico_mission_prompt(user_text="revisa tests")
+    acts = [
+        {
+            "title": "Read test configuration",
+            "rationale": "Inspect pytest.ini before changes",
+            "action_type": "ops_config_change",
+            "params": {},
+            "execution_mode": "requires_approval",
+            "priority_score": 80,
+            "impact": "medium",
+            "confidence": 0.7,
+        }
+    ]
+    out = normalize_perico_strategy_actions(acts, mission_prompt=mp)
+    assert len(out) == 1
+    assert out[0]["action_type"] == "perico_repo_read"
+    assert out[0]["execution_mode"] == "auto_execute"
+    assert out[0].get("requires_approval") is False
+
+
+def test_normalize_perico_maps_run_full_pytest_to_perico_run_pytest():
+    mp = build_perico_mission_prompt(user_text="fix tests")
+    acts = [
+        {
+            "title": "Run full pytest suite",
+            "rationale": "Validate after edits",
+            "action_type": "code_change",
+            "params": {},
+            "execution_mode": "auto_execute",
+            "priority_score": 70,
+            "impact": "high",
+            "confidence": 0.8,
+        }
+    ]
+    out = normalize_perico_strategy_actions(acts, mission_prompt=mp)
+    assert any(x.get("action_type") == "perico_run_pytest" for x in out)
+
+
+def test_normalize_perico_maps_code_change_with_patch_to_apply_patch():
+    mp = build_perico_mission_prompt(user_text="fix")
+    acts = [
+        {
+            "title": "patch",
+            "action_type": "code_change",
+            "params": {"relative_path": "foo.py", "old_text": "a", "new_text": "b"},
+            "execution_mode": "auto_execute",
+            "priority_score": 70,
+            "impact": "high",
+            "confidence": 0.8,
+        }
+    ]
+    out = normalize_perico_strategy_actions(acts, mission_prompt=mp)
+    assert out[0]["action_type"] == "perico_apply_patch"
+    assert out[0]["params"]["relative_path"] == "foo.py"
+
+
+def test_normalize_perico_does_not_map_or_relax_mutating_ops_config():
+    mp = build_perico_mission_prompt(user_text="x")
+    acts = [
+        {
+            "title": "Write updated secrets to SSM",
+            "rationale": "Rotate credentials and deploy",
+            "action_type": "ops_config_change",
+            "params": {},
+            "execution_mode": "requires_approval",
+            "priority_score": 90,
+            "impact": "high",
+            "confidence": 0.9,
+        }
+    ]
+    out = normalize_perico_strategy_actions(acts, mission_prompt=mp)
+    assert len(out) == 1
+    assert out[0]["action_type"] == "ops_config_change"
+    assert out[0]["execution_mode"] == "requires_approval"
+
+
+def test_normalize_perico_non_software_prompt_returns_unchanged_shape():
+    acts = [{"title": "x", "action_type": "ops_config_change", "params": {}, "execution_mode": "requires_approval"}]
+    out = normalize_perico_strategy_actions(acts, mission_prompt="plain marketing text without perico wrapper")
+    assert out[0]["action_type"] == "ops_config_change"
+
+
+def test_review_agent_perico_bugfix_summary_uses_closure_token():
+    from app.jarvis.autonomous_agents import ReviewAgent
+
+    mp = build_perico_mission_prompt(user_text="fix parser bug pytest")
+    plan = {"objective": "Corregir parser"}
+    execution = {
+        "executed": [
+            {
+                "action_type": "perico_repo_read",
+                "result": {"ok": True, "operation": "read", "path": "/p.py", "content": "x"},
+                "status": "executed",
+            },
+            {"action_type": "perico_apply_patch", "result": {"ok": True, "relative_path": "p.py"}, "status": "executed"},
+            {
+                "action_type": "perico_run_pytest",
+                "result": {"ok": True, "pytest": True, "tests_ok": True},
+                "status": "executed",
+            },
+        ],
+        "needs_approval": False,
+    }
+    r = ReviewAgent().run(plan=plan, execution=execution, mission_prompt=mp)
+    assert r.get("passed") is True
+    assert "FIXED" in str(r.get("summary") or "")
+    assert "Mission completed with safe actions" not in str(r.get("summary") or "")

@@ -1,7 +1,8 @@
 """Human-readable Notion mission layers (executive summary + timeline).
 
-Technical traceability ([AGENT_OUTPUT:*], JSON, etc.) stays in NotionMissionService;
-this module only formats higher-signal paragraphs for operators.
+Operator-facing blocks use tags like ``[EXEC_SUMMARY]`` and short ``[TIMELINE]``.
+Raw agent JSON and state transitions are written with ``[DEBUG_TRACE]`` in
+NotionMissionService so the page stays readable first, traceable second.
 """
 
 from __future__ import annotations
@@ -185,16 +186,87 @@ def summarize_execution_for_readability(execution: dict[str, Any] | None) -> str
     return f"Acciones ejecutadas: {joined}"[:900]
 
 
+def _short_action_label(row: dict[str, Any]) -> str:
+    t = str(row.get("title") or "").strip()
+    if t:
+        return t.replace("\n", " ")[:72]
+    at = str(row.get("action_type") or "").strip().lower()
+    if at.startswith("perico_repo_read"):
+        return "Inspección del repositorio (read/grep)"
+    if at == "perico_apply_patch":
+        return "Parche aplicado"
+    if at == "perico_run_pytest":
+        return "Ejecución de pytest"
+    if at:
+        return at[:72]
+    return "Acción sin título"
+
+
+def summarize_execution_for_operator(
+    execution: dict[str, Any] | None,
+    *,
+    max_bullets: int = 3,
+    mission_prompt: str | None = None,
+) -> str:
+    """
+    Short bullet list for the operator layer (max ``max_bullets`` lines).
+
+    For Perico bugfix/integration_fix missions, prefers concrete ``perico_*`` tool rows
+    so the operator layer is not dominated by skipped placeholder planner actions.
+    """
+    if not isinstance(execution, dict):
+        return ""
+    from app.jarvis.perico_mission import (
+        is_perico_bugfix_rubric_task,
+        is_perico_software_mission_prompt,
+        parse_perico_task_type_from_prompt,
+    )
+
+    executed = [x for x in (execution.get("executed") or []) if isinstance(x, dict)]
+    mp = (mission_prompt or "").strip()
+    if mp and is_perico_software_mission_prompt(mp):
+        tt = parse_perico_task_type_from_prompt(mp)
+        if is_perico_bugfix_rubric_task(tt):
+            concrete = [
+                x
+                for x in executed
+                if str(x.get("action_type") or "").strip().lower()
+                in ("perico_repo_read", "perico_apply_patch", "perico_run_pytest")
+                and str(x.get("status") or "").strip().lower() != "skipped"
+            ]
+            if concrete:
+                executed = concrete
+            elif executed:
+                return (
+                    "Solo se registraron pasos no concretos del planificador (descartados). "
+                    "Se necesita inspección de repo, parche mínimo y pytest con resultado claro."
+                )[:900]
+    if not executed:
+        return "Aún no hay acciones registradas en esta misión."
+    lines: list[str] = []
+    for row in executed[: max_bullets * 2]:
+        if len(lines) >= max_bullets:
+            break
+        label = _short_action_label(row)
+        if label and all(label not in existing for existing in lines):
+            lines.append(f"• {label}")
+    if not lines:
+        return "Se ejecutó trabajo automático; revisa el detalle técnico si hace falta."
+    return "\n".join(lines)[:900]
+
+
 def summarize_perico_pending_approval_for_notion(
     execution: dict[str, Any] | None,
     pending_actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str | None = None,
 ) -> tuple[str, str]:
     """
     Clearer copy for Perico missions when Estado is waiting_for_approval.
 
     Returns (what_jarvis_did, next_step).
     """
-    exec_line = summarize_execution_for_readability(execution)
+    exec_line = summarize_execution_for_operator(execution, mission_prompt=mission_prompt)
     titles = [
         str(a.get("title") or "").strip()
         for a in pending_actions

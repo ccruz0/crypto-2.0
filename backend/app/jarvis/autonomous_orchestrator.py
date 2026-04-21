@@ -56,6 +56,7 @@ from app.jarvis.mission_goal_quality import (
 from app.jarvis.notion_mission_readability import (
     human_mission_status,
     notion_executive_display_fields,
+    summarize_execution_for_operator,
     summarize_execution_for_readability,
     summarize_perico_pending_approval_for_notion,
     summarize_plan_for_readability,
@@ -68,6 +69,7 @@ from app.jarvis.perico_mission import (
     format_perico_closure_status_display,
     is_perico_marked_prompt,
     is_perico_software_mission_prompt,
+    normalize_perico_strategy_actions,
     perico_should_block_for_operator_input,
     perico_try_auto_pytest_retry,
 )
@@ -682,6 +684,10 @@ class JarvisAutonomousOrchestrator:
                 project=nf["project"],
                 task_type=nf["task_type"],
             )
+            self.notion.append_decision_required_comment(
+                mission_id,
+                line="Falta tu respuesta al planificador; usa «Responder» en Telegram o el mismo chat.",
+            )
             clarify_sent = bool(self.telegram.send_input_request(chat_id, mission_id, clarify))
             return {
                 "ok": True,
@@ -713,6 +719,12 @@ class JarvisAutonomousOrchestrator:
             research=research,
             outcome_memory=outcome_memory,
         )
+        if active_perico:
+            raw_acts = [x for x in (strategy.get("actions") or []) if isinstance(x, dict)]
+            strategy = {
+                **dict(strategy),
+                "actions": normalize_perico_strategy_actions(raw_acts, mission_prompt=prompt),
+            }
         self.notion.append_agent_output(mission_id, agent_name="strategy", content=_dump(strategy))
         self.notion.append_readability_timeline(mission_id, "Estrategia lista; revisión ops y ejecución.")
         ops_output = self.ops.run(
@@ -801,16 +813,25 @@ class JarvisAutonomousOrchestrator:
                         mission_id,
                         "Perico: validación incompleta o tests en rojo; se pide intervención del operador.",
                     )
+                    gate_status = human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT)
+                    if isinstance(perico_snap, dict):
+                        cs_gate = format_perico_closure_status_display(perico_snap)
+                        if cs_gate:
+                            gate_status = cs_gate
                     self.notion.append_readability_executive_summary(
                         mission_id,
                         objective=nf["objective"],
-                        status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
-                        what_jarvis_did="Perico aplicó o intentó cambios pero no se cumple el criterio de cierre software.",
+                        status=gate_status,
+                        what_jarvis_did=summarize_execution_for_operator(execution, mission_prompt=prompt),
                         blocked=block_msg[:500],
                         next_step="Indica cómo seguir o ajusta el alcance (botón «Responder» o mensaje normal).",
                         agent=nf["agent"],
                         project=nf["project"],
                         task_type=nf["task_type"],
+                    )
+                    self.notion.append_decision_required_comment(
+                        mission_id,
+                        line="Perico necesita tu criterio: validación o tests no cerraron como se esperaba.",
                     )
                     gate_sent = bool(self.telegram.send_input_request(chat_id, mission_id, block_msg))
                     return {
@@ -859,6 +880,10 @@ class JarvisAutonomousOrchestrator:
                 agent=nf["agent"],
                 project=nf["project"],
                 task_type=nf["task_type"],
+            )
+            self.notion.append_decision_required_comment(
+                mission_id,
+                line="El objetivo de la misión no está cubierto: hace falta más contexto o alcance.",
             )
             shortfall_sent = bool(self.telegram.send_input_request(chat_id, mission_id, shortfall))
             return {
@@ -917,6 +942,10 @@ class JarvisAutonomousOrchestrator:
                 project=nf["project"],
                 task_type=nf["task_type"],
             )
+            self.notion.append_decision_required_comment(
+                mission_id,
+                line="La ejecución espera un dato tuyo antes de continuar.",
+            )
             input_sent = bool(self.telegram.send_input_request(chat_id, mission_id, prompt_text))
             return {
                 "ok": True,
@@ -953,11 +982,13 @@ class JarvisAutonomousOrchestrator:
             )
             if active_perico:
                 wj_approval, nxt_approval = summarize_perico_pending_approval_for_notion(
-                    execution, combined_waiting_approval
+                    execution,
+                    combined_waiting_approval,
+                    mission_prompt=prompt,
                 )
                 blk_approval = "Hay un paso que solo puede ejecutarse tras tu aprobación en Telegram."
             else:
-                wj_approval = summarize_execution_for_readability(execution)
+                wj_approval = summarize_execution_for_operator(execution, mission_prompt=prompt)
                 nxt_approval = (
                     "Aprobar o rechazar con los botones del mensaje anterior o con /mission."
                 )
@@ -972,6 +1003,10 @@ class JarvisAutonomousOrchestrator:
                 agent=nf["agent"],
                 project=nf["project"],
                 task_type=nf["task_type"],
+            )
+            self.notion.append_decision_required_comment(
+                mission_id,
+                line="Hay un paso sensible pendiente de tu aprobación en Telegram.",
             )
             approval_sent = bool(self.telegram.send_approval_request(chat_id, mission_id, summary))
             return {
@@ -993,7 +1028,7 @@ class JarvisAutonomousOrchestrator:
             }
 
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_REVIEWING, note="review started")
-        review = self.reviewer.run(plan=plan, execution=execution)
+        review = self.reviewer.run(plan=plan, execution=execution, mission_prompt=prompt)
         self.notion.append_agent_output(mission_id, agent_name="review", content=_dump(review))
         if review.get("passed"):
             self.notion.transition_state(mission_id, to_state=MISSION_STATUS_DONE, note="review passed")
@@ -1009,7 +1044,16 @@ class JarvisAutonomousOrchestrator:
                 goal_eval=goal_eval,
                 perico_deliverables_snapshot=perico_snap,
             )
-            self.notion.append_readability_timeline(mission_id, "Revisión superada; misión completada.")
+            if active_perico and isinstance(perico_snap, dict):
+                cs_tl = format_perico_closure_status_display(perico_snap)
+                tl = (
+                    f"Revisión superada; cierre software {cs_tl}."
+                    if cs_tl
+                    else "Revisión superada; misión completada."
+                )
+            else:
+                tl = "Revisión superada; misión completada."
+            self.notion.append_readability_timeline(mission_id, tl)
             if active_perico and isinstance(perico_snap, dict):
                 closure_status = format_perico_closure_status_display(perico_snap)
                 exec_summary_status = closure_status or human_mission_status(MISSION_STATUS_DONE)
@@ -1021,9 +1065,9 @@ class JarvisAutonomousOrchestrator:
                 mission_id,
                 objective=nf["objective"],
                 status=exec_summary_status,
-                what_jarvis_did=summarize_execution_for_readability(execution),
+                what_jarvis_did=summarize_execution_for_operator(execution, mission_prompt=prompt),
                 key_result=key_res_exec,
-                next_step="El detalle completo está en Notion; abajo quedan los logs técnicos.",
+                next_step="Si necesitas trazas: busca [TECHNICAL_DETAIL] y líneas [DEBUG_TRACE] en esta página.",
                 agent=nf["agent"],
                 project=nf["project"],
                 task_type=nf["task_type"],
@@ -1152,7 +1196,7 @@ class JarvisAutonomousOrchestrator:
             retry_attempted=bool((execution or {}).get("_perico_auto_pytest_retry_applied")),
         )
         closure_token = format_perico_closure_status_display(snap)
-        estado_line = closure_token if closure_token else "COMPLETADA"
+        estado_line = closure_token if closure_token else "LISTA (software)"
         key_result = format_perico_closure_key_result(snap, execution)
         lines = [
             f"Perico — Ref.: {mission_id}",

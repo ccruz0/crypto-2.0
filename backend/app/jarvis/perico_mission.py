@@ -275,6 +275,308 @@ def is_perico_software_mission_prompt(prompt: str) -> bool:
     return "registered perico tools" in low or "[perico_task_type:" in low
 
 
+_PERICO_STRATEGY_CONCRETE_TOOLS: frozenset[str] = frozenset(
+    {"perico_repo_read", "perico_apply_patch", "perico_run_pytest"}
+)
+
+
+def perico_should_skip_nonconcrete_strategy_action(action: dict[str, Any], *, mission_prompt: str) -> bool:
+    """
+    Skip planner rows that are too vague or non-actionable for Perico software missions.
+
+    Used by ExecutionAgent so bugfix-style work prefers repo read / patch / pytest instead of
+    placeholders like "prepare a potential fix".
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return False
+    at = str(action.get("action_type") or "").strip().lower()
+    if at in _PERICO_STRATEGY_CONCRETE_TOOLS:
+        return False
+    if at.startswith("diagnose_"):
+        return False
+
+    title = str(action.get("title") or "").strip().lower()
+    rationale = str(action.get("rationale") or "").strip().lower()
+    blob = f"{title} {rationale}".strip()
+
+    vague_needles = (
+        "prepare for potential",
+        "prepare for",
+        "prepare potential",
+        "get ready to",
+        "plan to run",
+        "might want to",
+        "could potentially",
+        "consider potentially",
+        "potential bugfix",
+        "potential fix",
+        "potential patch",
+        "potential approach",
+        "potential solution",
+        "explore potentially",
+    )
+    if any(n in blob for n in vague_needles):
+        return True
+    if title.startswith("prepare ") or title.startswith("preparing "):
+        return True
+    if "potential" in title and any(
+        w in title for w in ("fix", "patch", "change", "solution", "approach", "bug", "issue")
+    ):
+        return True
+
+    task_type = parse_perico_task_type_from_prompt(mission_prompt)
+    if is_perico_bugfix_rubric_task(task_type):
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        ot = str((params or {}).get("old_text") or "").strip()
+        nt = str((params or {}).get("new_text") or "").strip()
+        if at in ("code_change", "generic", "software_action", "edit_file", "write_file") and not (ot and nt):
+            return True
+    return False
+
+
+def _perico_strategy_action_blob(action: dict[str, Any]) -> str:
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    return f"{action.get('title', '')} {action.get('rationale', '')} {action.get('action_type', '')} {params}".lower()
+
+
+def _perico_blob_sensitive_ops(blob: str) -> bool:
+    return any(
+        x in blob
+        for x in (
+            "ssm",
+            "secret",
+            "credential",
+            "password",
+            "production",
+            " deploy",
+            "deploy ",
+            "kubectl",
+            "terraform",
+            "restart",
+        )
+    )
+
+
+def _perico_blob_blocks_readlike_mapping(blob: str) -> bool:
+    """
+    True when text suggests mutating infra/config — do not map to perico_repo_read
+    or downgrade ``ops_config_change`` to auto_execute.
+    """
+    if _perico_blob_sensitive_ops(blob):
+        return True
+    low = blob
+    needles = (
+        "write ",
+        " write",
+        "update ",
+        " update",
+        "replace ",
+        " replace",
+        "delete ",
+        " delete",
+        "rotate ",
+        " rotate",
+        "set env",
+        "set ssm",
+        "set secret",
+        "set credential",
+        "set credentials",
+        "mutate",
+        "patch prod",
+        "apply to prod",
+        "overwrite",
+        "truncate",
+    )
+    return any(n in low for n in needles)
+
+
+def _perico_blob_requests_pytest(blob: str) -> bool:
+    # Avoid treating "pytest.ini" / config reads as a test *run*.
+    scrubbed = (
+        blob.replace("pytest.ini", " ")
+        .replace("pyproject.toml", " ")
+        .replace("conftest.py", " ")
+    )
+    if "pytest" in scrubbed:
+        return True
+    return any(
+        x in blob
+        for x in (
+            "run tests",
+            "run test",
+            "correr test",
+            "ejecutar test",
+            "full test suite",
+            "test suite",
+            "unit tests",
+        )
+    )
+
+
+def _perico_infer_pytest_relative_path(blob: str, params: dict[str, Any]) -> str:
+    for key in ("relative_path", "path", "tests_path", "target", "test_path"):
+        v = str(params.get(key) or "").strip().replace("\\", "/")
+        if v and ".." not in v.split("/"):
+            return v
+    if "backend/test" in blob:
+        return "tests"
+    return ""
+
+
+def _perico_ops_config_maps_to_repo_read(at: str, blob: str) -> bool:
+    if at != "ops_config_change":
+        return False
+    if _perico_blob_blocks_readlike_mapping(blob):
+        return False
+    return any(
+        x in blob
+        for x in (
+            "read ",
+            "inspect",
+            "review ",
+            "leer",
+            "pytest.ini",
+            "conftest",
+            "test configuration",
+            "config file",
+            "list file",
+            "open file",
+        )
+    ) or ("test" in blob and "config" in blob)
+
+
+def _perico_analysis_codechange_maps_to_repo_read(at: str, blob: str) -> bool:
+    if at not in ("analysis", "research", "code_change"):
+        return False
+    if _perico_blob_blocks_readlike_mapping(blob) or _perico_blob_requests_pytest(blob):
+        return False
+    return any(
+        x in blob
+        for x in (
+            "read ",
+            "inspect",
+            "review ",
+            "leer",
+            "list ",
+            "browse",
+            "open ",
+            "pytest.ini",
+            "conftest",
+            "source file",
+            "codebase",
+            "repository",
+            "repo ",
+        )
+    )
+
+
+def _perico_infer_repo_read_triple(_at: str, blob: str, params: dict[str, Any]) -> tuple[str, str, str]:
+    rp = str(params.get("relative_path") or params.get("path") or params.get("file") or "").strip().replace("\\", "/")
+    pat = str(params.get("pattern") or params.get("query") or "").strip()
+    if "pytest.ini" in blob:
+        return "read", "pytest.ini", ""
+    if "conftest.py" in blob or ("conftest" in blob and "pytest" in blob):
+        if rp:
+            return "read", rp, ""
+        return "read", "backend/tests/conftest.py", ""
+    if "pyproject.toml" in blob:
+        return "read", "pyproject.toml", ""
+    if rp and pat and len(pat) >= 2:
+        return "grep", rp, pat[:200]
+    if rp:
+        return "read", rp, ""
+    if "list" in blob and "test" in blob:
+        return "list", "backend/tests", ""
+    return "list", "backend", ""
+
+
+def normalize_perico_strategy_actions(
+    actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Rewrite generic strategist rows into registered Perico tools so ExecutionAgent invokes them.
+
+    Paths stay repo-relative under ``PERICO_REPO_ROOT`` (enforced again inside tools).
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    from app.jarvis.action_policy import compute_priority_score, get_action_policy
+
+    out: list[dict[str, Any]] = []
+    for a0 in actions:
+        if not isinstance(a0, dict):
+            continue
+        a = dict(a0)
+        at = str(a.get("action_type") or "").strip().lower()
+        blob = _perico_strategy_action_blob(a)
+        params = dict(a.get("params") or {}) if isinstance(a.get("params"), dict) else {}
+
+        if at in _PERICO_STRATEGY_CONCRETE_TOOLS:
+            pol = get_action_policy(at)
+            a["execution_mode"] = str(pol.get("execution_mode") or "auto_execute")
+            a["requires_approval"] = a["execution_mode"] == "requires_approval"
+            out.append(a)
+            continue
+
+        mapped: dict[str, Any] | None = None
+
+        if at == "code_change":
+            ot = str(params.get("old_text") or "").strip()
+            nt = str(params.get("new_text") or "")
+            rp = str(params.get("relative_path") or params.get("path") or "").strip().replace("\\", "/")
+            if rp and ot:
+                mapped = {k: v for k, v in a.items() if k not in ("action_type", "params")}
+                mapped["action_type"] = "perico_apply_patch"
+                mapped["params"] = {"relative_path": rp, "old_text": ot, "new_text": nt}
+
+        if mapped is None and (
+            _perico_ops_config_maps_to_repo_read(at, blob)
+            or _perico_analysis_codechange_maps_to_repo_read(at, blob)
+        ):
+            op, rel, pat = _perico_infer_repo_read_triple(at, blob, params)
+            mapped = {k: v for k, v in a.items() if k not in ("action_type", "params")}
+            mapped["action_type"] = "perico_repo_read"
+            mapped["params"] = {
+                "operation": op,
+                "relative_path": rel,
+                "pattern": pat,
+                "max_results": int(params.get("max_results") or 80),
+            }
+
+        if mapped is None and _perico_blob_requests_pytest(blob):
+            mapped = {k: v for k, v in a.items() if k not in ("action_type", "params")}
+            mapped["action_type"] = "perico_run_pytest"
+            mapped["params"] = {
+                "relative_path": _perico_infer_pytest_relative_path(blob, params),
+                "extra_args": str(params.get("extra_args") or ""),
+                "timeout_seconds": int(params.get("timeout_seconds") or 180),
+            }
+
+        if mapped is not None:
+            pol = get_action_policy(str(mapped["action_type"]))
+            mapped["execution_mode"] = str(pol.get("execution_mode") or "auto_execute")
+            mapped["requires_approval"] = mapped["execution_mode"] == "requires_approval"
+            if not mapped.get("priority_score"):
+                mapped["priority_score"] = compute_priority_score(
+                    action_type=str(mapped["action_type"]),
+                    impact=str(a.get("impact") or "high"),
+                    confidence=float(a.get("confidence") or 0.78),
+                )
+            if not str(mapped.get("title") or "").strip():
+                mapped["title"] = str(mapped["action_type"])
+            out.append(mapped)
+            continue
+
+        if at == "ops_config_change" and not _perico_blob_blocks_readlike_mapping(blob):
+            if any(x in blob for x in ("read", "inspect", "review", "leer", "pytest", "test", "config", "file")):
+                a["execution_mode"] = "auto_execute"
+                a["requires_approval"] = False
+        out.append(a)
+    return out
+
+
 def parse_perico_task_type_from_prompt(mission_prompt: str) -> str:
     """Task type from [PERICO_TASK_TYPE: …] marker; falls back to classifying operator line."""
     mp = (mission_prompt or "").strip()
@@ -411,6 +713,27 @@ def classify_perico_task_type(user_text: str) -> str:
     ):
         return "integration_fix"
     if _perico_wants_bugfix_closure(low):
+        return "integration_fix" if integ else "bugfix"
+    # Tests failing + concrete fix/validate language → bugfix, even if the prompt opens with "Investiga…".
+    # (Otherwise "Investiga la causa…" can match diagnostics before the stricter bugfix heuristics fire.)
+    if any(x in low for x in ("test", "tests", "pytest", "pruebas", "prueba")) and any(
+        x in low for x in ("fallan", "fallando", "failing", "falla", "error", "problema", "broken")
+    ) and any(
+        x in low
+        for x in (
+            "parche",
+            "patch",
+            "pytest",
+            "validar",
+            "validate",
+            "validación",
+            "validacion",
+            "arregla",
+            "fix",
+            "corrige",
+            "aplica",
+        )
+    ):
         return "integration_fix" if integ else "bugfix"
     # Investigation-only (no explicit patch/pytest validation loop in the ask).
     if any(x in low for x in ("investiga", "investigar", "por qué", "por que", "why", "diagn")):

@@ -70,8 +70,8 @@ class _OpsNoApproval:
 
 
 class _ReviewPass:
-    def run(self, *, plan: dict, execution: dict) -> dict[str, Any]:
-        _ = plan, execution
+    def run(self, *, plan: dict, execution: dict, mission_prompt: str = "", **kwargs: Any) -> dict[str, Any]:
+        _ = plan, execution, mission_prompt, kwargs
         return {"passed": True, "summary": "ok"}
 
 
