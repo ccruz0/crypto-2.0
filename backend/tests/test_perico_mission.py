@@ -7,18 +7,27 @@ from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverabl
 from app.jarvis.autonomous_orchestrator import JarvisAutonomousOrchestrator
 from app.jarvis.mission_goal_quality import should_attempt_goal_retry
 from app.jarvis.mission_goal_quality import evaluate_goal_satisfaction
+from app.jarvis.perico_guided_env import apply_perico_guided_env_from_input
 from app.jarvis.perico_mission import (
     PERICO_AGENT_MARKER,
     build_perico_deliverables_snapshot,
     build_perico_mission_prompt,
+    classify_perico_runtime_precheck_failure,
     classify_perico_task_type,
+    filter_perico_bugfix_irrelevant_approval_actions,
+    filter_perico_operator_noise_approvals,
+    format_perico_approval_item_for_operator,
     format_perico_closure_key_result,
     format_perico_closure_status_display,
+    format_perico_runtime_block_telegram,
     infer_perico_target_project,
     is_perico_marked_prompt,
     is_perico_software_mission_prompt,
     normalize_perico_strategy_actions,
     parse_perico_task_type_from_prompt,
+    perico_autofix_strategy_pytest_paths,
+    perico_software_runtime_precheck,
+    perico_try_autofix_runtime_before_block,
 )
 
 
@@ -618,3 +627,230 @@ def test_review_agent_perico_bugfix_summary_uses_closure_token():
     assert r.get("passed") is True
     assert "FIXED" in str(r.get("summary") or "")
     assert "Mission completed with safe actions" not in str(r.get("summary") or "")
+
+
+def test_normalize_perico_skips_to_be_determined_code_change():
+    mp = build_perico_mission_prompt(user_text="fix bug")
+    acts = [
+        {
+            "title": "patch",
+            "action_type": "code_change",
+            "params": {
+                "relative_path": "foo.py",
+                "old_text": "TO_BE_DETERMINED",
+                "new_text": "x",
+            },
+            "execution_mode": "auto_execute",
+        }
+    ]
+    out = normalize_perico_strategy_actions(acts, mission_prompt=mp)
+    assert not any(x.get("action_type") == "perico_apply_patch" for x in out)
+
+
+def test_normalize_perico_skips_placeholder_perico_apply_patch():
+    mp = build_perico_mission_prompt(user_text="fix bug")
+    acts = [
+        {
+            "title": "apply",
+            "action_type": "perico_apply_patch",
+            "params": {"relative_path": "a.py", "old_text": "TO_BE_DETERMINED", "new_text": "b"},
+            "execution_mode": "auto_execute",
+        }
+    ]
+    out = normalize_perico_strategy_actions(acts, mission_prompt=mp)
+    assert out == []
+
+
+def test_filter_perico_bugfix_drops_irrelevant_deployment_approval():
+    mp = build_perico_mission_prompt(user_text="arregla bug en login")
+    acts = [
+        {
+            "title": "Request recent deployment history",
+            "rationale": "Need timeline",
+            "action_type": "external_side_effect",
+            "params": {},
+            "execution_mode": "requires_approval",
+            "requires_approval": True,
+        },
+        {
+            "title": "Read code",
+            "action_type": "perico_repo_read",
+            "params": {"operation": "read", "relative_path": "x.py"},
+            "execution_mode": "auto_execute",
+        },
+    ]
+    out = filter_perico_bugfix_irrelevant_approval_actions(acts, mission_prompt=mp)
+    assert len(out) == 1
+    assert out[0]["action_type"] == "perico_repo_read"
+
+
+def test_perico_software_runtime_precheck_ok_with_pytest_action(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    (root / "backend" / "app").mkdir(parents=True)
+    (root / "backend" / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "backend" / "tests").mkdir(parents=True)
+    (root / "backend" / "tests" / "test_x.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+    monkeypatch.setenv("PERICO_REPO_ROOT", str(root))
+    monkeypatch.chdir(root)
+    mp = build_perico_mission_prompt(user_text="arregla tests rotos pytest")
+    acts = [
+        {
+            "action_type": "perico_run_pytest",
+            "params": {"relative_path": "tests/test_x.py"},
+        }
+    ]
+    ok, msg = perico_software_runtime_precheck(mission_prompt=mp, strategy_actions=acts)
+    assert ok is True
+    assert msg == ""
+
+
+def test_perico_software_runtime_precheck_fails_missing_test_file(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    (root / "backend" / "app").mkdir(parents=True)
+    (root / "backend" / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "backend" / "tests").mkdir(parents=True)
+    monkeypatch.setenv("PERICO_REPO_ROOT", str(root))
+    monkeypatch.chdir(root)
+    mp = build_perico_mission_prompt(user_text="arregla tests rotos pytest")
+    acts = [{"action_type": "perico_run_pytest", "params": {"relative_path": "tests/nope.py"}}]
+    ok, msg = perico_software_runtime_precheck(mission_prompt=mp, strategy_actions=acts)
+    assert ok is False
+    assert "nope" in msg
+
+
+def test_deliverables_runtime_environment_block():
+    mp = build_perico_mission_prompt(user_text="fix bug")
+    snap = build_perico_deliverables_snapshot(
+        mission_prompt=mp,
+        plan={},
+        execution={"executed": []},
+        goal_satisfied=False,
+        runtime_environment_block="Perico: sin repo",
+    )
+    assert snap.get("runtime_environment_block") == "Perico: sin repo"
+    assert snap.get("objective_satisfied") is False
+    assert snap.get("software_closure_state") == "blocked"
+    assert "Bloqueado" in (snap.get("validation_result_summary") or "")
+
+
+def test_classify_perico_runtime_precheck_failure():
+    assert classify_perico_runtime_precheck_failure("Perico: la raíz del repositorio no existe") == "repo_root_missing"
+    assert classify_perico_runtime_precheck_failure("spawn_failed x") == "spawn_failed"
+
+
+def test_perico_autofix_strategy_pytest_paths_drops_bad_target(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    (root / "backend" / "app").mkdir(parents=True)
+    (root / "backend" / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "backend" / "tests").mkdir(parents=True)
+    monkeypatch.setenv("PERICO_REPO_ROOT", str(root))
+    acts = [{"action_type": "perico_run_pytest", "params": {"relative_path": "tests/does_not_exist.py"}}]
+    notes = perico_autofix_strategy_pytest_paths(acts)
+    assert notes
+    assert not str(acts[0].get("params", {}).get("relative_path") or "").strip()
+
+
+def test_apply_perico_guided_env_from_input_sets_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("PERICO_REPO_ROOT", str(tmp_path))
+    raw = "[PERICO_ENV PERICO_REPO_ROOT=/tmp/foo]\n[OPERADOR_GUIADO] ok"
+    out, fixes = apply_perico_guided_env_from_input(raw)
+    assert "PERICO_REPO_ROOT=/tmp/foo" in fixes
+    assert "OPERADOR_GUIADO" in out
+    import os
+
+    assert os.environ.get("PERICO_REPO_ROOT") == "/tmp/foo"
+
+
+def test_perico_try_autofix_returns_diag_on_persistent_failure(tmp_path, monkeypatch):
+    """When repo is unusable, diagnostics include error_kind and dir_hint (bounded)."""
+    root = tmp_path / "badrepo"
+    root.mkdir()
+    (root / "README.md").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("PERICO_REPO_ROOT", str(root))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    mp = build_perico_mission_prompt(user_text="arregla tests rotos pytest")
+    ok, msg, diag = perico_try_autofix_runtime_before_block(mission_prompt=mp, strategy_actions=[])
+    assert ok is False
+    assert msg
+    assert diag.get("error_kind")
+    assert "guided_profile" in diag
+
+
+def test_filter_perico_operator_noise_drops_ga4_ops_on_bugfix_without_ads_mention():
+    mp = build_perico_mission_prompt(user_text="pytest fallan en crypto arregla el bug con patch")
+    acts = [
+        {
+            "action_type": "update_runtime_env",
+            "title": "Update runtime env for GA4 settings",
+            "params": {"keys": ["JARVIS_GA4_PROPERTY_ID"]},
+        }
+    ]
+    out = filter_perico_operator_noise_approvals(acts, mission_prompt=mp)
+    assert out == []
+
+
+def test_filter_perico_operator_noise_keeps_ga4_when_mission_mentions_google_ads():
+    mp = build_perico_mission_prompt(user_text="pytest fallan y revisa google ads en el mismo repo")
+    acts = [
+        {
+            "action_type": "update_runtime_env",
+            "title": "Update runtime env for GA4 settings",
+            "params": {"keys": ["JARVIS_GA4_PROPERTY_ID"]},
+        }
+    ]
+    out = filter_perico_operator_noise_approvals(acts, mission_prompt=mp)
+    assert len(out) == 1
+
+
+def test_filter_perico_operator_noise_drops_internal_pytest_env_approval():
+    mp = build_perico_mission_prompt(user_text="fix tests failing in backend")
+    acts = [
+        {
+            "action_type": "update_runtime_env",
+            "title": "Add pytest to PATH for CI",
+            "params": {},
+        }
+    ]
+    out = filter_perico_operator_noise_approvals(acts, mission_prompt=mp)
+    assert out == []
+
+
+def test_filter_perico_operator_noise_keeps_deploy():
+    mp = build_perico_mission_prompt(user_text="fix tests failing in backend")
+    acts = [{"action_type": "deploy", "title": "Deploy to staging", "params": {}}]
+    out = filter_perico_operator_noise_approvals(acts, mission_prompt=mp)
+    assert len(out) == 1
+
+
+def test_format_perico_runtime_block_telegram_plain_language():
+    text = format_perico_runtime_block_telegram(
+        technical_message_es="No module named pytest",
+        error_kind="pytest_invoke_failed",
+        fixes_applied=["PERICO_REPO_ROOT=/app (autofix contenedor)"],
+        has_container_code_path=True,
+    )
+    assert "No module named pytest" in text
+    assert "pytest" in text.lower()
+    assert "En palabras simples" in text
+    assert "parche" in text.lower()
+
+
+def test_format_perico_approval_item_mentions_why():
+    s = format_perico_approval_item_for_operator(
+        {"action_type": "restart_backend", "title": "Restart backend service"}
+    )
+    assert "reiniciar" in s.lower()
+    assert "aprobación" in s.lower() or "visto bueno" in s.lower()
+
+
+def test_summarize_perico_pending_approval_for_notion_plain_language():
+    from app.jarvis.notion_mission_readability import summarize_perico_pending_approval_for_notion
+
+    mp = build_perico_mission_prompt(user_text="fix tests in backend")
+    wj, nx = summarize_perico_pending_approval_for_notion(
+        {"executed": []},
+        [{"action_type": "restart_backend", "title": "Restart backend service"}],
+        mission_prompt=mp,
+    )
+    assert "reiniciar" in wj.lower() or "backend" in wj.lower()
+    assert "aprobar" in nx.lower()

@@ -8,7 +8,9 @@ NotionMissionService so the page stays readable first, traceable second.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Sequence
+
+from app.jarvis.perico_mission import format_perico_approval_item_for_operator
 
 from app.jarvis.autonomous_schemas import (
     MISSION_STATUS_DONE,
@@ -119,6 +121,7 @@ def format_executive_summary_block(
     agent: str = "",
     project: str = "",
     task_type: str = "",
+    recommended_options: Sequence[str] | None = None,
 ) -> str:
     """Single comment body for [EXEC_SUMMARY] (no trailing newline spam)."""
     lines: list[str] = ["[EXEC_SUMMARY]"]
@@ -149,13 +152,20 @@ def format_executive_summary_block(
     ns = (next_step or "").strip()
     if ns:
         lines.append(f"Siguiente paso recomendado: {ns[:500]}")
-    return "\n".join(lines)[:1900]
+    opts = [x.strip() for x in (recommended_options or []) if str(x).strip()]
+    if opts:
+        lines.append("Opciones recomendadas (Telegram: botones guiados; aquí como referencia):")
+        for i, opt in enumerate(opts[:6], start=1):
+            lines.append(f"  {i}. {opt[:220]}")
+    return "\n".join(lines)[:2200]
 
 
-def format_timeline_line(sentence: str) -> str:
+def format_timeline_line(sentence: str, *, tier: str = "normal") -> str:
     s = (sentence or "").strip()
     if not s:
         return ""
+    if (tier or "").strip().lower() == "low":
+        return f"[TIMELINE_LOW] {s[:1700]}"
     return f"[TIMELINE] {s[:1700]}"
 
 
@@ -267,21 +277,22 @@ def summarize_perico_pending_approval_for_notion(
     Returns (what_jarvis_did, next_step).
     """
     exec_line = summarize_execution_for_operator(execution, mission_prompt=mission_prompt)
-    titles = [
-        str(a.get("title") or "").strip()
+    pend_lines = [
+        format_perico_approval_item_for_operator(a)
         for a in pending_actions
         if isinstance(a, dict)
     ]
-    titles = [t for t in titles if t][:5]
-    pend = " · ".join(titles) if titles else "paso que requiere tu confirmación"
+    pend_lines = [p for p in pend_lines if p.strip()][:4]
+    pend = "\n\n".join(pend_lines) if pend_lines else "un paso que requiere tu confirmación explícita"
     what = (
-        "Perico preparó el trabajo automático permitido; falta tu aprobación explícita "
-        f"antes de ejecutar: {pend[:420]}."
+        "Perico terminó la parte automática segura. Lo siguiente no es un ajuste interno de tests: "
+        "es una acción que cambia el sistema o la configuración de forma persistente o visible.\n\n"
+        f"{pend[:720]}"
     )
-    if len(what) < 800 and exec_line:
-        what = f"{what} Resumen de acciones: {exec_line[:380]}"
+    if len(what) < 900 and exec_line:
+        what = f"{what}\n\nResumen de lo ya hecho: {exec_line[:380]}"
     next_step = (
-        "En Telegram, usa los botones del mensaje de aprobación (Aprobar / Rechazar) "
-        "o los comandos de misión indicados. Sin aprobación no se continúa ese paso."
+        "En Telegram, abre el mensaje con «Aprobar» / «Rechazar». "
+        "Si apruebas, se ejecutará exactamente lo descrito arriba; si rechazas, ese paso no se aplica."
     )
     return what[:950], next_step[:500]

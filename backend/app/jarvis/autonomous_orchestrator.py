@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
@@ -53,6 +54,7 @@ from app.jarvis.mission_goal_quality import (
     format_natural_clarification_request,
     should_attempt_goal_retry,
 )
+from app.jarvis.mission_operator_guidance import notion_options_from_guided_profile
 from app.jarvis.notion_mission_readability import (
     human_mission_status,
     notion_executive_display_fields,
@@ -62,23 +64,34 @@ from app.jarvis.notion_mission_readability import (
     summarize_plan_for_readability,
 )
 from app.jarvis.notion_mission_service import NotionMissionService
+from app.jarvis.perico_guided_env import apply_perico_guided_env_from_input
 from app.jarvis.perico_mission import (
     build_perico_deliverables_snapshot,
     build_perico_mission_prompt,
+    filter_perico_bugfix_irrelevant_approval_actions,
+    filter_perico_operator_noise_approvals,
+    format_perico_approval_item_for_operator,
     format_perico_closure_key_result,
     format_perico_closure_status_display,
+    format_perico_runtime_block_telegram,
     is_perico_marked_prompt,
     is_perico_software_mission_prompt,
     normalize_perico_strategy_actions,
     perico_should_block_for_operator_input,
+    perico_try_autofix_runtime_before_block,
     perico_try_auto_pytest_retry,
 )
+from app.jarvis.perico_tools import perico_repo_root
 from app.jarvis.telegram_service import TelegramMissionService
 
 logger = logging.getLogger(__name__)
 
 
-def _format_combined_approval_summary(actions: list[dict[str, Any]]) -> str:
+def _format_combined_approval_summary(
+    actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str | None = None,
+) -> str:
     """Human-readable approval text; Google Ads pause uses metrics + trigger rule."""
     parts: list[str] = []
     for x in actions[:4]:
@@ -92,9 +105,12 @@ def _format_combined_approval_summary(actions: list[dict[str, Any]]) -> str:
         elif at == "google_ads_resume_campaign":
             parts.append(format_google_ads_resume_approval_summary(x))
         else:
-            t = str(x.get("title") or "").strip()
-            if t:
-                parts.append(t)
+            if mission_prompt and is_perico_software_mission_prompt(mission_prompt):
+                parts.append(format_perico_approval_item_for_operator(x))
+            else:
+                t = str(x.get("title") or "").strip()
+                if t:
+                    parts.append(t)
     return "\n\n".join(parts) if parts else "critical action requested"
 
 
@@ -514,7 +530,17 @@ class JarvisAutonomousOrchestrator:
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="resuming with new input")
         details = str(mission.get("details") or "")
         task_title = str(mission.get("task") or "")
-        prompt = f"{details}\n\nUser input:\n{input_text}"
+        sanitized, env_fixes = apply_perico_guided_env_from_input(input_text)
+        if env_fixes:
+            self.notion.append_event(
+                mission_id,
+                event="perico_guided_env_applied",
+                detail="; ".join(env_fixes)[:500],
+            )
+        body = (sanitized or "").strip()
+        if not body:
+            body = "[OPERADOR_GUIADO] Ajuste de entorno aplicado; continuar con el mismo objetivo."
+        prompt = f"{details}\n\nUser input:\n{body}"
         is_perico_resume = (
             is_perico_marked_prompt(prompt)
             or "[AGENT:PERICO" in details
@@ -525,7 +551,7 @@ class JarvisAutonomousOrchestrator:
             prompt=prompt,
             actor=actor,
             chat_id=chat_id,
-            external_input=input_text,
+            external_input=body,
             specialist_agent=("perico" if is_perico_resume else None),
         )
 
@@ -647,7 +673,7 @@ class JarvisAutonomousOrchestrator:
         specialist_agent: str | None = None,
     ) -> dict[str, Any]:
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="planner started")
-        self.notion.append_readability_timeline(mission_id, "Planificador iniciado.")
+        self.notion.append_readability_timeline_low(mission_id, "Planificador iniciado.")
         active_perico = (
             (specialist_agent or "").strip().lower() == "perico"
             or is_perico_marked_prompt(prompt)
@@ -655,7 +681,7 @@ class JarvisAutonomousOrchestrator:
         )
         nf = notion_executive_display_fields(prompt, specialist_agent=specialist_agent)
         if active_perico:
-            self.notion.append_readability_timeline(
+            self.notion.append_readability_timeline_low(
                 mission_id,
                 "Perico (software): bucle inspectar → hipótesis → parche mínimo → validar; sin deploy automático a producción.",
             )
@@ -679,16 +705,25 @@ class JarvisAutonomousOrchestrator:
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
                 what_jarvis_did="El planificador necesita un poco más de contexto para avanzar con seguridad.",
                 key_result=str(plan.get("objective") or summarize_plan_for_readability(plan))[:500],
-                next_step="Responder en Telegram (botones o mensaje normal).",
+                next_step="Elige una opción guiada en Telegram o responde en texto libre.",
                 agent=nf["agent"],
                 project=nf["project"],
                 task_type=nf["task_type"],
+                recommended_options=list(notion_options_from_guided_profile("generic_wait", ctx={})),
             )
             self.notion.append_decision_required_comment(
                 mission_id,
                 line="Falta tu respuesta al planificador; usa «Responder» en Telegram o el mismo chat.",
             )
-            clarify_sent = bool(self.telegram.send_input_request(chat_id, mission_id, clarify))
+            clarify_sent = bool(
+                self.telegram.send_input_request(
+                    chat_id,
+                    mission_id,
+                    clarify,
+                    guided_profile="generic_wait",
+                    guided_context={},
+                )
+            )
             return {
                 "ok": True,
                 "mission_id": mission_id,
@@ -708,7 +743,7 @@ class JarvisAutonomousOrchestrator:
         research: dict[str, Any] | None = None
         if plan.get("requires_research"):
             self.notion.transition_state(mission_id, to_state=MISSION_STATUS_RESEARCHING, note="research started")
-            self.notion.append_readability_timeline(mission_id, "Fase de investigación iniciada.")
+            self.notion.append_readability_timeline_low(mission_id, "Fase de investigación iniciada.")
             research = self.researcher.run(prompt=prompt, plan=plan)
             self.notion.append_agent_output(mission_id, agent_name="research", content=_dump(research))
 
@@ -721,12 +756,116 @@ class JarvisAutonomousOrchestrator:
         )
         if active_perico:
             raw_acts = [x for x in (strategy.get("actions") or []) if isinstance(x, dict)]
-            strategy = {
-                **dict(strategy),
-                "actions": normalize_perico_strategy_actions(raw_acts, mission_prompt=prompt),
-            }
+            norm_acts = normalize_perico_strategy_actions(raw_acts, mission_prompt=prompt)
+            norm_acts = filter_perico_bugfix_irrelevant_approval_actions(
+                norm_acts, mission_prompt=prompt
+            )
+            strategy = {**dict(strategy), "actions": norm_acts}
         self.notion.append_agent_output(mission_id, agent_name="strategy", content=_dump(strategy))
-        self.notion.append_readability_timeline(mission_id, "Estrategia lista; revisión ops y ejecución.")
+        if active_perico:
+            strat_acts = [x for x in (strategy.get("actions") or []) if isinstance(x, dict)]
+            ok_rt, rt_msg, diag = perico_try_autofix_runtime_before_block(
+                mission_prompt=prompt,
+                strategy_actions=strat_acts,
+            )
+            for note in diag.get("fixes_applied") or []:
+                if str(note).strip():
+                    self.notion.append_readability_timeline_low(
+                        mission_id,
+                        f"Perico: autocorrección de runtime antes del bloqueo: {str(note)[:220]}",
+                    )
+            if not ok_rt:
+                self.notion.append_readability_timeline_low(
+                    mission_id,
+                    "Perico: bloqueado — el runtime no permite usar el repo o pytest con la configuración actual.",
+                )
+                dir_hint = str(diag.get("dir_hint") or "")
+                full_block = rt_msg if not dir_hint else f"{rt_msg}\n\nDirectorios (pistas): {dir_hint}"
+                fb = "/app" if Path("/app/app").is_dir() else ""
+                has_app = bool(fb)
+                operator_telegram = format_perico_runtime_block_telegram(
+                    technical_message_es=full_block,
+                    error_kind=str(diag.get("error_kind") or ""),
+                    fixes_applied=list(diag.get("fixes_applied") or []),
+                    has_container_code_path=has_app,
+                )
+                perico_snap_block = build_perico_deliverables_snapshot(
+                    mission_prompt=prompt,
+                    plan=plan,
+                    execution={"executed": []},
+                    goal_satisfied=False,
+                    retry_attempted=False,
+                    runtime_environment_block=full_block[:2500],
+                )
+                self.notion.append_agent_output(
+                    mission_id, agent_name="perico_deliverables", content=_dump(perico_snap_block)
+                )
+                self.notion.transition_state(
+                    mission_id,
+                    to_state=MISSION_STATUS_WAITING_FOR_INPUT,
+                    note="perico_runtime_unusable",
+                )
+                gate_status = human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT)
+                cs_gate = format_perico_closure_status_display(perico_snap_block)
+                if cs_gate:
+                    gate_status = cs_gate
+                guided_profile = str(diag.get("guided_profile") or "perico_repo_path")
+                guided_ctx: dict[str, Any] = {
+                    "profile": guided_profile,
+                    "repo_root_hint": str(perico_repo_root()),
+                    "fallback_root": fb,
+                    "error_kind": str(diag.get("error_kind") or ""),
+                    "dir_hint": dir_hint,
+                }
+                self.notion.append_readability_executive_summary(
+                    mission_id,
+                    objective=nf["objective"],
+                    status=gate_status,
+                    what_jarvis_did=(
+                        "Perico intentó preparar el entorno de tests y rutas del repo por su cuenta; "
+                        "aún no puede ejecutar la validación con la configuración actual."
+                    ),
+                    blocked=operator_telegram[:500],
+                    next_step=(
+                        "Usa los botones guiados (ruta en contenedor, reintento de tests o parar) "
+                        "o responde en texto libre si ninguna opción encaja."
+                    ),
+                    agent=nf["agent"],
+                    project=nf["project"],
+                    task_type=nf["task_type"],
+                    recommended_options=list(
+                        notion_options_from_guided_profile(guided_profile, ctx=guided_ctx)
+                    ),
+                )
+                self.notion.append_decision_required_comment(
+                    mission_id,
+                    line="Perico bloqueado por entorno (repo/pytest); revisa despliegue antes de continuar.",
+                )
+                block_sent = bool(
+                    self.telegram.send_input_request(
+                        chat_id,
+                        mission_id,
+                        operator_telegram[:900],
+                        guided_profile=guided_profile,
+                        guided_context=guided_ctx,
+                        request_preamble="Perico se detuvo: hace falta una decisión tuya sobre el entorno de ejecución.",
+                    )
+                )
+                return {
+                    "ok": True,
+                    "mission_id": mission_id,
+                    "status": MISSION_STATUS_WAITING_FOR_INPUT,
+                    "dialog_message": (
+                        ""
+                        if block_sent
+                        else (
+                            f"{operator_telegram}\n\n"
+                            f"Pulsa «Responder» cuando el entorno esté listo. (Ref. interna: {mission_id})"
+                        )
+                    ),
+                    "telegram_compact_reply_suppressed": block_sent,
+                }
+        self.notion.append_readability_timeline_low(mission_id, "Estrategia lista; revisión ops y ejecución.")
         ops_output = self.ops.run(
             prompt=prompt,
             plan=plan,
@@ -745,7 +884,7 @@ class JarvisAutonomousOrchestrator:
             baseline_by_title[title] = {"score": 100.0, "captured_at": "strategy_phase"}
 
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_EXECUTING, note="execution started")
-        self.notion.append_readability_timeline(mission_id, "Ejecución iniciada.")
+        self.notion.append_readability_timeline_low(mission_id, "Ejecución iniciada.")
         strategy_actions = [a for a in (strategy.get("actions") or []) if isinstance(a, dict)]
         non_ops_actions = [
             a
@@ -824,16 +963,28 @@ class JarvisAutonomousOrchestrator:
                         status=gate_status,
                         what_jarvis_did=summarize_execution_for_operator(execution, mission_prompt=prompt),
                         blocked=block_msg[:500],
-                        next_step="Indica cómo seguir o ajusta el alcance (botón «Responder» o mensaje normal).",
+                        next_step="Elige una opción guiada en Telegram o responde en texto libre.",
                         agent=nf["agent"],
                         project=nf["project"],
                         task_type=nf["task_type"],
+                        recommended_options=list(
+                            notion_options_from_guided_profile("generic_wait", ctx={})
+                        ),
                     )
                     self.notion.append_decision_required_comment(
                         mission_id,
                         line="Perico necesita tu criterio: validación o tests no cerraron como se esperaba.",
                     )
-                    gate_sent = bool(self.telegram.send_input_request(chat_id, mission_id, block_msg))
+                    gate_sent = bool(
+                        self.telegram.send_input_request(
+                            chat_id,
+                            mission_id,
+                            block_msg,
+                            guided_profile="generic_wait",
+                            guided_context={},
+                            request_preamble="Perico necesita tu criterio: la validación con tests no cerró como se esperaba.",
+                        )
+                    )
                     return {
                         "ok": True,
                         "mission_id": mission_id,
@@ -876,16 +1027,25 @@ class JarvisAutonomousOrchestrator:
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
                 what_jarvis_did="Se ejecutó la misión, pero el objetivo declarado sigue sin cubrirse del todo.",
                 blocked=shortfall[:500],
-                next_step="Responder con el detalle que falta (botón «Responder» o mensaje normal).",
+                next_step="Elige una opción guiada en Telegram o responde en texto libre.",
                 agent=nf["agent"],
                 project=nf["project"],
                 task_type=nf["task_type"],
+                recommended_options=list(notion_options_from_guided_profile("generic_wait", ctx={})),
             )
             self.notion.append_decision_required_comment(
                 mission_id,
                 line="El objetivo de la misión no está cubierto: hace falta más contexto o alcance.",
             )
-            shortfall_sent = bool(self.telegram.send_input_request(chat_id, mission_id, shortfall))
+            shortfall_sent = bool(
+                self.telegram.send_input_request(
+                    chat_id,
+                    mission_id,
+                    shortfall,
+                    guided_profile="generic_wait",
+                    guided_context={},
+                )
+            )
             return {
                 "ok": True,
                 "mission_id": mission_id,
@@ -937,16 +1097,25 @@ class JarvisAutonomousOrchestrator:
                 status=human_mission_status(MISSION_STATUS_WAITING_FOR_INPUT),
                 what_jarvis_did="La ejecución se detuvo: una acción necesita más contexto.",
                 blocked=prompt_text[:500],
-                next_step="Responder por Telegram («Responder» o mensaje en este chat).",
+                next_step="Elige una opción guiada en Telegram o responde en texto libre.",
                 agent=nf["agent"],
                 project=nf["project"],
                 task_type=nf["task_type"],
+                recommended_options=list(notion_options_from_guided_profile("generic_wait", ctx={})),
             )
             self.notion.append_decision_required_comment(
                 mission_id,
                 line="La ejecución espera un dato tuyo antes de continuar.",
             )
-            input_sent = bool(self.telegram.send_input_request(chat_id, mission_id, prompt_text))
+            input_sent = bool(
+                self.telegram.send_input_request(
+                    chat_id,
+                    mission_id,
+                    prompt_text,
+                    guided_profile="generic_wait",
+                    guided_context={},
+                )
+            )
             return {
                 "ok": True,
                 "mission_id": mission_id,
@@ -967,9 +1136,15 @@ class JarvisAutonomousOrchestrator:
             for x in (ops_output.get("waiting_for_approval") or [])
             if isinstance(x, dict)
         ] + [x for x in (execution.get("waiting_for_approval") or []) if isinstance(x, dict)]
+        if active_perico:
+            combined_waiting_approval = filter_perico_operator_noise_approvals(
+                combined_waiting_approval, mission_prompt=prompt
+            )
         if combined_waiting_approval:
             self.notion.append_pending_approval_payload(mission_id, actions=combined_waiting_approval)
-            summary = _format_combined_approval_summary(combined_waiting_approval)
+            summary = _format_combined_approval_summary(
+                combined_waiting_approval, mission_prompt=prompt if active_perico else None
+            )
             note = (summary.split("\n", 1)[0] if summary else "")[:300]
             self.notion.transition_state(
                 mission_id,
