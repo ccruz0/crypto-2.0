@@ -68,6 +68,7 @@ from app.jarvis.perico_guided_env import apply_perico_guided_env_from_input
 from app.jarvis.perico_mission import (
     build_perico_deliverables_snapshot,
     build_perico_mission_prompt,
+    filter_perico_actions_already_satisfied_by_guided_env,
     filter_perico_bugfix_irrelevant_approval_actions,
     filter_perico_operator_noise_approvals,
     format_perico_approval_item_for_operator,
@@ -77,9 +78,11 @@ from app.jarvis.perico_mission import (
     is_perico_marked_prompt,
     is_perico_software_mission_prompt,
     normalize_perico_strategy_actions,
+    perico_applied_env_keys_from_fixes,
     perico_should_block_for_operator_input,
     perico_try_autofix_runtime_before_block,
     perico_try_auto_pytest_retry,
+    prune_nonconcrete_perico_strategy_actions,
 )
 from app.jarvis.perico_tools import perico_repo_root
 from app.jarvis.telegram_service import TelegramMissionService
@@ -531,6 +534,7 @@ class JarvisAutonomousOrchestrator:
         details = str(mission.get("details") or "")
         task_title = str(mission.get("task") or "")
         sanitized, env_fixes = apply_perico_guided_env_from_input(input_text)
+        applied_keys = perico_applied_env_keys_from_fixes(env_fixes)
         if env_fixes:
             self.notion.append_event(
                 mission_id,
@@ -553,6 +557,7 @@ class JarvisAutonomousOrchestrator:
             chat_id=chat_id,
             external_input=body,
             specialist_agent=("perico" if is_perico_resume else None),
+            applied_guided_env_keys=applied_keys,
         )
 
     def _merge_google_ads_mutation_proposals(
@@ -671,6 +676,7 @@ class JarvisAutonomousOrchestrator:
         chat_id: str,
         external_input: str,
         specialist_agent: str | None = None,
+        applied_guided_env_keys: list[str] | None = None,
     ) -> dict[str, Any]:
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="planner started")
         self.notion.append_readability_timeline_low(mission_id, "Planificador iniciado.")
@@ -760,6 +766,36 @@ class JarvisAutonomousOrchestrator:
             norm_acts = filter_perico_bugfix_irrelevant_approval_actions(
                 norm_acts, mission_prompt=prompt
             )
+            guided_keys = [str(k or "").upper() for k in (applied_guided_env_keys or []) if str(k or "").strip()]
+            if guided_keys:
+                pre_count = len(norm_acts)
+                norm_acts = filter_perico_actions_already_satisfied_by_guided_env(
+                    norm_acts,
+                    applied_env_keys=guided_keys,
+                    mission_prompt=prompt,
+                )
+                if len(norm_acts) < pre_count:
+                    self.notion.append_readability_timeline_low(
+                        mission_id,
+                        (
+                            "Perico: suprimidas "
+                            f"{pre_count - len(norm_acts)} acción(es) ya cubiertas por el input guiado "
+                            f"({', '.join(guided_keys)})."
+                        ),
+                    )
+            pre_prune = len(norm_acts)
+            norm_acts = prune_nonconcrete_perico_strategy_actions(
+                norm_acts, mission_prompt=prompt
+            )
+            if len(norm_acts) < pre_prune:
+                self.notion.append_readability_timeline_low(
+                    mission_id,
+                    (
+                        "Perico: descartadas "
+                        f"{pre_prune - len(norm_acts)} acción(es) genéricas no ejecutables "
+                        "(bugfix exige perico_repo_read / perico_run_pytest / perico_apply_patch)."
+                    ),
+                )
             strategy = {**dict(strategy), "actions": norm_acts}
         self.notion.append_agent_output(mission_id, agent_name="strategy", content=_dump(strategy))
         if active_perico:
@@ -1140,6 +1176,17 @@ class JarvisAutonomousOrchestrator:
             combined_waiting_approval = filter_perico_operator_noise_approvals(
                 combined_waiting_approval, mission_prompt=prompt
             )
+            guided_keys = [
+                str(k or "").upper()
+                for k in (applied_guided_env_keys or [])
+                if str(k or "").strip()
+            ]
+            if guided_keys:
+                combined_waiting_approval = filter_perico_actions_already_satisfied_by_guided_env(
+                    combined_waiting_approval,
+                    applied_env_keys=guided_keys,
+                    mission_prompt=prompt,
+                )
         if combined_waiting_approval:
             self.notion.append_pending_approval_payload(mission_id, actions=combined_waiting_approval)
             summary = _format_combined_approval_summary(

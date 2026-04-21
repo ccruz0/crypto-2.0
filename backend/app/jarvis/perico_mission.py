@@ -701,6 +701,149 @@ def _perico_internal_runtime_env_approval(action: dict[str, Any]) -> bool:
     return any(n in blob for n in needles)
 
 
+_PERICO_ENV_KEY_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "PERICO_REPO_ROOT": (
+        "perico_repo_root",
+        "perico repo root",
+        "perico-repo-root",
+        "repo root",
+        "repository root",
+        "raíz del repositorio",
+        "raiz del repositorio",
+    ),
+    "PERICO_WRITE_ENABLED": (
+        "perico_write_enabled",
+        "perico write enabled",
+        "write enabled",
+    ),
+    "PYTHONPATH": ("pythonpath",),
+}
+
+
+def perico_applied_env_keys_from_fixes(env_fixes: list[Any] | None) -> list[str]:
+    """Extract KEY names from ``apply_perico_guided_env_from_input`` fix labels."""
+    keys: list[str] = []
+    for raw in env_fixes or []:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        key = s.split("=", 1)[0].strip().upper()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def filter_perico_actions_already_satisfied_by_guided_env(
+    actions: list[dict[str, Any]],
+    *,
+    applied_env_keys: list[str],
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Drop strategy rows that only ask to set/apply an env key already applied via guided input.
+
+    Keeps registered Perico tools (they do not "set" env) and non-env actions untouched.
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    keys = [str(k or "").strip().upper() for k in (applied_env_keys or []) if str(k or "").strip()]
+    if not keys:
+        return list(actions)
+
+    set_needles = (
+        "set env",
+        "set environment",
+        "export ",
+        "establece ",
+        "establecer ",
+        "configura ",
+        "configurar ",
+        "define ",
+        "definir ",
+        "force ",
+        "forzar ",
+        "apply env",
+        "aplicar env",
+        "aplicar entorno",
+        "update env",
+        "update runtime env",
+        "actualizar entorno",
+        "persist env",
+        "persistir entorno",
+    )
+
+    def _mentions_any_key(blob: str, params: Any) -> str | None:
+        low = blob.lower()
+        for key in keys:
+            if key.lower() in low:
+                return key
+            for alias in _PERICO_ENV_KEY_SYNONYMS.get(key, ()):
+                if alias in low:
+                    return key
+        if isinstance(params, dict):
+            pk = params.get("keys")
+            seq: list[str] = []
+            if isinstance(pk, list):
+                seq = [str(x or "").upper() for x in pk]
+            elif pk is not None:
+                seq = [str(pk or "").upper()]
+            for key in keys:
+                if key in seq:
+                    return key
+        return None
+
+    out: list[dict[str, Any]] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        at = str(a.get("action_type") or "").strip().lower()
+        if at in _PERICO_STRATEGY_CONCRETE_TOOLS:
+            out.append(a)
+            continue
+        blob = _perico_strategy_action_blob(a)
+        params = a.get("params") if isinstance(a.get("params"), dict) else {}
+        matched_key = _mentions_any_key(blob, params)
+        if not matched_key:
+            out.append(a)
+            continue
+        is_env_ish = (
+            at in ("update_runtime_env", "ops_config_change", "external_side_effect", "analysis", "research")
+            or any(n in blob for n in set_needles)
+            or "environment variable" in blob
+            or "variable de entorno" in blob
+        )
+        if is_env_ish:
+            continue
+        out.append(a)
+    return out
+
+
+def prune_nonconcrete_perico_strategy_actions(
+    actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Drop vague/non-actionable strategy rows for Perico bugfix missions before execution and approval.
+
+    Mirrors the runtime skip performed in ExecutionAgent so resumed plans stay on the concrete
+    perico_repo_read / perico_run_pytest / perico_apply_patch path.
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    task = parse_perico_task_type_from_prompt(mission_prompt)
+    if not is_perico_bugfix_rubric_task(task):
+        return list(actions)
+    out: list[dict[str, Any]] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        if perico_should_skip_nonconcrete_strategy_action(a, mission_prompt=mission_prompt):
+            continue
+        out.append(a)
+    return out
+
+
 def filter_perico_operator_noise_approvals(
     actions: list[dict[str, Any]],
     *,

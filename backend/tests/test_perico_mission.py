@@ -14,6 +14,7 @@ from app.jarvis.perico_mission import (
     build_perico_mission_prompt,
     classify_perico_runtime_precheck_failure,
     classify_perico_task_type,
+    filter_perico_actions_already_satisfied_by_guided_env,
     filter_perico_bugfix_irrelevant_approval_actions,
     filter_perico_operator_noise_approvals,
     format_perico_approval_item_for_operator,
@@ -25,9 +26,11 @@ from app.jarvis.perico_mission import (
     is_perico_software_mission_prompt,
     normalize_perico_strategy_actions,
     parse_perico_task_type_from_prompt,
+    perico_applied_env_keys_from_fixes,
     perico_autofix_strategy_pytest_paths,
     perico_software_runtime_precheck,
     perico_try_autofix_runtime_before_block,
+    prune_nonconcrete_perico_strategy_actions,
 )
 
 
@@ -841,6 +844,81 @@ def test_format_perico_approval_item_mentions_why():
     )
     assert "reiniciar" in s.lower()
     assert "aprobación" in s.lower() or "visto bueno" in s.lower()
+
+
+def test_perico_applied_env_keys_from_fixes_parses_keys():
+    fixes = ["PERICO_REPO_ROOT=/app", "PERICO_REPO_ROOT=<unset>", "  ", "PYTHONPATH=/foo"]
+    out = perico_applied_env_keys_from_fixes(fixes)
+    assert out == ["PERICO_REPO_ROOT", "PYTHONPATH"]
+
+
+def test_filter_perico_actions_already_satisfied_drops_set_repo_root():
+    mp = build_perico_mission_prompt(user_text="pytest fallan arregla con patch")
+    acts = [
+        {
+            "action_type": "update_runtime_env",
+            "title": "Set PERICO_REPO_ROOT environment variable",
+            "params": {"keys": ["PERICO_REPO_ROOT"]},
+        },
+        {
+            "action_type": "ops_config_change",
+            "title": "Configurar la raíz del repositorio a /app",
+            "params": {},
+        },
+        {
+            "action_type": "perico_run_pytest",
+            "title": "Run pytest",
+            "params": {"relative_path": "backend/tests"},
+        },
+    ]
+    out = filter_perico_actions_already_satisfied_by_guided_env(
+        acts,
+        applied_env_keys=["PERICO_REPO_ROOT"],
+        mission_prompt=mp,
+    )
+    types = [a["action_type"] for a in out]
+    assert types == ["perico_run_pytest"]
+
+
+def test_filter_perico_actions_already_satisfied_keeps_unrelated_ops():
+    mp = build_perico_mission_prompt(user_text="pytest fallan arregla con patch")
+    acts = [
+        {
+            "action_type": "update_runtime_env",
+            "title": "Set JARVIS_GA4_PROPERTY_ID",
+            "params": {"keys": ["JARVIS_GA4_PROPERTY_ID"]},
+        }
+    ]
+    out = filter_perico_actions_already_satisfied_by_guided_env(
+        acts,
+        applied_env_keys=["PERICO_REPO_ROOT"],
+        mission_prompt=mp,
+    )
+    assert len(out) == 1
+
+
+def test_prune_nonconcrete_perico_strategy_drops_placeholders_and_keeps_tools():
+    mp = build_perico_mission_prompt(user_text="pytest fallan arregla con patch")
+    acts = [
+        {"action_type": "analysis", "title": "Prepare potential fix", "params": {}},
+        {
+            "action_type": "code_change",
+            "title": "Apply minimal patch if solution identified",
+            "params": {"old_text": "", "new_text": ""},
+        },
+        {
+            "action_type": "perico_apply_patch",
+            "title": "Apply concrete patch",
+            "params": {
+                "relative_path": "backend/app/x.py",
+                "old_text": "a",
+                "new_text": "b",
+            },
+        },
+    ]
+    out = prune_nonconcrete_perico_strategy_actions(acts, mission_prompt=mp)
+    kept = [a["action_type"] for a in out]
+    assert kept == ["perico_apply_patch"]
 
 
 def test_summarize_perico_pending_approval_for_notion_plain_language():
