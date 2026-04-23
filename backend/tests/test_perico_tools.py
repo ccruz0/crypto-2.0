@@ -19,6 +19,7 @@ from app.jarvis.perico_tools import (
     perico_repo_read,
     perico_repo_root,
     perico_repo_runtime_ready,
+    perico_resolve_pytest_command,
     perico_run_pytest,
     perico_verify_pytest_relative_target,
 )
@@ -287,6 +288,21 @@ def test_perico_repo_runtime_ready_rejects_missing_app_tree(tmp_path, monkeypatc
     ok, msg = perico_repo_runtime_ready()
     assert ok is False
     assert "app" in msg.lower()
+
+
+def test_perico_resolve_pytest_command_env_override(perico_repo: Path, monkeypatch):
+    monkeypatch.setenv("PERICO_TEST_COMMAND", "my-pytest --tb=no")
+    cmd, source = perico_resolve_pytest_command()
+    assert cmd == ["my-pytest", "--tb=no"]
+    assert source == "env_override"
+
+
+def test_perico_resolve_pytest_command_system_python_fallback(perico_repo: Path, monkeypatch):
+    monkeypatch.delenv("PERICO_TEST_COMMAND", raising=False)
+    monkeypatch.delenv("PERICO_PYTHON", raising=False)
+    cmd, source = perico_resolve_pytest_command()
+    assert "pytest" in " ".join(cmd)
+    assert source in ("system_python", "perico_python")
 
 
 def test_perico_verify_pytest_relative_accepts_backend_prefixed_path(perico_repo: Path):

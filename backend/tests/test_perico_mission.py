@@ -18,6 +18,7 @@ from app.jarvis.perico_mission import (
     filter_perico_bugfix_irrelevant_approval_actions,
     filter_perico_operator_noise_approvals,
     format_perico_approval_item_for_operator,
+    format_perico_final_work_report,
     format_perico_closure_key_result,
     format_perico_closure_status_display,
     format_perico_runtime_block_telegram,
@@ -919,6 +920,69 @@ def test_prune_nonconcrete_perico_strategy_drops_placeholders_and_keeps_tools():
     out = prune_nonconcrete_perico_strategy_actions(acts, mission_prompt=mp)
     kept = [a["action_type"] for a in out]
     assert kept == ["perico_apply_patch"]
+
+
+def test_format_perico_final_work_report_success_has_seven_sections():
+    snap = {
+        "software_closure_state": "fixed",
+        "patch_applied": True,
+        "tests_passed": True,
+        "files_touched": ["backend/app/foo.py"],
+        "root_cause_summary": "Regex duplicado en parser",
+        "validation_command": "python -m pytest backend/tests/test_foo.py",
+        "validation_result_summary": "pytest (última pasada): OK",
+        "errors_detected": [],
+    }
+    execution = {
+        "executed": [
+            {"action_type": "perico_repo_read", "result": {"ok": True}},
+            {"action_type": "perico_apply_patch", "result": {"ok": True}},
+            {"action_type": "perico_run_pytest", "result": {"ok": True, "tests_ok": True}},
+        ]
+    }
+    out = format_perico_final_work_report(snap, execution)
+    for tag in (
+        "1. Problema encontrado",
+        "2. Causa raíz probable",
+        "3. Qué intentó Perico",
+        "4. Qué cambió",
+        "5. Cómo se validó",
+        "6. Estado final",
+        "7. Pendiente",
+    ):
+        assert tag in out
+    assert "FIXED" in out
+    assert "backend/app/foo.py" in out
+
+
+def test_format_perico_final_work_report_blocked_mentions_runtime_and_pending():
+    snap = {
+        "software_closure_state": "blocked",
+        "patch_applied": False,
+        "tests_passed": None,
+        "files_touched": [],
+        "root_cause_summary": "",
+        "runtime_environment_block": "No module named pytest",
+        "validation_command": "",
+        "validation_result_summary": "",
+    }
+    out = format_perico_final_work_report(snap, {"executed": []})
+    assert "BLOCKED" in out
+    assert "runtime" in out.lower() or "Runtime".lower() in out.lower()
+    assert "Pendiente:" in out
+    assert "pytest" in out.lower()
+
+
+def test_format_perico_runtime_block_telegram_reports_detected_runner():
+    msg = format_perico_runtime_block_telegram(
+        technical_message_es="No module named pytest",
+        error_kind="pytest_invoke_failed",
+        fixes_applied=["PERICO_REPO_ROOT=/app (autofix contenedor)"],
+        has_container_code_path=True,
+        detected_test_runner="unavailable",
+    )
+    assert "Runner de tests" in msg
+    assert "unavailable" in msg or "no se encontró" in msg.lower()
 
 
 def test_summarize_perico_pending_approval_for_notion_plain_language():

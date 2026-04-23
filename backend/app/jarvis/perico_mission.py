@@ -541,13 +541,18 @@ def perico_try_autofix_runtime_before_block(
     import os
     from pathlib import Path
 
-    from app.jarvis.perico_tools import perico_shallow_runtime_dir_hint
+    from app.jarvis.perico_tools import (
+        perico_resolve_pytest_command,
+        perico_shallow_runtime_dir_hint,
+    )
 
     diag: dict[str, Any] = {
         "fixes_applied": [],
         "error_kind": "",
         "guided_profile": "perico_repo_path",
         "dir_hint": "",
+        "test_runner_source": "",
+        "test_runner_cmd": "",
     }
     path_notes = perico_autofix_strategy_pytest_paths(strategy_actions)
     diag["fixes_applied"].extend(path_notes)
@@ -557,6 +562,14 @@ def perico_try_autofix_runtime_before_block(
         strategy_actions=strategy_actions,
     )
     if ok:
+        try:
+            cmd, src = perico_resolve_pytest_command()
+            diag["test_runner_source"] = src
+            diag["test_runner_cmd"] = " ".join(cmd)
+            if src not in ("system_python", "unavailable", "perico_python"):
+                diag["fixes_applied"].append(f"pytest runner detectado: {src} ({' '.join(cmd)})")
+        except Exception:
+            pass
         return True, "", diag
 
     app_ready = Path("/app/app").is_dir()
@@ -583,7 +596,24 @@ def perico_try_autofix_runtime_before_block(
                 strategy_actions=strategy_actions,
             )
             if ok:
+                try:
+                    cmd, src = perico_resolve_pytest_command()
+                    diag["test_runner_source"] = src
+                    diag["test_runner_cmd"] = " ".join(cmd)
+                    if src not in ("system_python", "unavailable", "perico_python"):
+                        diag["fixes_applied"].append(
+                            f"pytest runner detectado: {src} ({' '.join(cmd)})"
+                        )
+                except Exception:
+                    pass
                 return True, "", diag
+
+    try:
+        cmd, src = perico_resolve_pytest_command()
+        diag["test_runner_source"] = src
+        diag["test_runner_cmd"] = " ".join(cmd)
+    except Exception:
+        pass
 
     diag["error_kind"] = kind
     diag["dir_hint"] = perico_shallow_runtime_dir_hint()
@@ -882,6 +912,7 @@ def format_perico_runtime_block_telegram(
     error_kind: str,
     fixes_applied: list[Any],
     has_container_code_path: bool,
+    detected_test_runner: str = "",
 ) -> str:
     """
     Operator-facing Telegram copy for runtime precheck blocks (plain language + optional technical tail).
@@ -896,6 +927,15 @@ def format_perico_runtime_block_telegram(
         for note in fixes[:6]:
             lines.append(f"• {note[:220]}")
     lines.append(f"En palabras simples: {plain}")
+    runner = (detected_test_runner or "").strip()
+    if runner:
+        if runner == "unavailable":
+            lines.append(
+                "Runner de tests: no se encontró ninguno utilizable (probé PERICO_TEST_COMMAND, "
+                "PERICO_PYTHON, .venv-test-runner, .venv, venv, poetry, tox, python3 -m pytest)."
+            )
+        else:
+            lines.append(f"Runner de tests detectado: {runner}.")
     tech = (technical_message_es or "").strip()
     if tech:
         lines.append("")
@@ -1632,6 +1672,143 @@ def format_perico_closure_status_display(snap: dict[str, Any]) -> str:
         "partially_fixed": "PARTIALLY_FIXED",
         "blocked": "BLOCKED",
     }.get(key, key.upper())
+
+
+def format_perico_final_work_report(
+    snap: dict[str, Any],
+    execution: dict[str, Any] | None,
+) -> str:
+    """
+    Structured Perico work report (success or blocked) answering the 7 operator questions:
+
+    1. Problema encontrado
+    2. Causa raíz probable
+    3. Qué intentó Perico
+    4. Qué cambió
+    5. Cómo se validó
+    6. Estado final
+    7. Qué queda pendiente
+
+    Designed for Telegram cierre + Notion executive summary. Plain Spanish, no debug noise.
+    """
+    if not isinstance(snap, dict):
+        return ""
+    ex = execution if isinstance(execution, dict) else {}
+    executed = [x for x in (ex.get("executed") or []) if isinstance(x, dict)]
+
+    runtime_block = (snap.get("runtime_environment_block") or "").strip()
+    closure = str(snap.get("software_closure_state") or "").strip().lower()
+    patch_applied = bool(snap.get("patch_applied"))
+    tests_passed = snap.get("tests_passed")
+    files_touched = list(snap.get("files_touched") or [])
+    root_cause = (snap.get("root_cause_summary") or "").strip()
+    hypothesis = (snap.get("hypothesis_summary") or "").strip()
+    errors = [str(e).strip() for e in (snap.get("errors_detected") or []) if str(e).strip()]
+    validation_cmd = (snap.get("validation_command") or "").strip()
+    validation_summary = (snap.get("validation_result_summary") or "").strip()
+
+    if runtime_block:
+        problem = "Perico no pudo ejecutar la validación automática en el runtime actual."
+    elif errors:
+        problem = f"Se detectaron errores durante la ejecución: {errors[0][:240]}"
+    elif tests_passed is False:
+        problem = "La suite de pytest terminó en rojo al validar el cambio."
+    elif closure == "fixed":
+        problem = "Bug reportado por el operador (pytest o comportamiento en rojo)."
+    elif hypothesis:
+        problem = f"Hipótesis de trabajo: {hypothesis[:240]}"
+    else:
+        problem = "Revisión de código / validación solicitada por el operador."
+
+    if root_cause:
+        cause = root_cause[:400]
+    elif runtime_block:
+        cause = "Falta de dependencia o runtime incompleto: no hay pytest ejecutable utilizable."
+    elif tests_passed is False:
+        cause = "Causa raíz no confirmada; los tests fallan tras el intento de parche."
+    elif not patch_applied:
+        cause = "No se aplicó parche concreto; la causa raíz sigue abierta."
+    else:
+        cause = "No se registró un análisis explícito de causa raíz."
+
+    inspected = len([
+        r for r in executed
+        if str(r.get("action_type") or "").strip().lower() == "perico_repo_read"
+    ])
+    pytest_rows = [
+        r for r in executed
+        if str(r.get("action_type") or "").strip().lower() == "perico_run_pytest"
+    ]
+    tried_parts: list[str] = []
+    if inspected:
+        tried_parts.append(f"inspeccionó {inspected} archivo(s) del repo")
+    if patch_applied:
+        tried_parts.append("aplicó un parche mínimo")
+    if pytest_rows:
+        tried_parts.append(f"ejecutó pytest {len(pytest_rows)} vez/veces")
+    if snap.get("retry_attempted"):
+        tried_parts.append("reintentó pytest automáticamente tras el primer fallo")
+    if runtime_block:
+        tried_parts.append("intentó autocorregir el entorno de ejecución (repo root / rutas)")
+    if not tried_parts:
+        tried_parts.append("recorrido ligero del plan sin tocar código")
+    tried = "; ".join(tried_parts) + "."
+
+    if files_touched:
+        changed = "Archivos tocados: " + ", ".join(files_touched[:8])
+        if len(files_touched) > 8:
+            changed += f" (+{len(files_touched) - 8} más)"
+    else:
+        changed = "Ningún archivo del repo fue modificado."
+
+    if pytest_rows and tests_passed is True:
+        validated = f"pytest en verde ({validation_cmd or 'python -m pytest'})."
+    elif pytest_rows and tests_passed is False:
+        validated = f"pytest en rojo ({validation_cmd or 'python -m pytest'}). {validation_summary}".strip()
+    elif pytest_rows:
+        validated = f"pytest ejecutado, resultado incompleto. {validation_summary}".strip()
+    elif runtime_block:
+        validated = "No se pudo ejecutar ninguna validación (runtime no listo)."
+    else:
+        validated = "No se ejecutó pytest en esta misión."
+
+    final_state_token = {
+        "fixed": "FIXED — resuelto y validado",
+        "partially_fixed": "PARTIALLY_FIXED — cambio aplicado, validación no concluyente",
+        "blocked": "BLOCKED — sin resolución confirmada",
+    }.get(closure, "")
+    if not final_state_token:
+        if patch_applied and tests_passed is True:
+            final_state_token = "FIXED — resuelto y validado"
+        elif patch_applied:
+            final_state_token = "PARTIALLY_FIXED — cambio aplicado, validación no concluyente"
+        else:
+            final_state_token = "COMPLETADO"
+
+    pending: list[str] = []
+    if closure == "blocked" and runtime_block:
+        pending.append(
+            "Preparar un runner de pytest en el runtime (o fijar PERICO_TEST_COMMAND / PERICO_PYTHON)."
+        )
+    if closure == "blocked" and tests_passed is False:
+        pending.append("Revisar manualmente la salida de pytest y decidir si se hace un nuevo intento.")
+    if closure == "partially_fixed":
+        pending.append("Relanzar la validación cuando el entorno esté disponible.")
+    if not patch_applied and closure != "fixed":
+        pending.append("No se ha aplicado ningún parche persistente todavía.")
+    pending_text = " ".join(pending).strip() or "Nada pendiente por parte del operador."
+
+    lines = [
+        "Informe Perico (cierre de misión):",
+        f"1. Problema encontrado: {problem}",
+        f"2. Causa raíz probable: {cause}",
+        f"3. Qué intentó Perico: {tried}",
+        f"4. Qué cambió: {changed}",
+        f"5. Cómo se validó: {validated}",
+        f"6. Estado final: {final_state_token}",
+        f"7. Pendiente: {pending_text}",
+    ]
+    return "\n".join(lines)[:3600]
 
 
 def format_perico_closure_key_result(snap: dict[str, Any], execution: dict[str, Any] | None) -> str:

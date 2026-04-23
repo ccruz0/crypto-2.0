@@ -74,6 +74,7 @@ from app.jarvis.perico_mission import (
     format_perico_approval_item_for_operator,
     format_perico_closure_key_result,
     format_perico_closure_status_display,
+    format_perico_final_work_report,
     format_perico_runtime_block_telegram,
     is_perico_marked_prompt,
     is_perico_software_mission_prompt,
@@ -824,6 +825,7 @@ class JarvisAutonomousOrchestrator:
                     error_kind=str(diag.get("error_kind") or ""),
                     fixes_applied=list(diag.get("fixes_applied") or []),
                     has_container_code_path=has_app,
+                    detected_test_runner=str(diag.get("test_runner_source") or ""),
                 )
                 perico_snap_block = build_perico_deliverables_snapshot(
                     mission_prompt=prompt,
@@ -853,13 +855,17 @@ class JarvisAutonomousOrchestrator:
                     "error_kind": str(diag.get("error_kind") or ""),
                     "dir_hint": dir_hint,
                 }
+                work_report_block = format_perico_final_work_report(perico_snap_block, {"executed": []})
                 self.notion.append_readability_executive_summary(
                     mission_id,
                     objective=nf["objective"],
                     status=gate_status,
                     what_jarvis_did=(
-                        "Perico intentó preparar el entorno de tests y rutas del repo por su cuenta; "
-                        "aún no puede ejecutar la validación con la configuración actual."
+                        work_report_block
+                        or (
+                            "Perico intentó preparar el entorno de tests y rutas del repo por su cuenta; "
+                            "aún no puede ejecutar la validación con la configuración actual."
+                        )
                     ),
                     blocked=operator_telegram[:500],
                     next_step=(
@@ -993,11 +999,15 @@ class JarvisAutonomousOrchestrator:
                         cs_gate = format_perico_closure_status_display(perico_snap)
                         if cs_gate:
                             gate_status = cs_gate
+                    work_report_gate = format_perico_final_work_report(perico_snap, execution)
                     self.notion.append_readability_executive_summary(
                         mission_id,
                         objective=nf["objective"],
                         status=gate_status,
-                        what_jarvis_did=summarize_execution_for_operator(execution, mission_prompt=prompt),
+                        what_jarvis_did=(
+                            work_report_gate
+                            or summarize_execution_for_operator(execution, mission_prompt=prompt)
+                        ),
                         blocked=block_msg[:500],
                         next_step="Elige una opción guiada en Telegram o responde en texto libre.",
                         agent=nf["agent"],
@@ -1280,16 +1290,28 @@ class JarvisAutonomousOrchestrator:
                 closure_status = format_perico_closure_status_display(perico_snap)
                 exec_summary_status = closure_status or human_mission_status(MISSION_STATUS_DONE)
                 key_res_exec = format_perico_closure_key_result(perico_snap, execution)
+                work_report = format_perico_final_work_report(perico_snap, execution)
+                what_did = work_report or summarize_execution_for_operator(
+                    execution, mission_prompt=prompt
+                )
+                next_step_text = (
+                    "Si hace falta trazar algo: busca [TECHNICAL_DETAIL] y líneas [DEBUG_TRACE] "
+                    "en esta misma página de Notion."
+                )
             else:
                 exec_summary_status = human_mission_status(MISSION_STATUS_DONE)
                 key_res_exec = str(review.get("summary") or "Completada correctamente.")[:500]
+                what_did = summarize_execution_for_operator(execution, mission_prompt=prompt)
+                next_step_text = (
+                    "Si necesitas trazas: busca [TECHNICAL_DETAIL] y líneas [DEBUG_TRACE] en esta página."
+                )
             self.notion.append_readability_executive_summary(
                 mission_id,
                 objective=nf["objective"],
                 status=exec_summary_status,
-                what_jarvis_did=summarize_execution_for_operator(execution, mission_prompt=prompt),
+                what_jarvis_did=what_did,
                 key_result=key_res_exec,
-                next_step="Si necesitas trazas: busca [TECHNICAL_DETAIL] y líneas [DEBUG_TRACE] en esta página.",
+                next_step=next_step_text,
                 agent=nf["agent"],
                 project=nf["project"],
                 task_type=nf["task_type"],
@@ -1425,11 +1447,12 @@ class JarvisAutonomousOrchestrator:
             f"Estado: {estado_line}",
             f"Resultado clave: {key_result}",
         ]
+        work_report = format_perico_final_work_report(snap, execution)
+        if work_report:
+            lines.append("")
+            lines.append(work_report)
         if snap.get("validation_command"):
             lines.append(f"Comando validación: {str(snap['validation_command'])[:320]}")
-        kr = (snap.get("root_cause_summary") or "").strip()
-        if kr:
-            lines.append(f"Contexto técnico: {kr[:450]}")
         return "\n".join(lines)[:3900]
 
     def _is_google_ads_mission(self, *, prompt: str, strategy: dict[str, Any]) -> bool:
