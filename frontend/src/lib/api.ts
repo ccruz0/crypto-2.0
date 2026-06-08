@@ -2881,3 +2881,62 @@ export async function rotateAdminKey(
   }
   return res.json() as Promise<{ ok: boolean; message?: string }>;
 }
+
+// --- Jarvis LangGraph MVP ---
+
+export type JarvisTaskStatus = 'completed' | 'requires_approval' | 'failed' | 'running';
+export type JarvisRiskLevel = 'low' | 'medium' | 'high';
+
+export interface JarvisTaskRequest {
+  task: string;
+  dry_run?: boolean;
+}
+
+export interface JarvisTaskResponse {
+  task_id: string;
+  status: JarvisTaskStatus;
+  risk_level: JarvisRiskLevel;
+  plan: Record<string, unknown>[];
+  tool_results: Record<string, unknown>[];
+  review: Record<string, unknown>;
+  estimated_cost_usd: number;
+  final_answer: string;
+}
+
+export interface JarvisTaskRunSummary {
+  task_id: string;
+  task: string;
+  status: string;
+  risk_level: JarvisRiskLevel;
+  estimated_cost_usd: number;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface JarvisTaskListResponse {
+  tasks: JarvisTaskRunSummary[];
+}
+
+export interface JarvisTaskRunDetail extends JarvisTaskResponse {
+  task: string;
+  dry_run: boolean;
+  error: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export async function submitJarvisTask(body: JarvisTaskRequest): Promise<JarvisTaskResponse> {
+  return fetchAPI<JarvisTaskResponse>('/jarvis/task', {
+    method: 'POST',
+    body: JSON.stringify({ task: body.task, dry_run: body.dry_run ?? true }),
+  });
+}
+
+export async function listJarvisTasks(limit = 20): Promise<JarvisTaskListResponse> {
+  const safeLimit = Math.max(1, Math.min(limit, 100));
+  return fetchAPI<JarvisTaskListResponse>(`/jarvis/tasks?limit=${safeLimit}`);
+}
+
+export async function getJarvisTask(taskId: string): Promise<JarvisTaskRunDetail> {
+  return fetchAPI<JarvisTaskRunDetail>(`/jarvis/tasks/${encodeURIComponent(taskId)}`);
+}
