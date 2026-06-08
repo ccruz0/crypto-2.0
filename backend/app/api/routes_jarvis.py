@@ -75,7 +75,6 @@ from app.jarvis.mvp.schemas import (
     JarvisTaskRunDetail,
 )
 from app.jarvis.mvp.service import run_jarvis_task
-from app.jarvis.orchestrator import run_jarvis
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +89,17 @@ class JarvisRequest(BaseModel):
 def jarvis_invoke(body: JarvisRequest) -> dict[str, Any]:
     """Run the Jarvis pipeline (memory → plan → tools) and return structured output."""
     logger.info("jarvis.api.request message_chars=%d", len(body.message or ""))
+    try:
+        from app.jarvis.orchestrator import run_jarvis
+    except Exception as e:
+        rid = str(uuid.uuid4())
+        logger.exception("jarvis.api.legacy_import_failed jarvis_run_id=%s err=%s", rid, e)
+        return {
+            "input": body.message,
+            "plan": {"error": "legacy_jarvis_import_failed", "detail": str(e)},
+            "result": {"error": "legacy_jarvis_unavailable", "detail": str(e)},
+            "jarvis_run_id": rid,
+        }
     try:
         out = run_jarvis(body.message)
         logger.info("jarvis.api.response jarvis_run_id=%s", out.get("jarvis_run_id"))
