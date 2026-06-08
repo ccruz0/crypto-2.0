@@ -388,6 +388,81 @@ def ensure_jarvis_marketing_intake_table(engine_to_use) -> bool:
         return False
 
 
+def ensure_jarvis_task_runs_table(engine_to_use) -> bool:
+    """
+    Persist Jarvis LangGraph MVP task run history.
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_task_runs_table: engine is None")
+        return False
+    tname = "jarvis_task_runs"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis task runs)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                task_id TEXT NOT NULL UNIQUE,
+                                task TEXT NOT NULL,
+                                status TEXT NOT NULL,
+                                risk_level TEXT NOT NULL,
+                                dry_run BOOLEAN NOT NULL,
+                                plan_json TEXT,
+                                tool_results_json TEXT,
+                                review_json TEXT,
+                                estimated_cost_usd REAL,
+                                final_answer TEXT,
+                                error TEXT,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                completed_at TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_task_runs_status ON {tname} (status)"))
+                    conn.execute(
+                        text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_task_runs_created_at ON {tname} (created_at DESC)")
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                task_id TEXT NOT NULL UNIQUE,
+                                task TEXT NOT NULL,
+                                status TEXT NOT NULL,
+                                risk_level TEXT NOT NULL,
+                                dry_run BOOLEAN NOT NULL,
+                                plan_json JSONB,
+                                tool_results_json JSONB,
+                                review_json JSONB,
+                                estimated_cost_usd NUMERIC,
+                                final_answer TEXT,
+                                error TEXT,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                completed_at TIMESTAMPTZ
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_task_runs_status ON {tname} (status)"))
+                    conn.execute(
+                        text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_task_runs_created_at ON {tname} (created_at DESC)")
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_task_runs_table failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_optional_columns(db_engine=None):
     """
     Ensure optional columns exist in critical tables.
@@ -455,6 +530,12 @@ def ensure_optional_columns(db_engine=None):
             logger.info("[BOOT] jarvis_marketing_intake_state table OK")
     except Exception as intake_err:
         logger.warning("Could not ensure jarvis_marketing_intake_state table: %s", intake_err)
+
+    try:
+        if ensure_jarvis_task_runs_table(engine_to_use):
+            logger.info("[BOOT] jarvis_task_runs table OK")
+    except Exception as task_runs_err:
+        logger.warning("Could not ensure jarvis_task_runs table: %s", task_runs_err)
 
     watchlist_table = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
         WatchlistItem, "__tablename__", "watchlist_items"
