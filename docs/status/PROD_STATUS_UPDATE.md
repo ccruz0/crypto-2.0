@@ -1,5 +1,7 @@
 # Production Status Update — Automated Trading Platform
 
+> **Historical snapshot — retained for reference.** Current PROD status should be verified with `/api/health/ready` and `docker compose --profile aws ps` from `/home/ubuntu/crypto-2.0`. See [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md).
+
 **Report date:** 2026-03-01  
 **Scope:** Repo root on PROD **`/home/ubuntu/crypto-2.0`** (backend-aws / compose); production host EC2 (dashboard.hilovivo.com).  
 **Sources:** Repo documentation only; server verification commands must be run on EC2 and outputs pasted below.

@@ -3,7 +3,7 @@
 **Date:** 2026-03-15  
 **Scope:** Full repository scan, implementation-based, factual only.
 
-> **Note (GitHub API on PROD):** Backend uses **GitHub App** — [`backend/docs/GITHUB_APP_AUTH.md`](../backend/docs/GITHUB_APP_AUTH.md). PAT mentions elsewhere refer to **LAB/OpenClaw** git access unless stated.
+> **Note (GitHub API on PROD):** Backend uses **GitHub App** — [`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md). PAT mentions elsewhere refer to **LAB/OpenClaw** git access unless stated.
 
 ---
 
