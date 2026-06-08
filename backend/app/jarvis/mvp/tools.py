@@ -7,7 +7,9 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from app.jarvis.mvp.aws_auditor_tools import AWS_AUDITOR_TOOLS, run_aws_auditor_tool
 from app.jarvis.mvp.config import bedrock_model_id, bedrock_region, jarvis_dry_run_only, jarvis_enabled
+from app.jarvis.mvp.crypto_auditor_tools import CRYPTO_AUDITOR_TOOLS, run_crypto_auditor_tool
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,9 @@ READONLY_TOOLS: frozenset[str] = frozenset(
         "get_runtime_status",
         "get_aws_cost_snapshot_stub",
         "get_recent_logs_stub",
+        "reconcile_crypto_wallet_vs_dashboard",
+        *AWS_AUDITOR_TOOLS,
+        *CRYPTO_AUDITOR_TOOLS,
     }
 )
 
@@ -79,6 +84,13 @@ def get_aws_cost_snapshot_stub() -> dict[str, Any]:
     }
 
 
+def reconcile_crypto_wallet_vs_dashboard() -> dict[str, Any]:
+    """Compare Crypto.com Exchange wallet vs internal dashboard portfolio (read-only)."""
+    from app.jarvis.mvp.wallet_reconciliation import reconcile_crypto_wallet_vs_dashboard as _reconcile
+
+    return _reconcile()
+
+
 def get_recent_logs_stub(*, lines: int = 20) -> dict[str, Any]:
     """Stub recent logs — no live log tail in MVP."""
     limit = max(1, min(int(lines or 20), 100))
@@ -97,6 +109,9 @@ _TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_runtime_status": lambda **_kwargs: get_runtime_status(),
     "get_aws_cost_snapshot_stub": lambda **_kwargs: get_aws_cost_snapshot_stub(),
     "get_recent_logs_stub": lambda **kwargs: get_recent_logs_stub(lines=int(kwargs.get("lines") or 20)),
+    "reconcile_crypto_wallet_vs_dashboard": lambda **_kwargs: reconcile_crypto_wallet_vs_dashboard(),
+    **{name: (lambda n=name, **_kw: run_aws_auditor_tool(n)) for name in AWS_AUDITOR_TOOLS},
+    **{name: (lambda n=name, **_kw: run_crypto_auditor_tool(n)) for name in CRYPTO_AUDITOR_TOOLS},
 }
 
 

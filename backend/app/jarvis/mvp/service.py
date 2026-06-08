@@ -6,7 +6,12 @@ import logging
 import uuid
 from typing import Any
 
+from app.jarvis.mvp.audit_persistence import record_audit_run
+from app.jarvis.mvp.aws_auditor import compile_audit_findings, is_aws_audit_task
 from app.jarvis.mvp.config import jarvis_dry_run_only, jarvis_enabled
+from app.jarvis.mvp.crypto_audit_persistence import record_crypto_audit_run
+from app.jarvis.mvp.crypto_auditor import compile_crypto_audit_findings, is_crypto_audit_task
+from app.jarvis.mvp.telegram_crypto_alerts import send_crypto_audit_alert
 from app.jarvis.mvp.graph import get_jarvis_graph
 from app.jarvis.mvp.persistence import record_task_completed, record_task_started
 from app.jarvis.mvp.risk import classify_task_risk
@@ -113,6 +118,14 @@ def run_jarvis_task(task: str, *, dry_run: bool = True) -> dict[str, Any]:
     if not status:
         status = "requires_approval" if final_state.get("risk_level") == "high" else "completed"
 
+    audit_output = final_state.get("audit_output")
+    if is_aws_audit_task(task_text) and not isinstance(audit_output, dict):
+        audit_output = compile_audit_findings(final_state.get("tool_results") or [])
+
+    crypto_audit_output = final_state.get("crypto_audit_output")
+    if is_crypto_audit_task(task_text) and not isinstance(crypto_audit_output, dict):
+        crypto_audit_output = compile_crypto_audit_findings(final_state.get("tool_results") or [])
+
     out = {
         "task_id": task_id,
         "status": status,
@@ -123,5 +136,22 @@ def run_jarvis_task(task: str, *, dry_run: bool = True) -> dict[str, Any]:
         "estimated_cost_usd": float(final_state.get("estimated_cost_usd") or 0.0),
         "final_answer": str(final_state.get("final_answer") or ""),
     }
+    if isinstance(audit_output, dict):
+        out["audit_output"] = audit_output
+        try:
+            audit_id = record_audit_run(task_id=task_id, audit_output=audit_output)
+            out["audit_id"] = audit_id
+        except Exception as exc:
+            logger.warning("jarvis.mvp.audit.persist_failed task_id=%s err=%s", task_id, exc)
+
+    if isinstance(crypto_audit_output, dict):
+        out["crypto_audit_output"] = crypto_audit_output
+        try:
+            crypto_audit_id = record_crypto_audit_run(task_id=task_id, audit_output=crypto_audit_output)
+            out["crypto_audit_id"] = crypto_audit_id
+            send_crypto_audit_alert(crypto_audit_output)
+        except Exception as exc:
+            logger.warning("jarvis.mvp.crypto_audit.persist_failed task_id=%s err=%s", task_id, exc)
+
     _persist_completed(task_id, out)
     return out
