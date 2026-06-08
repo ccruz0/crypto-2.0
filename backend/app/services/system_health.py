@@ -35,6 +35,16 @@ def record_telegram_send_result(success: bool):
 # DB connectivity timeout (ms) for /api/health/system so it never hangs on DB down
 _HEALTH_DB_TIMEOUT_MS = 2000
 
+
+def run_db_connectivity_check(db: Session) -> None:
+    """
+    Read-only DB connectivity probe: SELECT 1 with a short statement timeout.
+    Raises on failure so callers (e.g. /api/health/ready) can treat any exception as not-ready.
+    """
+    db.execute(text(f"SET statement_timeout = '{_HEALTH_DB_TIMEOUT_MS}'"))
+    db.execute(text("SELECT 1"))
+    db.execute(text("SET statement_timeout = '0'"))
+
 # Default and bounds for market staleness threshold (minutes); invalid env falls back to default
 _DEFAULT_STALE_MARKET_MINUTES = 30.0
 _MIN_STALE_MARKET_MINUTES = 1.0
@@ -65,9 +75,7 @@ def get_system_health(db: Session) -> Dict:
 
     # Fast DB connectivity check with timeout so we never hang
     try:
-        db.execute(text(f"SET statement_timeout = '{_HEALTH_DB_TIMEOUT_MS}'"))
-        db.execute(text("SELECT 1"))
-        db.execute(text("SET statement_timeout = '0'"))  # reset so rest of health checks are not limited
+        run_db_connectivity_check(db)
     except Exception as e:
         logger.warning(f"DB connectivity check failed (timeout or down): {e}")
         return {
