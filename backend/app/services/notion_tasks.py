@@ -199,6 +199,41 @@ def notion_status_from_display(display_or_internal: str) -> str:
     return NOTION_STATUS_DISPLAY_TO_INTERNAL.get(s, s.lower())
 
 
+_NOTION_LIFECYCLE_ORDER: dict[str, int] = {
+    "planned": 10,  # legacy alias
+    "backlog": 10,
+    "ready-for-investigation": 20,
+    "in-progress": 30,  # legacy alias
+    "investigating": 30,
+    "investigation-complete": 40,
+    "ready-for-patch": 50,
+    "patching": 60,
+    "testing": 70,
+    "release-candidate-ready": 80,
+    "ready-for-deploy": 80,
+    "awaiting-deploy-approval": 80,
+    "deploying": 90,
+    "done": 100,
+    "deployed": 100,  # legacy alias
+}
+
+
+def _notion_status_would_regress(current_status: str, target_status: str) -> bool:
+    """
+    Return True when target is a backward move in the canonical lifecycle.
+
+    Non-lifecycle states (e.g. blocked/rejected/needs-revision) are treated as
+    non-regressive escapes and never blocked by this helper.
+    """
+    curr = notion_status_from_display(current_status or "")
+    tgt = notion_status_from_display(target_status or "")
+    curr_rank = _NOTION_LIFECYCLE_ORDER.get(curr)
+    tgt_rank = _NOTION_LIFECYCLE_ORDER.get(tgt)
+    if curr_rank is None or tgt_rank is None:
+        return False
+    return tgt_rank < curr_rank
+
+
 # ---------------------------------------------------------------------------
 # Project / Type / Priority — Notion Select display names (AI Task System schema)
 # ---------------------------------------------------------------------------
@@ -1027,6 +1062,7 @@ def update_notion_task_status(
     *,
     append_comment: str | None = None,
     needs_revision_metadata: dict | None = None,
+    allow_status_regression: bool = False,
 ) -> bool:
     """
     Update the "Status" property of an existing Notion task page.
@@ -1074,6 +1110,32 @@ def update_notion_task_status(
             ",".join(ALLOWED_TASK_STATUSES),
         )
         return False
+
+    # Monotonic lifecycle guard: block backward transitions unless explicitly allowed.
+    if not allow_status_regression:
+        try:
+            from app.services.notion_task_reader import get_notion_task_by_id
+
+            current_task = get_notion_task_by_id(normalized_page_id)
+            current_status = (
+                str((current_task or {}).get("status") or "").strip()
+                if isinstance(current_task, dict)
+                else ""
+            )
+            if current_status and _notion_status_would_regress(current_status, normalized_status):
+                logger.warning(
+                    "notion_status_regression_blocked page_id=%s from=%s to=%s",
+                    normalized_page_id,
+                    current_status,
+                    normalized_status,
+                )
+                return False
+        except Exception as e:
+            logger.debug(
+                "Notion status regression pre-check skipped page_id=%s err=%s",
+                normalized_page_id,
+                e,
+            )
 
     # CRITICAL: needs-revision requires explicit metadata (revision_reason/verify_summary/missing_inputs/decision_required)
     # Use task_status_transition.safe_transition_to_needs_revision() or pass needs_revision_metadata.

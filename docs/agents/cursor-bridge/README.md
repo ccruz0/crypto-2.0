@@ -1,5 +1,7 @@
 # Cursor Execution Bridge
 
+> **Note:** This document may contain historical token wording. For **backend** GitHub API authentication (including PR creation from this bridge), use **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)** (GitHub App — not a personal PAT by default).
+
 Phase 1–2 implementation of the [Cursor Execution Bridge](../architecture/CURSOR_EXECUTION_BRIDGE_DESIGN.md).
 
 ## Quick Start
@@ -32,7 +34,7 @@ Phase 1–2 implementation of the [Cursor Execution Bridge](../architecture/CURS
      -H "Content-Type: application/json" \
      -d '{"task_id": "YOUR_NOTION_PAGE_ID", "create_pr": true}'
    ```
-   Requires `GITHUB_TOKEN` with `repo` scope. PR created only when tests pass.
+   Requires **GitHub App** on the backend (`GITHUB_APP_*` from SSM). PR created only when tests pass. See **`backend/docs/GITHUB_APP_AUTH.md`**.
 
 6. **Check events:**
    ```bash
@@ -71,7 +73,7 @@ There is no automatic “after investigation complete, send to Cursor” — it 
 ## Requirements
 
 - Cursor CLI installed (`cursor` in PATH or `npx cursor`)
-- For PR creation: `GITHUB_TOKEN` with `repo` scope
+- For PR creation: **GitHub App** (same as deploy triggers) — **`backend/docs/GITHUB_APP_AUTH.md`**. Emergency-only legacy PAT is documented there; not used in normal operation.
 - Git available for cloning
 - Python + pytest for backend tests
 - Node + npm for frontend tests

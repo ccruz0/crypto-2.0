@@ -1,5 +1,7 @@
 # Cursor Execution Bridge — Architecture Proposal
 
+> **Note:** For **backend** GitHub API authentication (PR creation, `git push` to origin), use **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)** (GitHub App). Older text below may mention `GITHUB_TOKEN`; that is **not** the normal path.
+
 > **Goal:** Define the architecture and first implementation plan for a controlled Cursor execution layer that can apply patches automatically in a writable staging workspace, capture diffs, run tests, and feed results back into the orchestration lifecycle—while preserving ATP as the read-only source of truth.
 
 ---
@@ -336,7 +338,7 @@ cursor agent -p --output-format json < /app/docs/agents/cursor-handoffs/cursor-h
 | "handoff file not found" | No `cursor-handoff-{task_id}.md` | Ensure OpenClaw investigation completed; handoff generated after patch approval |
 | "Cursor CLI not found" | `cursor` not in PATH | Install Cursor CLI or set `CURSOR_CLI_PATH` |
 | "git clone failed" | Staging root not writable | Set `ATP_STAGING_ROOT` to a writable path |
-| "git push failed" | `GITHUB_TOKEN` missing or no `repo` scope | Add token with `repo` scope for PR creation |
+| "git push failed" | GitHub App not configured or missing repo permissions | Configure `GITHUB_APP_*` per **`backend/docs/GITHUB_APP_AUTH.md`**; emergency legacy PAT only if documented there |
 | "max staging dirs reached" | Too many concurrent tasks | Run `cleanup_staging(task_id)` or remove `$ATP_STAGING_ROOT/atp-*` |
 | Tests fail in staging | pytest/npm not in staging clone | Ensure backend/frontend have `requirements.txt` / `package.json` |
 | Scheduler doesn't run bridge | `CURSOR_BRIDGE_AUTO_IN_ADVANCE` not set | Set to `true` for automatic invocation |

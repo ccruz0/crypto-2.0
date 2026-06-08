@@ -1,5 +1,7 @@
 # Notion task → Cursor connection → new code deployment (full flow)
 
+> **Note:** This document may contain historical token wording. For **backend** GitHub API authentication (deploy workflow dispatch, Cursor bridge PR flows), use **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)** (GitHub App on EC2 — not a personal PAT by default).
+
 **When to use:** You want to run **any Notion task** from the AI Task System all the way to Cursor (apply code), validation, deploy approval, deployment, and task closure (done).
 
 This runbook walks the **extended lifecycle** used for bug/investigation tasks: from **planned** through **investigation** → **patch approval** → **Cursor Bridge** → **deploy approval** → **deploy** → **smoke check** → **done**.
@@ -75,7 +77,7 @@ If any step fails, use [PRODUCTION_ORCHESTRATION_DEBUGGING_GUIDE.md](PRODUCTION_
 - **Backend:** Agent scheduler running (picks up `planned` tasks); optional: `CURSOR_BRIDGE_ENABLED=true` for Cursor Bridge.
 - **Telegram:** Approval bot configured so you can approve **investigation** → **patch** → **deploy** and run **Run Cursor Bridge** / **Smoke Check**.
 - **Cursor Bridge (for code apply):** Cursor CLI in PATH on the host that runs the backend (or `CURSOR_CLI_PATH`), `ATP_STAGING_ROOT` writable; handoff file exists for the task.
-- **Deploy:** `GITHUB_TOKEN` with `actions:write` (and repo access) for `trigger_deploy_workflow`; GitHub Actions deploy workflow (e.g. `deploy_session_manager.yml`) and optional webhook for post-deploy smoke.
+- **Deploy:** Backend uses **GitHub App** credentials (SSM → `render_runtime_env.sh`) for `trigger_deploy_workflow` — see **`backend/docs/GITHUB_APP_AUTH.md`**. GitHub Actions deploy workflow (e.g. `deploy_session_manager.yml`) and optional webhook for post-deploy smoke.
 
 ---
 

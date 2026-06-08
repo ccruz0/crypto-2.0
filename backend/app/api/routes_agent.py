@@ -10,11 +10,27 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+
+from app.core.environment import is_atp_trading_only
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+def _require_automation_api_when_not_trading_only() -> None:
+    """Fail closed if this router is ever mounted while ATP_TRADING_ONLY=1 (defense in depth; factory should skip mount)."""
+    if is_atp_trading_only():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "automation_api_disabled",
+                "reason": "ATP_TRADING_ONLY=1",
+                "message": "Agent/OpenClaw orchestration APIs are disabled on trading-only processes.",
+            },
+        )
+
+
+router = APIRouter(dependencies=[Depends(_require_automation_api_when_not_trading_only)])
 
 
 def _verify_agent_token(authorization: str | None = Header(None)) -> None:
