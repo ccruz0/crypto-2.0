@@ -2940,3 +2940,114 @@ export async function listJarvisTasks(limit = 20): Promise<JarvisTaskListRespons
 export async function getJarvisTask(taskId: string): Promise<JarvisTaskRunDetail> {
   return fetchAPI<JarvisTaskRunDetail>(`/jarvis/tasks/${encodeURIComponent(taskId)}`);
 }
+
+export type JarvisObjectiveStatus = 'planned' | 'active' | 'completed' | 'cancelled';
+export type JarvisObjectiveHealth = 'green' | 'yellow' | 'red';
+export type JarvisKrStatus = 'on_track' | 'at_risk' | 'behind' | 'achieved';
+export type JarvisKrDirection = 'max' | 'min';
+
+export interface JarvisKeyResultSummary {
+  kr_id: string;
+  objective_id: string;
+  title: string;
+  metric_name: string | null;
+  target_value: number;
+  current_value: number;
+  unit: string | null;
+  direction: JarvisKrDirection;
+  status: JarvisKrStatus;
+  progress_pct: number;
+  metric_source?: string | null;
+  last_refreshed_at?: string | null;
+}
+
+export interface JarvisKrRefreshRunSummary {
+  refresh_id: string;
+  created_at: string | null;
+  kr_count: number;
+  updated_count: number;
+  failed_count: number;
+  errors: { kr_id?: string; metric_name?: string; error?: string }[];
+}
+
+export interface JarvisKrRefreshResponse {
+  refresh_id: string;
+  kr_count: number;
+  updated_count: number;
+  failed_count: number;
+  errors: { kr_id?: string; metric_name?: string; error?: string }[];
+  alerts_queued: number;
+  telegram_sent: number;
+  read_only: boolean;
+  execution_performed: boolean;
+}
+
+export interface JarvisKrRefreshRunsResponse {
+  runs: JarvisKrRefreshRunSummary[];
+  read_only: boolean;
+}
+
+export interface JarvisObjectiveLink {
+  link_id: string;
+  objective_id: string;
+  linked_type: string;
+  linked_id: string;
+  created_at: string | null;
+}
+
+export interface JarvisObjectiveSummary {
+  objective_id: string;
+  created_at: string | null;
+  updated_at: string | null;
+  title: string;
+  description: string;
+  status: JarvisObjectiveStatus;
+  owner: string | null;
+  target_date: string | null;
+  progress_pct: number;
+  health: JarvisObjectiveHealth;
+  is_overdue: boolean;
+  alignment_status: string;
+}
+
+export interface JarvisObjectiveListResponse {
+  objectives: JarvisObjectiveSummary[];
+}
+
+export interface JarvisObjectiveDetail extends JarvisObjectiveSummary {
+  key_results: JarvisKeyResultSummary[];
+  links: JarvisObjectiveLink[];
+  linked_initiatives: Record<string, unknown>[];
+  progress_trend: { date: string | null; progress_pct: number; health: string }[];
+  risks: string[];
+  read_only?: boolean;
+  execution_performed?: boolean;
+}
+
+export async function listJarvisObjectives(
+  limit = 50,
+  status?: JarvisObjectiveStatus,
+): Promise<JarvisObjectiveListResponse> {
+  const safeLimit = Math.max(1, Math.min(limit, 200));
+  const statusParam = status ? `&status=${encodeURIComponent(status)}` : '';
+  return fetchAPI<JarvisObjectiveListResponse>(`/jarvis/objectives?limit=${safeLimit}${statusParam}`);
+}
+
+export async function getJarvisObjective(objectiveId: string): Promise<JarvisObjectiveDetail> {
+  return fetchAPI<JarvisObjectiveDetail>(`/jarvis/objectives/${encodeURIComponent(objectiveId)}`);
+}
+
+export async function seedJarvisObjectives(): Promise<{ objectives: JarvisObjectiveDetail[]; count: number }> {
+  return fetchAPI('/jarvis/objectives/seed', { method: 'POST' });
+}
+
+export async function refreshJarvisKeyResults(): Promise<JarvisKrRefreshResponse> {
+  return fetchAPI<JarvisKrRefreshResponse>('/jarvis/objectives/key-results/refresh', { method: 'POST' });
+}
+
+export async function listJarvisKrRefreshRuns(limit = 10): Promise<JarvisKrRefreshRunsResponse> {
+  const safeLimit = Math.max(1, Math.min(limit, 100));
+  return fetchAPI<JarvisKrRefreshRunsResponse>(
+    `/jarvis/objectives/key-results/refresh-runs?limit=${safeLimit}`,
+  );
+}

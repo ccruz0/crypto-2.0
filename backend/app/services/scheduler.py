@@ -29,6 +29,8 @@ class TradingScheduler:
         self.last_sl_tp_check_date = None  # Track last SL/TP check date
         self.last_sell_orders_report_date = None  # Track last sell orders report date
         self.last_nightly_consistency_date = None  # Track last nightly consistency check date
+        self.last_kr_refresh_date = None  # Track last Jarvis KR metric refresh
+        self.kr_refresh_time = time_module(7, 30)  # Daily 7:30 AM
         self.last_hourly_sl_tp_check = None  # Track last hourly SL/TP check (datetime)
         self._scheduler_task = None  # Track the running task to prevent duplicates
         # Locks for atomic check-and-set operations on date tracking variables
@@ -36,6 +38,7 @@ class TradingScheduler:
         self._sl_tp_check_lock = asyncio.Lock()
         self._sell_orders_report_lock = asyncio.Lock()
         self._nightly_consistency_lock = asyncio.Lock()
+        self._kr_refresh_lock = asyncio.Lock()
         self._hourly_sl_tp_check_lock = asyncio.Lock()
     
     def check_daily_summary_sync(self):
@@ -504,6 +507,45 @@ class TradingScheduler:
             from app.api.routes_monitoring import record_workflow_execution
             record_workflow_execution("dashboard_snapshot", "error", None, str(e))
     
+    def check_kr_refresh_sync(self):
+        """Refresh Jarvis KR metrics from read-only sources (no execution)."""
+        logger.info("Refreshing Jarvis KR metrics...")
+        try:
+            from app.jarvis.mvp.jarvis_kr_refresh_scheduler import run_kr_refresh_sync
+
+            result = run_kr_refresh_sync()
+            status = "success" if not result.get("error") else "error"
+            from app.api.routes_monitoring import record_workflow_execution
+
+            record_workflow_execution(
+                "jarvis_kr_refresh",
+                status,
+                None,
+                result.get("error"),
+            )
+            logger.info("Jarvis KR refresh completed status=%s", status)
+        except Exception as e:
+            logger.error(f"Error refreshing Jarvis KR metrics: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+
+            record_workflow_execution("jarvis_kr_refresh", "error", None, str(e))
+
+    async def check_kr_refresh(self):
+        """Run daily KR metric refresh from read-only sources."""
+        now = datetime.now()
+        today = now.date()
+        now_time = now.time()
+
+        async with self._kr_refresh_lock:
+            if (
+                self.kr_refresh_time.hour == now_time.hour
+                and abs(self.kr_refresh_time.minute - now_time.minute) <= 1
+                and self.last_kr_refresh_date != today
+            ):
+                self.last_kr_refresh_date = today
+                await asyncio.to_thread(self.check_kr_refresh_sync)
+                await asyncio.sleep(120)
+
     async def run_scheduler(self):
         """Main scheduler loop"""
         logger.info("[SCHEDULER] 🚀 run_scheduler() STARTED")
@@ -540,6 +582,7 @@ class TradingScheduler:
                         await asyncio.to_thread(_refresh_equity_peak)
                     except Exception as eq_err:
                         logger.warning("[SCHEDULER] system_core equity_peak_refresh thread failed: %s", eq_err)
+                await self.check_kr_refresh()
                 await self.check_daily_summary()
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()
