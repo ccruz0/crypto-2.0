@@ -41,6 +41,12 @@ _LOW_RISK_PATTERNS: list[re.Pattern[str]] = [
         r"\bdashboard\b",
         r"\bruntime\b.*\bstatus\b",
         r"\baws\b.*\bcost\b",
+        r"\b(audit|analyze|review)\b.*\b(aws|infrastructure|ec2|ebs)\b",
+        r"\baws\b.*\b(infrastructure|resources?)\b.*\baudit\b",
+        r"\brun\b.*\baws\b.*\baudit\b",
+        r"\b(run|audit|check|compare|reconcile)\b.*\b(crypto|portfolio|wallet)\b",
+        r"\bportfolio\b.*\b(consistency|audit|reconcile)\b",
+        r"\bcompare\b.*\b(exchange|dashboard)\b",
     )
 ]
 

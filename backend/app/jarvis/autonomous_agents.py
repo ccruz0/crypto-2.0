@@ -21,7 +21,11 @@ from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficie
 from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
 from app.jarvis.executor import invoke_registered_tool, is_invoke_error_payload
 from app.jarvis.ga4_readonly_analytics import run_ga4_readonly_analytics
-from app.jarvis.perico_mission import is_perico_marked_prompt
+from app.jarvis.perico_mission import (
+    is_perico_marked_prompt,
+    is_perico_software_mission_prompt,
+    perico_should_skip_nonconcrete_strategy_action,
+)
 from app.jarvis.setup_diagnostics import (
     diagnose_ga4_setup_bundle,
     diagnose_gsc_setup_bundle,
@@ -40,24 +44,9 @@ _PERICO_REGISTERED_TOOLS: frozenset[str] = frozenset(
 
 def _skipped_vague_perico_placeholder(action: dict[str, Any], *, mission_prompt: str) -> bool:
     """
-    Skip fluffy planner rows ('prepare for…') on Perico missions — force concrete perico_* tools.
+    Skip fluffy / non-concrete planner rows on Perico software missions (see perico_mission).
     """
-    if not is_perico_marked_prompt(mission_prompt):
-        return False
-    at = str(action.get("action_type") or "").strip().lower()
-    if at in _PERICO_REGISTERED_TOOLS:
-        return False
-    if at.startswith("diagnose_"):
-        return False
-    blob = f"{action.get('title', '')} {action.get('rationale', '')}".lower()
-    needles = (
-        "prepare for potential",
-        "prepare for",
-        "prepare potential",
-        "get ready to",
-        "plan to run",
-    )
-    return any(n in blob for n in needles)
+    return perico_should_skip_nonconcrete_strategy_action(action, mission_prompt=mission_prompt)
 
 
 _OPS_DIAG_ACTION_BY_SOURCE: dict[str, str] = {
@@ -1074,11 +1063,43 @@ def _execution_uses_perico_repo_tools(execution: dict[str, Any]) -> bool:
 class ReviewAgent:
     name = "review"
 
-    def run(self, *, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
-        _ = plan
+    def run(
+        self,
+        *,
+        plan: dict[str, Any],
+        execution: dict[str, Any],
+        mission_prompt: str = "",
+    ) -> dict[str, Any]:
         ok = bool(execution.get("executed")) and not bool(execution.get("needs_approval"))
         if ok:
             if _execution_uses_perico_repo_tools(execution):
+                if is_perico_software_mission_prompt(mission_prompt):
+                    from app.jarvis.perico_mission import (
+                        build_perico_deliverables_snapshot,
+                        format_perico_closure_key_result,
+                        format_perico_closure_status_display,
+                        is_perico_bugfix_rubric_task,
+                        parse_perico_task_type_from_prompt,
+                    )
+
+                    tt = parse_perico_task_type_from_prompt(mission_prompt)
+                    if is_perico_bugfix_rubric_task(tt):
+                        snap = build_perico_deliverables_snapshot(
+                            mission_prompt=mission_prompt,
+                            plan=plan,
+                            execution=execution,
+                            goal_satisfied=True,
+                            retry_attempted=bool((execution or {}).get("_perico_auto_pytest_retry_applied")),
+                        )
+                        token = format_perico_closure_status_display(snap)
+                        if token:
+                            kr = format_perico_closure_key_result(snap, execution)
+                            line = f"Revisión OK — cierre software {token}: {kr}"
+                            return {"passed": True, "summary": line.replace("\n", " ").strip()[:900]}
+                    return {
+                        "passed": True,
+                        "summary": "Perico completó herramientas de repo; detalle en goal_check y perico_deliverables.",
+                    }
                 return {
                     "passed": True,
                     "summary": "Perico ejecutó herramientas de repo; el cierre operativo va en goal_check / perico_deliverables.",

@@ -73,12 +73,12 @@ class NotionMissionService:
         if (specialist_agent or "").strip().lower() == "perico":
             op = (operator_short_prompt or prompt).strip()
             title = f"Perico: {op[:96]}".strip() or "Perico: (sin texto)"
+            # Operator-facing body only; full wrapped prompt remains in [DEBUG_TRACE] / agent outputs.
             details = (
                 "Misión Jarvis — especialista Perico (software)\n\n"
                 f"Actor: {actor or 'desconocido'}\n"
                 f"Creada: {_utc_now_iso()}\n"
-                f"Petición del operador:\n{op[:900]}\n\n"
-                f"Contexto ampliado (truncado):\n{prompt[:1500]}"
+                f"Petición del operador:\n{op[:900]}\n"
             )
         else:
             title = f"Misión: {prompt[:96]}".strip()
@@ -86,7 +86,7 @@ class NotionMissionService:
                 f"Misión Jarvis (autónoma)\n\n"
                 f"Actor: {actor or 'desconocido'}\n"
                 f"Creada: {_utc_now_iso()}\n"
-                f"Petición:\n{prompt[:1500]}"
+                f"Petición (resumen):\n{prompt[:900]}"
             )
         created = create_notion_task(
             title=title,
@@ -100,10 +100,6 @@ class NotionMissionService:
             raise RuntimeError("Failed to create Notion mission record")
 
         mission_id = str(created["id"])
-        self._append_comment(
-            mission_id,
-            f"[MISSION_STATE] {MISSION_STATUS_RECEIVED} actor={actor or 'unknown'}",
-        )
         self._set_mission_state_property(mission_id, MISSION_STATUS_RECEIVED)
         nf = notion_executive_display_fields(prompt, specialist_agent=specialist_agent)
         self.append_readability_executive_summary(
@@ -116,7 +112,7 @@ class NotionMissionService:
             project=nf["project"],
             task_type=nf["task_type"],
         )
-        self.append_readability_timeline(mission_id, "Misión registrada en Notion.")
+        self.append_readability_timeline_low(mission_id, "Misión registrada en Notion.")
         return {
             "mission_id": mission_id,
             "status": MISSION_STATUS_RECEIVED,
@@ -150,7 +146,7 @@ class NotionMissionService:
             return False
         self._set_mission_state_property(mission_id, to_state)
         suffix = f" note={note}" if note else ""
-        self._append_comment(mission_id, f"[MISSION_STATE] {to_state}{suffix}")
+        self._append_debug_comment(mission_id, f"[MISSION_STATE] {to_state}{suffix}")
         return True
 
     def append_agent_output(self, mission_id: str, *, agent_name: str, content: str) -> None:
@@ -158,7 +154,7 @@ class NotionMissionService:
         if not body:
             return
         normalized = self._normalize_action_fields(body)
-        self._append_comment(mission_id, f"[AGENT_OUTPUT:{agent_name}] {normalized[:1800]}")
+        self._append_debug_comment(mission_id, f"[AGENT_OUTPUT:{agent_name}] {normalized[:1800]}")
         if agent_name == "ops":
             self.append_ops_diagnostics(mission_id, normalized)
             self.append_ops_fix_proposal(mission_id, normalized)
@@ -167,7 +163,7 @@ class NotionMissionService:
         msg = f"[MISSION_EVENT] {event}"
         if detail:
             msg = f"{msg} :: {detail}"
-        self._append_comment(mission_id, msg[:1900])
+        self._append_debug_comment(mission_id, msg[:1900])
 
     def append_pending_approval_payload(self, mission_id: str, *, actions: list[dict[str, Any]]) -> None:
         """Persist structured actions awaiting Telegram approval (read back on approve)."""
@@ -179,7 +175,7 @@ class NotionMissionService:
             body = json.dumps(payload, ensure_ascii=True)[:1600]
         except Exception:
             body = "{}"
-        self._append_comment(mission_id, f"[PENDING_APPROVAL_ACTIONS] {body}")
+        self._append_debug_comment(mission_id, f"[PENDING_APPROVAL_ACTIONS] {body}")
 
     def get_latest_pending_approval_actions(self, mission_id: str) -> list[dict[str, Any]]:
         """Best-effort: scan Notion page blocks for the last [PENDING_APPROVAL_ACTIONS] JSON."""
@@ -251,7 +247,7 @@ class NotionMissionService:
             "baseline_metrics": self._capture_metrics_snapshot(),
             "captured_at": _utc_now_iso(),
         }
-        self._append_comment(mission_id, f"[ACTION_BASELINE] {json.dumps(payload, ensure_ascii=True)[:1800]}")
+        self._append_debug_comment(mission_id, f"[ACTION_BASELINE] {json.dumps(payload, ensure_ascii=True)[:1800]}")
 
     def append_readability_executive_summary(
         self,
@@ -266,8 +262,9 @@ class NotionMissionService:
         agent: str = "",
         project: str = "",
         task_type: str = "",
+        recommended_options: list[str] | tuple[str, ...] | None = None,
     ) -> None:
-        """Operator-facing summary block; does not replace technical [AGENT_OUTPUT] logs."""
+        """Operator-facing summary block (see also [DEBUG_TRACE] for raw agent logs)."""
         body = format_executive_summary_block(
             objective=objective,
             status=status,
@@ -278,6 +275,7 @@ class NotionMissionService:
             agent=agent,
             project=project,
             task_type=task_type,
+            recommended_options=recommended_options,
         )
         if body.strip():
             self._append_comment(mission_id, body)
@@ -287,12 +285,19 @@ class NotionMissionService:
         if line:
             self._append_comment(mission_id, line)
 
+    def append_readability_timeline_low(self, mission_id: str, sentence: str) -> None:
+        """Low-prominence phase trace (still on-page; scroll below [EXEC_SUMMARY])."""
+        line = format_timeline_line(sentence, tier="low")
+        if line:
+            self._append_comment(mission_id, line)
+
     def append_technical_detail_marker(self, mission_id: str, title: str = "Detalle técnico") -> None:
-        """Marks where raw agent/JSON logs live (append-only; fold in Notion UI manually)."""
+        """Marks start of debug telemetry ([DEBUG_TRACE], JSON, baselines). Append-only."""
         t = (title or "Detalle técnico").strip()[:120]
         self._append_comment(
             mission_id,
-            f"[TECHNICAL_DETAIL] {t} — abajo quedan salidas de agentes y bloques JSON etiquetados.",
+            f"[TECHNICAL_DETAIL] {t} — a partir de aquí: telemetría interna ([DEBUG_TRACE]); "
+            "arriba quedó el resumen para el operador. Las líneas [TIMELINE_LOW] son fases internas (menos prominentes).",
         )
 
     def append_outcome_evaluation(
@@ -307,7 +312,7 @@ class NotionMissionService:
             "summary": summary,
             "evaluated_at": _utc_now_iso(),
         }
-        self._append_comment(mission_id, f"[ACTION_OUTCOMES] {json.dumps(data, ensure_ascii=True)[:1800]}")
+        self._append_debug_comment(mission_id, f"[ACTION_OUTCOMES] {json.dumps(data, ensure_ascii=True)[:1800]}")
 
     def get_recent_outcomes(self, mission_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
         """
@@ -354,6 +359,29 @@ class NotionMissionService:
                     continue
                 if resp.status_code == 200:
                     return
+
+    def _append_debug_comment(self, mission_id: str, content: str) -> None:
+        """Internal traces: JSON, agent dumps, state transitions (not for quick operator scanning)."""
+        c = (content or "").strip()
+        if not c:
+            return
+        tagged = f"[DEBUG_TRACE] {c[:1650]}"
+        self._append_comment(mission_id, tagged)
+
+    def append_debug_mission_state_received(
+        self, mission_id: str, *, state: str, actor: str = "", note: str = ""
+    ) -> None:
+        """Initial or extra state line in debug stream (Notion property remains the source of truth for status)."""
+        extra = f" actor={actor}" if actor else ""
+        suf = f" note={note}" if note else ""
+        self._append_debug_comment(mission_id, f"[MISSION_STATE] {state}{extra}{suf}")
+
+    def append_decision_required_comment(self, mission_id: str, *, line: str) -> None:
+        """Short operator hint when input or approval is needed (stays outside [DEBUG_TRACE])."""
+        s = (line or "").strip()
+        if not s:
+            return
+        self._append_comment(mission_id, f"[DECISION_REQUIRED] {s[:900]}")
 
     def _append_comment(self, mission_id: str, content: str) -> None:
         if not self._api_key:
@@ -438,7 +466,7 @@ class NotionMissionService:
         if not diagnostics:
             return
         payload = {"diagnostics": diagnostics[:12], "count": len(diagnostics), "captured_at": _utc_now_iso()}
-        self._append_comment(mission_id, f"[OPS_DIAGNOSTICS] {json.dumps(payload, ensure_ascii=True)[:1800]}")
+        self._append_debug_comment(mission_id, f"[OPS_DIAGNOSTICS] {json.dumps(payload, ensure_ascii=True)[:1800]}")
 
     def append_ops_fix_proposal(self, mission_id: str, raw_content: str) -> None:
         try:
@@ -458,7 +486,7 @@ class NotionMissionService:
         }
         if not proposed and not waiting and not executed:
             return
-        self._append_comment(mission_id, f"[OPS_FIX_PROPOSALS] {json.dumps(payload, ensure_ascii=True)[:1800]}")
+        self._append_debug_comment(mission_id, f"[OPS_FIX_PROPOSALS] {json.dumps(payload, ensure_ascii=True)[:1800]}")
 
     def _capture_metrics_snapshot(self) -> dict[str, Any]:
         """

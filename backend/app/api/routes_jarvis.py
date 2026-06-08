@@ -9,15 +9,72 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.jarvis.mvp.action_plan_persistence import get_action_plan, list_action_plans
+from app.jarvis.mvp.action_plan_service import create_action_plan_from_audit
+from app.jarvis.mvp.audit_persistence import get_audit_run, list_audit_runs
+from app.jarvis.mvp.crypto_audit_persistence import get_crypto_audit_run, list_crypto_audit_runs
+from app.jarvis.mvp.decision_analytics import get_decision_analytics
+from app.jarvis.mvp.decision_persistence import get_decision, list_decisions
+from app.jarvis.mvp.decision_service import create_decision
+from app.jarvis.mvp.executive_report_persistence import get_executive_report, list_executive_reports
+from app.jarvis.mvp.executive_report_service import create_executive_report
+from app.jarvis.mvp.followup_persistence import get_followup, list_followups
+from app.jarvis.mvp.followup_service import generate_followups, update_followup_record
+from app.jarvis.mvp.initiative_persistence import get_initiative, list_initiatives
+from app.jarvis.mvp.initiative_service import create_initiative, update_initiative_record
+from app.jarvis.mvp.objective_analytics import get_objective_analytics
+from app.jarvis.mvp.objective_persistence import get_objective, list_objectives
+from app.jarvis.mvp.objective_service import (
+    add_key_result,
+    create_objective,
+    link_to_objective,
+    refresh_objective_metrics,
+    seed_sample_objectives,
+    update_key_result_record,
+    update_objective_record,
+)
+from app.jarvis.mvp.metrics_persistence import get_executive_dashboard
 from app.jarvis.mvp.persistence import get_task_run, list_task_runs
 from app.jarvis.mvp.schemas import (
+    JarvisActionPlanDetail,
+    JarvisActionPlanGenerateRequest,
+    JarvisActionPlanListResponse,
+    JarvisAuditListResponse,
+    JarvisAuditRunDetail,
+    JarvisCryptoAuditListResponse,
+    JarvisCryptoAuditRunDetail,
+    JarvisDecisionCreateRequest,
+    JarvisDecisionDetail,
+    JarvisDecisionIntelligence,
+    JarvisDecisionListResponse,
+    JarvisExecutiveDashboardResponse,
+    JarvisExecutiveReportDetail,
+    JarvisExecutiveReportListResponse,
+    JarvisFollowupDetail,
+    JarvisFollowupGenerateResponse,
+    JarvisFollowupListResponse,
+    JarvisFollowupUpdateRequest,
+    JarvisInitiativeCreateRequest,
+    JarvisInitiativeDetail,
+    JarvisInitiativeListResponse,
+    JarvisInitiativeUpdateRequest,
+    JarvisKeyResultCreateRequest,
+    JarvisKeyResultSummary,
+    JarvisKeyResultUpdateRequest,
+    JarvisKrRefreshResponse,
+    JarvisKrRefreshRunsResponse,
+    JarvisObjectiveCreateRequest,
+    JarvisObjectiveDetail,
+    JarvisObjectiveLink,
+    JarvisObjectiveLinkRequest,
+    JarvisObjectiveListResponse,
+    JarvisObjectiveUpdateRequest,
     JarvisTaskListResponse,
     JarvisTaskRequest,
     JarvisTaskResponse,
     JarvisTaskRunDetail,
 )
 from app.jarvis.mvp.service import run_jarvis_task
-from app.jarvis.orchestrator import run_jarvis
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +89,17 @@ class JarvisRequest(BaseModel):
 def jarvis_invoke(body: JarvisRequest) -> dict[str, Any]:
     """Run the Jarvis pipeline (memory → plan → tools) and return structured output."""
     logger.info("jarvis.api.request message_chars=%d", len(body.message or ""))
+    try:
+        from app.jarvis.orchestrator import run_jarvis
+    except Exception as e:
+        rid = str(uuid.uuid4())
+        logger.exception("jarvis.api.legacy_import_failed jarvis_run_id=%s err=%s", rid, e)
+        return {
+            "input": body.message,
+            "plan": {"error": "legacy_jarvis_import_failed", "detail": str(e)},
+            "result": {"error": "legacy_jarvis_unavailable", "detail": str(e)},
+            "jarvis_run_id": rid,
+        }
     try:
         out = run_jarvis(body.message)
         logger.info("jarvis.api.response jarvis_run_id=%s", out.get("jarvis_run_id"))
@@ -87,3 +155,602 @@ def jarvis_task_detail(task_id: str) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
     return row
+
+
+@router.get("/api/jarvis/audits", response_model=JarvisAuditListResponse)
+def jarvis_audit_list(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    """List recent AWS infrastructure audit runs (read-only)."""
+    from app.database import engine, ensure_jarvis_audit_runs_table
+
+    if engine is None or not ensure_jarvis_audit_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    audits = list_audit_runs(limit=limit)
+    return {"audits": audits}
+
+
+@router.get("/api/jarvis/audits/{audit_id}", response_model=JarvisAuditRunDetail)
+def jarvis_audit_detail(audit_id: str) -> dict[str, Any]:
+    """Return one AWS infrastructure audit run with full detail."""
+    from app.database import engine, ensure_jarvis_audit_runs_table
+
+    if engine is None or not ensure_jarvis_audit_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_audit_run(audit_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="audit not found")
+    return row
+
+
+@router.get("/api/jarvis/executive", response_model=JarvisExecutiveDashboardResponse)
+def jarvis_executive_dashboard() -> dict[str, Any]:
+    """Return executive management dashboard with platform health metrics (read-only)."""
+    from app.database import engine, ensure_jarvis_daily_metrics_table
+
+    if engine is None or not ensure_jarvis_daily_metrics_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_executive_dashboard()
+
+
+@router.get("/api/jarvis/crypto-audits", response_model=JarvisCryptoAuditListResponse)
+def jarvis_crypto_audit_list(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    """List recent crypto portfolio audit runs (read-only)."""
+    from app.database import engine, ensure_jarvis_crypto_audit_runs_table
+
+    if engine is None or not ensure_jarvis_crypto_audit_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    audits = list_crypto_audit_runs(limit=limit)
+    return {"audits": audits}
+
+
+@router.get("/api/jarvis/crypto-audits/{audit_id}", response_model=JarvisCryptoAuditRunDetail)
+def jarvis_crypto_audit_detail(audit_id: str) -> dict[str, Any]:
+    """Return one crypto portfolio audit run with full detail."""
+    from app.database import engine, ensure_jarvis_crypto_audit_runs_table
+
+    if engine is None or not ensure_jarvis_crypto_audit_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_crypto_audit_run(audit_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="crypto audit not found")
+    return row
+
+
+@router.get("/api/jarvis/action-plans", response_model=JarvisActionPlanListResponse)
+def jarvis_action_plan_list(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    """List recent Jarvis action plans (recommendations only, no execution)."""
+    from app.database import engine, ensure_jarvis_action_plans_table
+
+    if engine is None or not ensure_jarvis_action_plans_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    plans = list_action_plans(limit=limit)
+    return {"plans": plans}
+
+
+@router.get("/api/jarvis/action-plans/{plan_id}", response_model=JarvisActionPlanDetail)
+def jarvis_action_plan_detail(plan_id: str) -> dict[str, Any]:
+    """Return one action plan with full remediation recommendations."""
+    from app.database import engine, ensure_jarvis_action_plans_table
+
+    if engine is None or not ensure_jarvis_action_plans_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_action_plan(plan_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="action plan not found")
+    return row
+
+
+@router.post("/api/jarvis/action-plans/generate", response_model=JarvisActionPlanDetail)
+def jarvis_action_plan_generate(body: JarvisActionPlanGenerateRequest) -> dict[str, Any]:
+    """Generate a remediation plan from an existing audit (recommendations only)."""
+    from app.database import engine, ensure_jarvis_action_plans_table
+
+    if engine is None or not ensure_jarvis_action_plans_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info(
+        "jarvis.action_plan.generate source_type=%s source_id=%s",
+        body.source_type,
+        body.source_id,
+    )
+    try:
+        plan = create_action_plan_from_audit(
+            source_type=body.source_type,
+            source_id=body.source_id,
+        )
+        logger.info(
+            "jarvis.action_plan.generated plan_id=%s severity=%s status=%s",
+            plan.get("plan_id"),
+            plan.get("severity"),
+            plan.get("status"),
+        )
+        return plan
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.action_plan.generate_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"action_plan_generate_failed: {e}") from e
+
+
+@router.get("/api/jarvis/executive-reports", response_model=JarvisExecutiveReportListResponse)
+def jarvis_executive_report_list(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    """List recent Chief of Staff weekly priority reports (read-only)."""
+    from app.database import engine, ensure_jarvis_executive_reports_table
+
+    if engine is None or not ensure_jarvis_executive_reports_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    reports = list_executive_reports(limit=limit)
+    return {"reports": reports}
+
+
+@router.get("/api/jarvis/executive-reports/{report_id}", response_model=JarvisExecutiveReportDetail)
+def jarvis_executive_report_detail(report_id: str) -> dict[str, Any]:
+    """Return one executive priorities report with full detail."""
+    from app.database import engine, ensure_jarvis_executive_reports_table
+
+    if engine is None or not ensure_jarvis_executive_reports_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_executive_report(report_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="executive report not found")
+    return row
+
+
+@router.post("/api/jarvis/executive-reports/generate", response_model=JarvisExecutiveReportDetail)
+def jarvis_executive_report_generate() -> dict[str, Any]:
+    """Generate a weekly priorities report from current audit and metrics data (read-only)."""
+    from app.database import engine, ensure_jarvis_executive_reports_table
+
+    if engine is None or not ensure_jarvis_executive_reports_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info("jarvis.executive_report.generate requested")
+    try:
+        report = create_executive_report(skip_if_recent=False, send_telegram=True)
+        logger.info(
+            "jarvis.executive_report.generated report_id=%s health_score=%s",
+            report.get("report_id"),
+            report.get("overall_health_score"),
+        )
+        return report
+    except Exception as e:
+        logger.exception("jarvis.executive_report.generate_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"executive_report_generate_failed: {e}") from e
+
+
+@router.post("/api/jarvis/decisions", response_model=JarvisDecisionDetail)
+def jarvis_decision_create(body: JarvisDecisionCreateRequest) -> dict[str, Any]:
+    """Record a human decision on a recommendation (no execution performed)."""
+    from app.database import engine, ensure_jarvis_decisions_table
+
+    if engine is None or not ensure_jarvis_decisions_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info(
+        "jarvis.decision.create decision=%s source_type=%s plan_id=%s",
+        body.decision,
+        body.source_type,
+        body.plan_id,
+    )
+    try:
+        stored = create_decision(
+            source_type=body.source_type,
+            source_id=body.source_id,
+            plan_id=body.plan_id,
+            decision=body.decision,
+            decision_reason=body.decision_reason,
+            outcome=body.outcome,
+            reviewed_by=body.reviewed_by,
+        )
+        return stored
+    except Exception as e:
+        logger.exception("jarvis.decision.create_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"decision_create_failed: {e}") from e
+
+
+@router.get("/api/jarvis/decisions", response_model=JarvisDecisionListResponse)
+def jarvis_decision_list(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+    """List Jarvis decision records (newest first)."""
+    from app.database import engine, ensure_jarvis_decisions_table
+
+    if engine is None or not ensure_jarvis_decisions_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    decisions = list_decisions(limit=limit)
+    return {"decisions": decisions}
+
+
+@router.get("/api/jarvis/decisions/{decision_id}", response_model=JarvisDecisionDetail)
+def jarvis_decision_detail(decision_id: str) -> dict[str, Any]:
+    """Return one decision record with full detail."""
+    from app.database import engine, ensure_jarvis_decisions_table
+
+    if engine is None or not ensure_jarvis_decisions_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_decision(decision_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="decision not found")
+    return row
+
+
+@router.get("/api/jarvis/decision-analytics", response_model=JarvisDecisionIntelligence)
+def jarvis_decision_analytics() -> dict[str, Any]:
+    """Return decision intelligence analytics (read-only)."""
+    from app.database import engine, ensure_jarvis_decisions_table
+
+    if engine is None or not ensure_jarvis_decisions_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_decision_analytics()
+
+
+@router.post("/api/jarvis/initiatives", response_model=JarvisInitiativeDetail)
+def jarvis_initiative_create(body: JarvisInitiativeCreateRequest) -> dict[str, Any]:
+    """Create a new initiative (human-controlled management layer, no execution)."""
+    from app.database import engine, ensure_jarvis_initiatives_table
+
+    if engine is None or not ensure_jarvis_initiatives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info("jarvis.initiative.create title=%s status=%s", body.title, body.status)
+    try:
+        stored = create_initiative(
+            title=body.title,
+            description=body.description,
+            status=body.status,
+            priority=body.priority,
+            owner=body.owner,
+            target_date=body.target_date,
+            source_type=body.source_type,
+            source_id=body.source_id,
+            progress_pct=body.progress_pct,
+            blocked_reason=body.blocked_reason,
+        )
+        return stored
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.initiative.create_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"initiative_create_failed: {e}") from e
+
+
+@router.get("/api/jarvis/initiatives", response_model=JarvisInitiativeListResponse)
+def jarvis_initiative_list(
+    limit: int = Query(default=50, ge=1, le=200),
+    status: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """List Jarvis initiatives (newest updated first)."""
+    from app.database import engine, ensure_jarvis_initiatives_table
+
+    if engine is None or not ensure_jarvis_initiatives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    initiatives = list_initiatives(limit=limit, status=status)
+    return {"initiatives": initiatives}
+
+
+@router.get("/api/jarvis/initiatives/{initiative_id}", response_model=JarvisInitiativeDetail)
+def jarvis_initiative_detail(initiative_id: str) -> dict[str, Any]:
+    """Return one initiative with full detail."""
+    from app.database import engine, ensure_jarvis_initiatives_table
+
+    if engine is None or not ensure_jarvis_initiatives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_initiative(initiative_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="initiative not found")
+    return row
+
+
+@router.put("/api/jarvis/initiatives/{initiative_id}", response_model=JarvisInitiativeDetail)
+def jarvis_initiative_update(initiative_id: str, body: JarvisInitiativeUpdateRequest) -> dict[str, Any]:
+    """Update an initiative (recalculates health automatically)."""
+    from app.database import engine, ensure_jarvis_initiatives_table
+
+    if engine is None or not ensure_jarvis_initiatives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info("jarvis.initiative.update initiative_id=%s", initiative_id)
+    try:
+        stored = update_initiative_record(
+            initiative_id=initiative_id,
+            title=body.title,
+            description=body.description,
+            status=body.status,
+            priority=body.priority,
+            owner=body.owner,
+            target_date=body.target_date,
+            source_type=body.source_type,
+            source_id=body.source_id,
+            progress_pct=body.progress_pct,
+            blocked_reason=body.blocked_reason,
+        )
+        return stored
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.initiative.update_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"initiative_update_failed: {e}") from e
+
+
+@router.post("/api/jarvis/followups/generate", response_model=JarvisFollowupGenerateResponse)
+def jarvis_followup_generate(send_telegram: bool = Query(default=True)) -> dict[str, Any]:
+    """Detect and upsert follow-up reminders (read-only, no execution)."""
+    from app.database import engine, ensure_jarvis_followups_table
+
+    if engine is None or not ensure_jarvis_followups_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info("jarvis.followup.generate send_telegram=%s", send_telegram)
+    try:
+        result = generate_followups(send_telegram=send_telegram)
+        logger.info(
+            "jarvis.followup.generated touched=%s telegram_sent=%s",
+            result.get("followups_touched"),
+            result.get("telegram_sent"),
+        )
+        return result
+    except Exception as e:
+        logger.exception("jarvis.followup.generate_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"followup_generate_failed: {e}") from e
+
+
+@router.get("/api/jarvis/followups", response_model=JarvisFollowupListResponse)
+def jarvis_followup_list(
+    limit: int = Query(default=50, ge=1, le=200),
+    status: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """List Jarvis follow-up reminders."""
+    from app.database import engine, ensure_jarvis_followups_table
+
+    if engine is None or not ensure_jarvis_followups_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    followups = list_followups(limit=limit, status=status, severity=severity)
+    return {"followups": followups}
+
+
+@router.get("/api/jarvis/followups/{followup_id}", response_model=JarvisFollowupDetail)
+def jarvis_followup_detail(followup_id: str) -> dict[str, Any]:
+    """Return one follow-up reminder with full detail."""
+    from app.database import engine, ensure_jarvis_followups_table
+
+    if engine is None or not ensure_jarvis_followups_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_followup(followup_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="followup not found")
+    return row
+
+
+@router.put("/api/jarvis/followups/{followup_id}", response_model=JarvisFollowupDetail)
+def jarvis_followup_update(followup_id: str, body: JarvisFollowupUpdateRequest) -> dict[str, Any]:
+    """Update follow-up status (acknowledge, resolve, dismiss)."""
+    from app.database import engine, ensure_jarvis_followups_table
+
+    if engine is None or not ensure_jarvis_followups_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info("jarvis.followup.update followup_id=%s status=%s", followup_id, body.status)
+    try:
+        stored = update_followup_record(
+            followup_id=followup_id,
+            status=body.status,
+            severity=body.severity,
+            assigned_to=body.assigned_to,
+            description=body.description,
+        )
+        return stored
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.followup.update_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"followup_update_failed: {e}") from e
+
+
+@router.post("/api/jarvis/objectives", response_model=JarvisObjectiveDetail)
+def jarvis_objective_create(body: JarvisObjectiveCreateRequest) -> dict[str, Any]:
+    """Create a strategic objective (read-only management, no execution)."""
+    from app.database import engine, ensure_jarvis_objectives_table
+
+    if engine is None or not ensure_jarvis_objectives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info("jarvis.objective.create title=%s status=%s", body.title, body.status)
+    try:
+        return create_objective(
+            title=body.title,
+            description=body.description,
+            status=body.status,
+            owner=body.owner,
+            target_date=body.target_date,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.objective.create_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"objective_create_failed: {e}") from e
+
+
+@router.get("/api/jarvis/objectives", response_model=JarvisObjectiveListResponse)
+def jarvis_objective_list(
+    limit: int = Query(default=50, ge=1, le=200),
+    status: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """List strategic objectives."""
+    from app.database import engine, ensure_jarvis_objectives_table
+    from app.jarvis.mvp.objective_persistence import list_all_objectives
+
+    if engine is None or not ensure_jarvis_objectives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    if status:
+        objectives = list_objectives(limit=limit, status=status)
+    else:
+        objectives = list_all_objectives()[:limit]
+    return {"objectives": objectives}
+
+
+@router.get("/api/jarvis/objectives/{objective_id}", response_model=JarvisObjectiveDetail)
+def jarvis_objective_detail(objective_id: str) -> dict[str, Any]:
+    """Return one objective with key results, links, and trend."""
+    from app.database import engine, ensure_jarvis_objectives_table
+
+    if engine is None or not ensure_jarvis_objectives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_objective(objective_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="objective not found")
+    return row
+
+
+@router.put("/api/jarvis/objectives/{objective_id}", response_model=JarvisObjectiveDetail)
+def jarvis_objective_update(objective_id: str, body: JarvisObjectiveUpdateRequest) -> dict[str, Any]:
+    """Update a strategic objective."""
+    from app.database import engine, ensure_jarvis_objectives_table
+
+    if engine is None or not ensure_jarvis_objectives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    logger.info("jarvis.objective.update objective_id=%s", objective_id)
+    try:
+        return update_objective_record(
+            objective_id=objective_id,
+            title=body.title,
+            description=body.description,
+            status=body.status,
+            owner=body.owner,
+            target_date=body.target_date,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.objective.update_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"objective_update_failed: {e}") from e
+
+
+@router.post("/api/jarvis/objectives/{objective_id}/key-results", response_model=JarvisKeyResultSummary)
+def jarvis_key_result_create(objective_id: str, body: JarvisKeyResultCreateRequest) -> dict[str, Any]:
+    """Add a measurable key result to an objective."""
+    from app.database import engine, ensure_jarvis_key_results_table
+
+    if engine is None or not ensure_jarvis_key_results_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    try:
+        return add_key_result(
+            objective_id=objective_id,
+            title=body.title,
+            metric_name=body.metric_name,
+            target_value=body.target_value,
+            current_value=body.current_value,
+            unit=body.unit,
+            direction=body.direction,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.key_result.create_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"key_result_create_failed: {e}") from e
+
+
+@router.put("/api/jarvis/objectives/key-results/{kr_id}", response_model=JarvisKeyResultSummary)
+def jarvis_key_result_update(kr_id: str, body: JarvisKeyResultUpdateRequest) -> dict[str, Any]:
+    """Update key result current or target value."""
+    from app.database import engine, ensure_jarvis_key_results_table
+
+    if engine is None or not ensure_jarvis_key_results_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    try:
+        return update_key_result_record(
+            kr_id=kr_id,
+            title=body.title,
+            current_value=body.current_value,
+            target_value=body.target_value,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.key_result.update_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"key_result_update_failed: {e}") from e
+
+
+@router.post("/api/jarvis/objectives/{objective_id}/links", response_model=JarvisObjectiveLink)
+def jarvis_objective_link_create(objective_id: str, body: JarvisObjectiveLinkRequest) -> dict[str, Any]:
+    """Link an objective to an initiative, audit, plan, decision, or report."""
+    from app.database import engine, ensure_jarvis_objective_links_table
+
+    if engine is None or not ensure_jarvis_objective_links_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    try:
+        return link_to_objective(
+            objective_id=objective_id,
+            linked_type=body.linked_type,
+            linked_id=body.linked_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("jarvis.objective.link_failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"objective_link_failed: {e}") from e
+
+
+@router.post("/api/jarvis/objectives/seed")
+def jarvis_objectives_seed() -> dict[str, Any]:
+    """Create sample objectives for validation (idempotent)."""
+    from app.database import engine, ensure_jarvis_objectives_table
+
+    if engine is None or not ensure_jarvis_objectives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return seed_sample_objectives()
+
+
+@router.post("/api/jarvis/objectives/metrics/refresh")
+def jarvis_objectives_metrics_refresh() -> dict[str, Any]:
+    """Record objective metric snapshots for trend charts."""
+    from app.database import engine, ensure_jarvis_objective_metrics_table
+
+    if engine is None or not ensure_jarvis_objective_metrics_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return refresh_objective_metrics()
+
+
+@router.post("/api/jarvis/objectives/key-results/refresh", response_model=JarvisKrRefreshResponse)
+def jarvis_key_results_refresh() -> dict[str, Any]:
+    """Refresh KR current_value from read-only live metrics (no execution)."""
+    from app.database import engine, ensure_jarvis_key_results_table, ensure_jarvis_kr_refresh_runs_table
+
+    if engine is None or not ensure_jarvis_key_results_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_kr_refresh_runs_table(engine):
+        raise HTTPException(status_code=503, detail="KR refresh persistence unavailable")
+
+    logger.info("jarvis.kr_refresh.start")
+    try:
+        from app.jarvis.mvp.kr_refresh_service import refresh_key_results
+
+        return refresh_key_results(send_telegram=True)
+    except Exception as e:
+        logger.exception("jarvis.kr_refresh.failed err=%s", e)
+        raise HTTPException(status_code=500, detail=f"kr_refresh_failed: {e}") from e
+
+
+@router.get("/api/jarvis/objectives/key-results/refresh-runs", response_model=JarvisKrRefreshRunsResponse)
+def jarvis_key_results_refresh_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    """List recent KR metric refresh runs."""
+    from app.database import engine, ensure_jarvis_kr_refresh_runs_table
+    from app.jarvis.mvp.kr_refresh_persistence import list_kr_refresh_runs
+
+    if engine is None or not ensure_jarvis_kr_refresh_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"runs": list_kr_refresh_runs(limit=limit), "read_only": True}
+
+
+@router.get("/api/jarvis/objective-analytics")
+def jarvis_objective_analytics() -> dict[str, Any]:
+    """Return objective intelligence analytics (read-only)."""
+    from app.database import engine, ensure_jarvis_objectives_table
+
+    if engine is None or not ensure_jarvis_objectives_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_objective_analytics()

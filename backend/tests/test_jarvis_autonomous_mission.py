@@ -57,6 +57,12 @@ class _FakeNotion:
     def append_technical_detail_marker(self, mission_id: str, title: str = "") -> None:
         self.events.append((mission_id, "technical_marker", title))
 
+    def append_debug_mission_state_received(self, mission_id: str, *, state: str, actor: str = "", note: str = "") -> None:
+        self.events.append((mission_id, "debug_state", f"{state}:{actor}:{note}"))
+
+    def append_decision_required_comment(self, mission_id: str, *, line: str) -> None:
+        self.events.append((mission_id, "decision_required", line[:200]))
+
     def append_pending_approval_payload(self, mission_id: str, *, actions: list) -> None:
         self.events.append((mission_id, "pending_approval_payload", str(len(actions or []))))
 
@@ -117,8 +123,8 @@ class _ExecutionCritical:
 
 
 class _ReviewPass:
-    def run(self, *, plan: dict, execution: dict) -> dict:
-        _ = plan, execution
+    def run(self, *, plan: dict, execution: dict, mission_prompt: str = "", **kwargs) -> dict:
+        _ = plan, execution, mission_prompt, kwargs
         return {"passed": True, "summary": "ok"}
 
 

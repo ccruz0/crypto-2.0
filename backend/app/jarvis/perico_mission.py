@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -275,6 +276,971 @@ def is_perico_software_mission_prompt(prompt: str) -> bool:
     return "registered perico tools" in low or "[perico_task_type:" in low
 
 
+_PERICO_STRATEGY_CONCRETE_TOOLS: frozenset[str] = frozenset(
+    {"perico_repo_read", "perico_apply_patch", "perico_run_pytest"}
+)
+
+
+def perico_should_skip_nonconcrete_strategy_action(action: dict[str, Any], *, mission_prompt: str) -> bool:
+    """
+    Skip planner rows that are too vague or non-actionable for Perico software missions.
+
+    Used by ExecutionAgent so bugfix-style work prefers repo read / patch / pytest instead of
+    placeholders like "prepare a potential fix".
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return False
+    at = str(action.get("action_type") or "").strip().lower()
+    if at in _PERICO_STRATEGY_CONCRETE_TOOLS:
+        return False
+    if at.startswith("diagnose_"):
+        return False
+
+    title = str(action.get("title") or "").strip().lower()
+    rationale = str(action.get("rationale") or "").strip().lower()
+    blob = f"{title} {rationale}".strip()
+
+    vague_needles = (
+        "prepare for potential",
+        "prepare for",
+        "prepare potential",
+        "get ready to",
+        "plan to run",
+        "might want to",
+        "could potentially",
+        "consider potentially",
+        "potential bugfix",
+        "potential fix",
+        "potential patch",
+        "potential approach",
+        "potential solution",
+        "explore potentially",
+    )
+    if any(n in blob for n in vague_needles):
+        return True
+    if title.startswith("prepare ") or title.startswith("preparing "):
+        return True
+    if "potential" in title and any(
+        w in title for w in ("fix", "patch", "change", "solution", "approach", "bug", "issue")
+    ):
+        return True
+
+    task_type = parse_perico_task_type_from_prompt(mission_prompt)
+    if is_perico_bugfix_rubric_task(task_type):
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        ot = str((params or {}).get("old_text") or "").strip()
+        nt = str((params or {}).get("new_text") or "")
+        if at in ("code_change", "generic", "software_action", "edit_file", "write_file"):
+            if perico_patch_text_looks_placeholder(old_text=ot, new_text=nt):
+                return True
+            if not (ot and str(nt).strip()):
+                return True
+    return False
+
+
+def _perico_strategy_action_blob(action: dict[str, Any]) -> str:
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    return f"{action.get('title', '')} {action.get('rationale', '')} {action.get('action_type', '')} {params}".lower()
+
+
+def perico_patch_text_looks_placeholder(*, old_text: str, new_text: str) -> bool:
+    """True when patch params are empty or clearly non-concrete (never map to perico_apply_patch)."""
+    ot = (old_text or "").strip()
+    nt = (new_text or "")
+    blob = f"{ot} {nt}".lower()
+    if "to_be_determined" in blob:
+        return True
+    if not ot and not str(nt).strip():
+        return True
+    return False
+
+
+def _perico_action_requires_operator_approval_gate(action: dict[str, Any]) -> bool:
+    if bool(action.get("requires_approval")):
+        return True
+    mode = str(action.get("execution_mode") or "").strip().lower()
+    return mode in ("requires_approval", "approval_required", "requires_input")
+
+
+_PERICO_BUGFIX_IRRELEVANT_APPROVAL_NEEDLES: tuple[str, ...] = (
+    "deployment history",
+    "deploy history",
+    "recent deployment",
+    "repository access confirmation",
+    "repo access confirmation",
+    "access confirmation",
+    "confirm repository access",
+    "confirm repo access",
+    "test environment configuration",
+    "request recent deployment",
+    "request deployment history",
+    "request test environment",
+    "ci/cd pipeline access",
+    "pipeline access",
+)
+
+
+def _perico_bugfix_approval_allowed_exception(action: dict[str, Any]) -> bool:
+    """Keep approvals that explicitly gate registered Perico tools (rare but legitimate)."""
+    at = str(action.get("action_type") or "").strip().lower()
+    if at.startswith("perico_"):
+        return True
+    blob = _perico_strategy_action_blob(action)
+    return "perico_repo_read" in blob or "perico_run_pytest" in blob or "perico_apply_patch" in blob
+
+
+def filter_perico_bugfix_irrelevant_approval_actions(
+    actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Drop strategist rows that only ask for irrelevant human approvals in Perico bugfix missions
+    (deploy history, generic env access, etc.).
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    if not is_perico_bugfix_rubric_task(parse_perico_task_type_from_prompt(mission_prompt)):
+        return list(actions)
+    out: list[dict[str, Any]] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        if _perico_action_requires_operator_approval_gate(a):
+            blob = _perico_strategy_action_blob(a)
+            if any(n in blob for n in _PERICO_BUGFIX_IRRELEVANT_APPROVAL_NEEDLES):
+                if not _perico_bugfix_approval_allowed_exception(a):
+                    continue
+        out.append(a)
+    return out
+
+
+def classify_perico_runtime_precheck_failure(message: str) -> str:
+    """Coarse error bucket for context-aware guided UX (Spanish messages from tools)."""
+    m = (message or "").lower()
+    if "ruta de tests no permitida" in m or "path_not_allowed" in m:
+        return "test_path_invalid"
+    if "ruta de tests" in m and "no existe" in m:
+        return "test_path_missing"
+    if "spawn_failed" in m or "no such file or directory" in m:
+        return "spawn_failed"
+    if "pytest" in m and ("invocar" in m or "falló" in m or "fallo" in m or "código" in m):
+        return "pytest_invoke_failed"
+    if "directorio de trabajo para pytest" in m and "no existe" in m:
+        return "pytest_cwd_missing"
+    if "raíz del repositorio no existe" in m:
+        return "repo_root_missing"
+    if "no aparece el árbol" in m or "backend/app" in m:
+        return "repo_layout_missing"
+    if "timeout" in m and "pytest" in m:
+        return "pytest_timeout"
+    return "unknown"
+
+
+def perico_autofix_strategy_pytest_paths(strategy_actions: list[dict[str, Any]]) -> list[str]:
+    """
+    Mutates ``perico_run_pytest`` rows in-place when ``relative_path`` is wrong but a safe
+    alternative exists under ``PERICO_REPO_ROOT``. Returns human-readable fix notes.
+    """
+    from app.jarvis.perico_tools import perico_verify_pytest_relative_target
+
+    notes: list[str] = []
+    for act in strategy_actions:
+        if not isinstance(act, dict):
+            continue
+        if str(act.get("action_type") or "").strip().lower() != "perico_run_pytest":
+            continue
+        p = dict(act.get("params") or {}) if isinstance(act.get("params"), dict) else {}
+        rel = str(p.get("relative_path") or "").strip()
+        if not rel:
+            continue
+        ok, _msg = perico_verify_pytest_relative_target(rel)
+        if ok:
+            continue
+        rel2 = f"backend/{rel}".replace("//", "/")
+        ok2, _ = perico_verify_pytest_relative_target(rel2)
+        if ok2:
+            p["relative_path"] = rel2
+            act["params"] = p
+            notes.append(f"pytest relative_path {rel!r} → {rel2!r}")
+            continue
+        p.pop("relative_path", None)
+        act["params"] = p
+        notes.append(f"pytest relative_path {rel!r} eliminado (descubrimiento por cwd)")
+    return notes
+
+
+def perico_software_runtime_precheck_detailed(
+    *,
+    mission_prompt: str,
+    strategy_actions: list[dict[str, Any]],
+) -> tuple[bool, str, str]:
+    """
+    Like ``perico_software_runtime_precheck`` but returns ``(ok, message_es, error_kind)``.
+    ``error_kind`` is empty when ``ok`` is True.
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return True, "", ""
+    from app.jarvis.perico_tools import (
+        perico_repo_runtime_ready,
+        perico_verify_pytest_cwd,
+        perico_verify_pytest_relative_target,
+    )
+
+    ok, msg = perico_repo_runtime_ready()
+    if not ok:
+        return False, msg, classify_perico_runtime_precheck_failure(msg)
+    if not is_perico_bugfix_rubric_task(parse_perico_task_type_from_prompt(mission_prompt)):
+        return True, "", ""
+    ok_py, msg_py = perico_verify_pytest_cwd()
+    if not ok_py:
+        return False, msg_py, classify_perico_runtime_precheck_failure(msg_py)
+    rel = ""
+    for act in strategy_actions:
+        if not isinstance(act, dict):
+            continue
+        if str(act.get("action_type") or "").strip().lower() != "perico_run_pytest":
+            continue
+        p = dict(act.get("params") or {})
+        rel = str(p.get("relative_path") or "").strip()
+        if rel:
+            break
+    if rel:
+        ok_t, msg_t = perico_verify_pytest_relative_target(rel)
+        if not ok_t:
+            return False, msg_t, classify_perico_runtime_precheck_failure(msg_t)
+    return True, "", ""
+
+
+def perico_software_runtime_precheck(
+    *,
+    mission_prompt: str,
+    strategy_actions: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    """
+    Fail-fast checks before Perico tools run: repo layout, and (bugfix rubric) pytest cwd + planned test path.
+    """
+    ok, msg, _kind = perico_software_runtime_precheck_detailed(
+        mission_prompt=mission_prompt,
+        strategy_actions=strategy_actions,
+    )
+    return ok, msg
+
+
+def perico_try_autofix_runtime_before_block(
+    *,
+    mission_prompt: str,
+    strategy_actions: list[dict[str, Any]],
+) -> tuple[bool, str, dict[str, Any]]:
+    """
+    Safe in-process fixes (pytest path hints, ``PERICO_REPO_ROOT`` towards ``/app``) before blocking.
+
+    Returns ``(ok, message_es, diagnostics)`` where diagnostics include ``error_kind``,
+    ``guided_profile``, ``fixes_applied``, and optional ``dir_hint`` when still failing.
+    """
+    import os
+    from pathlib import Path
+
+    from app.jarvis.perico_tools import (
+        perico_resolve_pytest_command,
+        perico_shallow_runtime_dir_hint,
+    )
+
+    diag: dict[str, Any] = {
+        "fixes_applied": [],
+        "error_kind": "",
+        "guided_profile": "perico_repo_path",
+        "dir_hint": "",
+        "test_runner_source": "",
+        "test_runner_cmd": "",
+    }
+    path_notes = perico_autofix_strategy_pytest_paths(strategy_actions)
+    diag["fixes_applied"].extend(path_notes)
+
+    ok, msg, kind = perico_software_runtime_precheck_detailed(
+        mission_prompt=mission_prompt,
+        strategy_actions=strategy_actions,
+    )
+    if ok:
+        try:
+            cmd, src = perico_resolve_pytest_command()
+            diag["test_runner_source"] = src
+            diag["test_runner_cmd"] = " ".join(cmd)
+            if src not in ("system_python", "unavailable", "perico_python"):
+                diag["fixes_applied"].append(f"pytest runner detectado: {src} ({' '.join(cmd)})")
+        except Exception:
+            pass
+        return True, "", diag
+
+    app_ready = Path("/app/app").is_dir()
+    explicit = (os.getenv("PERICO_REPO_ROOT") or "").strip()
+
+    def _apply_app_root() -> None:
+        os.environ["PERICO_REPO_ROOT"] = "/app"
+        diag["fixes_applied"].append("PERICO_REPO_ROOT=/app (autofix contenedor)")
+
+    if app_ready and explicit:
+        pexp = Path(explicit).expanduser()
+        try:
+            pexp_r = pexp.resolve()
+        except OSError:
+            pexp_r = pexp
+        missing_root = not pexp_r.is_dir()
+        bad_layout = False
+        if not missing_root:
+            bad_layout = not (pexp_r / "app").is_dir() and not (pexp_r / "backend" / "app").is_dir()
+        if missing_root or bad_layout:
+            _apply_app_root()
+            ok, msg, kind = perico_software_runtime_precheck_detailed(
+                mission_prompt=mission_prompt,
+                strategy_actions=strategy_actions,
+            )
+            if ok:
+                try:
+                    cmd, src = perico_resolve_pytest_command()
+                    diag["test_runner_source"] = src
+                    diag["test_runner_cmd"] = " ".join(cmd)
+                    if src not in ("system_python", "unavailable", "perico_python"):
+                        diag["fixes_applied"].append(
+                            f"pytest runner detectado: {src} ({' '.join(cmd)})"
+                        )
+                except Exception:
+                    pass
+                return True, "", diag
+
+    try:
+        cmd, src = perico_resolve_pytest_command()
+        diag["test_runner_source"] = src
+        diag["test_runner_cmd"] = " ".join(cmd)
+    except Exception:
+        pass
+
+    diag["error_kind"] = kind
+    diag["dir_hint"] = perico_shallow_runtime_dir_hint()
+    diag["guided_profile"] = guided_profile_for_perico_runtime_error(kind)
+    return False, msg, diag
+
+
+def guided_profile_for_perico_runtime_error(error_kind: str) -> str:
+    k = (error_kind or "").strip().lower()
+    if k in ("test_path_missing", "test_path_invalid"):
+        return "perico_test_path"
+    if k in ("pytest_invoke_failed", "pytest_timeout", "pytest_cwd_missing", "spawn_failed"):
+        return "perico_pytest"
+    if k in ("repo_root_missing", "repo_layout_missing", "unknown"):
+        return "perico_repo_path"
+    return "perico_repo_path"
+
+
+PERICO_RUNTIME_ERROR_KIND_OPERATOR_ES: dict[str, str] = {
+    "test_path_invalid": "La ruta de tests indicada no es válida o no está permitida aquí.",
+    "test_path_missing": "No se encuentra el archivo o carpeta de tests indicada.",
+    "spawn_failed": "No se pudo lanzar el proceso (comando o intérprete no disponible en este contenedor).",
+    "pytest_invoke_failed": "No se pudo ejecutar pytest (falta el módulo, el comando o el directorio de trabajo).",
+    "pytest_cwd_missing": "El directorio de trabajo para pytest no existe en el runtime actual.",
+    "repo_root_missing": "La raíz del código que Perico intenta usar no existe en este entorno.",
+    "repo_layout_missing": "El árbol del repositorio no coincide con lo esperado (no se ve backend/app).",
+    "pytest_timeout": "Los tests tardaron demasiado y se cancelaron por tiempo.",
+    "unknown": "El entorno de ejecución devolvió un error que no encaja en un caso conocido.",
+}
+
+
+def _perico_approval_action_blob(action: dict[str, Any]) -> str:
+    parts = [
+        str(action.get("title") or ""),
+        str(action.get("description") or ""),
+        str(action.get("rationale") or ""),
+    ]
+    try:
+        parts.append(json.dumps(action.get("params") or {}, ensure_ascii=True))
+    except (TypeError, ValueError):
+        parts.append(str(action.get("params") or ""))
+    return " ".join(parts).lower()
+
+
+def _perico_mission_mentions_external_integrations(mission_prompt: str) -> bool:
+    """
+    True only when the *operator* text references marketing integrations.
+
+    The full Perico machine prompt mentions GA4/GSC/Google Ads in boilerplate; that must not
+    disable noise filtering for normal code missions.
+    """
+    mp = (mission_prompt or "").strip()
+    if "Operator software task:" in mp:
+        low = mp.split("Operator software task:", 1)[-1].strip().lower()
+    else:
+        low = mp.lower()
+    needles = (
+        "google ads",
+        "google adwords",
+        " ga4",
+        " ga4 ",
+        "gsc",
+        "search console",
+        "analytics property",
+        "facebook ads",
+    )
+    return any(n in low for n in needles)
+
+
+def _perico_ops_approval_is_integration_setup_noise(action: dict[str, Any]) -> bool:
+    """Ads / GA4 / GSC ops fixes that are unrelated to a code-repo Perico bugfix."""
+    t = str(action.get("title") or "").lower()
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    keys = params.get("keys")
+    keys_blob = ""
+    if isinstance(keys, list):
+        keys_blob = " ".join(str(x) for x in keys).lower()
+    elif keys is not None:
+        keys_blob = str(keys).lower()
+    if "google ads" in t or " ga4" in t or "ga4 " in t or "gsc" in t or "search console" in t:
+        return True
+    if any(
+        p in keys_blob
+        for p in (
+            "jarvis_google_ads",
+            "jarvis_ga4",
+            "jarvis_gsc",
+        )
+    ):
+        return True
+    at = str(action.get("action_type") or "").strip().lower()
+    if at == "fix_credentials_path" and ("google ads" in t or "google" in t):
+        return True
+    return False
+
+
+def _perico_internal_runtime_env_approval(action: dict[str, Any]) -> bool:
+    """Runtime env tweaks that should be handled via guided callbacks / autofix, not formal approval."""
+    if str(action.get("action_type") or "").strip().lower() != "update_runtime_env":
+        return False
+    blob = _perico_approval_action_blob(action)
+    if _perico_ops_approval_is_integration_setup_noise(action):
+        return False
+    needles = (
+        "pytest",
+        "perico",
+        "repo root",
+        "pythonpath",
+        "pip install",
+        "module named",
+        "test suite",
+        "cwd",
+        "working directory",
+    )
+    return any(n in blob for n in needles)
+
+
+_PERICO_ENV_KEY_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "PERICO_REPO_ROOT": (
+        "perico_repo_root",
+        "perico repo root",
+        "perico-repo-root",
+        "repo root",
+        "repository root",
+        "raíz del repositorio",
+        "raiz del repositorio",
+    ),
+    "PERICO_WRITE_ENABLED": (
+        "perico_write_enabled",
+        "perico write enabled",
+        "write enabled",
+    ),
+    "PYTHONPATH": ("pythonpath",),
+}
+
+
+def perico_applied_env_keys_from_fixes(env_fixes: list[Any] | None) -> list[str]:
+    """Extract KEY names from ``apply_perico_guided_env_from_input`` fix labels."""
+    keys: list[str] = []
+    for raw in env_fixes or []:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        key = s.split("=", 1)[0].strip().upper()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def filter_perico_actions_already_satisfied_by_guided_env(
+    actions: list[dict[str, Any]],
+    *,
+    applied_env_keys: list[str],
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Drop strategy rows that only ask to set/apply an env key already applied via guided input.
+
+    Keeps registered Perico tools (they do not "set" env) and non-env actions untouched.
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    keys = [str(k or "").strip().upper() for k in (applied_env_keys or []) if str(k or "").strip()]
+    if not keys:
+        return list(actions)
+
+    set_needles = (
+        "set env",
+        "set environment",
+        "export ",
+        "establece ",
+        "establecer ",
+        "configura ",
+        "configurar ",
+        "define ",
+        "definir ",
+        "force ",
+        "forzar ",
+        "apply env",
+        "aplicar env",
+        "aplicar entorno",
+        "update env",
+        "update runtime env",
+        "actualizar entorno",
+        "persist env",
+        "persistir entorno",
+    )
+
+    def _mentions_any_key(blob: str, params: Any) -> str | None:
+        low = blob.lower()
+        for key in keys:
+            if key.lower() in low:
+                return key
+            for alias in _PERICO_ENV_KEY_SYNONYMS.get(key, ()):
+                if alias in low:
+                    return key
+        if isinstance(params, dict):
+            pk = params.get("keys")
+            seq: list[str] = []
+            if isinstance(pk, list):
+                seq = [str(x or "").upper() for x in pk]
+            elif pk is not None:
+                seq = [str(pk or "").upper()]
+            for key in keys:
+                if key in seq:
+                    return key
+        return None
+
+    out: list[dict[str, Any]] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        at = str(a.get("action_type") or "").strip().lower()
+        if at in _PERICO_STRATEGY_CONCRETE_TOOLS:
+            out.append(a)
+            continue
+        blob = _perico_strategy_action_blob(a)
+        params = a.get("params") if isinstance(a.get("params"), dict) else {}
+        matched_key = _mentions_any_key(blob, params)
+        if not matched_key:
+            out.append(a)
+            continue
+        is_env_ish = (
+            at in ("update_runtime_env", "ops_config_change", "external_side_effect", "analysis", "research")
+            or any(n in blob for n in set_needles)
+            or "environment variable" in blob
+            or "variable de entorno" in blob
+        )
+        if is_env_ish:
+            continue
+        out.append(a)
+    return out
+
+
+def prune_nonconcrete_perico_strategy_actions(
+    actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Drop vague/non-actionable strategy rows for Perico bugfix missions before execution and approval.
+
+    Mirrors the runtime skip performed in ExecutionAgent so resumed plans stay on the concrete
+    perico_repo_read / perico_run_pytest / perico_apply_patch path.
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    task = parse_perico_task_type_from_prompt(mission_prompt)
+    if not is_perico_bugfix_rubric_task(task):
+        return list(actions)
+    out: list[dict[str, Any]] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        if perico_should_skip_nonconcrete_strategy_action(a, mission_prompt=mission_prompt):
+            continue
+        out.append(a)
+    return out
+
+
+def filter_perico_operator_noise_approvals(
+    actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Remove ops/strategy approval rows that are internal runtime noise for Perico software missions.
+
+    Keeps deploy, credentials, Google integrations when the mission text references them, and other
+    genuinely sensitive steps.
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    task = parse_perico_task_type_from_prompt(mission_prompt)
+    strip_integration_ops = is_perico_bugfix_rubric_task(task) and not _perico_mission_mentions_external_integrations(
+        mission_prompt
+    )
+    out: list[dict[str, Any]] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        if strip_integration_ops and _perico_ops_approval_is_integration_setup_noise(a):
+            continue
+        if _perico_internal_runtime_env_approval(a):
+            continue
+        at = str(a.get("action_type") or "").strip().lower()
+        if at in ("perico_repo_read", "perico_run_pytest"):
+            continue
+        out.append(a)
+    return out
+
+
+def format_perico_runtime_block_telegram(
+    *,
+    technical_message_es: str,
+    error_kind: str,
+    fixes_applied: list[Any],
+    has_container_code_path: bool,
+    detected_test_runner: str = "",
+) -> str:
+    """
+    Operator-facing Telegram copy for runtime precheck blocks (plain language + optional technical tail).
+    """
+    kind = (error_kind or "").strip().lower()
+    plain = PERICO_RUNTIME_ERROR_KIND_OPERATOR_ES.get(kind, PERICO_RUNTIME_ERROR_KIND_OPERATOR_ES["unknown"])
+    lines: list[str] = []
+    lines.append("Perico no puede seguir con la validación automática en este entorno.")
+    fixes = [str(x).strip() for x in (fixes_applied or []) if str(x).strip()]
+    if fixes:
+        lines.append("Esto es lo que ya probó solo (sin pedirte permiso para cada paso):")
+        for note in fixes[:6]:
+            lines.append(f"• {note[:220]}")
+    lines.append(f"En palabras simples: {plain}")
+    runner = (detected_test_runner or "").strip()
+    if runner:
+        if runner == "unavailable":
+            lines.append(
+                "Runner de tests: no se encontró ninguno utilizable (probé PERICO_TEST_COMMAND, "
+                "PERICO_PYTHON, .venv-test-runner, .venv, venv, poetry, tox, python3 -m pytest)."
+            )
+        else:
+            lines.append(f"Runner de tests detectado: {runner}.")
+    tech = (technical_message_es or "").strip()
+    if tech:
+        lines.append("")
+        lines.append("Detalle técnico (por si hace falta escalarlo):")
+        lines.append(tech[:520])
+    lines.append("")
+    if has_container_code_path:
+        lines.append(
+            "Puedes usar los botones de abajo: probar la ruta de código detectada en el contenedor, "
+            "reintentar la ejecución de tests con ajustes seguros, o parar la misión."
+        )
+    else:
+        lines.append("Puedes responder con más contexto o parar la misión usando los botones.")
+    lines.append("Todavía no se ha aplicado ningún parche de código por este bloqueo.")
+    return "\n".join(lines).strip()
+
+
+def format_perico_approval_item_for_operator(action: dict[str, Any]) -> str:
+    """Plain-language Spanish summary for a single pending approval (Perico / software context)."""
+    at = str(action.get("action_type") or "").strip().lower()
+    title = str(action.get("title") or "").strip()
+    head = title or at or "acción pendiente"
+    if at == "deploy":
+        return (
+            f"Propuesta: desplegar — «{head}». "
+            "Tu aprobación importa porque puede cambiar lo que está en servicio o en producción. "
+            "Revisa entorno, alcance y rollback en Notion antes de confirmar."
+        )
+    if at == "update_runtime_env":
+        return (
+            f"Propuesta: cambiar variables de entorno del backend — «{head}». "
+            "Tu aprobación importa porque suele persistir tras reinicios y puede afectar integraciones "
+            "(anuncios, analytics, credenciales). No es un ajuste temporal solo para esta misión de código."
+        )
+    if at == "restart_backend":
+        return (
+            f"Propuesta: reiniciar el backend — «{head}». "
+            "Tu aprobación importa porque puede cortar brevemente el API y recarga configuración global."
+        )
+    if at == "fix_credentials_path":
+        return (
+            f"Propuesta: ajustar rutas o ubicación de credenciales — «{head}». "
+            "Tu aprobación importa porque toca secretos o montajes en host/contenedor."
+        )
+    if at == "external_side_effect":
+        return (
+            f"Propuesta: acción con efecto fuera del repo — «{head}». "
+            "Requiere tu confirmación explícita antes de ejecutar."
+        )
+    if at == "ops_config_change":
+        return (
+            f"Propuesta: cambio de configuración operativa — «{head}». "
+            "Revisa en Notion el alcance; puede afectar servicios conectados."
+        )
+    return (
+        f"Propuesta pendiente de tu visto bueno — «{head}». "
+        "Revisa el detalle técnico en Notion; al aprobar, Perico ejecutará exactamente ese paso."
+    )
+
+
+def _perico_blob_sensitive_ops(blob: str) -> bool:
+    return any(
+        x in blob
+        for x in (
+            "ssm",
+            "secret",
+            "credential",
+            "password",
+            "production",
+            " deploy",
+            "deploy ",
+            "kubectl",
+            "terraform",
+            "restart",
+        )
+    )
+
+
+def _perico_blob_blocks_readlike_mapping(blob: str) -> bool:
+    """
+    True when text suggests mutating infra/config — do not map to perico_repo_read
+    or downgrade ``ops_config_change`` to auto_execute.
+    """
+    if _perico_blob_sensitive_ops(blob):
+        return True
+    low = blob
+    needles = (
+        "write ",
+        " write",
+        "update ",
+        " update",
+        "replace ",
+        " replace",
+        "delete ",
+        " delete",
+        "rotate ",
+        " rotate",
+        "set env",
+        "set ssm",
+        "set secret",
+        "set credential",
+        "set credentials",
+        "mutate",
+        "patch prod",
+        "apply to prod",
+        "overwrite",
+        "truncate",
+    )
+    return any(n in low for n in needles)
+
+
+def _perico_blob_requests_pytest(blob: str) -> bool:
+    # Avoid treating "pytest.ini" / config reads as a test *run*.
+    scrubbed = (
+        blob.replace("pytest.ini", " ")
+        .replace("pyproject.toml", " ")
+        .replace("conftest.py", " ")
+    )
+    if "pytest" in scrubbed:
+        return True
+    return any(
+        x in blob
+        for x in (
+            "run tests",
+            "run test",
+            "correr test",
+            "ejecutar test",
+            "full test suite",
+            "test suite",
+            "unit tests",
+        )
+    )
+
+
+def _perico_infer_pytest_relative_path(blob: str, params: dict[str, Any]) -> str:
+    for key in ("relative_path", "path", "tests_path", "target", "test_path"):
+        v = str(params.get(key) or "").strip().replace("\\", "/")
+        if v and ".." not in v.split("/"):
+            return v
+    if "backend/test" in blob:
+        return "tests"
+    return ""
+
+
+def _perico_ops_config_maps_to_repo_read(at: str, blob: str) -> bool:
+    if at != "ops_config_change":
+        return False
+    if _perico_blob_blocks_readlike_mapping(blob):
+        return False
+    return any(
+        x in blob
+        for x in (
+            "read ",
+            "inspect",
+            "review ",
+            "leer",
+            "pytest.ini",
+            "conftest",
+            "test configuration",
+            "config file",
+            "list file",
+            "open file",
+        )
+    ) or ("test" in blob and "config" in blob)
+
+
+def _perico_analysis_codechange_maps_to_repo_read(at: str, blob: str) -> bool:
+    if at not in ("analysis", "research", "code_change"):
+        return False
+    if _perico_blob_blocks_readlike_mapping(blob) or _perico_blob_requests_pytest(blob):
+        return False
+    return any(
+        x in blob
+        for x in (
+            "read ",
+            "inspect",
+            "review ",
+            "leer",
+            "list ",
+            "browse",
+            "open ",
+            "pytest.ini",
+            "conftest",
+            "source file",
+            "codebase",
+            "repository",
+            "repo ",
+        )
+    )
+
+
+def _perico_infer_repo_read_triple(_at: str, blob: str, params: dict[str, Any]) -> tuple[str, str, str]:
+    rp = str(params.get("relative_path") or params.get("path") or params.get("file") or "").strip().replace("\\", "/")
+    pat = str(params.get("pattern") or params.get("query") or "").strip()
+    if "pytest.ini" in blob:
+        return "read", "pytest.ini", ""
+    if "conftest.py" in blob or ("conftest" in blob and "pytest" in blob):
+        if rp:
+            return "read", rp, ""
+        return "read", "backend/tests/conftest.py", ""
+    if "pyproject.toml" in blob:
+        return "read", "pyproject.toml", ""
+    if rp and pat and len(pat) >= 2:
+        return "grep", rp, pat[:200]
+    if rp:
+        return "read", rp, ""
+    if "list" in blob and "test" in blob:
+        return "list", "backend/tests", ""
+    return "list", "backend", ""
+
+
+def normalize_perico_strategy_actions(
+    actions: list[dict[str, Any]],
+    *,
+    mission_prompt: str,
+) -> list[dict[str, Any]]:
+    """
+    Rewrite generic strategist rows into registered Perico tools so ExecutionAgent invokes them.
+
+    Paths stay repo-relative under ``PERICO_REPO_ROOT`` (enforced again inside tools).
+    """
+    if not is_perico_software_mission_prompt(mission_prompt):
+        return list(actions)
+    from app.jarvis.action_policy import compute_priority_score, get_action_policy
+
+    out: list[dict[str, Any]] = []
+    for a0 in actions:
+        if not isinstance(a0, dict):
+            continue
+        a = dict(a0)
+        at = str(a.get("action_type") or "").strip().lower()
+        blob = _perico_strategy_action_blob(a)
+        params = dict(a.get("params") or {}) if isinstance(a.get("params"), dict) else {}
+
+        if at in _PERICO_STRATEGY_CONCRETE_TOOLS:
+            if at == "perico_apply_patch":
+                p0 = dict(a.get("params") or {}) if isinstance(a.get("params"), dict) else {}
+                ot0 = str(p0.get("old_text") or "").strip()
+                nt0 = str(p0.get("new_text") or "")
+                rp0 = str(p0.get("relative_path") or "").strip()
+                if not rp0 or perico_patch_text_looks_placeholder(old_text=ot0, new_text=nt0):
+                    continue
+            pol = get_action_policy(at)
+            a["execution_mode"] = str(pol.get("execution_mode") or "auto_execute")
+            a["requires_approval"] = a["execution_mode"] == "requires_approval"
+            out.append(a)
+            continue
+
+        mapped: dict[str, Any] | None = None
+
+        if at == "code_change":
+            ot = str(params.get("old_text") or "").strip()
+            nt = str(params.get("new_text") or "")
+            rp = str(params.get("relative_path") or params.get("path") or "").strip().replace("\\", "/")
+            if rp and ot and not perico_patch_text_looks_placeholder(old_text=ot, new_text=nt):
+                mapped = {k: v for k, v in a.items() if k not in ("action_type", "params")}
+                mapped["action_type"] = "perico_apply_patch"
+                mapped["params"] = {"relative_path": rp, "old_text": ot, "new_text": nt}
+
+        if mapped is None and (
+            _perico_ops_config_maps_to_repo_read(at, blob)
+            or _perico_analysis_codechange_maps_to_repo_read(at, blob)
+        ):
+            op, rel, pat = _perico_infer_repo_read_triple(at, blob, params)
+            mapped = {k: v for k, v in a.items() if k not in ("action_type", "params")}
+            mapped["action_type"] = "perico_repo_read"
+            mapped["params"] = {
+                "operation": op,
+                "relative_path": rel,
+                "pattern": pat,
+                "max_results": int(params.get("max_results") or 80),
+            }
+
+        if mapped is None and _perico_blob_requests_pytest(blob):
+            mapped = {k: v for k, v in a.items() if k not in ("action_type", "params")}
+            mapped["action_type"] = "perico_run_pytest"
+            mapped["params"] = {
+                "relative_path": _perico_infer_pytest_relative_path(blob, params),
+                "extra_args": str(params.get("extra_args") or ""),
+                "timeout_seconds": int(params.get("timeout_seconds") or 180),
+            }
+
+        if mapped is not None:
+            pol = get_action_policy(str(mapped["action_type"]))
+            mapped["execution_mode"] = str(pol.get("execution_mode") or "auto_execute")
+            mapped["requires_approval"] = mapped["execution_mode"] == "requires_approval"
+            if not mapped.get("priority_score"):
+                mapped["priority_score"] = compute_priority_score(
+                    action_type=str(mapped["action_type"]),
+                    impact=str(a.get("impact") or "high"),
+                    confidence=float(a.get("confidence") or 0.78),
+                )
+            if not str(mapped.get("title") or "").strip():
+                mapped["title"] = str(mapped["action_type"])
+            out.append(mapped)
+            continue
+
+        if at == "ops_config_change" and not _perico_blob_blocks_readlike_mapping(blob):
+            if any(x in blob for x in ("read", "inspect", "review", "leer", "pytest", "test", "config", "file")):
+                a["execution_mode"] = "auto_execute"
+                a["requires_approval"] = False
+        out.append(a)
+    return out
+
+
 def parse_perico_task_type_from_prompt(mission_prompt: str) -> str:
     """Task type from [PERICO_TASK_TYPE: …] marker; falls back to classifying operator line."""
     mp = (mission_prompt or "").strip()
@@ -412,6 +1378,27 @@ def classify_perico_task_type(user_text: str) -> str:
         return "integration_fix"
     if _perico_wants_bugfix_closure(low):
         return "integration_fix" if integ else "bugfix"
+    # Tests failing + concrete fix/validate language → bugfix, even if the prompt opens with "Investiga…".
+    # (Otherwise "Investiga la causa…" can match diagnostics before the stricter bugfix heuristics fire.)
+    if any(x in low for x in ("test", "tests", "pytest", "pruebas", "prueba")) and any(
+        x in low for x in ("fallan", "fallando", "failing", "falla", "error", "problema", "broken")
+    ) and any(
+        x in low
+        for x in (
+            "parche",
+            "patch",
+            "pytest",
+            "validar",
+            "validate",
+            "validación",
+            "validacion",
+            "arregla",
+            "fix",
+            "corrige",
+            "aplica",
+        )
+    ):
+        return "integration_fix" if integ else "bugfix"
     # Investigation-only (no explicit patch/pytest validation loop in the ask).
     if any(x in low for x in ("investiga", "investigar", "por qué", "por que", "why", "diagn")):
         return "diagnostics"
@@ -478,6 +1465,7 @@ def build_perico_deliverables_snapshot(
     execution: dict[str, Any] | None,
     goal_satisfied: bool | None,
     retry_attempted: bool = False,
+    runtime_environment_block: str | None = None,
 ) -> dict[str, Any]:
     """
     Structured view for Notion / logs (phase 1; derived from execution rows).
@@ -495,6 +1483,7 @@ def build_perico_deliverables_snapshot(
     target = (hint_match.group(1).strip() if hint_match else None) or infer_perico_target_project(user_line)
     tt_match = re.search(r"\[PERICO_TASK_TYPE:\s*([^\]]+)\]", mp)
     task_type = tt_match.group(1).strip() if tt_match else classify_perico_task_type(user_line)
+    runtime_block = (runtime_environment_block or "").strip()
 
     exec0 = execution if isinstance(execution, dict) else {}
     executed = [x for x in (exec0.get("executed") or []) if isinstance(x, dict)]
@@ -525,6 +1514,8 @@ def build_perico_deliverables_snapshot(
     files_touched: list[str] = []
     diff_parts: list[str] = []
     errors_detected: list[str] = []
+    if runtime_block:
+        errors_detected.append(runtime_block[:2500])
     pytest_rows: list[dict[str, Any]] = []
     for row in executed:
         at = str(row.get("action_type") or "").strip().lower()
@@ -567,7 +1558,9 @@ def build_perico_deliverables_snapshot(
         has_inspection=has_inspection,
         errors_detected=errors_detected,
     )
-    if not pytest_rows:
+    if runtime_block:
+        validation_result_summary = f"Bloqueado (runtime / herramientas): {runtime_block[:400]}"
+    elif not pytest_rows:
         validation_result_summary = "pytest no ejecutado en esta misión"
     elif validation_run == "perico_run_pytest_incomplete":
         validation_result_summary = "pytest lanzado pero el resultado quedó incompleto"
@@ -588,25 +1581,30 @@ def build_perico_deliverables_snapshot(
 
     software_closure_state: str | None = None
     if is_perico_bugfix_rubric_task(task_type):
-        gate = perico_should_block_for_operator_input(exec0)
-        if gate:
-            software_closure_state = "blocked"
-        elif patch_applied:
-            if tests_passed is True:
-                software_closure_state = "fixed"
-            elif tests_passed is False:
-                software_closure_state = "blocked"
-            else:
-                software_closure_state = "partially_fixed"
-        elif has_inspection:
-            # Bugfix sin parche aplicado nunca es "fixed" (coherente con evaluate_perico_marked_goal_satisfaction).
+        if runtime_block:
             software_closure_state = "blocked"
         else:
-            software_closure_state = "blocked"
+            gate = perico_should_block_for_operator_input(exec0)
+            if gate:
+                software_closure_state = "blocked"
+            elif patch_applied:
+                if tests_passed is True:
+                    software_closure_state = "fixed"
+                elif tests_passed is False:
+                    software_closure_state = "blocked"
+                else:
+                    software_closure_state = "partially_fixed"
+            elif has_inspection:
+                # Bugfix sin parche aplicado nunca es "fixed" (coherente con evaluate_perico_marked_goal_satisfaction).
+                software_closure_state = "blocked"
+            else:
+                software_closure_state = "blocked"
         if software_closure_state not in {"fixed", "partially_fixed", "blocked"}:
             raise RuntimeError(
                 f"Invalid Perico bugfix software_closure_state: {software_closure_state!r}"
             )
+    elif runtime_block:
+        software_closure_state = "blocked"
 
     return {
         "target_project": target or PERICO_DEFAULT_TARGET_PROJECT,
@@ -620,7 +1618,12 @@ def build_perico_deliverables_snapshot(
         "patch_applied": patch_applied,
         "validation_run": validation_run,
         "validation_command": validation_command,
-        "objective_satisfied": (bool(goal_satisfied) if goal_satisfied is not None else None),
+        "objective_satisfied": (
+            False
+            if runtime_block
+            else (bool(goal_satisfied) if goal_satisfied is not None else None)
+        ),
+        "runtime_environment_block": runtime_block or None,
         "deploy_sensitive": deploy_sensitive,
         "bugfix_rubric": is_perico_bugfix_rubric_task(task_type),
         "root_cause_summary": root_cause_summary[:1200],
@@ -669,6 +1672,143 @@ def format_perico_closure_status_display(snap: dict[str, Any]) -> str:
         "partially_fixed": "PARTIALLY_FIXED",
         "blocked": "BLOCKED",
     }.get(key, key.upper())
+
+
+def format_perico_final_work_report(
+    snap: dict[str, Any],
+    execution: dict[str, Any] | None,
+) -> str:
+    """
+    Structured Perico work report (success or blocked) answering the 7 operator questions:
+
+    1. Problema encontrado
+    2. Causa raíz probable
+    3. Qué intentó Perico
+    4. Qué cambió
+    5. Cómo se validó
+    6. Estado final
+    7. Qué queda pendiente
+
+    Designed for Telegram cierre + Notion executive summary. Plain Spanish, no debug noise.
+    """
+    if not isinstance(snap, dict):
+        return ""
+    ex = execution if isinstance(execution, dict) else {}
+    executed = [x for x in (ex.get("executed") or []) if isinstance(x, dict)]
+
+    runtime_block = (snap.get("runtime_environment_block") or "").strip()
+    closure = str(snap.get("software_closure_state") or "").strip().lower()
+    patch_applied = bool(snap.get("patch_applied"))
+    tests_passed = snap.get("tests_passed")
+    files_touched = list(snap.get("files_touched") or [])
+    root_cause = (snap.get("root_cause_summary") or "").strip()
+    hypothesis = (snap.get("hypothesis_summary") or "").strip()
+    errors = [str(e).strip() for e in (snap.get("errors_detected") or []) if str(e).strip()]
+    validation_cmd = (snap.get("validation_command") or "").strip()
+    validation_summary = (snap.get("validation_result_summary") or "").strip()
+
+    if runtime_block:
+        problem = "Perico no pudo ejecutar la validación automática en el runtime actual."
+    elif errors:
+        problem = f"Se detectaron errores durante la ejecución: {errors[0][:240]}"
+    elif tests_passed is False:
+        problem = "La suite de pytest terminó en rojo al validar el cambio."
+    elif closure == "fixed":
+        problem = "Bug reportado por el operador (pytest o comportamiento en rojo)."
+    elif hypothesis:
+        problem = f"Hipótesis de trabajo: {hypothesis[:240]}"
+    else:
+        problem = "Revisión de código / validación solicitada por el operador."
+
+    if root_cause:
+        cause = root_cause[:400]
+    elif runtime_block:
+        cause = "Falta de dependencia o runtime incompleto: no hay pytest ejecutable utilizable."
+    elif tests_passed is False:
+        cause = "Causa raíz no confirmada; los tests fallan tras el intento de parche."
+    elif not patch_applied:
+        cause = "No se aplicó parche concreto; la causa raíz sigue abierta."
+    else:
+        cause = "No se registró un análisis explícito de causa raíz."
+
+    inspected = len([
+        r for r in executed
+        if str(r.get("action_type") or "").strip().lower() == "perico_repo_read"
+    ])
+    pytest_rows = [
+        r for r in executed
+        if str(r.get("action_type") or "").strip().lower() == "perico_run_pytest"
+    ]
+    tried_parts: list[str] = []
+    if inspected:
+        tried_parts.append(f"inspeccionó {inspected} archivo(s) del repo")
+    if patch_applied:
+        tried_parts.append("aplicó un parche mínimo")
+    if pytest_rows:
+        tried_parts.append(f"ejecutó pytest {len(pytest_rows)} vez/veces")
+    if snap.get("retry_attempted"):
+        tried_parts.append("reintentó pytest automáticamente tras el primer fallo")
+    if runtime_block:
+        tried_parts.append("intentó autocorregir el entorno de ejecución (repo root / rutas)")
+    if not tried_parts:
+        tried_parts.append("recorrido ligero del plan sin tocar código")
+    tried = "; ".join(tried_parts) + "."
+
+    if files_touched:
+        changed = "Archivos tocados: " + ", ".join(files_touched[:8])
+        if len(files_touched) > 8:
+            changed += f" (+{len(files_touched) - 8} más)"
+    else:
+        changed = "Ningún archivo del repo fue modificado."
+
+    if pytest_rows and tests_passed is True:
+        validated = f"pytest en verde ({validation_cmd or 'python -m pytest'})."
+    elif pytest_rows and tests_passed is False:
+        validated = f"pytest en rojo ({validation_cmd or 'python -m pytest'}). {validation_summary}".strip()
+    elif pytest_rows:
+        validated = f"pytest ejecutado, resultado incompleto. {validation_summary}".strip()
+    elif runtime_block:
+        validated = "No se pudo ejecutar ninguna validación (runtime no listo)."
+    else:
+        validated = "No se ejecutó pytest en esta misión."
+
+    final_state_token = {
+        "fixed": "FIXED — resuelto y validado",
+        "partially_fixed": "PARTIALLY_FIXED — cambio aplicado, validación no concluyente",
+        "blocked": "BLOCKED — sin resolución confirmada",
+    }.get(closure, "")
+    if not final_state_token:
+        if patch_applied and tests_passed is True:
+            final_state_token = "FIXED — resuelto y validado"
+        elif patch_applied:
+            final_state_token = "PARTIALLY_FIXED — cambio aplicado, validación no concluyente"
+        else:
+            final_state_token = "COMPLETADO"
+
+    pending: list[str] = []
+    if closure == "blocked" and runtime_block:
+        pending.append(
+            "Preparar un runner de pytest en el runtime (o fijar PERICO_TEST_COMMAND / PERICO_PYTHON)."
+        )
+    if closure == "blocked" and tests_passed is False:
+        pending.append("Revisar manualmente la salida de pytest y decidir si se hace un nuevo intento.")
+    if closure == "partially_fixed":
+        pending.append("Relanzar la validación cuando el entorno esté disponible.")
+    if not patch_applied and closure != "fixed":
+        pending.append("No se ha aplicado ningún parche persistente todavía.")
+    pending_text = " ".join(pending).strip() or "Nada pendiente por parte del operador."
+
+    lines = [
+        "Informe Perico (cierre de misión):",
+        f"1. Problema encontrado: {problem}",
+        f"2. Causa raíz probable: {cause}",
+        f"3. Qué intentó Perico: {tried}",
+        f"4. Qué cambió: {changed}",
+        f"5. Cómo se validó: {validated}",
+        f"6. Estado final: {final_state_token}",
+        f"7. Pendiente: {pending_text}",
+    ]
+    return "\n".join(lines)[:3600]
 
 
 def format_perico_closure_key_result(snap: dict[str, Any], execution: dict[str, Any] | None) -> str:
@@ -773,8 +1913,9 @@ def perico_should_block_for_operator_input(execution: dict[str, Any]) -> str | N
     pytest_rows = [x for x in rows if str(x.get("action_type") or "").strip().lower() == "perico_run_pytest"]
     if patch_ok and not pytest_rows:
         return (
-            "Perico aplicó un parche pero no hay resultado de `perico_run_pytest`. "
-            "Ejecuta tests (misma misión con una acción perico_run_pytest) o indica por qué no aplican."
+            "Perico ya aplicó un cambio de código, pero falta una pasada de tests para validarlo.\n\n"
+            "Opciones: reintenta la misión incluyendo ejecución de tests, o explica por qué en este entorno "
+            "no aplica correr tests ahora."
         )
     if not pytest_rows:
         return None
@@ -786,7 +1927,9 @@ def perico_should_block_for_operator_input(execution: dict[str, Any]) -> str | N
     if len(pytest_rows) >= 2:
         tail = str(last.get("stderr_tail") or last.get("combined_tail") or "")[:1200]
         return (
-            "Tras un reintento automático, pytest sigue en rojo. "
-            f"Revisa el error o ajusta el alcance.\n\nÚltima salida (truncada):\n{tail or '(sin detalle)'}"
+            "Perico reintentó los tests automáticamente una vez y siguen fallando.\n\n"
+            "Esto ya no es un fallo de rutas del contenedor: hace falta que revises el fallo de tests "
+            "o acotes qué quieres cambiar a continuación.\n\n"
+            f"Última salida (técnica, truncada):\n{tail or '(sin detalle)'}"
         )
     return None

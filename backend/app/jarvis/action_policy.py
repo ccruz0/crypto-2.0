@@ -71,6 +71,21 @@ ACTION_POLICY: dict[str, dict[str, Any]] = {
         "base_priority_score": 70,
         "impact_default": "high",
     },
+    "perico_repo_read": {
+        "execution_mode": "auto_execute",
+        "base_priority_score": 72,
+        "impact_default": "high",
+    },
+    "perico_run_pytest": {
+        "execution_mode": "auto_execute",
+        "base_priority_score": 76,
+        "impact_default": "high",
+    },
+    "perico_apply_patch": {
+        "execution_mode": "auto_execute",
+        "base_priority_score": 80,
+        "impact_default": "high",
+    },
     "fix_credentials_path": {
         "execution_mode": "requires_approval",
         "base_priority_score": 86,

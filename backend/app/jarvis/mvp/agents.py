@@ -7,8 +7,15 @@ import logging
 from typing import Any
 
 from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
+from app.jarvis.mvp.aws_auditor import compile_audit_findings, is_aws_audit_task, run_aws_audit
+from app.jarvis.mvp.crypto_auditor import (
+    compile_crypto_audit_findings,
+    is_crypto_audit_task,
+    run_crypto_audit,
+)
 from app.jarvis.mvp.risk import classify_task_risk
 from app.jarvis.mvp.tools import READONLY_TOOLS, run_readonly_tool
+from app.jarvis.mvp.wallet_reconciliation import is_wallet_reconcile_task
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +60,37 @@ def _fallback_plan(task: str) -> list[dict[str, Any]]:
         {"step": 1, "action": "classify", "description": "Classify task intent and risk"},
     ]
     step = 2
-    if any(k in text for k in ("health", "dashboard", "status")):
+    if is_crypto_audit_task(task):
+        for audit_tool in (
+            "get_exchange_wallet",
+            "get_dashboard_portfolio",
+            "get_open_positions",
+            "get_portfolio_cache",
+            "get_trade_history_summary",
+            "get_price_feed_status",
+        ):
+            steps.append(
+                {
+                    "step": step,
+                    "action": audit_tool,
+                    "description": f"Crypto auditor: {audit_tool}",
+                    "tool": audit_tool,
+                    "args": {},
+                }
+            )
+            step += 1
+    elif is_wallet_reconcile_task(task):
+        steps.append(
+            {
+                "step": step,
+                "action": "reconcile_crypto_wallet_vs_dashboard",
+                "description": "Compare Crypto.com wallet balances vs dashboard portfolio valuation",
+                "tool": "reconcile_crypto_wallet_vs_dashboard",
+                "args": {},
+            }
+        )
+        step += 1
+    elif any(k in text for k in ("health", "dashboard", "status")):
         steps.append(
             {
                 "step": step,
@@ -75,7 +112,27 @@ def _fallback_plan(task: str) -> list[dict[str, Any]]:
             }
         )
         step += 1
-    if "cost" in text or "aws" in text:
+    if is_aws_audit_task(task):
+        for audit_tool in (
+            "get_ec2_inventory",
+            "get_ebs_inventory",
+            "get_snapshot_inventory",
+            "get_eip_inventory",
+            "get_security_group_inventory",
+            "get_cost_summary",
+            "get_resource_tag_audit",
+        ):
+            steps.append(
+                {
+                    "step": step,
+                    "action": audit_tool,
+                    "description": f"AWS auditor: {audit_tool}",
+                    "tool": audit_tool,
+                    "args": {},
+                }
+            )
+            step += 1
+    elif "cost" in text or "aws" in text:
         steps.append(
             {
                 "step": step,
@@ -138,6 +195,36 @@ def planner_agent(state: dict[str, Any]) -> dict[str, Any]:
         logger.info("jarvis.mvp.planner fallback task_id=%s steps=%d", state.get("task_id"), len(plan))
 
     return {"plan": plan, "model_calls": model_calls}
+
+
+def aws_auditor_agent(state: dict[str, Any]) -> dict[str, Any]:
+    """Run read-only AWS infrastructure audit and compile findings."""
+    task_id = state.get("task_id")
+    logger.info("jarvis.mvp.aws_auditor task_id=%s", task_id)
+
+    tool_results, audit_output = run_aws_audit()
+    tool_calls = int(state.get("tool_calls") or 0) + len(tool_results)
+
+    return {
+        "tool_results": tool_results,
+        "tool_calls": tool_calls,
+        "audit_output": audit_output,
+    }
+
+
+def crypto_auditor_agent(state: dict[str, Any]) -> dict[str, Any]:
+    """Run read-only crypto portfolio audit and compile findings."""
+    task_id = state.get("task_id")
+    logger.info("jarvis.mvp.crypto_auditor task_id=%s", task_id)
+
+    tool_results, audit_output = run_crypto_audit()
+    tool_calls = int(state.get("tool_calls") or 0) + len(tool_results)
+
+    return {
+        "tool_results": tool_results,
+        "tool_calls": tool_calls,
+        "crypto_audit_output": audit_output,
+    }
 
 
 def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
@@ -208,17 +295,28 @@ def reviewer_agent(state: dict[str, Any]) -> dict[str, Any]:
     final_answer = _build_final_answer(state, review)
     status = "completed" if approved else "failed"
 
-    model_calls = int(state.get("model_calls") or 0) + 1
-    prompt = (
-        "You are the Jarvis Reviewer. Given task, plan, and tool results, write a concise "
-        f"operator-facing answer in plain text (max 6 sentences).\n"
-        f"Task: {state.get('task')}\n"
-        f"Review: {json.dumps(review)}\n"
-        f"Tool results: {json.dumps(tool_results)[:4000]}"
-    )
-    llm_answer = (ask_bedrock(prompt) or "").strip()
-    if llm_answer:
-        final_answer = llm_answer
+    model_calls = int(state.get("model_calls") or 0)
+    audit_answer = _build_aws_audit_answer(state, tool_results)
+    crypto_answer = _build_crypto_audit_answer(state, tool_results)
+    reconcile_answer = _build_wallet_reconcile_answer(tool_results)
+    if audit_answer:
+        final_answer = audit_answer
+    elif crypto_answer:
+        final_answer = crypto_answer
+    elif reconcile_answer:
+        final_answer = reconcile_answer
+    else:
+        model_calls += 1
+        prompt = (
+            "You are the Jarvis Reviewer. Given task, plan, and tool results, write a concise "
+            f"operator-facing answer in plain text (max 6 sentences).\n"
+            f"Task: {state.get('task')}\n"
+            f"Review: {json.dumps(review)}\n"
+            f"Tool results: {json.dumps(tool_results)[:4000]}"
+        )
+        llm_answer = (ask_bedrock(prompt) or "").strip()
+        if llm_answer:
+            final_answer = llm_answer
 
     return {
         "review": review,
@@ -226,6 +324,94 @@ def reviewer_agent(state: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "model_calls": model_calls,
     }
+
+
+def _build_aws_audit_answer(state: dict[str, Any], tool_results: list[dict[str, Any]]) -> str | None:
+    """Build a deterministic final answer from AWS audit output."""
+    if not is_aws_audit_task(str(state.get("task") or "")):
+        return None
+    audit = state.get("audit_output")
+    if not isinstance(audit, dict):
+        audit = compile_audit_findings(tool_results)
+    summary = audit.get("summary") or {}
+    savings = audit.get("estimated_monthly_savings", 0)
+    cost_n = len(audit.get("cost_findings") or [])
+    sec_n = len(audit.get("security_findings") or [])
+    res_n = len(audit.get("resource_findings") or [])
+    recs = audit.get("recommendations") or []
+    lines = [
+        "AWS infrastructure audit complete (read-only).",
+        f"Findings: {cost_n} cost, {sec_n} security, {res_n} resource.",
+        f"Estimated monthly savings opportunity: ${savings:,.2f}.",
+        f"Tools succeeded: {summary.get('tools_succeeded', 0)}/{summary.get('tools_executed', 0)}.",
+    ]
+    if recs:
+        lines.append(f"Top recommendation: {recs[0]}")
+    lines.append("No AWS resources were modified.")
+    return " ".join(lines)
+
+
+def _build_crypto_audit_answer(state: dict[str, Any], tool_results: list[dict[str, Any]]) -> str | None:
+    """Build a deterministic final answer from crypto audit output."""
+    if not is_crypto_audit_task(str(state.get("task") or "")):
+        return None
+    audit = state.get("crypto_audit_output")
+    if not isinstance(audit, dict):
+        audit = compile_crypto_audit_findings(tool_results)
+    summary = audit.get("summary") or {}
+    diff_usd = audit.get("portfolio_difference_usd", 0)
+    diff_pct = audit.get("portfolio_difference_pct", 0)
+    total = summary.get("total_findings", 0)
+    status = summary.get("reconciliation_status", "unknown")
+    recs = audit.get("recommendations") or []
+    lines = [
+        "Crypto portfolio audit complete (read-only).",
+        f"Reconciliation status: {status}.",
+        f"Findings: {total} total.",
+        f"Portfolio difference: ${diff_usd:,.2f} ({diff_pct}%).",
+        f"Exchange: ${summary.get('exchange_total_usd', 0):,.2f} | "
+        f"Dashboard: ${summary.get('dashboard_total_usd', 0):,.2f}.",
+    ]
+    if recs:
+        lines.append(f"Top recommendation: {recs[0]}")
+    lines.append("No trades or balance modifications were executed.")
+    return " ".join(lines)
+
+
+def _build_wallet_reconcile_answer(tool_results: list[dict[str, Any]]) -> str | None:
+    """Build a deterministic final answer from wallet reconciliation tool output."""
+    for item in tool_results:
+        if not isinstance(item, dict):
+            continue
+        if item.get("tool") != "reconcile_crypto_wallet_vs_dashboard":
+            continue
+        status = str(item.get("status") or "failed")
+        crypto_total = item.get("crypto_com_total_usd")
+        dashboard_total = item.get("dashboard_total_usd")
+        diff = item.get("difference_usd")
+        diff_pct = item.get("difference_pct")
+        causes = item.get("probable_root_causes") or []
+        steps = item.get("recommended_next_steps") or []
+        top_assets = [
+            a for a in (item.get("asset_comparison") or []) if a.get("issue") != "ok"
+        ][:3]
+        asset_lines = ", ".join(
+            f"{a.get('coin')} ({a.get('issue')}, Δ${a.get('difference_usd')})" for a in top_assets
+        )
+        lines = [
+            f"Wallet reconciliation status: {status}.",
+            f"Crypto.com total: ${crypto_total:,.2f} | Dashboard total: ${dashboard_total:,.2f} | "
+            f"Difference: ${diff:,.2f} ({diff_pct}%).",
+        ]
+        if asset_lines:
+            lines.append(f"Top asset issues: {asset_lines}.")
+        if causes:
+            lines.append(f"Probable root cause: {causes[0]}")
+        if steps:
+            lines.append(f"Recommended next step: {steps[0]}")
+        lines.append("Read-only diagnostic only — no trades or balance writes were executed.")
+        return " ".join(lines)
+    return None
 
 
 def _build_final_answer(state: dict[str, Any], review: dict[str, Any]) -> str:

@@ -52,11 +52,94 @@ function rowClassName(status: string, riskLevel: JarvisRiskLevel): string {
   return 'hover:bg-gray-50 dark:hover:bg-slate-800/60';
 }
 
-function JsonBlock({ value }: { value: unknown }) {
+function JsonBlock({ value, expanded = false }: { value: unknown; expanded?: boolean }) {
+  const text = JSON.stringify(value, null, 2);
+  const isLarge = text.length > 4000;
   return (
-    <pre className="text-xs bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded p-3 overflow-x-auto max-h-64">
-      {JSON.stringify(value, null, 2)}
+    <pre
+      className={`text-xs bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded p-3 overflow-x-auto whitespace-pre-wrap break-words ${
+        expanded || isLarge ? 'max-h-[32rem]' : 'max-h-64'
+      }`}
+    >
+      {text}
     </pre>
+  );
+}
+
+function ReconcileSummary({ toolResults }: { toolResults: unknown }) {
+  if (!Array.isArray(toolResults)) return null;
+  const reconcile = toolResults.find(
+    (item) =>
+      item &&
+      typeof item === 'object' &&
+      (item as { tool?: string }).tool === 'reconcile_crypto_wallet_vs_dashboard',
+  ) as
+    | {
+        status?: string;
+        crypto_com_total_usd?: number;
+        dashboard_total_usd?: number;
+        difference_usd?: number;
+        difference_pct?: number;
+        probable_root_causes?: string[];
+        recommended_next_steps?: string[];
+      }
+    | undefined;
+  if (!reconcile) return null;
+
+  const statusVariant =
+    reconcile.status === 'pass' ? 'success' : reconcile.status === 'mismatch' ? 'warning' : 'danger';
+
+  return (
+    <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="font-semibold text-gray-900 dark:text-gray-100">Wallet reconciliation</h3>
+        <Badge variant={statusVariant}>{reconcile.status || 'unknown'}</Badge>
+      </div>
+      <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400">Crypto.com total (USD)</dt>
+          <dd className="font-mono tabular-nums">
+            {reconcile.crypto_com_total_usd?.toLocaleString(undefined, { minimumFractionDigits: 2 }) ?? '—'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400">Dashboard total (USD)</dt>
+          <dd className="font-mono tabular-nums">
+            {reconcile.dashboard_total_usd?.toLocaleString(undefined, { minimumFractionDigits: 2 }) ?? '—'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400">Difference (USD)</dt>
+          <dd className="font-mono tabular-nums">
+            {reconcile.difference_usd?.toLocaleString(undefined, { minimumFractionDigits: 2 }) ?? '—'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400">Difference (%)</dt>
+          <dd className="font-mono tabular-nums">{reconcile.difference_pct ?? '—'}%</dd>
+        </div>
+      </dl>
+      {reconcile.probable_root_causes && reconcile.probable_root_causes.length > 0 && (
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400 mb-1">Probable root causes</dt>
+          <ul className="list-disc pl-5 text-sm space-y-1">
+            {reconcile.probable_root_causes.map((cause) => (
+              <li key={cause}>{cause}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {reconcile.recommended_next_steps && reconcile.recommended_next_steps.length > 0 && (
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400 mb-1">Recommended next steps</dt>
+          <ul className="list-disc pl-5 text-sm space-y-1">
+            {reconcile.recommended_next_steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -139,6 +222,48 @@ export default function JarvisPage() {
             </p>
           </div>
           <div className="flex gap-3">
+            <a
+              href="/jarvis/executive"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+            >
+              Executive
+            </a>
+            <a
+              href="/jarvis/initiatives"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+            >
+              Initiatives
+            </a>
+            <a
+              href="/jarvis/decisions"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+            >
+              Decisions
+            </a>
+            <a
+              href="/jarvis/executive-reports"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+            >
+              Weekly Reports
+            </a>
+            <a
+              href="/jarvis/crypto-audits"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+            >
+              Crypto Audits
+            </a>
+            <a
+              href="/jarvis/action-plans"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+            >
+              Action Plans
+            </a>
+            <a
+              href="/jarvis/audits"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+            >
+              AWS Audits
+            </a>
             <a
               href="/monitoring"
               className="px-4 py-2 text-sm border border-gray-300 dark:border-slate-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800"
@@ -342,9 +467,10 @@ export default function JarvisPage() {
                   <dt className="text-gray-500 dark:text-gray-400 mb-1">plan</dt>
                   <JsonBlock value={detail.plan} />
                 </div>
+                <ReconcileSummary toolResults={detail.tool_results} />
                 <div>
                   <dt className="text-gray-500 dark:text-gray-400 mb-1">tool_results</dt>
-                  <JsonBlock value={detail.tool_results} />
+                  <JsonBlock value={detail.tool_results} expanded />
                 </div>
                 <div>
                   <dt className="text-gray-500 dark:text-gray-400 mb-1">review</dt>

@@ -25,13 +25,16 @@ class TelegramMissionService:
         *,
         mission_id: str,
         mode: MissionInlineMode,
+        guided_context: dict | None = None,
     ) -> bool:
         if not (chat_id or "").strip():
             return False
         try:
             from app.services.telegram_commands import send_telegram_message_with_markup
 
-            markup = build_jarvis_mission_inline_markup(mission_id, mode)
+            markup = build_jarvis_mission_inline_markup(
+                mission_id, mode, guided_context=guided_context
+            )
             return bool(
                 send_telegram_message_with_markup(
                     chat_id,
@@ -47,8 +50,9 @@ class TelegramMissionService:
         # Headroom for Google Ads pause (metrics + rule + benefit) while staying under Telegram clip.
         body = (summary or "").strip()[:2200] or "(sin resumen)"
         msg = (
-            "Hace falta tu visto bueno antes de seguir.\n\n"
+            "Hace falta tu visto bueno para una acción concreta (no es un ajuste interno de pruebas).\n\n"
             f"{body}\n\n"
+            "Si apruebas, Perico ejecutará exactamente lo descrito arriba; si rechazas, ese paso no se aplica.\n\n"
             f"Ref.: {mission_id}"
         )
         ok = self._send_with_mission_buttons(
@@ -61,18 +65,52 @@ class TelegramMissionService:
             return True
         return self.send_message(chat_id, msg)
 
-    def send_input_request(self, chat_id: str, mission_id: str, question: str) -> bool:
-        msg = (
-            "Necesito un dato más para seguir.\n\n"
-            f"{question[:900] or 'Indica el contexto que falta.'}\n\n"
-            f"Referencia interna: {mission_id}\n\n"
-            "Pulsa «Responder», escribe un mensaje normal o usa /mission input."
-        )
+    def send_input_request(
+        self,
+        chat_id: str,
+        mission_id: str,
+        question: str,
+        *,
+        guided_profile: str | None = None,
+        guided_context: dict | None = None,
+        request_preamble: str | None = None,
+    ) -> bool:
+        from app.jarvis.telegram_mission_inline import register_guided_mission_context
+
+        ctx: dict = dict(guided_context or {})
+        if guided_profile:
+            ctx["profile"] = guided_profile
+            register_guided_mission_context(mission_id, ctx)
+            preamble = (
+                (request_preamble or "").strip()
+                or "Necesito una decisión o un dato más para seguir con seguridad."
+            )
+            msg = (
+                f"{preamble}\n\n"
+                f"{question[:900] or 'Indica el contexto que falta.'}\n\n"
+                "Primero elige una opción rápida abajo; si ninguna encaja, pulsa «Responder (texto libre)».\n\n"
+                f"Referencia interna: {mission_id}\n\n"
+                "También puedes usar /mission input con el id."
+            )
+            mode: MissionInlineMode = "input_guided"
+        else:
+            preamble = (
+                (request_preamble or "").strip()
+                or "Necesito un dato más para seguir."
+            )
+            msg = (
+                f"{preamble}\n\n"
+                f"{question[:900] or 'Indica el contexto que falta.'}\n\n"
+                f"Referencia interna: {mission_id}\n\n"
+                "Pulsa «Responder», escribe un mensaje normal o usa /mission input."
+            )
+            mode = "input"
         ok = self._send_with_mission_buttons(
             chat_id,
             msg,
             mission_id=mission_id,
-            mode="input",
+            mode=mode,
+            guided_context=ctx if guided_profile else None,
         )
         if ok:
             return True

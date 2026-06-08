@@ -14,12 +14,22 @@ from app.jarvis.perico_mission import (
     perico_try_auto_pytest_retry,
 )
 from app.jarvis.autonomous_agents import ExecutionAgent
-from app.jarvis.perico_tools import perico_apply_patch, perico_repo_read, perico_run_pytest
+from app.jarvis.perico_tools import (
+    perico_apply_patch,
+    perico_repo_read,
+    perico_repo_root,
+    perico_repo_runtime_ready,
+    perico_resolve_pytest_command,
+    perico_run_pytest,
+    perico_verify_pytest_relative_target,
+)
 
 
 @pytest.fixture()
 def perico_repo(tmp_path, monkeypatch):
     root = tmp_path / "repo"
+    (root / "backend" / "app").mkdir(parents=True)
+    (root / "backend" / "app" / "__init__.py").write_text("", encoding="utf-8")
     (root / "backend" / "tests").mkdir(parents=True)
     (root / "src" / "pkg").mkdir(parents=True)
     (root / "src" / "pkg" / "hello.py").write_text('msg = "PERICO_UNIQUE_MARKER"\n', encoding="utf-8")
@@ -139,7 +149,7 @@ def test_perico_gate_patch_without_pytest():
         ]
     }
     msg = perico_should_block_for_operator_input(execution)
-    assert msg and "perico_run_pytest" in msg
+    assert msg and "tests" in msg.lower()
 
 
 def test_perico_auto_pytest_retry_then_block(monkeypatch):
@@ -166,7 +176,7 @@ def test_perico_auto_pytest_retry_then_block(monkeypatch):
     assert len(extra) == 1
     execution.setdefault("executed", []).extend(extra)
     msg = perico_should_block_for_operator_input(execution)
-    assert msg and ("pytest" in msg.lower() or "rojo" in msg.lower())
+    assert msg and ("tests" in msg.lower() or "rojo" in msg.lower())
 
 
 def test_deliverables_includes_files_and_tests_flag():
@@ -265,3 +275,37 @@ def test_deliverables_suspected_files_from_grep_and_read():
     assert "backend/app/jarvis/telegram_service.py" in sf
     assert "README.md" in sf
     assert snap.get("validation_command") == ""
+
+
+def test_perico_repo_root_env_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("PERICO_REPO_ROOT", str(tmp_path))
+    (tmp_path / "app").mkdir()
+    assert perico_repo_root().resolve() == tmp_path.resolve()
+
+
+def test_perico_repo_runtime_ready_rejects_missing_app_tree(tmp_path, monkeypatch):
+    monkeypatch.setenv("PERICO_REPO_ROOT", str(tmp_path))
+    ok, msg = perico_repo_runtime_ready()
+    assert ok is False
+    assert "app" in msg.lower()
+
+
+def test_perico_resolve_pytest_command_env_override(perico_repo: Path, monkeypatch):
+    monkeypatch.setenv("PERICO_TEST_COMMAND", "my-pytest --tb=no")
+    cmd, source = perico_resolve_pytest_command()
+    assert cmd == ["my-pytest", "--tb=no"]
+    assert source == "env_override"
+
+
+def test_perico_resolve_pytest_command_system_python_fallback(perico_repo: Path, monkeypatch):
+    monkeypatch.delenv("PERICO_TEST_COMMAND", raising=False)
+    monkeypatch.delenv("PERICO_PYTHON", raising=False)
+    cmd, source = perico_resolve_pytest_command()
+    assert "pytest" in " ".join(cmd)
+    assert source in ("system_python", "perico_python")
+
+
+def test_perico_verify_pytest_relative_accepts_backend_prefixed_path(perico_repo: Path):
+    ok, msg = perico_verify_pytest_relative_target("backend/tests/test_perico_smoke.py")
+    assert ok is True
+    assert msg == ""

@@ -14,7 +14,7 @@ from fastapi import Depends
 import sys
 import os
 from datetime import datetime, timezone
-import requests
+from requests.exceptions import RequestException
 
 # Add paths to find simple_price_fetcher (can be in /app or /app/app)
 backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # /app
@@ -385,7 +385,7 @@ def get_ohlcv(
                 logger.error(f"Unexpected response format: {result}")
                 raise HTTPException(status_code=502, detail="Invalid response from exchange")
                 
-        except requests.exceptions.RequestException as e:
+        except RequestException as e:
             logger.error(f"HTTP error getting OHLCV: {e}")
             raise HTTPException(status_code=502, detail=str(e))
         except Exception as e:
@@ -436,7 +436,7 @@ def get_ohlcv(
             logger.info(f"Retrieved {len(ohlcv_data)} candles for {symbol}")
             return ohlcv_data
             
-        except requests.exceptions.RequestException as e:
+        except RequestException as e:
             logger.error(f"HTTP error getting OHLCV from Binance: {e}")
             raise HTTPException(status_code=502, detail=str(e))
         except Exception as e:
@@ -475,7 +475,7 @@ def get_ticker(
             else:
                 raise HTTPException(status_code=502, detail="Invalid response from exchange")
                 
-        except requests.exceptions.RequestException as e:
+        except RequestException as e:
             logger.error(f"HTTP error getting ticker: {e}")
             raise HTTPException(status_code=502, detail=str(e))
     
@@ -497,7 +497,7 @@ def get_ticker(
                 "low": float(data.get("lowPrice", 0))
             }
             
-        except requests.exceptions.RequestException as e:
+        except RequestException as e:
             logger.error(f"HTTP error getting ticker from Binance: {e}")
             raise HTTPException(status_code=502, detail=str(e))
     
