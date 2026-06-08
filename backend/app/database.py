@@ -463,6 +463,367 @@ def ensure_jarvis_task_runs_table(engine_to_use) -> bool:
         return False
 
 
+def ensure_jarvis_audit_runs_table(engine_to_use) -> bool:
+    """
+    Persist Jarvis AWS Auditor run history.
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_audit_runs_table: engine is None")
+        return False
+    tname = "jarvis_audit_runs"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis audit runs)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                audit_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT,
+                                summary_json TEXT,
+                                cost_findings_json TEXT,
+                                security_findings_json TEXT,
+                                resource_findings_json TEXT,
+                                recommendations_json TEXT,
+                                estimated_monthly_savings REAL,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_audit_runs_created_at ON {tname} (created_at DESC)")
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                audit_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT,
+                                summary_json JSONB,
+                                cost_findings_json JSONB,
+                                security_findings_json JSONB,
+                                resource_findings_json JSONB,
+                                recommendations_json JSONB,
+                                estimated_monthly_savings NUMERIC,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_audit_runs_created_at ON {tname} (created_at DESC)")
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_audit_runs_table failed: %s", e, exc_info=True)
+        return False
+
+
+def ensure_jarvis_daily_metrics_table(engine_to_use) -> bool:
+    """
+    Persist Jarvis executive daily metrics snapshots.
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_daily_metrics_table: engine is None")
+        return False
+    tname = "jarvis_daily_metrics"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis daily metrics)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                metric_date TEXT NOT NULL UNIQUE,
+                                aws_monthly_cost REAL,
+                                aws_daily_cost REAL,
+                                ec2_count INTEGER,
+                                ebs_count INTEGER,
+                                snapshot_count INTEGER,
+                                eip_count INTEGER,
+                                open_findings INTEGER,
+                                critical_findings INTEGER,
+                                task_count INTEGER,
+                                audit_count INTEGER,
+                                task_success_rate REAL,
+                                bedrock_cost REAL,
+                                dashboard_portfolio_value REAL,
+                                exchange_portfolio_value REAL,
+                                portfolio_difference_pct REAL,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_daily_metrics_date ON {tname} (metric_date DESC)")
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                metric_date DATE NOT NULL UNIQUE,
+                                aws_monthly_cost NUMERIC,
+                                aws_daily_cost NUMERIC,
+                                ec2_count INTEGER,
+                                ebs_count INTEGER,
+                                snapshot_count INTEGER,
+                                eip_count INTEGER,
+                                open_findings INTEGER,
+                                critical_findings INTEGER,
+                                task_count INTEGER,
+                                audit_count INTEGER,
+                                task_success_rate NUMERIC,
+                                bedrock_cost NUMERIC,
+                                dashboard_portfolio_value NUMERIC,
+                                exchange_portfolio_value NUMERIC,
+                                portfolio_difference_pct NUMERIC,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_daily_metrics_date ON {tname} (metric_date DESC)")
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_daily_metrics_table failed: %s", e, exc_info=True)
+        return False
+
+
+def ensure_jarvis_crypto_audit_runs_table(engine_to_use) -> bool:
+    """
+    Persist Jarvis Crypto Auditor run history.
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_crypto_audit_runs_table: engine is None")
+        return False
+    tname = "jarvis_crypto_audit_runs"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis crypto audit runs)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                audit_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT,
+                                summary_json TEXT,
+                                wallet_findings_json TEXT,
+                                position_findings_json TEXT,
+                                valuation_findings_json TEXT,
+                                price_feed_findings_json TEXT,
+                                recommendations_json TEXT,
+                                portfolio_difference_usd REAL,
+                                portfolio_difference_pct REAL,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_crypto_audit_runs_created_at ON {tname} (created_at DESC)"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                audit_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT,
+                                summary_json JSONB,
+                                wallet_findings_json JSONB,
+                                position_findings_json JSONB,
+                                valuation_findings_json JSONB,
+                                price_feed_findings_json JSONB,
+                                recommendations_json JSONB,
+                                portfolio_difference_usd NUMERIC,
+                                portfolio_difference_pct NUMERIC,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_crypto_audit_runs_created_at ON {tname} (created_at DESC)"
+                        )
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_crypto_audit_runs_table failed: %s", e, exc_info=True)
+        return False
+
+
+def ensure_jarvis_action_plans_table(engine_to_use) -> bool:
+    """
+    Persist Jarvis Action Planner remediation recommendations.
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_action_plans_table: engine is None")
+        return False
+    tname = "jarvis_action_plans"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis action plans)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                plan_id TEXT NOT NULL UNIQUE,
+                                source_type TEXT,
+                                source_id TEXT,
+                                severity TEXT,
+                                estimated_savings_usd REAL,
+                                estimated_risk_reduction TEXT,
+                                actions_json TEXT,
+                                status TEXT NOT NULL DEFAULT 'proposed',
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_action_plans_created_at ON {tname} (created_at DESC)"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                plan_id TEXT NOT NULL UNIQUE,
+                                source_type TEXT,
+                                source_id TEXT,
+                                severity TEXT,
+                                estimated_savings_usd NUMERIC,
+                                estimated_risk_reduction TEXT,
+                                actions_json JSONB,
+                                status TEXT NOT NULL DEFAULT 'proposed',
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_action_plans_created_at ON {tname} (created_at DESC)"
+                        )
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_action_plans_table failed: %s", e, exc_info=True)
+        return False
+
+
+def ensure_jarvis_decisions_table(engine_to_use) -> bool:
+    """
+    Persist Jarvis human decision records for decision intelligence.
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_decisions_table: engine is None")
+        return False
+    tname = "jarvis_decisions"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis decisions)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                decision_id TEXT NOT NULL UNIQUE,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                source_type TEXT,
+                                source_id TEXT,
+                                plan_id TEXT,
+                                decision TEXT NOT NULL,
+                                decision_reason TEXT,
+                                outcome TEXT NOT NULL DEFAULT 'unknown',
+                                reviewed_at TIMESTAMP,
+                                reviewed_by TEXT
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_decisions_created_at "
+                            f"ON {tname} (created_at DESC)"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                decision_id TEXT NOT NULL UNIQUE,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                source_type TEXT,
+                                source_id TEXT,
+                                plan_id TEXT,
+                                decision TEXT NOT NULL,
+                                decision_reason TEXT,
+                                outcome TEXT NOT NULL DEFAULT 'unknown',
+                                reviewed_at TIMESTAMPTZ,
+                                reviewed_by TEXT
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_decisions_created_at "
+                            f"ON {tname} (created_at DESC)"
+                        )
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_decisions_table failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_jarvis_initiatives_table(engine_to_use) -> bool:
     """
     Persist Jarvis initiatives for the Operating System management layer.
@@ -640,6 +1001,126 @@ def ensure_jarvis_executive_reports_table(engine_to_use) -> bool:
     except Exception as e:
         logger.error("ensure_jarvis_executive_reports_table failed: %s", e, exc_info=True)
         return False
+
+
+def ensure_jarvis_followups_table(engine_to_use) -> bool:
+    """
+    Persist Jarvis follow-up reminders (read-only management layer).
+
+    Returns True if the table exists after this call.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_followups_table: engine is None")
+        return False
+    tname = "jarvis_followups"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis follow-ups)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                followup_id TEXT NOT NULL UNIQUE,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                source_type TEXT NOT NULL,
+                                source_id TEXT,
+                                title TEXT NOT NULL,
+                                description TEXT,
+                                severity TEXT NOT NULL DEFAULT 'medium',
+                                status TEXT NOT NULL DEFAULT 'open',
+                                due_date TEXT,
+                                assigned_to TEXT,
+                                reminder_count INTEGER NOT NULL DEFAULT 0,
+                                last_reminded_at TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_followups_status "
+                            f"ON {tname} (status)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_followups_severity "
+                            f"ON {tname} (severity)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_followups_updated_at "
+                            f"ON {tname} (updated_at DESC)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE UNIQUE INDEX IF NOT EXISTS ix_jarvis_followups_dedup "
+                            f"ON {tname} (source_type, source_id, title) "
+                            f"WHERE status = 'open'"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                followup_id TEXT NOT NULL UNIQUE,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                source_type TEXT NOT NULL,
+                                source_id TEXT,
+                                title TEXT NOT NULL,
+                                description TEXT,
+                                severity TEXT NOT NULL DEFAULT 'medium',
+                                status TEXT NOT NULL DEFAULT 'open',
+                                due_date DATE,
+                                assigned_to TEXT,
+                                reminder_count INTEGER NOT NULL DEFAULT 0,
+                                last_reminded_at TIMESTAMPTZ
+                            )
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_followups_status "
+                            f"ON {tname} (status)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_followups_severity "
+                            f"ON {tname} (severity)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS ix_jarvis_followups_updated_at "
+                            f"ON {tname} (updated_at DESC)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE UNIQUE INDEX IF NOT EXISTS ix_jarvis_followups_dedup
+                            ON {tname} (source_type, COALESCE(source_id, ''), title)
+                            WHERE status = 'open'
+                            """
+                        )
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_followups_table failed: %s", e, exc_info=True)
+        return False
+
 
 def ensure_jarvis_objectives_table(engine_to_use) -> bool:
     """Persist Jarvis strategic objectives (read-only management layer)."""
@@ -980,6 +1461,7 @@ def ensure_jarvis_objective_metrics_table(engine_to_use) -> bool:
         logger.error("ensure_jarvis_objective_metrics_table failed: %s", e, exc_info=True)
         return False
 
+
 def ensure_optional_columns(db_engine=None):
     """
     Ensure optional columns exist in critical tables.
@@ -1055,16 +1537,52 @@ def ensure_optional_columns(db_engine=None):
         logger.warning("Could not ensure jarvis_task_runs table: %s", task_runs_err)
 
     try:
-        if ensure_jarvis_initiatives_table(engine_to_use):
-            logger.info("[BOOT] jarvis_initiatives table OK")
-    except Exception as initiatives_err:
-        logger.warning("Could not ensure jarvis_initiatives table: %s", initiatives_err)
+        if ensure_jarvis_audit_runs_table(engine_to_use):
+            logger.info("[BOOT] jarvis_audit_runs table OK")
+    except Exception as audit_runs_err:
+        logger.warning("Could not ensure jarvis_audit_runs table: %s", audit_runs_err)
+
+    try:
+        if ensure_jarvis_daily_metrics_table(engine_to_use):
+            logger.info("[BOOT] jarvis_daily_metrics table OK")
+    except Exception as daily_metrics_err:
+        logger.warning("Could not ensure jarvis_daily_metrics table: %s", daily_metrics_err)
+
+    try:
+        if ensure_jarvis_crypto_audit_runs_table(engine_to_use):
+            logger.info("[BOOT] jarvis_crypto_audit_runs table OK")
+    except Exception as crypto_audit_err:
+        logger.warning("Could not ensure jarvis_crypto_audit_runs table: %s", crypto_audit_err)
+
+    try:
+        if ensure_jarvis_action_plans_table(engine_to_use):
+            logger.info("[BOOT] jarvis_action_plans table OK")
+    except Exception as action_plans_err:
+        logger.warning("Could not ensure jarvis_action_plans table: %s", action_plans_err)
 
     try:
         if ensure_jarvis_executive_reports_table(engine_to_use):
             logger.info("[BOOT] jarvis_executive_reports table OK")
     except Exception as executive_reports_err:
         logger.warning("Could not ensure jarvis_executive_reports table: %s", executive_reports_err)
+
+    try:
+        if ensure_jarvis_decisions_table(engine_to_use):
+            logger.info("[BOOT] jarvis_decisions table OK")
+    except Exception as decisions_err:
+        logger.warning("Could not ensure jarvis_decisions table: %s", decisions_err)
+
+    try:
+        if ensure_jarvis_initiatives_table(engine_to_use):
+            logger.info("[BOOT] jarvis_initiatives table OK")
+    except Exception as initiatives_err:
+        logger.warning("Could not ensure jarvis_initiatives table: %s", initiatives_err)
+
+    try:
+        if ensure_jarvis_followups_table(engine_to_use):
+            logger.info("[BOOT] jarvis_followups table OK")
+    except Exception as followups_err:
+        logger.warning("Could not ensure jarvis_followups table: %s", followups_err)
 
     try:
         if ensure_jarvis_objectives_table(engine_to_use):
