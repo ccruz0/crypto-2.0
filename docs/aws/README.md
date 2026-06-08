@@ -2,6 +2,8 @@
 
 This folder holds AWS architecture, audit, remediation, and the **runtime status dashboard** for production (atp-rebuild-2026) and lab (atp-lab-ssm-clean).
 
+**PROD/LAB backend (`backend-aws`):** run `docker compose --profile aws` from repo root **`/home/ubuntu/crypto-2.0`** — see [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md).
+
 ---
 
 ## Runtime dashboard — where to look

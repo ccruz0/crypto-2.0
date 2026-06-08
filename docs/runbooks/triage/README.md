@@ -6,3 +6,4 @@ When a triage note includes **Cursor action steps**, run them to apply the fix (
 - [Notion triage 5f1c9779-c707-4dd1-9fc3-801cda6dd55e: Investigate Telegram failure](notion-triage-5f1c9779-c707-4dd1-9fc3-801cda6dd55e.md)
 - [Notion triage 333b1837-03fe-8169-bb4f-fc592431920a: [Anomaly] Scheduler Inactivity](notion-triage-333b1837-03fe-8169-bb4f-fc592431920a.md)
 - [Notion triage 333b1837-03fe-81ae-8ed5-c101a996c7f7: [Anomaly] Scheduler Inactivity](notion-triage-333b1837-03fe-81ae-8ed5-c101a996c7f7.md)
+- [Notion triage 33cb1837-03fe-81cc-a88f-dbc48abd09e9: [Anomaly] Scheduler Inactivity (subtask 3/3)](notion-triage-33cb1837-03fe-81cc-a88f-dbc48abd09e9.md)

@@ -10,7 +10,7 @@ All commands are run **on the EC2 instance** (atp-rebuild-2026), in the project 
 
 ```bash
 ssh ubuntu@dashboard.hilovivo.com
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 If SSH is unavailable, use **AWS Systems Manager Session Manager** and then run the same commands. See [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](../aws/RUNBOOK_SSM_PROD_CONNECTION_LOST.md) if SSM shows ConnectionLost.

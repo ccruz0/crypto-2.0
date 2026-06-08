@@ -28,7 +28,15 @@ Rendered by `render_runtime_env.sh`:
 - NOTION_API_KEY — Notion integration token. Fetched from SSM (prod `/automated-trading-platform/prod/notion/api_key` or LAB `/automated-trading-platform/lab/notion/api_key`) when available, or from `.env.aws` (fallback). On LAB, render tries LAB SSM automatically so no manual secret insertion is required if the parameter exists.
 - NOTION_TASK_DB — Notion database ID. SSM `/automated-trading-platform/prod/notion/task_db` or `.env.aws`. On LAB, if only the API key is in SSM, a default DB ID is used. Example: `eb90cfa139f94724a8b476315908510a`. See [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
 
-**Source:** AWS SSM (prod, then LAB for Notion) or `.env.aws` (fallback). Do not change secret sources unless necessary.
+**Rendered by `render_runtime_env.sh` (GitHub App — deploy / Cursor bridge):**
+
+- GITHUB_APP_ID — SSM `/automated-trading-platform/prod/github_app/app_id`, then LAB `.../lab/github_app/app_id` if empty; optional `.env.aws` override when using primary SSM. See [backend/docs/GITHUB_APP_AUTH.md](../../backend/docs/GITHUB_APP_AUTH.md).
+- GITHUB_APP_INSTALLATION_ID — `.../github_app/installation_id` (same resolution order).
+- GITHUB_APP_PRIVATE_KEY_B64 — `.../github_app/private_key_b64` (SecureString in SSM recommended).
+
+**Legacy (emergency):** GITHUB_TOKEN from SSM `/automated-trading-platform/prod/github_token`. On AWS, PAT without GitHub App requires **ALLOW_LEGACY_GITHUB_PAT=true** (see `backend/app/factory.py` and [GITHUB_APP_AUTH.md](../../backend/docs/GITHUB_APP_AUTH.md)).
+
+**Source:** AWS SSM (prod, then LAB for applicable keys) or `.env.aws` (fallback). Do not change secret sources unless necessary.
 
 ## Where the Notion secret and database ID are stored
 

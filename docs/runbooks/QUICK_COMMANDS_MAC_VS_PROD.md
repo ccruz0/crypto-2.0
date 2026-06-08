@@ -2,6 +2,8 @@
 
 Comandos que funcionan desde tu **Mac** vs desde **PROD** (SSM/SSH).
 
+**PROD (EC2):** `docker compose` for `backend-aws` must be run from **`/home/ubuntu/crypto-2.0`** (see [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md)).
+
 ---
 
 ## Desde tu Mac (ruta local)
@@ -44,7 +46,7 @@ aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 Dentro de la sesión PROD:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0
+cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/automated-trading-platform
 git pull origin main
 ./scripts/fix_telegram_anomalies.sh
 docker compose --profile aws ps
