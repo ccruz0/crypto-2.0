@@ -221,6 +221,7 @@ def test_task_token_fallback_atp_control(monkeypatch):
     Ensures /task works when deploy sets only ATP Control vars (no legacy TELEGRAM_BOT_TOKEN).
     """
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN_AWS", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN_DEV", raising=False)
     monkeypatch.delenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CLAW_BOT_TOKEN", raising=False)
