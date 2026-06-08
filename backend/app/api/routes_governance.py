@@ -16,11 +16,25 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.environment import is_atp_trading_only
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+def _require_governance_api_when_not_trading_only() -> None:
+    if is_atp_trading_only():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "governance_api_disabled",
+                "reason": "ATP_TRADING_ONLY=1",
+                "message": "Governance APIs are disabled on trading-only processes.",
+            },
+        )
+
+
+router = APIRouter(dependencies=[Depends(_require_governance_api_when_not_trading_only)])
 
 
 def _verify_governance_token(authorization: str | None = Header(None)) -> None:
