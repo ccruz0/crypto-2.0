@@ -109,7 +109,7 @@ jobs:
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
 
       # ---------- Trivy image scans ----------
-      # Updated to v0.33.1 (latest stable as of Dec 2025)
+      # Updated to v0.36.0
       # Only scan images that were successfully built (check step.outcome == 'success')
       # exit-code: 1 means job fails if HIGH/CRITICAL vulnerabilities found
       # Note: We check step.outcome instead of success() to handle cases where
@@ -117,7 +117,7 @@ jobs:
 
       - name: Trivy Scan (frontend image)
         if: steps.build-frontend.outcome == 'success'
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: local/atp-frontend:ci
           format: sarif
@@ -129,7 +129,7 @@ jobs:
 
       - name: Trivy Scan (backend image)
         if: steps.build-backend.outcome == 'success'
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: local/atp-backend:ci
           format: sarif
@@ -141,7 +141,7 @@ jobs:
 
       - name: Trivy Scan (db image)
         if: hashFiles('./docker/postgres/Dockerfile') != '' && steps.build-db.outcome == 'success'
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: local/atp-postgres:ci
           format: sarif
@@ -157,7 +157,7 @@ jobs:
 
       - name: Trivy FS (repo)
         if: always()
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .

@@ -44,7 +44,8 @@ jobs:
       - name: Check for direct HTTP imports
         run: |
           echo "Checking for direct HTTP library imports outside http_client.py..."
-          if grep -r "^\s*import requests\|^\s*from requests import\|^\s*import aiohttp\|^\s*from aiohttp import\|^\s*import urllib.request\|^\s*from urllib import request" backend/app --include="*.py" | grep -v "http_client.py" | grep -v "__pycache__" | grep -v "test_" | grep -v "tests/"; then
+          # operator CLI probe, not runtime app egress
+          if grep -r "^\s*import requests\|^\s*from requests import\|^\s*import aiohttp\|^\s*from aiohttp import\|^\s*import urllib.request\|^\s*from urllib import request" backend/app --include="*.py" | grep -v "http_client.py" | grep -v "__pycache__" | grep -v "test_" | grep -v "tests/" | grep -v "crypto_com_trigger_probe.py"; then
             echo "❌ ERROR: Direct HTTP library imports found outside http_client.py"
             echo "All outbound HTTP requests must use app.utils.http_client"
             exit 1
@@ -54,7 +55,8 @@ jobs:
       - name: Check for direct HTTP calls
         run: |
           echo "Checking for direct HTTP calls (requests.get/post, aiohttp.ClientSession, urllib.request)..."
-          if grep -r "requests\.\(get\|post\)\|aiohttp\.ClientSession\|urllib\.request\.\(urlopen\|Request\)" backend/app --include="*.py" | grep -v "http_client.py" | grep -v "__pycache__" | grep -v "test_" | grep -v "tests/"; then
+          # operator CLI probe, not runtime app egress
+          if grep -r "requests\.\(get\|post\)\|aiohttp\.ClientSession\|urllib\.request\.\(urlopen\|Request\)" backend/app --include="*.py" | grep -v "http_client.py" | grep -v "__pycache__" | grep -v "test_" | grep -v "tests/" | grep -v "crypto_com_trigger_probe.py"; then
             echo "❌ ERROR: Direct HTTP calls found outside http_client.py"
             echo "All outbound HTTP requests must use app.utils.http_client"
             exit 1

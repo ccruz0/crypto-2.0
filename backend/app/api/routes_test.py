@@ -8,7 +8,7 @@ from app.models.market_price import MarketPrice, MarketData as MarketDataModel
 from app.services.signal_monitor import signal_monitor_service
 from app.services.telegram_notifier import telegram_notifier
 from app.services.sl_tp_checker import sl_tp_checker_service
-import requests
+from app.utils.http_client import http_get
 import logging
 import asyncio
 import time
