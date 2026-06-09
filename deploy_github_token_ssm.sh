@@ -6,7 +6,7 @@ set -euo pipefail
 
 INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
-PROJECT_DIR="automated-trading-platform"
+PROJECT_DIR="crypto-2.0"
 
 # Get token: env var, or fetch from SSM
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then

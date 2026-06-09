@@ -21,7 +21,7 @@ cd "$ROOT_DIR"
 . "$(dirname "$0")/ssh_key.sh" 2>/dev/null || source "$(dirname "$0")/ssh_key.sh"
 
 SERVER="${SERVER:-175.41.189.249}"
-REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/ubuntu/automated-trading-platform}"
+REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/ubuntu/crypto-2.0}"
 
 echo "[INFO] Pre-flight validation..."
 ./scripts/pre_deploy_check.sh

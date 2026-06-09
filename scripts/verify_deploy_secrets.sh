@@ -6,7 +6,7 @@
 #   ./scripts/verify_deploy_secrets.sh
 #   # On EC2 via SSM:
 #   aws ssm send-command --instance-ids i-xxx --document-name AWS-RunShellScript \
-#     --parameters 'commands=["cd ~/automated-trading-platform && ./scripts/verify_deploy_secrets.sh"]' ...
+#     --parameters 'commands=["cd ~/crypto-2.0 && ./scripts/verify_deploy_secrets.sh"]' ...
 
 set -euo pipefail
 

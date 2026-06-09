@@ -23,7 +23,7 @@ COMMAND_ID=$(aws ssm send-command \
     --region "$REGION" \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
-        "cd ~/automated-trading-platform",
+        "cd ~/crypto-2.0",
         "echo \"🔄 Restarting Docker backend...\"",
         "docker compose --profile aws restart backend-aws",
         "sleep 5",
