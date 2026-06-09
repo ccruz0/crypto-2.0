@@ -43,7 +43,7 @@ CONTAINER_NAME="$(docker ps --filter "id=$CONTAINER" --format '{{.Names}}')"
 echo "Using container: $CONTAINER_NAME"
 
 echo "== Deploy secrets (container env, presence only) =="
-docker exec "$CONTAINER" python3 - <<'PY'
+docker exec -i "$CONTAINER" python3 - <<'PY'
 import os
 
 def present(name):
@@ -86,7 +86,7 @@ PY
 
 echo
 echo "== Deploy automation ready? =="
-AUTH_READY=$(docker exec "$CONTAINER" python3 - <<'PY'
+AUTH_READY=$(docker exec -i "$CONTAINER" python3 - <<'PY'
 import os
 
 def ok(name):
