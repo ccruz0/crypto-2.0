@@ -7,8 +7,10 @@ same mechanism used elsewhere in the codebase (see
 
 Required environment variables
 ------------------------------
+GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_B64
+    GitHub App credentials (preferred). Mints installation tokens at runtime.
 GITHUB_TOKEN
-    GitHub Personal Access Token with ``actions:write`` scope.
+    Emergency legacy PAT when ``ALLOW_LEGACY_GITHUB_PAT=true``.
 GITHUB_REPOSITORY
     Repo in ``owner/repo`` format.  Defaults to ``ccruz0/crypto-2.0``.
 DEPLOY_WORKFLOW_FILE
@@ -55,12 +57,14 @@ def get_recent_deploys(limit: int = 10) -> list[dict[str, str]]:
     return list(_recent_deploys[-limit:]) if limit > 0 else []
 
 
-def _get_config() -> tuple[str, str, str]:
-    """Return (token, repo, workflow_file).  Token may be empty."""
-    token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+def _get_config() -> tuple[str, str, str, str]:
+    """Return (token, repo, workflow_file, auth_method). Token may be empty."""
+    from app.services.github_app_auth import get_github_api_token
+
+    token, auth_method = get_github_api_token()
     repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip() or _DEFAULT_REPO
     workflow = (os.environ.get("DEPLOY_WORKFLOW_FILE") or "").strip() or _DEFAULT_WORKFLOW
-    return token, repo, workflow
+    return token, repo, workflow, auth_method
 
 
 def trigger_deploy_workflow(
@@ -92,7 +96,7 @@ def trigger_deploy_workflow(
         error (str):  Error message if ok is False.
         triggered_at (str):  ISO timestamp.
     """
-    token, repo, workflow = _get_config()
+    token, repo, workflow, auth_method = _get_config()
     target_ref = (ref or "").strip() or _DEFAULT_REF
     triggered_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -108,16 +112,17 @@ def trigger_deploy_workflow(
     }
 
     logger.info(
-        "trigger_deploy_workflow: preparing dispatch task_id=%s workflow=%s branch=%s repo=%s token_present=%s",
-        task_id, workflow, target_ref, repo, bool(token),
+        "trigger_deploy_workflow: preparing dispatch task_id=%s workflow=%s branch=%s repo=%s "
+        "token_present=%s auth_method=%s",
+        task_id, workflow, target_ref, repo, bool(token), auth_method,
     )
 
     if not token:
         msg = (
-            "GITHUB_TOKEN is not set — cannot trigger deploy. "
-            "Set a GitHub PAT with actions:write scope."
+            "GitHub API auth unavailable — cannot trigger deploy. "
+            "Configure GITHUB_APP_* or ALLOW_LEGACY_GITHUB_PAT=true with GITHUB_TOKEN."
         )
-        logger.error("trigger_deploy_workflow: %s task_id=%s", msg, task_id)
+        logger.error("trigger_deploy_workflow: %s task_id=%s auth_method=%s", msg, task_id, auth_method)
         return {**base, "summary": msg, "error": msg}
 
     url = f"{_GITHUB_API}/repos/{repo}/actions/workflows/{workflow}/dispatches"
