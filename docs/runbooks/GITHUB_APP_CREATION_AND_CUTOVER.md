@@ -182,6 +182,19 @@ The script prints a presence table (names/types/versions only) after writing.
 
 ## 8. Runtime rendering on EC2 (use the safe helper)
 
+> **WARNING — LAB fallback:** `render_runtime_env.sh` falls back to the LAB SSM path
+> (`/automated-trading-platform/lab/github_app/*`) when the PROD `github_app/*` parameters
+> are absent. **Verify the LAB `github_app/*` params are empty before rendering** so stale
+> LAB credentials cannot silently flip `auth_mode` to `github_app` on PROD:
+>
+> ```bash
+> aws ssm describe-parameters \
+>   --region ap-southeast-1 \
+>   --parameter-filters "Key=Name,Option=BeginsWith,Values=/automated-trading-platform/lab/github_app/" \
+>   --query 'Parameters[].Name' --output table
+> # Expected before cutover: empty
+> ```
+
 SSH to PROD:
 
 ```bash
@@ -195,6 +208,13 @@ recreates backend-aws, waits up to 120s for health, runs the verify script):
 
 ```bash
 bash scripts/aws/render_and_recreate_backend_safe.sh
+```
+
+After the cutover render, also recreate the canary so its env stays in parity with
+`backend-aws` (the safe helper only recreates `backend-aws`):
+
+```bash
+docker compose --profile aws up -d --force-recreate backend-aws-canary
 ```
 
 **Expected render summary line within output:**
@@ -248,6 +268,13 @@ Deploy automation ready? YES
 ```bash
 bash scripts/aws/verify_github_app_cutover_ready.sh
 ```
+
+> **Do not trust presence-only checks.** `CUTOVER_READY=YES` requires a **live in-container
+> token mint** (`get_github_api_token()` returning `auth_method=github_app` with a token
+> present), not merely the presence of `GITHUB_APP_*` env vars. Vars can be present yet
+> invalid (wrong App ID, bad PEM, wrong installation ID); only a successful mint proves
+> the App path works. If vars are present but the mint fails, the script prints
+> `NO-GO: GitHub App vars present but live token mint failed.` and `CUTOVER_READY=NO`.
 
 **Expected after cutover:** `CUTOVER_READY=YES`
 
@@ -357,10 +384,19 @@ aws ssm delete-parameter \
   --region ap-southeast-1 \
   --name /automated-trading-platform/prod/github_token
 
-# 3. Re-render on EC2
-cd /home/ubuntu/crypto-2.0 || cd /home/ubuntu/automated-trading-platform
+# 3. Remove GITHUB_TOKEN from .env.aws (fallback source) so a future render
+#    in fallback mode cannot resurrect the PAT
+cd /home/ubuntu/crypto-2.0
+[[ -f .env.aws ]] && sed -i '/^GITHUB_TOKEN=/d' .env.aws
+
+# 4. Re-render on EC2
 bash scripts/aws/render_runtime_env.sh
 docker compose --profile aws up -d --force-recreate backend-aws
+
+# 5. Recreate backend-aws-canary too, so canary env stays in parity with
+#    backend-aws (otherwise the canary keeps stale PAT/App env)
+docker compose --profile aws up -d --force-recreate backend-aws-canary
+
 ./scripts/verify_deploy_secrets.sh
 ```
 

@@ -60,7 +60,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo
   echo "aws ssm put-parameter --region $AWS_REGION --name $SSM_APP_ID --value '$GITHUB_APP_ID_VALUE' --type String --overwrite"
   echo "aws ssm put-parameter --region $AWS_REGION --name $SSM_INSTALLATION_ID --value '$GITHUB_APP_INSTALLATION_ID_VALUE' --type String --overwrite"
-  echo "aws ssm put-parameter --region $AWS_REGION --name $SSM_PRIVATE_KEY_B64 --value '***MASKED (from $GITHUB_APP_PRIVATE_KEY_B64_FILE)***' --type SecureString --overwrite"
+  echo "aws ssm put-parameter --region $AWS_REGION --name $SSM_PRIVATE_KEY_B64 --value '***MASKED (file://$GITHUB_APP_PRIVATE_KEY_B64_FILE)***' --type SecureString --overwrite"
   echo
   echo "Dry run complete. Re-run without DRY_RUN=1 to write."
   exit 0
@@ -69,7 +69,8 @@ fi
 aws sts get-caller-identity >/dev/null 2>&1 || fail "AWS credentials unavailable (aws sts get-caller-identity failed)"
 
 put_param() {
-  # $1 name, $2 type, $3 value (value never echoed)
+  # $1 name, $2 type, $3 value or file:// URI (secret values never echoed;
+  # file:// is expanded by the AWS CLI itself, keeping the key out of argv)
   local name="$1" type="$2" value="$3" version
   version="$(aws ssm put-parameter \
     --region "$AWS_REGION" \
@@ -85,8 +86,9 @@ put_param() {
 echo "Writing parameters..."
 put_param "$SSM_APP_ID" "String" "$GITHUB_APP_ID_VALUE"
 put_param "$SSM_INSTALLATION_ID" "String" "$GITHUB_APP_INSTALLATION_ID_VALUE"
-# Read key from file into the put call without exporting it or echoing it
-put_param "$SSM_PRIVATE_KEY_B64" "SecureString" "$(cat "$GITHUB_APP_PRIVATE_KEY_B64_FILE")"
+# Key is loaded by the AWS CLI directly from the file (file:// URI) so the
+# secret value never appears in CLI argv, shell history, or process listings.
+put_param "$SSM_PRIVATE_KEY_B64" "SecureString" "file://$GITHUB_APP_PRIVATE_KEY_B64_FILE"
 
 echo
 echo "Done. Verify presence (names/types only):"

@@ -14,9 +14,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/.."
 cd "$ROOT_DIR"
 
-# Prefer backend-aws (prod), then backend, then backend-dev (local)
-CONTAINER="$(docker ps -q --filter 'name=backend-aws' | head -1)"
-[[ -z "$CONTAINER" ]] && CONTAINER="$(docker ps -q --filter 'name=automated-trading-platform-backend' | head -1)"
+# Prefer the exact compose service backend-aws (prod) — this cannot match
+# backend-aws-canary. Fall back to name filters (excluding canary), then
+# backend, then backend-dev (local).
+CONTAINER="$(docker compose --profile aws ps -q backend-aws 2>/dev/null | head -1 || true)"
+[[ -z "$CONTAINER" ]] && CONTAINER="$(docker ps --filter 'name=backend-aws' --format '{{.ID}} {{.Names}}' | awk '$2 !~ /canary/ {print $1; exit}')"
+[[ -z "$CONTAINER" ]] && CONTAINER="$(docker ps --filter 'name=automated-trading-platform-backend' --format '{{.ID}} {{.Names}}' | awk '$2 !~ /canary/ {print $1; exit}')"
 [[ -z "$CONTAINER" ]] && CONTAINER="$(docker ps -q --filter 'name=backend-dev' | head -1)"
 
 if [[ -z "$CONTAINER" ]]; then
