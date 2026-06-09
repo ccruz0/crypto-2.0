@@ -1,7 +1,9 @@
 # Production Status Update — Automated Trading Platform
 
+> **Historical snapshot — retained for reference.** Current PROD status should be verified with `/api/health/ready` and `docker compose --profile aws ps` from `/home/ubuntu/crypto-2.0`. See [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md).
+
 **Report date:** 2026-03-01  
-**Scope:** Repo `automated-trading-platform`; production host EC2 (dashboard.hilovivo.com).  
+**Scope:** Repo root on PROD **`/home/ubuntu/crypto-2.0`** (backend-aws / compose); production host EC2 (dashboard.hilovivo.com).  
 **Sources:** Repo documentation only; server verification commands must be run on EC2 and outputs pasted below.
 
 ---
@@ -75,7 +77,7 @@
 
 2. **Disk and containers**  
    On EC2:  
-   `cd ~/automated-trading-platform`  
+   `cd /home/ubuntu/crypto-2.0`  
    `df -h`  
    `docker system df`  
    `uptime`  
@@ -84,14 +86,14 @@
 
 3. **Env and API key**  
    On EC2:  
-   `cd ~/automated-trading-platform`  
+   `cd /home/ubuntu/crypto-2.0`  
    `git pull origin main`  
    `./scripts/aws/create_runtime_env.sh`  
    Save printed ATP_API_KEY. If script missing, add ATP_API_KEY to `secrets/runtime.env` (generate with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`).
 
 4. **Restart stack**  
    On EC2:  
-   `cd ~/automated-trading-platform`  
+   `cd /home/ubuntu/crypto-2.0`  
    `docker compose --profile aws down`  
    `docker compose --profile aws up -d`  
    Wait ~30s.  
@@ -128,10 +130,10 @@
 
 ## 6) Server verification commands (run on EC2)
 
-*Run these on PROD (cd ~/automated-trading-platform first). Paste outputs into §2 Evidence column.*
+*Run these on PROD (`cd /home/ubuntu/crypto-2.0` first). Paste outputs into §2 Evidence column.*
 
 ```bash
-cd ~/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 1) Disk and system
 df -h

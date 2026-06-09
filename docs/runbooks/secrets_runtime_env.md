@@ -28,7 +28,19 @@ Rendered by `render_runtime_env.sh`:
 - NOTION_API_KEY — Notion integration token. Fetched from SSM (prod `/automated-trading-platform/prod/notion/api_key` or LAB `/automated-trading-platform/lab/notion/api_key`) when available, or from `.env.aws` (fallback). On LAB, render tries LAB SSM automatically so no manual secret insertion is required if the parameter exists.
 - NOTION_TASK_DB — Notion database ID. SSM `/automated-trading-platform/prod/notion/task_db` or `.env.aws`. On LAB, if only the API key is in SSM, a default DB ID is used. Example: `eb90cfa139f94724a8b476315908510a`. See [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
 
-**Source:** AWS SSM (prod, then LAB for Notion) or `.env.aws` (fallback). Do not change secret sources unless necessary.
+**GitHub App (deploy / Cursor bridge) — not written by `render_runtime_env.sh` today:**
+
+Configure via `.env.aws` (loaded by `backend-aws` via docker-compose `env_file`) or append manually to `secrets/runtime.env`. SSM parameter paths (when set by operator or future render support):
+
+- GITHUB_APP_ID — `/automated-trading-platform/prod/github_app/app_id` (LAB fallback: `.../lab/github_app/app_id`)
+- GITHUB_APP_INSTALLATION_ID — `.../github_app/installation_id`
+- GITHUB_APP_PRIVATE_KEY_B64 — `.../github_app/private_key_b64` (SecureString recommended)
+
+See [backend/docs/GITHUB_APP_AUTH.md](../../backend/docs/GITHUB_APP_AUTH.md). `render_runtime_env.sh` currently writes legacy `GITHUB_TOKEN` only when present in SSM.
+
+**Legacy (emergency):** GITHUB_TOKEN from SSM `/automated-trading-platform/prod/github_token`. On AWS, PAT without GitHub App requires **ALLOW_LEGACY_GITHUB_PAT=true** (see `backend/app/factory.py` and [GITHUB_APP_AUTH.md](../../backend/docs/GITHUB_APP_AUTH.md)).
+
+**Source:** AWS SSM (prod, then LAB for applicable keys) or `.env.aws` (fallback). Do not change secret sources unless necessary.
 
 ## Where the Notion secret and database ID are stored
 
@@ -104,7 +116,7 @@ Do not run raw `docker compose config` on EC2 or in any script that could log ou
 
 ## EC2 deploy order
 
-1. `cd /home/ubuntu/automated-trading-platform` (or your repo path)
+1. `cd /home/ubuntu/crypto-2.0` (canonical PROD path; legacy fallback: `/home/ubuntu/automated-trading-platform`)
 2. `bash scripts/aws/render_runtime_env.sh`
 3. `test -f secrets/runtime.env || exit 1`
 4. `bash scripts/aws/check_no_inline_secrets_in_compose.sh`

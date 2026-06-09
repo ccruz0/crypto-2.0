@@ -89,7 +89,7 @@ Example (run from repo root or backend, with env loaded):
 
 ```bash
 # Every 5 minutes
-*/5 * * * * cd /path/to/automated-trading-platform/backend && python scripts/run_agent_scheduler_cycle.py >> logs/scheduler.log 2>&1
+*/5 * * * * cd /home/ubuntu/crypto-2.0/backend && python scripts/run_agent_scheduler_cycle.py >> logs/scheduler.log 2>&1
 ```
 
 Ensure `NOTION_API_KEY`, `NOTION_TASK_DB`, and (for approval path) `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` are set.

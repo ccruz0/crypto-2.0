@@ -3,6 +3,8 @@
 **Date:** 2026-03-15  
 **Scope:** Full repository scan, implementation-based, factual only.
 
+> **Note (GitHub API on PROD):** Backend uses **GitHub App** — [`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md). PAT mentions elsewhere refer to **LAB/OpenClaw** git access unless stated.
+
 ---
 
 ## One-Page Summary
@@ -227,7 +229,7 @@ An automated crypto trading platform that:
 
 - **ATP → OpenClaw:** HTTP POST to `/v1/responses`. Bearer token (OPENCLAW_API_TOKEN).
 - **OpenClaw → ATP:** Mounts ATP repo read-only at `/home/node/.openclaw/workspace/atp`
-- **OpenClaw → GitHub:** Clone, branch, PR (via PAT/deploy key). No prod secrets.
+- **OpenClaw → GitHub (LAB):** Clone, branch, PR (via fine-grained PAT or deploy key on LAB). No prod secrets. **Backend** deploy uses GitHub App on EC2.
 - **OpenClaw → Cursor:** ACP default agent (e.g. codex) for sessions
 
 ### Role
@@ -258,7 +260,7 @@ An automated crypto trading platform that:
 | Script | Purpose |
 |--------|---------|
 | `scripts/deploy_aws.sh` | Canonical deploy on EC2: git reset, render runtime.env, compose up |
-| `scripts/aws/render_runtime_env.sh` | Renders secrets/runtime.env from SSM/env |
+| `scripts/aws/render_runtime_env.sh` | Renders secrets/runtime.env from SSM/env; GitHub App keys via `.env.aws` or manual runtime.env (see `backend/docs/GITHUB_APP_AUTH.md`) |
 | `scripts/openclaw/deploy_openclaw_lab_from_mac.sh` | Deploy OpenClaw to LAB from Mac |
 | `scripts/openclaw/fix_504_via_eice.sh` | Fix OpenClaw 504 via EC2 Instance Connect |
 

@@ -1,5 +1,7 @@
 # Comandos para ejecutar tú (copy-paste)
 
+> **Nota:** Autenticación **backend** en EC2: **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. La sección 5 es **LAB OpenClaw** (token en archivo); no confundir con el runtime del backend.
+
 Comandos listos para copiar en tu terminal. Requieren: AWS CLI configurado con credenciales que tengan permisos sobre EC2/SSM en la región ap-southeast-1.
 
 ---
@@ -67,7 +69,7 @@ Luego en el mismo run revisa que el paso "Deploy to EC2 using Session Manager" t
 Entras a la instancia LAB por **Session Manager** (EC2 → Instances → atp-lab-ssm-clean → Connect → Session Manager). Luego, en esa sesión:
 
 ```bash
-# Crear directorio de secretos y token (sustituir TOKEN por tu PAT real; no dejar en historial)
+# Crear directorio de secretos y token — **solo LAB OpenClaw** (fine-grained PAT en archivo; no es el backend PROD)
 mkdir -p ~/secrets
 chmod 700 ~/secrets
 echo -n "TU_FINE_GRAINED_PAT_AQUI" > ~/secrets/openclaw_token
@@ -88,7 +90,7 @@ docker compose -f docker-compose.openclaw.yml up -d
 docker compose -f docker-compose.openclaw.yml ps
 ```
 
-Sustituye `TU_FINE_GRAINED_PAT_AQUI` por tu Personal Access Token de GitHub (fine-grained: Contents R/W, Pull requests R/W, Metadata R). No compartas ese valor. Detalle completo: **docs/openclaw/SIGUIENTE_PASOS_OPENCLAW.md** y **LAB_SETUP_AND_VALIDATION.md**.
+Sustituye `TU_FINE_GRAINED_PAT_AQUI` por un token **solo para OpenClaw en LAB** (fine-grained: Contents R/W, Pull requests R/W, Metadata R). El **backend** en PROD usa **GitHub App** — **`backend/docs/GITHUB_APP_AUTH.md`**. No compartas el valor. Detalle: **docs/openclaw/SIGUIENTE_PASOS_OPENCLAW.md** y **LAB_SETUP_AND_VALIDATION.md**.
 
 ---
 
@@ -99,7 +101,7 @@ Sustituye `TU_FINE_GRAINED_PAT_AQUI` por tu Personal Access Token de GitHub (fin
 1. Conéctate a PROD (SSM o EC2 Instance Connect).
 2. Añade `NOTION_TASK_DB` si aún no está (sustituye por el ID de tu base Notion si es otra):
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    grep -q NOTION_TASK_DB secrets/runtime.env || echo 'NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a' >> secrets/runtime.env
    docker compose --profile aws restart backend-aws
    ```
