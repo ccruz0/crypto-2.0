@@ -260,7 +260,7 @@ An automated crypto trading platform that:
 | Script | Purpose |
 |--------|---------|
 | `scripts/deploy_aws.sh` | Canonical deploy on EC2: git reset, render runtime.env, compose up |
-| `scripts/aws/render_runtime_env.sh` | Renders secrets/runtime.env from SSM/env (GitHub App keys; see `backend/docs/GITHUB_APP_AUTH.md`) |
+| `scripts/aws/render_runtime_env.sh` | Renders secrets/runtime.env from SSM/env; GitHub App keys via `.env.aws` or manual runtime.env (see `backend/docs/GITHUB_APP_AUTH.md`) |
 | `scripts/openclaw/deploy_openclaw_lab_from_mac.sh` | Deploy OpenClaw to LAB from Mac |
 | `scripts/openclaw/fix_504_via_eice.sh` | Fix OpenClaw 504 via EC2 Instance Connect |
 
