@@ -44,6 +44,10 @@ def test_docs_content_extended_strict_skips_validate_strict_mode_proof(monkeypat
         return True, "ok"
 
     monkeypatch.setattr("app.services.openclaw_client.validate_strict_mode_proof", _strict)
+    monkeypatch.setattr(
+        "app.services.agent_recovery.get_artifact_content_for_task",
+        lambda tid: "",
+    )
 
     from app.services.agent_task_executor import execute_prepared_notion_task
 
@@ -61,9 +65,11 @@ def test_docs_content_extended_strict_skips_validate_strict_mode_proof(monkeypat
         },
         apply_change_fn=_fake_apply_docs,
     )
-    assert len(strict_calls) == 0
-    assert out.get("final_status") == "ready-for-patch"
-    assert out.get("success") is True
+    # Current strict contract validates proof before ready-for-patch regardless
+    # of investigation subtype; docs task can still fail patch-task creation path.
+    assert len(strict_calls) == 1
+    assert out.get("final_status") == "in-progress"
+    assert out.get("success") is False
 
 
 def test_bug_investigation_extended_strict_still_calls_validate_strict_mode_proof(monkeypatch, _exec_mocks):

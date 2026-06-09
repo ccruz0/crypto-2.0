@@ -42,6 +42,19 @@ from app.services.agent_versioning import (
 logger = logging.getLogger(__name__)
 
 
+def _as_text(value: Any, *, max_len: int | None = None) -> str:
+    """Coerce to str before slicing/formatting. Prevents dict[:n] → unhashable slice."""
+    if value is None:
+        s = ""
+    elif isinstance(value, str):
+        s = value
+    else:
+        s = str(value)
+    if max_len is not None and max_len >= 0:
+        return s[:max_len]
+    return s
+
+
 def _maybe_ensure_notion_governance_task_after_claim(*, page_id: str, task: dict[str, Any], repo_area: dict[str, Any]) -> None:
     """
     When agent governance enforce is on (AWS), ensure ``gov-notion-<page_id>`` exists after a successful
@@ -471,19 +484,22 @@ def _run_callback(
 
 def summarize_execution_result(success: bool, summary: str | None = None) -> str:
     """Build a short text summary of an apply/change step for Notion or logs."""
-    s = (summary or "").strip() or ("succeeded" if success else "failed")
+    t = _as_text(summary).strip()
+    s = t or ("succeeded" if success else "failed")
     return f"Execution (apply): {'succeeded' if success else 'failed'} — {s}"
 
 
 def summarize_validation_result(success: bool, summary: str | None = None) -> str:
     """Build a short text summary of a validation step for Notion or logs."""
-    s = (summary or "").strip() or ("passed" if success else "failed")
+    t = _as_text(summary).strip()
+    s = t or ("passed" if success else "failed")
     return f"Validation: {'passed' if success else 'failed'} — {s}"
 
 
 def summarize_deployment_result(success: bool, summary: str | None = None) -> str:
     """Build a short text summary of a deployment step for Notion or logs."""
-    s = (summary or "").strip() or ("succeeded" if success else "failed")
+    t = _as_text(summary).strip()
+    s = t or ("succeeded" if success else "failed")
     return f"Deployment: {'succeeded' if success else 'failed'} — {s}"
 
 
@@ -662,6 +678,33 @@ def infer_repo_area_for_task(task: dict[str, Any]) -> dict[str, Any]:
             "relevant_runbooks": uniq(relevant_runbooks),
             "matched_rules": matched,
         }
+
+    # Full-system ATP / codebase audits — broad scope (do not narrow to telegram/health heuristics)
+    if (
+        ("audit atp codebase" in blob)
+        or ("full-system audit" in blob)
+        or ("full system audit" in blob)
+        or ("against documentation and business rules" in blob)
+        or (
+            "audit" in blob
+            and "atp" in blob
+            and (
+                "documentation" in blob
+                or "business rules" in blob
+                or "codebase" in blob
+            )
+        )
+    ):
+        matched.append("atp-full-audit")
+        return area(
+            "ATP System-wide Audit",
+            likely_files=[
+                "README.md",
+                "docs/architecture/system-map.md",
+            ],
+            relevant_docs=[],
+            relevant_runbooks=["docs/aws/RUNBOOK_INDEX.md"],
+        )
 
     # Telegram / notifications
     if any(k in blob for k in ("telegram", "bot", "chat_id", "notifier")):
@@ -2138,7 +2181,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                     logger.warning("advance_ready_for_patch_task: cursor bridge failed task_id=%s: %s", task_id, err)
                     _append_notion_page_comment(
                         task_id,
-                        f"[{ts}] Cursor bridge ran but did not pass: {err[:200]}. Task stays in patching.",
+                        f"[{ts}] Cursor bridge ran but did not pass: {_as_text(err, max_len=200)}. Task stays in patching.",
                     )
                     return _result(False, "cursor_bridge", err, "patching")
             elif (
@@ -2206,6 +2249,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
 
     # --- 5. Run validation ---
     val_ok, val_summary, _ = _run_callback(prepared_task, validate_fn, "validate")
+    val_summary = _as_text(val_summary)
 
     try:
         from app.services.agent_activity_log import log_agent_event
@@ -2247,6 +2291,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     if verify_enabled and verify_fn is not None:
         logger.info("verification_started task_id=%s", task_id[:12] if task_id else "?")
         verify_ok, verify_summary, _ = _run_callback(prepared_task, verify_fn, "verify_solution")
+        verify_summary = _as_text(verify_summary)
         if not verify_ok:
             # Distinguish: verification unavailable (env/config/error) vs verification failed (bad solution)
             _s = (verify_summary or "").lower()
@@ -2257,7 +2302,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                 logger.info(
                     "verification_unavailable task_id=%s reason=%s",
                     task_id[:12] if task_id else "?",
-                    (verify_summary or "")[:200],
+                    _as_text(verify_summary, max_len=200),
                 )
                 try:
                     from app.services.agent_activity_log import log_agent_event
@@ -2282,7 +2327,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                 # Actual verification failure — solution does not address task
                 logger.warning(
                     "verification_failed task_id=%s summary=%s",
-                    task_id[:12] if task_id else "?", verify_summary[:200] if verify_summary else "?",
+                    task_id[:12] if task_id else "?", _as_text(verify_summary, max_len=200) or "?",
                 )
                 try:
                     from app.services.agent_activity_log import log_agent_event
@@ -2461,7 +2506,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         _append_notion_page_comment(
             task_id,
             f"[{ts}] {summarize_validation_result(True, val_summary)}\n"
-            f"Verification unavailable ({verification_unavailable_reason[:100]}). "
+            f"Verification unavailable ({_as_text(verification_unavailable_reason, max_len=100)}). "
             "Patch ready — single approval sent.",
         )
     else:

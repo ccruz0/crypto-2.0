@@ -1189,8 +1189,10 @@ def _validate_openclaw_note(
     # Generic output gate: Root Cause must have actionable content, not filler
     try:
         from app.services.openclaw_client import parse_all_markdown_sections
-        sections = parse_all_markdown_sections(content)
-        root_cause = (sections.get("Root Cause") or "").strip()
+        # Do not assign to name ``sections`` — it shadows the schema tuple parameter below
+        # and causes ``use_sections[:4]`` to run on a dict (TypeError: unhashable type: 'slice').
+        parsed_sections = parse_all_markdown_sections(content)
+        root_cause = (parsed_sections.get("Root Cause") or "").strip()
         if root_cause:
             rc_lower = root_cause.lower()
             if any(m in rc_lower for m in _GENERIC_INVESTIGATION_MARKERS):

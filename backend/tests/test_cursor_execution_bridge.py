@@ -128,22 +128,28 @@ class TestEnsureHandoffForBridge:
     def test_ensure_ok_when_file_already_exists(self, tmp_path):
         handoff_dir = tmp_path / "cursor-handoffs"
         handoff_dir.mkdir(parents=True)
-        p = handoff_dir / "cursor-handoff-abc.md"
+        task_dir = handoff_dir / "tasks" / "abc"
+        task_dir.mkdir(parents=True)
+        p = task_dir / "cursor-handoff-abc.md"
         p.write_text("# existing", encoding="utf-8")
         with patch(
             "app.services.cursor_execution_bridge._handoffs_dir_for_bridge",
             return_value=handoff_dir,
         ):
-            from app.services.cursor_execution_bridge import ensure_handoff_file_for_bridge
-            ok, err = ensure_handoff_file_for_bridge("abc")
-            assert ok is True
-            assert err == ""
+            with patch(
+                "app.services.artifact_paths.resolve_cursor_handoff_path_for_read",
+                return_value=p,
+            ):
+                from app.services.cursor_execution_bridge import ensure_handoff_file_for_bridge
+                ok, err = ensure_handoff_file_for_bridge("abc")
+                assert ok is True
+                assert err == ""
 
     def test_ensure_generates_when_missing(self, tmp_path):
         handoff_dir = tmp_path / "cursor-handoffs"
 
         def _fake_generate(prepared_task):
-            out = handoff_dir / "cursor-handoff-t1.md"
+            out = handoff_dir / "tasks" / "t1" / "cursor-handoff-t1.md"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("# auto prompt", encoding="utf-8")
             return {"success": True, "path": str(out), "prompt": "# auto prompt"}
@@ -152,6 +158,7 @@ class TestEnsureHandoffForBridge:
             "app.services.cursor_execution_bridge._handoffs_dir_for_bridge",
             return_value=handoff_dir,
         ):
+            generated_path = handoff_dir / "tasks" / "t1" / "cursor-handoff-t1.md"
             with patch(
                 "app.services.notion_task_reader.get_notion_task_by_id",
                 return_value={"id": "t1", "task": "My task"},
@@ -160,13 +167,17 @@ class TestEnsureHandoffForBridge:
                     "app.services.cursor_handoff.generate_cursor_handoff",
                     side_effect=_fake_generate,
                 ):
-                    from app.services.cursor_execution_bridge import ensure_handoff_file_for_bridge
-                    ok, err = ensure_handoff_file_for_bridge("t1")
-                    assert ok is True
-                    assert err == ""
-                    written = handoff_dir / "cursor-handoff-t1.md"
-                    assert written.exists()
-                    assert written.read_text(encoding="utf-8") == "# auto prompt"
+                    with patch(
+                        "app.services.artifact_paths.resolve_cursor_handoff_path_for_read",
+                        side_effect=[None, generated_path],
+                    ):
+                        from app.services.cursor_execution_bridge import ensure_handoff_file_for_bridge
+                        ok, err = ensure_handoff_file_for_bridge("t1")
+                        assert ok is True
+                        assert err == ""
+                        written = handoff_dir / "tasks" / "t1" / "cursor-handoff-t1.md"
+                        assert written.exists()
+                        assert written.read_text(encoding="utf-8") == "# auto prompt"
 
 
 class TestCleanupStaging:

@@ -56,6 +56,35 @@ _ARTIFACT_CONFIGS = (
 )
 
 
+def _is_bridge_phase2_active_for_task(task_id: str) -> bool:
+    """
+    Best-effort check for an active Cursor bridge phase-2 run for this task.
+
+    Uses the same lock file location/name convention as cursor_execution_bridge.
+    Returns True when the lock appears held by another process.
+    """
+    tid = (task_id or "").strip()
+    if not tid:
+        return False
+    try:
+        import re
+        import fcntl
+
+        lock_root = Path((os.environ.get("CURSOR_BRIDGE_LOCK_DIR") or "").strip() or "/tmp/cursor-bridge-locks")
+        safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", tid)[:120] if tid else "unknown"
+        lock_path = lock_root / f"{safe}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a+", encoding="utf-8") as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                return False
+            except BlockingIOError:
+                return True
+    except Exception:
+        return False
+
+
 def _is_recovery_enabled() -> bool:
     """Check AGENT_RECOVERY_ENABLED env var (default true)."""
     raw = (os.environ.get("AGENT_RECOVERY_ENABLED") or "").strip().lower()
@@ -943,6 +972,7 @@ def _reset_task_to_planned(task_id: str, task_title: str, reason: str) -> bool:
             task_id,
             TASK_STATUS_PLANNED,
             append_comment=comment,
+            allow_status_regression=True,
         )
         if not ok:
             logger.warning("agent_recovery: reset to planned failed task_id=%s", task_id)
@@ -994,6 +1024,13 @@ def _get_tasks_with_missing_artifacts(*, max_results: int = 5) -> list[dict[str,
     for t in tasks:
         tid = str(t.get("id") or "").strip()
         if not tid:
+            continue
+        task_status = str(t.get("status") or "").strip().lower()
+        if task_status == "patching" and _is_bridge_phase2_active_for_task(tid):
+            logger.info(
+                "agent_recovery: task_id=%s skipped (cursor bridge phase2 active)",
+                tid,
+            )
             continue
         if _has_recovery_attempt_for_task(tid, _RECOVERY_MISSING_ARTIFACT_EVENT_TYPE):
             continue

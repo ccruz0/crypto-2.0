@@ -36,10 +36,47 @@ def _workspace_root() -> Path:
     return workspace_root()
 
 
-def is_code_fix_task(task: dict[str, Any] | None) -> bool:
-    """True if the task type implies code changes and requires Cursor Bridge before deploy."""
-    if not task:
+def _explicit_patch_request(blob: str) -> bool:
+    return any(
+        k in blob
+        for k in (
+            "code patch",
+            "apply patch",
+            "create patch",
+            "patch handoff",
+            "cursor handoff",
+            "cursor bridge",
+            "implementation handoff",
+            "open pr",
+            "code change",
+            "modify code",
+            "fix and patch",
+        )
+    )
+
+
+def _safe_readonly_investigation_report_blob(blob: str, explicit_patch: bool) -> bool:
+    """Title/details ask for investigate + report + read-only with no explicit patch request."""
+    if explicit_patch:
         return False
+    bl = blob.lower()
+    has_report = "produce report" in bl or "produce a report" in bl
+    has_investigate = (
+        "investigate" in bl
+        or "investigation" in bl
+        or bl.startswith("investigate ")
+    )
+    has_readonly = "read-only" in bl or "read only" in bl or "readonly" in bl
+    return bool(has_report and has_investigate and has_readonly)
+
+
+def classify_code_fix_task(task: dict[str, Any] | None) -> tuple[bool, str]:
+    """Classify whether task should be treated as code-fix for patch/Cursor Bridge gating.
+
+    Returns (is_code_fix, reason) for logs and tests.
+    """
+    if not task:
+        return False, "no_task"
     task_obj = task.get("task") if isinstance(task.get("task"), dict) else task
     raw = str(task_obj.get("type") or task.get("type") or "").strip().lower()
     title = str(task_obj.get("task") or task.get("task") or "").strip().lower()
@@ -56,25 +93,46 @@ def is_code_fix_task(task: dict[str, Any] | None) -> bool:
             and ("documentation" in blob or "business rules" in blob or "codebase" in blob)
         )
     )
-    explicit_patch_request = any(
-        k in blob
-        for k in (
-            "code patch",
-            "apply patch",
-            "create patch",
-            "patch handoff",
-            "cursor handoff",
-            "cursor bridge",
-            "implementation handoff",
-            "open pr",
-            "code change",
-            "modify code",
-            "fix and patch",
+    explicit_patch = _explicit_patch_request(blob)
+    if is_full_audit and not explicit_patch:
+        return False, "excluded_full_audit_no_explicit_patch"
+
+    # Any Notion type: read-only investigation + report deliverable (mis-typed as Bug still excluded).
+    if _safe_readonly_investigation_report_blob(blob, explicit_patch):
+        return False, "excluded_safe_readonly_investigation_report"
+
+    # Investigation types often produce markdown reports only (no repo patch).
+    if raw in ("investigation", "architecture investigation") and not explicit_patch:
+        report_only_markers = (
+            "produce report",
+            "produce a report",
+            "write report",
+            "report only",
+            "read-only",
+            "read only",
+            "analysis only",
+            "investigate and report",
+            "investigation report",
+            "document findings",
+            "audit report",
+            "consistency report",
+            "health report",
+            "produce an investigation",
+            "investigation output",
+            "analysis and produce",
         )
-    )
-    if is_full_audit and not explicit_patch_request:
-        return False
-    return raw in CODE_FIX_TASK_TYPES
+        if any(m in blob for m in report_only_markers):
+            return False, "excluded_investigation_report_deliverable"
+
+    if raw not in CODE_FIX_TASK_TYPES:
+        return False, f"not_code_fix_type:{raw or 'empty'}"
+
+    return True, f"code_fix_type:{raw}"
+
+
+def is_code_fix_task(task: dict[str, Any] | None) -> bool:
+    """True if the task type implies code changes and requires Cursor Bridge before deploy."""
+    return classify_code_fix_task(task)[0]
 
 
 def is_doc_or_ops_task(task: dict[str, Any] | None) -> bool:
@@ -152,7 +210,19 @@ def cursor_bridge_required_for_task(task: dict[str, Any], task_id: str) -> tuple
     - (False, "not_code_fix") when doc/ops task
     - (False, "patch_proof_exists") when proof already exists
     """
-    if not is_code_fix_task(task):
+    is_cf, cf_detail = classify_code_fix_task(task)
+    task_obj = task.get("task") if isinstance(task.get("task"), dict) else task
+    notion_type = str(task_obj.get("type") or task.get("type") or "").strip()
+    title_preview = str(task_obj.get("task") or task.get("task") or "").strip()[:120]
+    logger.info(
+        "patch_proof.classify task_id=%s is_code_fix=%s detail=%s notion_type=%r title_preview=%r",
+        (task_id or "").strip() or "?",
+        is_cf,
+        cf_detail,
+        notion_type,
+        title_preview,
+    )
+    if not is_cf:
         return False, "not_code_fix"
 
     proof_ok, proof_reason = has_patch_proof(task_id, task)

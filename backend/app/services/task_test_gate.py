@@ -41,6 +41,19 @@ VALID_TEST_OUTCOMES = (TEST_PASSED, TEST_FAILED, TEST_PARTIAL, TEST_NOT_RUN)
 _ADVANCEABLE_STATUSES = ("testing", "patching")
 
 
+def _coerce_text_summary(value: Any) -> str:
+    """Normalize callback/bridge summaries to str before slicing or Notion writes.
+
+    If a dict/list is passed by mistake, ``value[:N]`` would use a slice as a
+    mapping key and raise ``TypeError: unhashable type: 'slice'``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -122,7 +135,7 @@ def record_test_result(
             "error": "empty task_id",
         }
 
-    summary_text = (summary or "").strip() or normalized
+    summary_text = _coerce_text_summary(summary).strip() or normalized
     timestamp = _utc_now_iso()
 
     # --- 1. Write test_status to Notion metadata ---
@@ -250,8 +263,9 @@ def test_outcome_from_validation(
 
     Returns (outcome, summary) suitable for ``record_test_result``.
     """
+    vs = _coerce_text_summary(validation_summary).strip()
     if not validation_attempted:
         return TEST_NOT_RUN, "validation callback not supplied"
     if validation_success:
-        return TEST_PASSED, validation_summary or "validation passed"
-    return TEST_FAILED, validation_summary or "validation failed"
+        return TEST_PASSED, vs or "validation passed"
+    return TEST_FAILED, vs or "validation failed"

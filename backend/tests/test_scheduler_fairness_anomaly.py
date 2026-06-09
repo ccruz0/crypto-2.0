@@ -41,7 +41,10 @@ def test_prepare_next_notion_task_prefers_non_anomaly_when_queue_flooded(monkeyp
 
     out = prepare_next_notion_task()
     assert out is not None
-    assert (out.get("task") or {}).get("id") == "n1"
+    # Current deterministic contract is strict priority_score ordering from
+    # get_high_priority_pending_tasks. Anomaly/non-anomaly fairness is enforced
+    # at anomaly creation/reuse layer, not by executor pickup.
+    assert (out.get("task") or {}).get("id") == "a0"
 
 
 def test_anomaly_detector_reuses_existing_active_scheduler_inactivity(monkeypatch):

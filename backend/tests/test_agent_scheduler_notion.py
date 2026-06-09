@@ -281,7 +281,8 @@ class TestSchedulerWiring:
 
         # prepare_task_with_approval_check is lazily imported inside the function,
         # so we mock at the source module where it's defined.
-        with patch("app.services.agent_task_executor.get_high_priority_pending_tasks", return_value=[]):
+        with patch("app.services.agent_scheduler._ensure_notion_env_preflight", return_value=True), \
+             patch("app.services.agent_task_executor.prepare_task_with_approval_check", return_value=None):
             result = run_agent_scheduler_cycle()
 
         assert result["ok"] is True
@@ -302,13 +303,13 @@ class TestSchedulerWiring:
             assert _get_scheduler_interval() == 30  # minimum clamp
 
     def test_main_py_references_agent_scheduler(self):
-        """main.py wires the agent scheduler only when RUN_TELEGRAM_POLLER is true (primary instance)."""
+        """factory.py wires the agent scheduler under primary-instance guard."""
         from pathlib import Path
-        main_py = Path(__file__).resolve().parents[1] / "app" / "main.py"
-        content = main_py.read_text()
+        factory_py = Path(__file__).resolve().parents[1] / "app" / "factory.py"
+        content = factory_py.read_text()
         assert "start_agent_scheduler_loop" in content
         assert "RUN_TELEGRAM_POLLER" in content
-        assert "NOTION_API_KEY" in content or "notion_env" in content
+        assert "is_atp_trading_only" in content
 
     def test_notion_env_missing_then_auto_repair_proceeds(self):
         """Missing NOTION env → pre-flight triggers repair (mocked) → cycle proceeds to no task (no manual steps)."""
