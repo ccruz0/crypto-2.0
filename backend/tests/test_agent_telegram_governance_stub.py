@@ -19,6 +19,8 @@ from app.services.agent_telegram_approval import send_task_approval_request
 def test_send_preflight_classification_conflict_still_creates_governance_task(monkeypatch):
     monkeypatch.setenv("ATP_GOVERNANCE_AGENT_ENFORCE", "true")
     monkeypatch.setenv("ENVIRONMENT", "aws")
+    monkeypatch.setattr("app.services.agent_telegram_policy.is_quiet_mode", lambda: False)
+    monkeypatch.setattr("app.services.agent_telegram_policy.is_verbose_notification_mode", lambda: True)
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(
         bind=engine,
