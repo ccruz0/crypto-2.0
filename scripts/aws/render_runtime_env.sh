@@ -33,6 +33,12 @@ SSM_ADMIN_KEY="/automated-trading-platform/prod/admin_actions_key"
 SSM_DIAG_KEY="/automated-trading-platform/prod/diagnostics_api_key"
 SSM_ATP_API_KEY="/automated-trading-platform/prod/atp_api_key"
 SSM_GITHUB_TOKEN="/automated-trading-platform/prod/github_token"
+SSM_GITHUB_APP_ID="/automated-trading-platform/prod/github_app/app_id"
+SSM_GITHUB_APP_INSTALLATION_ID="/automated-trading-platform/prod/github_app/installation_id"
+SSM_GITHUB_APP_PRIVATE_KEY_B64="/automated-trading-platform/prod/github_app/private_key_b64"
+SSM_GITHUB_APP_ID_LAB="/automated-trading-platform/lab/github_app/app_id"
+SSM_GITHUB_APP_INSTALLATION_ID_LAB="/automated-trading-platform/lab/github_app/installation_id"
+SSM_GITHUB_APP_PRIVATE_KEY_B64_LAB="/automated-trading-platform/lab/github_app/private_key_b64"
 SSM_AWS_ACCESS_KEY="/automated-trading-platform/prod/aws_access_key_id"
 SSM_AWS_SECRET_KEY="/automated-trading-platform/prod/aws_secret_access_key"
 SSM_NOTION_API_KEY="/automated-trading-platform/prod/notion/api_key"
@@ -52,6 +58,9 @@ ADMIN_KEY=""
 DIAG_KEY=""
 ATP_API_KEY=""
 GITHUB_TOKEN=""
+GITHUB_APP_ID_VAL=""
+GITHUB_APP_INSTALLATION_ID_VAL=""
+GITHUB_APP_PRIVATE_KEY_B64_VAL=""
 AWS_ACCESS_KEY_ID_VAL=""
 AWS_SECRET_ACCESS_KEY_VAL=""
 NOTION_API_KEY_VAL=""
@@ -73,6 +82,12 @@ if command -v aws >/dev/null 2>&1; then
     DK="$(fetch_ssm "$SSM_DIAG_KEY" || true)"
     ATP="$(fetch_ssm "$SSM_ATP_API_KEY" || true)"
     GH="$(fetch_ssm "$SSM_GITHUB_TOKEN" || true)"
+    GITHUB_APP_ID_VAL="$(fetch_ssm "$SSM_GITHUB_APP_ID" || true)"
+    GITHUB_APP_INSTALLATION_ID_VAL="$(fetch_ssm "$SSM_GITHUB_APP_INSTALLATION_ID" || true)"
+    GITHUB_APP_PRIVATE_KEY_B64_VAL="$(fetch_ssm "$SSM_GITHUB_APP_PRIVATE_KEY_B64" || true)"
+    [[ -z "$GITHUB_APP_ID_VAL" ]] && GITHUB_APP_ID_VAL="$(fetch_ssm "$SSM_GITHUB_APP_ID_LAB" || true)"
+    [[ -z "$GITHUB_APP_INSTALLATION_ID_VAL" ]] && GITHUB_APP_INSTALLATION_ID_VAL="$(fetch_ssm "$SSM_GITHUB_APP_INSTALLATION_ID_LAB" || true)"
+    [[ -z "$GITHUB_APP_PRIVATE_KEY_B64_VAL" ]] && GITHUB_APP_PRIVATE_KEY_B64_VAL="$(fetch_ssm "$SSM_GITHUB_APP_PRIVATE_KEY_B64_LAB" || true)"
     AWS_ACCESS_KEY_ID_VAL="$(fetch_ssm "$SSM_AWS_ACCESS_KEY" || true)"
     AWS_SECRET_ACCESS_KEY_VAL="$(fetch_ssm "$SSM_AWS_SECRET_KEY" || true)"
     NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY" || true)"
@@ -117,6 +132,9 @@ if [[ "$use_ssm" != "true" ]]; then
   DIAG_KEY="${DIAGNOSTICS_API_KEY:-$ADMIN_KEY}"
   ATP_API_KEY="${ATP_API_KEY:-}"
   GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+  GITHUB_APP_ID_VAL="${GITHUB_APP_ID:-}"
+  GITHUB_APP_INSTALLATION_ID_VAL="${GITHUB_APP_INSTALLATION_ID:-}"
+  GITHUB_APP_PRIVATE_KEY_B64_VAL="${GITHUB_APP_PRIVATE_KEY_B64:-}"
   AWS_ACCESS_KEY_ID_VAL="${AWS_ACCESS_KEY_ID:-}"
   AWS_SECRET_ACCESS_KEY_VAL="${AWS_SECRET_ACCESS_KEY:-}"
   NOTION_API_KEY_VAL="${NOTION_API_KEY:-}"
@@ -165,7 +183,37 @@ umask 077
   printf "ENVIRONMENT=aws\n"
   printf "RUN_TELEGRAM=true\n"
   [[ -n "$GITHUB_TOKEN" ]] && printf "GITHUB_TOKEN=%s\n" "$GITHUB_TOKEN"
+  [[ -n "$GITHUB_APP_ID_VAL" ]] && printf "GITHUB_APP_ID=%s\n" "$GITHUB_APP_ID_VAL"
+  [[ -n "$GITHUB_APP_INSTALLATION_ID_VAL" ]] && printf "GITHUB_APP_INSTALLATION_ID=%s\n" "$GITHUB_APP_INSTALLATION_ID_VAL"
+  [[ -n "$GITHUB_APP_PRIVATE_KEY_B64_VAL" ]] && printf "GITHUB_APP_PRIVATE_KEY_B64=%s\n" "$GITHUB_APP_PRIVATE_KEY_B64_VAL"
 } > "$RUNTIME_ENV"
+
+# When source=primary, .env.aws can override GitHub App keys (operator/LAB override).
+if [[ "$SOURCE" == "primary" && -f "$ROOT_DIR/.env.aws" ]]; then
+  ( set +u; set -a; source "$ROOT_DIR/.env.aws" 2>/dev/null; set +a; set -u
+    if [[ -n "${GITHUB_APP_ID:-}" ]]; then
+      if grep -q '^GITHUB_APP_ID=' "$RUNTIME_ENV" 2>/dev/null; then
+        sed -i "s|^GITHUB_APP_ID=.*|GITHUB_APP_ID=${GITHUB_APP_ID}|" "$RUNTIME_ENV"
+      else
+        printf "GITHUB_APP_ID=%s\n" "${GITHUB_APP_ID}" >> "$RUNTIME_ENV"
+      fi
+    fi
+    if [[ -n "${GITHUB_APP_INSTALLATION_ID:-}" ]]; then
+      if grep -q '^GITHUB_APP_INSTALLATION_ID=' "$RUNTIME_ENV" 2>/dev/null; then
+        sed -i "s|^GITHUB_APP_INSTALLATION_ID=.*|GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}|" "$RUNTIME_ENV"
+      else
+        printf "GITHUB_APP_INSTALLATION_ID=%s\n" "${GITHUB_APP_INSTALLATION_ID}" >> "$RUNTIME_ENV"
+      fi
+    fi
+    if [[ -n "${GITHUB_APP_PRIVATE_KEY_B64:-}" ]]; then
+      if grep -q '^GITHUB_APP_PRIVATE_KEY_B64=' "$RUNTIME_ENV" 2>/dev/null; then
+        sed -i "s|^GITHUB_APP_PRIVATE_KEY_B64=.*|GITHUB_APP_PRIVATE_KEY_B64=${GITHUB_APP_PRIVATE_KEY_B64}|" "$RUNTIME_ENV"
+      else
+        printf "GITHUB_APP_PRIVATE_KEY_B64=%s\n" "${GITHUB_APP_PRIVATE_KEY_B64}" >> "$RUNTIME_ENV"
+      fi
+    fi
+  )
+fi
 
 # Optional health config: market data staleness threshold (minutes). See docs/MARKET_UPDATER_HARDENING_PLAN.md.
 echo "HEALTH_STALE_MARKET_MINUTES=15" >> "$RUNTIME_ENV"
@@ -204,4 +252,6 @@ fi
 [[ -n "$ATP_CONTROL_BOT_TOKEN_VAL" ]] && printf "TELEGRAM_ATP_CONTROL_BOT_TOKEN=%s\n" "$ATP_CONTROL_BOT_TOKEN_VAL" >> "$RUNTIME_ENV"
 
 echo "Rendered (source=$SOURCE)"
-echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO)"
+GITHUB_APP_ALL=no
+[[ -n "$GITHUB_APP_ID_VAL" && -n "$GITHUB_APP_INSTALLATION_ID_VAL" && -n "$GITHUB_APP_PRIVATE_KEY_B64_VAL" ]] && GITHUB_APP_ALL=YES
+echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO)"

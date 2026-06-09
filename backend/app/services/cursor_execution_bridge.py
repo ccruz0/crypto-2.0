@@ -15,7 +15,8 @@ Env vars:
       activity event before running; Telegram "Run Cursor Bridge" bypasses (human already approved).
   CURSOR_BRIDGE_AUTO_IN_ADVANCE — When true, scheduler auto-runs the bridge when eligible.
       When unset or false, no scheduler auto-run (production default); use Telegram or API.
-  GITHUB_TOKEN          — For PR creation (requires repo scope)
+  GITHUB_APP_*          — For PR creation (preferred; GitHub App installation token)
+  GITHUB_TOKEN          — Emergency legacy PAT when ALLOW_LEGACY_GITHUB_PAT=true
   GITHUB_REPOSITORY     — owner/repo (default: ccruz0/crypto-2.0)
 
 LAB vs staging writes:
@@ -51,6 +52,13 @@ logger = logging.getLogger(__name__)
 
 _GITHUB_API = "https://api.github.com"
 _DEFAULT_REPO = "ccruz0/crypto-2.0"
+
+
+def _github_auth_configured() -> bool:
+    from app.services.github_app_auth import github_api_token_configured
+
+    return github_api_token_configured()
+
 
 _DEFAULT_STAGING_ROOT = "/tmp/atp-staging"
 _DEFAULT_CURSOR_CLI = "cursor"
@@ -312,7 +320,7 @@ def get_bridge_diagnostics() -> dict[str, Any]:
         "handoff_dir": str(handoff_dir),
         "handoff_dir_exists": handoff_dir.is_dir(),
         "handoff_dir_writable": _path_is_writable_dir(handoff_dir),
-        "github_token_set": bool((os.environ.get("GITHUB_TOKEN") or "").strip()),
+        "github_auth_configured": _github_auth_configured(),
         "ready": is_bridge_enabled() and cursor_found and staging_writable,
     }
 
@@ -942,7 +950,7 @@ def create_patch_pr(
     base_ref: str = "main",
 ) -> dict[str, Any]:
     """
-    Create a PR from staging changes. Requires GITHUB_TOKEN and uncommitted changes.
+    Create a PR from staging changes. Requires GitHub App or legacy PAT and uncommitted changes.
 
     Returns dict with: ok, pr_url, pr_number, error.
     """
@@ -950,10 +958,18 @@ def create_patch_pr(
     if not task_id:
         return {"ok": False, "pr_url": None, "pr_number": None, "error": "empty task_id"}
 
-    token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+    from app.services.github_app_auth import get_github_api_token
+
+    token, auth_method = get_github_api_token()
     repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip() or _DEFAULT_REPO
     if not token:
-        return {"ok": False, "pr_url": None, "pr_number": None, "error": "GITHUB_TOKEN not set"}
+        return {
+            "ok": False,
+            "pr_url": None,
+            "pr_number": None,
+            "error": "GitHub API auth unavailable (configure GITHUB_APP_* or legacy PAT)",
+        }
+    logger.info("cursor_bridge: create_patch_pr auth_method=%s task_id=%s", auth_method, task_id)
 
     # Sanitize branch name: alphanumeric and hyphens only
     safe_id = re.sub(r"[^a-zA-Z0-9-]", "-", task_id)[:50].strip("-") or "patch"

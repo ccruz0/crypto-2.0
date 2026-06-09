@@ -55,8 +55,8 @@ if len(b64_str) > 3500:
     exit(1)
 
 # Two commands: 1) write file, 2) restart
-cmd1 = f"echo '{b64_str}' | base64 -d > /home/ubuntu/automated-trading-platform/secrets/runtime.env && chown ubuntu:ubuntu /home/ubuntu/automated-trading-platform/secrets/runtime.env"
-cmd2 = "sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws backend-aws-canary'"
+cmd1 = f"echo '{b64_str}' | base64 -d > /home/ubuntu/crypto-2.0/secrets/runtime.env && chown ubuntu:ubuntu /home/ubuntu/crypto-2.0/secrets/runtime.env"
+cmd2 = "sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws backend-aws-canary'"
 params = {"commands": [cmd1, cmd2]}
 
 result = subprocess.run(
