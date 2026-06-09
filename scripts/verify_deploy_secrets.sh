@@ -67,6 +67,12 @@ print(f"  GitHub App ready (all three): {'yes' if app_ready else 'no'}")
 print(f"  ALLOW_LEGACY_GITHUB_PAT: {present('ALLOW_LEGACY_GITHUB_PAT')}")
 print(f"  GITHUB_TOKEN (legacy): {present('GITHUB_TOKEN')}")
 print(f"  Legacy PAT path ready: {'yes' if legacy_ready else 'no'}")
+if app_ready:
+    print("  auth_mode: github_app")
+elif legacy_ready:
+    print("  auth_mode: legacy_transition")
+else:
+    print("  auth_mode: none")
 
 for key, desc in [
     ("GITHUB_WEBHOOK_SECRET", "optional, for webhook signature verification"),
