@@ -2731,19 +2731,28 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
         try:
             async def trigger_github_workflow():
                 try:
-                    # Get GitHub token and repo info from environment
-                    github_token = os.getenv("GITHUB_TOKEN")
+                    from app.services.github_app_auth import get_github_api_token
+
+                    github_token, auth_method = get_github_api_token()
                     github_repo = os.getenv("GITHUB_REPOSITORY", "ccruz0/crypto-2.0")
                     workflow_file = "dashboard-data-integrity.yml"
                     
                     if not github_token:
-                        raise ValueError("GITHUB_TOKEN environment variable is not set")
+                        raise ValueError(
+                            "GitHub API auth unavailable (configure GITHUB_APP_* or legacy PAT)"
+                        )
                     
+                    log.info(
+                        "dashboard_data_integrity: dispatch auth_method=%s repo=%s",
+                        auth_method,
+                        github_repo,
+                    )
+
                     # Trigger workflow via GitHub API
                     url = f"https://api.github.com/repos/{github_repo}/actions/workflows/{workflow_file}/dispatches"
                     headers = {
-                        "Authorization": f"token {github_token}",
-                        "Accept": "application/vnd.github.v3+json"
+                        "Authorization": f"Bearer {github_token}",
+                        "Accept": "application/vnd.github+json",
                     }
                     payload = {
                         "ref": "main"  # Branch to trigger on
