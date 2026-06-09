@@ -1,5 +1,7 @@
 # OpenClaw Autonomous Recovery Layer — Design
 
+> **Note:** **Deploy triggers** on the backend use **GitHub App** auth. See **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. Any remaining `GITHUB_TOKEN` wording elsewhere is historical.
+
 > **Goal:** Allow OpenClaw to automatically diagnose and recover from known low-risk orchestration failures without human intervention, while preserving approval gates for higher-risk actions.
 
 ---
@@ -41,7 +43,7 @@ flowchart TB
 | **Telegram** | Approval requests, deploy/smoke buttons | Rate limits, message delivery |
 | **OpenClaw** | AI investigation, content quality gate | Empty/fallback responses, timeout |
 | **Cursor handoff** | Sections sidecar, docs/ artifacts | Path resolution (/docs), volume mounts |
-| **Deploy trigger** | workflow_dispatch to GitHub | GITHUB_TOKEN missing |
+| **Deploy trigger** | workflow_dispatch to GitHub | GitHub App credentials missing or misconfigured (`GITHUB_APP_*`) |
 | **Webhook** | workflow_run completion → smoke check | Correlation miss (no deploying task), wrong workflow |
 | **Smoke check** | Health probes, advance to done | ATP_HEALTH_BASE wrong, timeout |
 

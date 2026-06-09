@@ -1,5 +1,7 @@
 # Cómo construir y subir la imagen OpenClaw a GHCR
 
+> **Nota:** Este documento trata **GHCR / imagen OpenClaw** (LAB). No describe la autenticación del **backend** en EC2. Para deploy y Cursor bridge, ver **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. Los tokens personales (`ghp_` / `github_pat_`) **no** son la vía por defecto para registry; preferir CI, imagen pública o `scripts/openclaw/ghcr_login_lab.md`.
+
 La imagen `ghcr.io/your-org/openclaw:latest` es un **placeholder**. Para usarla en el LAB necesitas construir la imagen desde el **repositorio donde está el código de OpenClaw** y subirla a GitHub Container Registry (GHCR).
 
 ---
@@ -8,13 +10,13 @@ La imagen `ghcr.io/your-org/openclaw:latest` es un **placeholder**. Para usarla 
 
 - Repositorio con el **código fuente de OpenClaw** y un **Dockerfile** que exponga el servicio en el puerto **8080**.
 - Cuenta GitHub con el repo (ej. `ccruz0/openclaw` o el repo donde esté el Dockerfile).
-- Token de GitHub con permiso **write:packages** (para subir a GHCR).
+- Credenciales de registry para GHCR (preferir CI o token no personal; ver §3).
 
 ---
 
 ## 1. Dónde está el código de OpenClaw
 
-Este repo (crypto-2.0 / automated-trading-platform) **no** contiene el código ni el Dockerfile de OpenClaw. Solo tiene:
+Este repo (`crypto-2.0`; ruta canónica `/home/ubuntu/crypto-2.0` — ver [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md)) **no** contiene el código ni el Dockerfile de OpenClaw. Solo tiene:
 
 - `docker-compose.openclaw.yml` (usa una imagen ya construida)
 - Documentación y scripts de despliegue
@@ -43,25 +45,19 @@ docker build -t ghcr.io/TU_USUARIO/openclaw:latest -f path/to/Dockerfile .
 
 ## 3. Autenticación en GitHub Container Registry (GHCR)
 
-Para poder hacer `docker push` a `ghcr.io` necesitas autenticarte.
+Para `docker push` / `docker pull` en `ghcr.io`, preferir credenciales **no personales**:
 
-**Opción A: Token clásico (PAT) con scope `write:packages`**
+1. **GitHub Actions** en el repo de OpenClaw: push con `secrets.GITHUB_TOKEN` del workflow (no es un PAT personal).
+2. **Paquete público** en GHCR → el LAB puede hacer `docker pull` sin login.
+3. **Privado:** ver **`scripts/openclaw/ghcr_login_lab.md`** en este repo (tokens `ghs_` u org; rechaza `ghp_` / `github_pat_`).
 
-1. GitHub → Settings → Developer settings → Personal access tokens → **Tokens (classic)**.
-2. Generate new token → marcar **write:packages** (y **read:packages** si quieres poder hacer pull después).
-3. Copia el token (empieza por `ghp_`).
-
-**Opción B: Fine-grained token**
-
-- Crear un token fine-grained con permiso **Packages: Read and write** para el repo (o para tu cuenta).
-
-Luego en la terminal:
+Login local (solo si hace falta):
 
 ```bash
-echo "TU_TOKEN_GITHUB" | docker login ghcr.io -u TU_USUARIO --password-stdin
+echo "TU_TOKEN_REGISTRY" | docker login ghcr.io -u TU_USUARIO --password-stdin
 ```
 
-(Sustituye `TU_TOKEN_GITHUB` y `TU_USUARIO`.)
+**(Histórico / legacy):** Un PAT clásico con `write:packages` (`ghp_…`) se usaba a veces; **no** es la recomendación por defecto.
 
 ---
 
@@ -92,7 +88,7 @@ echo "TOKEN_CON_READ_PACKAGES" | sudo -u ubuntu docker login ghcr.io -u TU_USUAR
 Luego:
 
 ```bash
-sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.openclaw.yml up -d'
+sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml up -d'
 ```
 
 ---
@@ -103,16 +99,17 @@ sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker com
 # En tu Mac (o donde tengas el repo de OpenClaw)
 cd ~/repos/openclaw   # o la ruta real
 docker build -t ghcr.io/ccruz0/openclaw:latest .
-echo "ghp_xxxx" | docker login ghcr.io -u ccruz0 --password-stdin
+# Login GHCR: preferir CI push; si hace falta login local, usar token no personal (ver ghcr_login_lab.md)
+echo "TU_TOKEN_REGISTRY" | docker login ghcr.io -u ccruz0 --password-stdin
 docker push ghcr.io/ccruz0/openclaw:latest
 
 # En el LAB (.env.lab)
 OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:latest
 
-# Si la imagen es privada, en el LAB primero:
-echo "ghp_yyyy" | sudo -u ubuntu docker login ghcr.io -u ccruz0 --password-stdin
+# Si la imagen es privada, en el LAB primero (mismo enfoque no personal):
+echo "TU_TOKEN_REGISTRY" | sudo -u ubuntu docker login ghcr.io -u ccruz0 --password-stdin
 # Luego
-sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.openclaw.yml up -d'
+sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml up -d'
 ```
 
 ---

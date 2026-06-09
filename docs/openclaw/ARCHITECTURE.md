@@ -4,6 +4,8 @@
 
 **See also:** [ARCHITECTURE_V1_1_INTERNAL_SERVICE.md](ARCHITECTURE_V1_1_INTERNAL_SERVICE.md) — Dashboard ↔ OpenClaw UI (internal service model, Nginx proxy, no public 8080).
 
+> **Note:** **PROD backend** GitHub API auth is **GitHub App** — **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. The table row “GITHUB_TOKEN / PAT” refers to **CI workflow token** vs **LAB `.env.lab`** for OpenClaw, not EC2 backend runtime.
+
 ---
 
 ## 1. High-Level Architecture

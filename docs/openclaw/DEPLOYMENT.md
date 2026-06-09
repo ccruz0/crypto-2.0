@@ -2,6 +2,8 @@
 
 This document provides the folder structure, hardened Docker Compose file, systemd service, `.env.lab` template, GitHub token scope requirements, security checklist reference, and step-by-step deployment guide. **Existing ATP services are not removed or modified** by this blueprint; OpenClaw is additive (Lab instance only).
 
+> **Note:** **EC2 backend** GitHub API authentication (deploy, Cursor bridge) is **GitHub App** — **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. `OPENCLAW_GITHUB_TOKEN` / token file here is **LAB-only** for the OpenClaw container, **not** the PROD backend default.
+
 ---
 
 ## 1. Folder Structure
@@ -9,7 +11,7 @@ This document provides the folder structure, hardened Docker Compose file, syste
 Recommended layout for OpenClaw on the Lab instance and in the repo:
 
 ```
-automated-trading-platform/          # or crypto-2.0 (repo root)
+crypto-2.0/                          # repo root (canonical; legacy clone name: automated-trading-platform)
 ├── .github/
 │   └── workflows/
 │       └── path-guard.yml           # NEW: CI security gate for protected paths
@@ -31,11 +33,11 @@ automated-trading-platform/          # or crypto-2.0 (repo root)
     └── .gitkeep
 ```
 
-On the **Lab EC2** host (e.g. `/home/ubuntu/automated-trading-platform` or `~/lab-repo`):
+On the **Lab EC2** host (canonical: `/home/ubuntu/crypto-2.0` — see [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md)):
 
 ```
 /home/ubuntu/
-├── automated-trading-platform/     # clone of repo (read-only for OpenClaw or dedicated clone)
+├── crypto-2.0/                     # clone of repo (read-only for OpenClaw or dedicated clone)
 │   ├── docker-compose.openclaw.yml
 │   ├── .env.lab                    # from .env.lab.example; never commit
 │   └── ...
@@ -124,7 +126,7 @@ This keeps OpenClaw running under Docker Compose after reboot. Install to `/etc/
 
 [Unit]
 Description=OpenClaw Lab Stack
-Documentation=file:///home/ubuntu/automated-trading-platform/docs/openclaw/DEPLOYMENT.md
+Documentation=file:///home/ubuntu/crypto-2.0/docs/openclaw/DEPLOYMENT.md
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
@@ -132,7 +134,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/ubuntu/automated-trading-platform
+WorkingDirectory=/home/ubuntu/crypto-2.0
 ExecStartPre=/usr/bin/docker compose -f docker-compose.openclaw.yml pull --quiet
 ExecStart=/usr/bin/docker compose -f docker-compose.openclaw.yml up -d
 ExecStop=/usr/bin/docker compose -f docker-compose.openclaw.yml down
@@ -148,7 +150,7 @@ WantedBy=multi-user.target
 **Install steps (on Lab host):**
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/openclaw/openclaw.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw
 sudo systemctl start openclaw
@@ -321,8 +323,8 @@ A full implementation would parse `github.event.pull_request.labels` and `github
 1. **Clone the repo (once):**
    ```bash
    cd /home/ubuntu
-   git clone https://github.com/ccruz0/crypto-2.0.git automated-trading-platform
-   cd automated-trading-platform
+   git clone https://github.com/ccruz0/crypto-2.0.git crypto-2.0
+   cd crypto-2.0
    ```
 
 2. **Create `.env.lab`:**

@@ -1,6 +1,8 @@
 # Audit: How OpenClaw Consumes the GitHub Token
 
-**Scope:** This repo (automated-trading-platform / crypto-2.0). The **OpenClaw application** (code inside the container image `ghcr.io/ccruz0/openclaw`) is **not** in this repo; that image’s source must be audited separately.
+> **Note:** The **backend** (EC2) uses **GitHub App** auth for workflow dispatch, not env `GITHUB_TOKEN` by default. See **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. Rows below that mention `routes_monitoring` / `GITHUB_TOKEN` describe **older wording**; implementation uses `github_app_auth`.
+
+**Scope:** This repo (`crypto-2.0`; canonical path `/home/ubuntu/crypto-2.0` — see [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md)). The **OpenClaw application** (code inside the container image `ghcr.io/ccruz0/openclaw`) is **not** in this repo; that image’s source must be audited separately.
 
 ---
 
@@ -20,11 +22,11 @@
 | Pattern | Files / lines | Notes |
 |---------|----------------|-------|
 | **OPENCLAW_TOKEN_FILE** | `docker-compose.openclaw.yml:22` | Env var set to path only. ✅ |
-| **GITHUB_TOKEN** | `backend/app/api/routes_monitoring.py:2515` | Used for **dashboard_data_integrity** workflow trigger (backend, not OpenClaw). Unrelated to OpenClaw container. |
+| **GitHub API (backend)** | `routes_monitoring.py`, `github_app_auth.py` | **GitHub App** installation tokens for workflow dispatch (not OpenClaw). |
 | **GH_TOKEN** | Not found | — |
 | **credential.helper** | `docs/openclaw/LAB_SETUP_AND_VALIDATION.md` (doc) | Doc only; helper reads from file, outputs to stdout for Git. |
 | **git config** (token-related) | Deploy scripts set `safe.directory` only; no credential store. | ✅ |
-| **os.getenv** (token) | `routes_monitoring.py` (GITHUB_TOKEN for workflow dispatch) | Not OpenClaw. |
+| **HTTP helper** | `github_http_post_with_installation_retry` | Bearer from GitHub App; not OpenClaw. |
 | **print(token)** / **logging token** | Various Telegram/Crypto scripts; none for OpenClaw token. | No OpenClaw token printed or logged in this repo. |
 | **Logging of headers** | `http_client.py` redacts Telegram token in logs. | No OpenClaw token in HTTP logging in this repo. |
 

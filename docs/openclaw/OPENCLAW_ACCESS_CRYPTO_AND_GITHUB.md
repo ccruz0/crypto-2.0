@@ -1,9 +1,11 @@
 # Giving OpenClaw (Claw) Access to the Crypto Instance and GitHub
 
+> **Note:** **EC2 trading backend** uses **GitHub App** for deploy/API — **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. Sections below about a GitHub PAT are **LAB/OpenClaw agent** access only (clone/PR), not the PROD backend default.
+
 This runbook explains how to let the OpenClaw agent (e.g. Lilo) access:
 
 1. **The crypto instance** — the production EC2 where the trading backend runs (atp-rebuild-2026).
-2. **GitHub** — so it can read the repo and documentation (e.g. `automated-trading-platform` or `crypto-2.0`).
+2. **GitHub** — so it can read the repo and documentation (`crypto-2.0`; legacy clone name `automated-trading-platform`).
 
 It also addresses the **`aws: Permission denied`** error you see in the OpenClaw chat when the agent tries to run the AWS CLI.
 
@@ -29,7 +31,7 @@ OpenClaw is designed to use a **GitHub fine-grained Personal Access Token (PAT)*
 
 1. GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**.
 2. **Generate new token**:
-   - Repository access: only the repo(s) you want (e.g. `ccruz0/automated-trading-platform` or `ccruz0/crypto-2.0`).
+   - Repository access: only the repo(s) you want (e.g. `ccruz0/crypto-2.0`).
    - Permissions:
      - **Contents:** Read and write (for clone, branch, push to non-protected branches).
      - **Pull requests:** Read and write (for creating/updating PRs).
@@ -57,10 +59,10 @@ Ensure the OpenClaw container mounts this file and gets only the *path* in env (
 - Mount: `~/secrets/openclaw_token` → `/run/secrets/openclaw_token` (read-only).
 - Env: `OPENCLAW_TOKEN_FILE=/run/secrets/openclaw_token`.
 
-Restart OpenClaw after creating or updating the token:
+Restart OpenClaw after creating or updating the token (canonical LAB repo path — see [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md)):
 
 ```bash
-cd ~/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d --force-recreate
 ```
 
@@ -77,8 +79,8 @@ If the app doesn’t yet use this file, apply the audit and code changes describ
 
 Once the token is set and the app uses it:
 
-- **Repo:** OpenClaw can clone the repo (e.g. `automated-trading-platform`) over HTTPS using the PAT.
-- **Documentation:** All docs under `docs/` in that repo are part of the clone; the agent can read them from the workspace. If OpenClaw has a “Resources / Docs” feature, you can also add links to the repo or to specific doc paths (e.g. `https://github.com/ccruz0/automated-trading-platform/tree/main/docs` or raw URLs) so the agent is explicitly given those as context.
+- **Repo:** OpenClaw can clone the repo (`crypto-2.0`) over HTTPS using the PAT.
+- **Documentation:** All docs under `docs/` in that repo are part of the clone; the agent can read them from the workspace. If OpenClaw has a “Resources / Docs” feature, you can also add links to the repo or to specific doc paths (e.g. `https://github.com/ccruz0/crypto-2.0/tree/main/docs` or raw URLs) so the agent is explicitly given those as context.
 
 So: **giving Claw GitHub access via this PAT gives it both the repo and the documentation** that lives in the repo.
 
@@ -138,7 +140,7 @@ Follow these steps in order to actually grant Claw access.
    ```
 4. **Restart OpenClaw** on LAB:
    ```bash
-   cd ~/automated-trading-platform && docker compose -f docker-compose.openclaw.yml up -d --force-recreate
+   cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml up -d --force-recreate
    ```
 5. **Verify:** `docker exec openclaw env | grep OPENCLAW_TOKEN_FILE` should show `OPENCLAW_TOKEN_FILE=/run/secrets/openclaw_token`. The OpenClaw app must read that file for git/API (see §1.3; if unsure, apply [PROMPT_AUDIT_OPENCLAW_SOURCE.md](PROMPT_AUDIT_OPENCLAW_SOURCE.md) in the OpenClaw repo).
 

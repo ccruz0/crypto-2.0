@@ -20,7 +20,11 @@ from typing import Any
 
 import httpx
 
+from app.core.environment import is_atp_trading_only
+
 logger = logging.getLogger(__name__)
+
+_TRADING_ONLY_OPENCLAW_ERR = "OPENCLAW_DISABLED_ATP_TRADING_ONLY"
 
 _SYSTEM_CORE_CACHE: str | None = None
 
@@ -287,6 +291,19 @@ def _post_one(
     instructions: str | None = None,
 ) -> dict[str, Any]:
     """Single POST to OpenClaw with the given model. Returns result dict with optional status_code for non-200."""
+    if is_atp_trading_only():
+        logger.info(
+            "openclaw_client: HTTP to OpenClaw blocked (ATP_TRADING_ONLY=1) model=%s task_id=%s",
+            model,
+            task_id,
+        )
+        return {
+            "success": False,
+            "content": "",
+            "error": _TRADING_ONLY_OPENCLAW_ERR,
+            "blocked_reason": "atp_trading_only",
+        }
+
     token = _api_token()
     if not token:
         return {"success": False, "content": "", "error": "OPENCLAW_API_TOKEN not set"}
@@ -373,6 +390,18 @@ def send_to_openclaw(
     Returns ``{"success": True, "content": "...", "raw": {...}, "model_used": "...", "usage": {...}}`` on success
     (usage optional if gateway provides it), or ``{"success": False, "content": "", "error": "..."}`` on failure.
     """
+    if is_atp_trading_only():
+        logger.info(
+            "openclaw_client: send_to_openclaw blocked (ATP_TRADING_ONLY=1) task_id=%s",
+            task_id,
+        )
+        return {
+            "success": False,
+            "content": "",
+            "error": _TRADING_ONLY_OPENCLAW_ERR,
+            "blocked_reason": "atp_trading_only",
+        }
+
     import time as _time
     chain = model_chain_override if model_chain_override is not None else _model_chain()
     if not chain:
