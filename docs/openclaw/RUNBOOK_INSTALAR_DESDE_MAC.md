@@ -1,5 +1,7 @@
 # OpenClaw LAB — Instalar desde Mac
 
+> **Nota:** **Backend EC2** (deploy, Cursor bridge) usa **GitHub App** — **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. Este runbook es **solo LAB/OpenClaw** (PAT fine-grained para instalar OpenClaw); no es la vía del backend.
+
 Instancia LAB: **i-0d82c172235770a0d** (ap-southeast-1).
 
 **Flujo recomendado (seguro):** PAT solo en LAB vía SSH, sin SSM. Ver **[RUNBOOK_SECURE_INSTALL.md](RUNBOOK_SECURE_INSTALL.md)** y ejecutar `./scripts/openclaw/prompt_pat_and_install.sh` (comprueba egress, pop-up para PAT, escritura directa en LAB por SSH).
@@ -39,8 +41,8 @@ En tu Mac, desde la raíz del repo:
 Alternativa sin pop-up (PAT por variable o archivo):
 
 ```bash
-OPENCLAW_PAT=ghp_xxx ./scripts/openclaw/store_pat_and_install.sh
-# o: echo ghp_xxx > .openclaw_pat && ./scripts/openclaw/store_pat_and_install.sh
+# Legacy (script deprecado): OPENCLAW_PAT=... ./scripts/openclaw/store_pat_and_install.sh
+# o: echo TOKEN > .openclaw_pat && ./scripts/openclaw/store_pat_and_install.sh
 ```
 
 ---
@@ -52,7 +54,7 @@ OPENCLAW_PAT=ghp_xxx ./scripts/openclaw/store_pat_and_install.sh
 
   ```bash
   docker ps -f name=openclaw
-  cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.openclaw.yml logs -f openclaw
+  cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml logs -f openclaw
   ```
 
 - Siguiente: [INSTALL_CONTINUE.md](INSTALL_CONTINUE.md) — "After installation" y [LAB_SETUP_AND_VALIDATION.md](LAB_SETUP_AND_VALIDATION.md).

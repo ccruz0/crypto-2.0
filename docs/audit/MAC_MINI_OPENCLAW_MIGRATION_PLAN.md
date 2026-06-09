@@ -1,5 +1,8 @@
 # Mac Mini OpenClaw Migration Plan
 
+> **Note:** **PROD backend** uses **GitHub App** — see **[`backend/docs/GITHUB_APP_AUTH.md`](../../backend/docs/GITHUB_APP_AUTH.md)**. PAT mentions below are **LAB / Mac OpenClaw** unless noted.
+
+
 **Date:** 2026-03-15  
 **Based on:** [CURRENT_ARCHITECTURE_REPORT.md](CURRENT_ARCHITECTURE_REPORT.md)  
 **Goal:** Add Mac Mini home-hosted OpenClaw in parallel with LAB, without changing AWS production trading.
@@ -69,7 +72,7 @@
 | **secrets/runtime.env** | Set `OPENCLAW_API_URL=http://<macmini-tailscale>:8080` |
 | **Backend restart** | Required after env change |
 | **OPENCLAW_API_TOKEN** | Must match Mac Mini OpenClaw gateway token (same token can be shared with LAB for parallel run) |
-| **Workspace path** | Mac Mini: mount differs. LAB uses `/home/ubuntu/automated-trading-platform`. Mac Mini: e.g. `/Users/<user>/automated-trading-platform` or Docker volume path |
+| **Workspace path** | Mac Mini: mount differs. LAB uses `/home/ubuntu/crypto-2.0` (canonical; see [BACKEND_AWS_CANONICAL_REPO.md](../operations/BACKEND_AWS_CANONICAL_REPO.md)). Mac Mini: e.g. `/Users/<user>/crypto-2.0` or Docker volume path |
 | **run-atp-command** | No change. OpenClaw (Mac Mini) calls `https://dashboard.hilovivo.com/api/agent/run-atp-command` — public URL, outbound from Mac Mini works |
 | **Nginx /openclaw/** | No change for Phase 1. UI stays on LAB. PROD nginx continues to proxy to LAB for browser access |
 
@@ -89,7 +92,7 @@
 
 1. **Deployment:** `docker-compose.openclaw.yml` or `deploy_openclaw_lab_from_mac.sh` runs `ghcr.io/ccruz0/openclaw:latest` on atp-lab-ssm-clean (172.31.3.214)
 2. **Port:** 8080 (host) → 18789 (container)
-3. **Workspace:** `/home/ubuntu/automated-trading-platform` mounted at `/home/node/.openclaw/workspace/atp:ro`
+3. **Workspace:** `/home/ubuntu/crypto-2.0` mounted at `/home/node/.openclaw/workspace/atp:ro`
 4. **Token:** `/home/ubuntu/secrets/openclaw_token` or `gateway.auth.token` in `openclaw.json`
 5. **UI:** Nginx on PROD proxies `https://dashboard.hilovivo.com/openclaw/` → `http://172.31.3.214:8080/`
 6. **API:** PROD backend sets `OPENCLAW_API_URL=http://172.31.3.214:8080` (or leaves default) and `OPENCLAW_API_TOKEN`; calls POST `/v1/responses`
@@ -148,8 +151,8 @@
 
 | Assumption | LAB | Mac Mini |
 |------------|-----|----------|
-| Host ATP path | `/home/ubuntu/automated-trading-platform` | e.g. `/Users/<user>/automated-trading-platform` |
-| Container mount | `-v /home/ubuntu/automated-trading-platform:/home/node/.openclaw/workspace/atp:ro` | `-v /Users/<user>/automated-trading-platform:/home/node/.openclaw/workspace/atp:ro` |
+| Host ATP path | `/home/ubuntu/crypto-2.0` | e.g. `/Users/<user>/crypto-2.0` |
+| Container mount | `-v /home/ubuntu/crypto-2.0:/home/node/.openclaw/workspace/atp:ro` | `-v /Users/<user>/crypto-2.0:/home/node/.openclaw/workspace/atp:ro` |
 | Prompt text | `/home/node/.openclaw/workspace/atp/` | Same — container path is identical |
 
 ### Auth/token handling
@@ -221,7 +224,7 @@
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (prod)
 - `DATABASE_URL` (prod)
 - Crypto.com API keys
-- `GITHUB_TOKEN` (if used for deploy approvals)
+- ~~`GITHUB_TOKEN`~~ — backend uses **GitHub App**; do not rely on a personal PAT for PROD deploy (see `GITHUB_APP_AUTH.md`)
 - `ATP_API_KEY` (dashboard auth)
 - Any AWS credentials with write access to prod
 
@@ -242,7 +245,7 @@
 
 - `OPENCLAW_API_TOKEN` (gateway auth) — same value as in PROD for API calls
 - OpenAI/Anthropic API keys (for LLM calls)
-- GitHub PAT (for clone/branch/PR) — fine-grained, repo-only
+- GitHub credential for OpenClaw on Mac (clone/branch/PR) — fine-grained PAT or deploy key, **LAB/Mac only** — not the EC2 backend default
 - Tailscale auth
 
 ### Firewall and auth model
@@ -259,7 +262,7 @@
 
 1. Install Docker on Mac Mini
 2. Install Tailscale; join tailnet; note hostname (e.g. `macmini`)
-3. Clone ATP repo: `git clone ... automated-trading-platform`
+3. Clone ATP repo: `git clone https://github.com/ccruz0/crypto-2.0.git crypto-2.0`
 4. Create `docker-compose.openclaw.macmini.yml` (or use existing with path override):
    - Same image: `ghcr.io/ccruz0/openclaw:latest`
    - Mount: `-v $(pwd):/home/node/.openclaw/workspace/atp:ro`

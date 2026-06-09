@@ -68,6 +68,17 @@ def test_truncate_task_text_default_limit(monkeypatch: pytest.MonkeyPatch) -> No
     assert "truncated" in out.lower()
 
 
+def test_send_to_openclaw_blocked_when_atp_trading_only() -> None:
+    from unittest.mock import patch
+
+    from app.services import openclaw_client as oc
+
+    with patch("app.services.openclaw_client.is_atp_trading_only", return_value=True):
+        out = oc.send_to_openclaw("hello", task_id="t-block")
+    assert out.get("success") is False
+    assert out.get("error") == oc._TRADING_ONLY_OPENCLAW_ERR
+
+
 def test_task_metadata_truncates_details() -> None:
     from app.services.openclaw_client import _task_metadata_block
 
@@ -88,6 +99,7 @@ def test_task_metadata_truncates_details() -> None:
 def test_post_one_includes_max_output_tokens_when_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("ATP_TRADING_ONLY", raising=False)
     monkeypatch.setenv("OPENCLAW_API_TOKEN", "test-token")
     monkeypatch.setenv("OPENCLAW_API_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("OPENCLAW_MAX_OUTPUT_TOKENS", "4096")
@@ -114,6 +126,7 @@ def test_post_one_treats_openresponses_failed_envelope_as_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HTTP 200 with JSON status=failed must not be treated as success (defensive)."""
+    monkeypatch.delenv("ATP_TRADING_ONLY", raising=False)
     monkeypatch.setenv("OPENCLAW_API_TOKEN", "test-token")
     monkeypatch.setenv("OPENCLAW_API_URL", "http://127.0.0.1:9")
     from unittest.mock import MagicMock, patch
