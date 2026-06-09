@@ -59,6 +59,14 @@ The script appends `GITHUB_APP_*` to **`secrets/runtime.env`** only for non-empt
 
 **`/automated-trading-platform/prod/github_token`** is still fetched and written as **`GITHUB_TOKEN`** when non-empty. On AWS, using **only** `GITHUB_TOKEN` without GitHub App is **blocked** unless **`ALLOW_LEGACY_GITHUB_PAT=true`** is set in `secrets/runtime.env` (see `backend/app/factory.py`). Prefer GitHub App for normal operation.
 
+### Transition period (deploy after PR #32)
+
+When **`scripts/aws/render_runtime_env.sh`** renders a PAT but **not** all three `GITHUB_APP_*` values, it automatically writes **`ALLOW_LEGACY_GITHUB_PAT=true`** and prints **`GITHUB_AUTH_MODE=legacy_transition`**. This keeps Telegram deploy, governance deploy bundles, and Cursor bridge working until App credentials exist in SSM.
+
+When all three App values are present, the render script **removes** `ALLOW_LEGACY_GITHUB_PAT` and prints **`GITHUB_AUTH_MODE=github_app`**.
+
+After App cutover is verified (`./scripts/verify_deploy_secrets.sh` → `auth_mode: github_app`), revoke the personal PAT in GitHub and delete `/automated-trading-platform/prod/github_token` from SSM (separate operator step).
+
 ## Store parameters in SSM (example)
 
 Replace `REGION` and use your account’s path names as above. **Do not** echo secret values in CI or shared terminals.

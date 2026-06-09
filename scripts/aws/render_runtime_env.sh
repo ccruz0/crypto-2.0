@@ -251,7 +251,32 @@ fi
 [[ -n "$ATP_CONTROL_CHAT_ID_VAL" ]] && printf "TELEGRAM_ATP_CONTROL_CHAT_ID=%s\n" "$ATP_CONTROL_CHAT_ID_VAL" >> "$RUNTIME_ENV"
 [[ -n "$ATP_CONTROL_BOT_TOKEN_VAL" ]] && printf "TELEGRAM_ATP_CONTROL_BOT_TOKEN=%s\n" "$ATP_CONTROL_BOT_TOKEN_VAL" >> "$RUNTIME_ENV"
 
-echo "Rendered (source=$SOURCE)"
+# GitHub auth mode (after all merges): App preferred; PAT-only sets legacy escape hatch for PR #32+.
 GITHUB_APP_ALL=no
-[[ -n "$GITHUB_APP_ID_VAL" && -n "$GITHUB_APP_INSTALLATION_ID_VAL" && -n "$GITHUB_APP_PRIVATE_KEY_B64_VAL" ]] && GITHUB_APP_ALL=YES
-echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO)"
+grep -q '^GITHUB_APP_ID=' "$RUNTIME_ENV" 2>/dev/null \
+  && grep -q '^GITHUB_APP_INSTALLATION_ID=' "$RUNTIME_ENV" 2>/dev/null \
+  && grep -q '^GITHUB_APP_PRIVATE_KEY_B64=' "$RUNTIME_ENV" 2>/dev/null \
+  && GITHUB_APP_ALL=YES
+HAS_GITHUB_PAT=no
+grep -q '^GITHUB_TOKEN=' "$RUNTIME_ENV" 2>/dev/null && HAS_GITHUB_PAT=YES
+GITHUB_AUTH_MODE=none
+if [[ "$GITHUB_APP_ALL" == "YES" ]]; then
+  GITHUB_AUTH_MODE=github_app
+  if grep -q '^ALLOW_LEGACY_GITHUB_PAT=' "$RUNTIME_ENV" 2>/dev/null; then
+    sed -i '/^ALLOW_LEGACY_GITHUB_PAT=/d' "$RUNTIME_ENV"
+  fi
+elif [[ "$HAS_GITHUB_PAT" == "YES" ]]; then
+  GITHUB_AUTH_MODE=legacy_transition
+  if grep -q '^ALLOW_LEGACY_GITHUB_PAT=' "$RUNTIME_ENV" 2>/dev/null; then
+    sed -i 's|^ALLOW_LEGACY_GITHUB_PAT=.*|ALLOW_LEGACY_GITHUB_PAT=true|' "$RUNTIME_ENV"
+  else
+    printf "ALLOW_LEGACY_GITHUB_PAT=true\n" >> "$RUNTIME_ENV"
+  fi
+else
+  if grep -q '^ALLOW_LEGACY_GITHUB_PAT=' "$RUNTIME_ENV" 2>/dev/null; then
+    sed -i '/^ALLOW_LEGACY_GITHUB_PAT=/d' "$RUNTIME_ENV"
+  fi
+fi
+
+echo "Rendered (source=$SOURCE)"
+echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$HAS_GITHUB_PAT" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL GITHUB_AUTH_MODE=$GITHUB_AUTH_MODE ALLOW_LEGACY_GITHUB_PAT=$([[ "$GITHUB_AUTH_MODE" == "legacy_transition" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO)"
