@@ -15,6 +15,7 @@ import WatchlistTab from '@/app/components/tabs/WatchlistTab';
 import OrdersTab from '@/app/components/tabs/OrdersTab';
 import ExpectedTakeProfitTab from '@/app/components/tabs/ExpectedTakeProfitTab';
 import ExecutedOrdersTab from '@/app/components/tabs/ExecutedOrdersTab';
+import JarvisTab from '@/app/components/tabs/JarvisTab';
 import SystemHealthPanel from '@/components/SystemHealth';
 import { palette } from '@/theme/palette';
 import { logger } from '@/utils/logger';
@@ -323,7 +324,7 @@ const SkeletonBlock = ({ className = '' }: { className?: string }) => (
   <div className={`animate-pulse bg-gray-200 dark:bg-slate-700 rounded ${className}`} />
 );
 
-type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring';
+type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring' | 'jarvis';
 
 // Helper function to add thousand separators
 function addThousandSeparators(numStr: string): string {
@@ -4620,6 +4621,7 @@ function resolveDecisionIndexColor(value: number): string {
     { id: 'executed-orders', label: 'Executed Orders' },
     { id: 'monitoring', label: 'Monitoring' },
     { id: 'version-history', label: 'Version History' },
+    { id: 'jarvis', label: 'Jarvis' },
   ];
 
   return (
@@ -5155,6 +5157,7 @@ function resolveDecisionIndexColor(value: number): string {
             </div>
           )}
 
+          {activeTab === 'jarvis' && <JarvisTab />}
         </ErrorBoundary>
       </div>
 
