@@ -1,5 +1,5 @@
 import { getApiUrl } from '@/lib/environment';
-import { readStoredGovernanceBearer } from '@/lib/governanceTaskView';
+import { readStoredGovernanceBearer } from '@/lib/governanceAuth';
 
 const DEFAULT_API_URL = getApiUrl();
 
