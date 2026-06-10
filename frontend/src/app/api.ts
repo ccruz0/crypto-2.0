@@ -1,4 +1,5 @@
 import { getApiUrl } from '@/lib/environment';
+import { readStoredGovernanceBearer } from '@/lib/governanceTaskView';
 
 const DEFAULT_API_URL = getApiUrl();
 
@@ -2011,4 +2012,95 @@ export async function getJarvisTaskList(limit = 20): Promise<JarvisTaskListRespo
 
 export async function getJarvisTaskDetail(taskId: string): Promise<JarvisTaskRunDetail> {
   return fetchAPI<JarvisTaskRunDetail>(`/jarvis/tasks/${encodeURIComponent(taskId)}`);
+}
+
+// --- Jarvis Control Center (Builder prepare stub — Phase 2A Step 4) ---
+
+export interface JarvisControlStatus {
+  control_enabled: boolean;
+  builder_allowed: boolean;
+  trading_only: boolean;
+  environment: string;
+  builder_available: boolean;
+}
+
+export interface JarvisBuilderPrepareResponse {
+  task_id: string;
+  status: string;
+  mode: 'builder' | string;
+  risk_level: JarvisRiskLevel;
+  stub: boolean;
+  message: string;
+}
+
+export interface JarvisBuilderTaskDetail {
+  task_id: string;
+  session_id: string;
+  mode: string;
+  domain: string;
+  prompt: string;
+  status: string;
+  risk_level: JarvisRiskLevel;
+  dry_run: boolean;
+  builder_artifact: {
+    stub?: boolean;
+    bridge_invoked?: boolean;
+    governance_created?: boolean;
+    message?: string;
+  } | null;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+function jarvisControlAuthHeaders(): HeadersInit {
+  const bearer = readStoredGovernanceBearer();
+  return bearer ? { Authorization: `Bearer ${bearer}` } : {};
+}
+
+async function fetchJarvisControlAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  return fetchAPI<T>(endpoint, {
+    ...options,
+    headers: {
+      ...jarvisControlAuthHeaders(),
+      ...(options?.headers ?? {}),
+    },
+  });
+}
+
+/** Control Center environment gates (404 when JARVIS_CONTROL_ENABLED is off). */
+export async function getJarvisControlStatus(): Promise<JarvisControlStatus | null> {
+  try {
+    return await fetchJarvisControlAPI<JarvisControlStatus>('/jarvis/control/status');
+  } catch (error) {
+    const status = (error as Error & { status?: number }).status;
+    if (status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** Create a Builder prepare stub task (no execution). */
+export async function postJarvisBuilderPrepare(
+  prompt: string,
+  options?: { domain?: string; requested_by?: string }
+): Promise<JarvisBuilderPrepareResponse> {
+  return fetchJarvisControlAPI<JarvisBuilderPrepareResponse>('/jarvis/control/builder/prepare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: prompt.trim(),
+      domain: options?.domain ?? 'software',
+      requested_by: options?.requested_by ?? 'dashboard',
+    }),
+  });
+}
+
+/** Fetch one Builder control task by id. */
+export async function getJarvisBuilderTask(taskId: string): Promise<JarvisBuilderTaskDetail> {
+  return fetchJarvisControlAPI<JarvisBuilderTaskDetail>(
+    `/jarvis/control/builder/${encodeURIComponent(taskId)}`
+  );
 }

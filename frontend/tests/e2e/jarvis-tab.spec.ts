@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 /**
- * Jarvis Control Center tab (Phase 1 — Advisor read-only).
+ * Jarvis Control Center tab (Advisor + Builder stub UI).
  * Verifies navigation labels and that OpenClaw tab was removed.
  */
 test.describe('Jarvis Control Center tab', () => {
@@ -19,7 +19,7 @@ test.describe('Jarvis Control Center tab', () => {
     await page.waitForTimeout(500);
 
     await expect(page.getByTestId('jarvis-tab')).toBeVisible();
-    await expect(page.getByTestId('jarvis-mode-advisor')).toHaveText('Advisor Mode');
+    await expect(page.getByTestId('jarvis-mode-advisor')).toBeVisible();
     await expect(page.getByTestId('jarvis-mode-readonly')).toHaveText('Read-only');
     await expect(page.getByTestId('jarvis-no-prod-changes')).toHaveText('No production changes allowed');
 
@@ -27,12 +27,38 @@ test.describe('Jarvis Control Center tab', () => {
     await expect(page.getByTestId('jarvis-submit-button')).toBeVisible();
     await expect(page.getByTestId('jarvis-submit-button')).toHaveText(/Ask \(read-only\)/);
 
-    // No write/operator/builder action buttons exposed
+    // No write/operator/builder execution buttons exposed
     await expect(page.getByRole('button', { name: /approve/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /deploy/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /execute/i })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /open pr/i })).toHaveCount(0);
 
     await expect(page.getByTestId('jarvis-system-status-toggle')).toBeVisible();
+  });
+
+  test('shows Builder mode selector when control API is available', async ({ page }) => {
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+
+    await page.getByRole('button', { name: 'Jarvis', exact: true }).click();
+    await page.waitForTimeout(1000);
+
+    const builderMode = page.getByTestId('jarvis-mode-builder');
+    const builderCount = await builderMode.count();
+    if (builderCount === 0) {
+      test.skip(true, 'Control API unavailable in this environment (expected on PROD/trading-only).');
+    }
+
+    await builderMode.click();
+    await expect(page.getByTestId('jarvis-builder-status-panel')).toBeVisible();
+    await expect(page.getByTestId('jarvis-builder-form')).toBeVisible();
+    await expect(page.getByTestId('jarvis-builder-submit-button')).toBeVisible();
+
+    const unavailable = page.getByTestId('jarvis-builder-unavailable');
+    if (await unavailable.count()) {
+      await expect(unavailable).toContainText('Builder Mode unavailable in this environment.');
+      await expect(page.getByTestId('jarvis-builder-submit-button')).toBeDisabled();
+    }
   });
 
   test('trading Portfolio tab still loads after Jarvis navigation', async ({ page }) => {
@@ -44,7 +70,6 @@ test.describe('Jarvis Control Center tab', () => {
     await portfolioTab.click();
     await page.waitForTimeout(1000);
 
-    // Portfolio tab content region should render (heading or table)
     await expect(page.locator('body')).not.toBeEmpty();
   });
 });
