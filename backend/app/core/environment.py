@@ -61,6 +61,20 @@ def is_atp_trading_only() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def is_jarvis_control_enabled() -> bool:
+    """True when Jarvis Control Center API layer is enabled (opt-in; default off)."""
+    v = (os.getenv("JARVIS_CONTROL_ENABLED") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def is_jarvis_builder_allowed() -> bool:
+    """True when Builder mode may run (LAB-only; default off; blocked on trading-only hosts)."""
+    if is_atp_trading_only():
+        return False
+    v = (os.getenv("JARVIS_BUILDER_ALLOWED") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def _normalize_cors_origin(origin: str) -> str:
     """Normalize CORS origin to scheme://host:port format (no path, query, or fragment)"""
     origin = origin.strip()

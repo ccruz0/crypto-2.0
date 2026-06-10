@@ -463,6 +463,47 @@ def ensure_jarvis_task_runs_table(engine_to_use) -> bool:
         return False
 
 
+def ensure_jarvis_control_center_tables(engine_to_use) -> bool:
+    """
+    Persist Jarvis Control Center sessions, tasks, approvals, and audit events.
+
+    Uses SQLAlchemy models (create_all) in FK order. Returns True if all four tables exist.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_control_center_tables: engine is None")
+        return False
+    try:
+        from app.models.jarvis_control_models import (
+            JarvisControlApproval,
+            JarvisControlAuditEvent,
+            JarvisControlSession,
+            JarvisControlTask,
+        )
+
+        ordered = [
+            (JarvisControlSession, "jarvis_control_sessions"),
+            (JarvisControlTask, "jarvis_control_tasks"),
+            (JarvisControlApproval, "jarvis_control_approvals"),
+            (JarvisControlAuditEvent, "jarvis_control_audit_events"),
+        ]
+        for model, tname in ordered:
+            tbl = getattr(model, "__table__", None)
+            if tbl is None:
+                logger.error("ensure_jarvis_control_center_tables: missing table for %s", tname)
+                return False
+            if not table_exists(engine_to_use, tname):
+                logger.warning(
+                    "Table %s does not exist - creating (Jarvis Control Center)",
+                    tname,
+                )
+                Base.metadata.create_all(bind=engine_to_use, tables=[tbl])
+                logger.info("[BOOT] Created table %s", tname)
+        return all(table_exists(engine_to_use, tname) for _, tname in ordered)
+    except Exception as e:
+        logger.error("ensure_jarvis_control_center_tables failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_jarvis_audit_runs_table(engine_to_use) -> bool:
     """
     Persist Jarvis AWS Auditor run history.
@@ -1535,6 +1576,12 @@ def ensure_optional_columns(db_engine=None):
             logger.info("[BOOT] jarvis_task_runs table OK")
     except Exception as task_runs_err:
         logger.warning("Could not ensure jarvis_task_runs table: %s", task_runs_err)
+
+    try:
+        if ensure_jarvis_control_center_tables(engine_to_use):
+            logger.info("[BOOT] jarvis_control_* tables OK")
+    except Exception as control_center_err:
+        logger.warning("Could not ensure jarvis_control_* tables: %s", control_center_err)
 
     try:
         if ensure_jarvis_audit_runs_table(engine_to_use):
