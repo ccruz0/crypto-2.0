@@ -15,6 +15,8 @@
 | `scripts/aws/setup_github_app_ssm_template.sh` | Operator-run SSM writer (validated, dry-run capable, never echoes the key) |
 | `scripts/aws/render_and_recreate_backend_safe.sh` | Render runtime.env + recreate backend-aws + health wait + verify |
 | `scripts/aws/verify_github_app_cutover_ready.sh` | One-shot readiness check; prints `CUTOVER_READY=YES/NO` |
+| `scripts/aws/monitor_github_app_cutover.sh` | Post-cutover health monitor; prints `GITHUB_APP_CUTOVER_HEALTH=PASS/FAIL` |
+| `scripts/aws/finalize_github_app_pat_removal.sh` | Guarded legacy PAT removal after observation window |
 
 ---
 
@@ -401,6 +403,93 @@ docker compose --profile aws up -d --force-recreate backend-aws-canary
 ```
 
 **Expected:** `auth_mode: github_app`, `GITHUB_TOKEN (legacy): no`
+
+---
+
+## 11b. Post-cutover monitoring and PAT retirement
+
+After GitHub App cutover (`auth_mode: github_app`, `CUTOVER_READY=YES`), run the monitor
+during the observation window (24–48 hours) before removing the legacy PAT.
+
+### Monitoring command
+
+```bash
+cd /home/ubuntu/crypto-2.0
+bash scripts/aws/monitor_github_app_cutover.sh
+```
+
+**Expected when healthy:**
+
+```
+GITHUB_APP_CUTOVER_HEALTH=PASS
+auth_mode: github_app
+CUTOVER_READY=YES
+```
+
+`EXCHANGE_CREDENTIAL_WARNINGS=YES` is acceptable — Crypto.com credential log lines are
+unrelated to GitHub App cutover and do not fail the monitor alone.
+
+### PAT removal schedule
+
+| Milestone | UTC time |
+|-----------|----------|
+| Earliest PAT removal | 2026-06-11 08:18 UTC (24h after cutover) |
+| Recommended PAT removal | 2026-06-12 08:18 UTC (48h after cutover) |
+
+Before the recommended time, the finalize script refuses unless
+`OVERRIDE_EARLY_PAT_REMOVAL=yes` is set.
+
+### Required checks before removal
+
+- [ ] `backend-aws` healthy
+- [ ] `backend-aws-canary` healthy
+- [ ] `auth_mode: github_app`
+- [ ] `CUTOVER_READY=YES`
+- [ ] Live token mint OK (`verify_github_app_cutover_ready.sh`)
+- [ ] `monitor_github_app_cutover.sh` → `GITHUB_APP_CUTOVER_HEALTH=PASS`
+
+### Final removal command
+
+After the recommended observation window, when all checks remain green:
+
+```bash
+cd /home/ubuntu/crypto-2.0
+CONFIRM_REMOVE_LEGACY_PAT=yes bash scripts/aws/finalize_github_app_pat_removal.sh
+```
+
+The script deletes `/automated-trading-platform/prod/github_token` from SSM, removes
+`GITHUB_TOKEN=` from `.env.aws` and `secrets/runtime.env` if present, re-renders
+runtime env, recreates both backends, and verifies `GITHUB_TOKEN` is absent from containers.
+
+### Rollback (if GitHub App becomes unavailable after PAT removal)
+
+1. Restore `/automated-trading-platform/prod/github_token` as **SecureString** in SSM
+   (use your stored PAT value — never commit it).
+2. Re-render and recreate backends:
+
+   ```bash
+   cd /home/ubuntu/crypto-2.0
+   bash scripts/aws/render_runtime_env.sh
+   sudo chown 10001:10001 secrets/runtime.env
+   sudo chmod 600 secrets/runtime.env
+   sudo docker compose --profile aws up -d --force-recreate backend-aws backend-aws-canary
+   ```
+
+3. Temporarily set legacy transition **only if** GitHub App becomes unavailable
+   (`ALLOW_LEGACY_GITHUB_PAT=true` via render after SSM PAT restore; expected
+   `auth_mode: legacy_transition`).
+
+4. Verify: `bash scripts/aws/verify_github_app_cutover_ready.sh` and
+   `./scripts/verify_deploy_secrets.sh`
+
+### Local PEM cleanup (after successful cutover)
+
+Remove operator-local key material from the EC2 host when no longer needed:
+
+- `/home/ubuntu/hilovivo-automation.private-key.pem`
+- `/home/ubuntu/github_app_private_key.b64`
+
+The authoritative key remains in SSM (`/automated-trading-platform/prod/github_app/private_key_b64`).
 
 ---
 
