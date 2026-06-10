@@ -117,11 +117,14 @@ inspect_backend_logs() {
     echo "    GitHub auth log warnings: none"
   fi
 
-  exchange_patterns='crypto\.com|EXCHANGE_CUSTOM|exchange.*credential|credential.*exchange|Crypto\.com'
-  if echo "$logs" | grep -Eiq "$exchange_patterns"; then
-    echo "    Exchange credential log lines (unrelated to GitHub App cutover):"
-    echo "$logs" | grep -Ei "$exchange_patterns" | tail -10 | sed 's/^/      /'
+  exchange_warn_patterns='API credentials not configured|Authentication failure|40101|Missing EXCHANGE_CUSTOM_API_KEY|Missing EXCHANGE_CUSTOM_API_SECRET|not allowlisted|authentication failed|Crypto\.com API authentication'
+  exchange_hits="$(echo "$logs" | grep -Ei "$exchange_warn_patterns" | grep -vi 'password authentication failed' || true)"
+  if [[ -n "$exchange_hits" ]]; then
+    echo "    Exchange credential/auth warnings:"
+    echo "$exchange_hits" | tail -10 | sed 's/^/      /'
     EXCHANGE_WARN=yes
+  else
+    echo "    Exchange credential/auth warnings: none"
   fi
 }
 
