@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.environment import is_local, is_aws, is_atp_trading_only
+from app.core.environment import is_local, is_aws, is_atp_trading_only, is_jarvis_control_enabled
 from app.api.routes_account import router as account_router
 from app.api.routes_internal import router as internal_router
 from app.api.routes_orders import router as orders_router
@@ -33,6 +33,11 @@ from app.api.routes_risk_probe import router as risk_probe_router
 from app.api.routes_metrics import router as metrics_router
 from app.api.routes_ws_prices import router as ws_prices_router
 from app.api.routes_jarvis import router as jarvis_router
+
+if is_jarvis_control_enabled():
+    from app.api.routes_jarvis_control import router as jarvis_control_router
+else:
+    jarvis_control_router = None  # type: ignore[assignment, misc]
 
 if not is_atp_trading_only():
     from app.api.routes_ai import router as ai_router
@@ -899,6 +904,8 @@ def create_app(role: str = "legacy") -> FastAPI:
     if github_webhook_router is not None:
         app.include_router(github_webhook_router, prefix="/api", tags=["github"])
     app.include_router(ws_prices_router, prefix="/api", tags=["ws-prices"])
+    if jarvis_control_router is not None:
+        app.include_router(jarvis_control_router, prefix="/api/jarvis/control", tags=["jarvis-control"])
     app.include_router(jarvis_router)
 
     # Alias health under /api for reverse-proxy setups that expect /api/health
