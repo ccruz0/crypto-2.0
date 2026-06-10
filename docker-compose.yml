@@ -48,6 +48,7 @@ services:
     profiles:
       - local
       - aws
+      - lab
 
   # ============================================
   # BACKEND-DEV - Local Profile (Hot Reload Development)

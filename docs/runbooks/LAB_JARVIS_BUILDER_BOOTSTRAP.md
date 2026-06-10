@@ -427,86 +427,27 @@ EOF
 
 ---
 
-### Phase 6 — Proposed `docker-compose.lab.yml` (or `--profile lab`)
+### Phase 6 — Docker Compose lab profile
 
-**Recommendation:** add `docker-compose.lab.yml` as a compose override (future PR) rather than overloading the `aws` profile. Minimum services: `db`, `backend-lab`, `frontend-lab`. Exclude `market-updater-aws`, observability stack, and canary.
+**Files:** `docker-compose.lab.yml` (override) + `lab` profile on `db` in root `docker-compose.yml`.
 
-```yaml
-# PROPOSED — not in repo until Phase 2A implementation PR
-# Usage: docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile lab up -d
-
-name: automated-trading-platform-lab
-
-services:
-  db:
-    profiles: [lab]
-
-  backend-lab:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile.aws
-    env_file:
-      - .env
-      - .env.lab
-      - ./secrets/runtime.env
-    environment:
-      ENVIRONMENT: lab
-      APP_ENV: lab
-      RUNTIME_ORIGIN: LAB
-      ATP_TRADING_ONLY: "0"
-      TRADING_ENABLED: "false"
-      LIVE_TRADING: "false"
-      RUN_SIGNAL_MONITOR: "false"
-      RUN_TELEGRAM: "false"
-      RUN_TELEGRAM_POLLER: "false"
-      JARVIS_ENV: lab
-      JARVIS_ENABLED: "true"
-      JARVIS_BUILDER_ALLOWED: "1"
-      CURSOR_BRIDGE_ENABLED: "true"
-      CURSOR_BRIDGE_REQUIRE_APPROVAL: "true"
-      ATP_STAGING_ROOT: /var/lib/atp-staging
-      DISABLE_AUTH: "true"
-      USE_CRYPTO_PROXY: "false"
-      EXECUTION_CONTEXT: LAB
-      API_BASE_URL: http://backend-lab:8002
-    ports:
-      - "127.0.0.1:8002:8002"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./.git:/app/.git:ro
-      - /var/lib/atp-staging:/var/lib/atp-staging
-      - /home/ubuntu/.local/bin/cursor:/usr/local/bin/cursor:ro
-      - ./secrets:/app/secrets
-      - ./docs:/app/docs
-      - ./logs:/app/logs
-    depends_on:
-      db:
-        condition: service_healthy
-    profiles: [lab]
-
-  frontend-lab:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.dev
-    environment:
-      NODE_ENV: development
-      NEXT_PUBLIC_API_URL: http://localhost:8002/api
-      NEXT_PUBLIC_ENVIRONMENT: lab
-    ports:
-      - "127.0.0.1:3000:3000"
-    depends_on:
-      backend-lab:
-        condition: service_healthy
-    profiles: [lab]
-```
-
-**Until `docker-compose.lab.yml` exists**, validate env and compose syntax only:
+**Usage (atp-lab-builder only — never on PROD):**
 
 ```bash
 cd /home/ubuntu/crypto-2.0
-docker compose --profile local config >/dev/null && echo "compose syntax OK"
-# Do NOT run --profile aws on this host
+docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile lab up -d
+docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile lab ps
 ```
+
+**Preflight (read-only, admin IAM):**
+
+```bash
+bash scripts/aws/lab_builder_preflight.sh
+```
+
+Services: `db`, `backend-lab`, `frontend-lab`. No `market-updater-aws`, observability stack, or canary.
+
+See `docker-compose.lab.yml` for full service definitions.
 
 ---
 

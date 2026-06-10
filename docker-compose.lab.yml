@@ -1,0 +1,106 @@
+# Jarvis Builder LAB overlay — use ONLY on atp-lab-builder (not PROD).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile lab up -d
+# See: docs/runbooks/LAB_JARVIS_BUILDER_BOOTSTRAP.md
+
+name: automated-trading-platform-lab
+
+services:
+  db:
+    env_file:
+      - .env
+      - .env.lab
+    profiles:
+      - lab
+
+  backend-lab:
+    image: automated-trading-platform-backend-lab
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.aws
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    container_name: automated-trading-platform-backend-lab
+    env_file:
+      - .env
+      - .env.lab
+      - ./secrets/runtime.env
+    environment:
+      - ENVIRONMENT=lab
+      - APP_ENV=lab
+      - RUNTIME_ORIGIN=LAB
+      - ATP_TRADING_ONLY=0
+      - TRADING_ENABLED=false
+      - LIVE_TRADING=false
+      - RUN_SIGNAL_MONITOR=false
+      - RUN_TELEGRAM=false
+      - RUN_TELEGRAM_POLLER=false
+      - JARVIS_ENV=lab
+      - JARVIS_ENABLED=true
+      - JARVIS_BUILDER_ALLOWED=1
+      - CURSOR_BRIDGE_ENABLED=true
+      - CURSOR_BRIDGE_REQUIRE_APPROVAL=true
+      - ATP_STAGING_ROOT=/var/lib/atp-staging
+      - DISABLE_AUTH=true
+      - USE_CRYPTO_PROXY=false
+      - EXECUTION_CONTEXT=LAB
+      - API_BASE_URL=http://backend-lab:8002
+      - FRONTEND_URL=http://localhost:3000
+      - ENABLE_DIAGNOSTICS_ENDPOINTS=1
+      - UVICORN_WORKERS=1
+      - ENABLE_CORS=1
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.git:/app/.git:ro
+      - /var/lib/atp-staging:/var/lib/atp-staging
+      - ${CURSOR_CLI_HOST_PATH:-/home/ubuntu/.local/bin/cursor}:/usr/local/bin/cursor:ro
+      - ./secrets:/app/secrets
+      - ./docs:/app/docs
+      - ./logs:/app/logs
+      - ./backend/ai_runs:/app/backend/ai_runs
+    working_dir: /app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8002/api/health/ready', timeout=15)"]
+      interval: 60s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "2G"
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - lab
+
+  frontend-lab:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: automated-trading-platform-frontend-lab
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8002/api
+      - NEXT_PUBLIC_ENVIRONMENT=lab
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev
+    restart: unless-stopped
+    depends_on:
+      backend-lab:
+        condition: service_healthy
+    profiles:
+      - lab
