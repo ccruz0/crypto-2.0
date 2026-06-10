@@ -23,6 +23,9 @@ export interface WatchlistItem {
   tp_percentage?: number | null;
   sl_price?: number;
   tp_price?: number;
+  strategy_key?: string | null;
+  strategy_preset?: string | null;
+  strategy_risk?: string | null;
   order_status?: string;
   price?: number;
   rsi?: number;
@@ -74,6 +77,8 @@ export type OpenOrder = {
   filled_quantity?: string | null; // Filled quantity for executed orders
   filled_price?: string | null; // Filled price for executed orders
   order_role?: string;  // Order role (STOP_LOSS, TAKE_PROFIT, etc.)
+  is_trigger?: boolean; // True if from get-trigger-orders / advanced trigger list
+  trigger_price?: number | null; // Trigger price for TP/SL orders
 }
 
 export interface ManualTradeRequest {
@@ -95,6 +100,7 @@ export interface PortfolioAsset {
   reserved_qty: number;
   haircut: number;
   value_usd: number;
+  usd_value?: number;  // Alternative field from Crypto.com API
   updated_at: string;
   tp?: number;  // Take profit price
   sl?: number;  // Stop loss price
@@ -130,6 +136,17 @@ export interface TopCoin {
   // Strategy-related fields
   strategy?: string;  // Strategy type (swing, scalp, etc.)
   strategy_state?: string;  // Strategy state
+  strategy_key?: string | null;
+  strategy_preset?: string | null;
+  strategy_risk?: string | null;
+  sl_price?: number;
+  tp_price?: number;
+  trade_enabled?: boolean;
+  trade_on_margin?: boolean;
+  trade_amount_usd?: number | null;
+  sl_tp_mode?: string;
+  sl_percentage?: number | null;
+  tp_percentage?: number | null;
 }
 
 // Dashboard State Types (new unified endpoint)
@@ -144,6 +161,7 @@ export interface DashboardBalance {
   quantity?: number;
   max_withdrawal?: number;
   currency?: string;  // Currency code
+  coin?: string;  // Alternative to asset (used in some API responses)
   tp?: number;  // Take profit price
   sl?: number;  // Stop loss price
 }
@@ -198,6 +216,10 @@ export interface DashboardState {
   portfolio?: {
     assets?: PortfolioAsset[];
     total_value_usd?: number;
+    total_assets_usd?: number;
+    total_collateral_usd?: number;
+    total_borrowed_usd?: number;
+    portfolio_value_source?: string;
   };
   bot_status: {
     is_running: boolean;
@@ -222,6 +244,9 @@ export interface CoinSettings {
   tp_percentage?: number | null;
   sl_price?: number;
   tp_price?: number;
+  strategy_key?: string | null;
+  strategy_preset?: string | null;
+  strategy_risk?: string | null;
   alert_cooldown_minutes?: number | null;  // Alert cooldown in minutes (nullable)
   id?: number;  // Optional ID field
   message?: string;  // Optional message field
@@ -590,6 +615,9 @@ export async function saveCoinSettings(symbol: string, settings: Partial<CoinSet
       tp_percentage: updated.tp_percentage,
       sl_price: updated.stop_loss,
       tp_price: updated.take_profit,
+      strategy_key: updated.strategy_key,
+      strategy_preset: updated.strategy_preset,
+      strategy_risk: updated.strategy_risk,
     };
   } catch (error) {
     logRequestIssue(
@@ -688,41 +716,31 @@ export async function getOrderHistory(
   limit: number = 100,
   offset: number = 0,
   sync: boolean = false
-): Promise<{ 
-  orders: OpenOrder[], 
-  count: number,
-  total?: number,
-  has_more?: boolean
+): Promise<{
+  orders: OpenOrder[];
+  count: number;
+  total?: number;
+  has_more?: boolean;
 }> {
-  try {
-    const params = new URLSearchParams({
-      limit: limit.toString(),
-      offset: offset.toString()
-    });
-    if (sync) {
-      params.set('sync', 'true');
-    }
-    const data = await fetchAPI<{ 
-      orders?: OpenOrder[]; 
-      count?: number;
-      total?: number;
-      has_more?: boolean;
+  const params = new URLSearchParams({
+    limit: limit.toString(),
+    offset: offset.toString()
+  });
+  if (sync) {
+    params.set('sync', 'true');
+  }
+  const data = await fetchAPI<{
+    orders?: OpenOrder[];
+    count?: number;
+    total?: number;
+    has_more?: boolean;
   }>(`/orders/history?${params.toString()}`);
-  return { 
-    orders: data.orders || [], 
+  return {
+    orders: data.orders || [],
     count: data.count || 0,
     total: data.total,
     has_more: data.has_more
   };
-} catch (error) {
-  logRequestIssue(
-    'getOrderHistory',
-    'Handled order history fetch failure (returning empty list)',
-    error,
-    'warn'
-  );
-  return { orders: [], count: 0 };
-}
 }
 
 // Trading
@@ -1510,41 +1528,10 @@ export interface DashboardSnapshot {
   empty?: boolean;
 }
 
-/** Safe fallback when snapshot is missing or API returns null/invalid `data` (avoids client TypeError on `.data.balances`). */
-function emptyDashboardSnapshotResponse(): DashboardSnapshot {
-  return {
-    data: {
-      balances: [],
-      fast_signals: [],
-      slow_signals: [],
-      open_orders: [],
-      last_sync: null,
-      bot_status: {
-        is_running: false,
-        status: 'stopped',
-        reason: null
-      }
-    },
-    last_updated_at: null,
-    stale_seconds: null,
-    stale: true,
-    empty: true
-  };
-}
-
 export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   try {
-    const snapshot = await fetchAPI<DashboardSnapshot>('/dashboard/snapshot');
-    if (!snapshot?.data) {
-      logRequestIssue(
-        'getDashboardSnapshot',
-        'Snapshot response missing data — using empty fallback',
-        new Error('snapshot.data is null or undefined'),
-        'warn'
-      );
-      return emptyDashboardSnapshotResponse();
-    }
-    return snapshot;
+    const data = await fetchAPI<DashboardSnapshot>('/dashboard/snapshot');
+    return data;
   } catch (error) {
     logRequestIssue(
       'getDashboardSnapshot',
@@ -1552,7 +1539,25 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
       error,
       'warn'
     );
-    return emptyDashboardSnapshotResponse();
+    // Return empty snapshot on error
+    return {
+      data: {
+        balances: [],
+        fast_signals: [],
+        slow_signals: [],
+        open_orders: [],
+        last_sync: null,
+        bot_status: {
+          is_running: false,
+          status: 'stopped',
+          reason: null
+        }
+      },
+      last_updated_at: null,
+      stale_seconds: null,
+      stale: true,
+      empty: true
+    };
   }
 }
 

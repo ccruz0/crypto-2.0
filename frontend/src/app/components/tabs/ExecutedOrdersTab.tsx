@@ -214,7 +214,7 @@ export default function ExecutedOrdersTab({
             </div>
           )}
           <button
-            onClick={() => fetchExecutedOrders({ showLoader: true })}
+            onClick={() => fetchExecutedOrders({ showLoader: true, sync: true })}
             disabled={executedOrdersLoading}
             className={`px-3 md:px-4 py-2 rounded-lg font-medium transition-all text-sm md:text-base whitespace-nowrap ${
               executedOrdersLoading

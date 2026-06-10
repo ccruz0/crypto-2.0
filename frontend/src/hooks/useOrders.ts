@@ -24,7 +24,7 @@ export interface UseOrdersReturn {
   executedOrdersError: string | null;
   executedOrdersLastUpdate: Date | null;
   fetchOpenOrders: (options?: { showLoader?: boolean; backgroundRefresh?: boolean }) => Promise<void>;
-  fetchExecutedOrders: (options?: { showLoader?: boolean }) => Promise<void>;
+  fetchExecutedOrders: (options?: { showLoader?: boolean; sync?: boolean; loadAll?: boolean }) => Promise<void>;
   setOpenOrders: (orders: OpenOrder[]) => void;
   setExecutedOrders: (orders: OpenOrder[]) => void;
 }
@@ -211,16 +211,26 @@ export function useOrders(): UseOrdersReturn {
     }
   }, []);
 
-  const fetchExecutedOrders = useCallback(async (options: { showLoader?: boolean } = {}) => {
-    const { showLoader = false } = options;
+  const fetchExecutedOrders = useCallback(async (options: { showLoader?: boolean; sync?: boolean; loadAll?: boolean } = {}) => {
+    const { showLoader = false, sync = false, loadAll = false } = options;
+    const doSync = sync || loadAll; // when loadAll (e.g. from slow tick with no orders), sync from exchange
     if (showLoader) {
       setExecutedOrdersLoading(true);
     }
     setExecutedOrdersError(null);
+
+    // Safety: ensure loading never hangs forever (API timeout is 60s; we give 65s then force-clear)
+    const SAFETY_MS = 65_000;
+    const safetyTimer = setTimeout(() => {
+      setExecutedOrdersLoading(false);
+      setExecutedOrdersError('Request took too long. Click Refresh to try again.');
+    }, SAFETY_MS);
     
     try {
-      logger.info('🔄 Fetching executed orders...');
-      const response = await getOrderHistory(100, 0, true); // sync=true to fetch latest from exchange
+      // First load: use sync=false to read from DB immediately (avoids long sync timeout).
+      // When user clicks "Refresh" or loadAll, pass sync=true to sync from exchange then return.
+      logger.info('🔄 Fetching executed orders...', { sync: doSync });
+      const response = await getOrderHistory(100, 0, doSync);
       const orders = response.orders || [];
       
       setExecutedOrders(orders);
@@ -235,8 +245,9 @@ export function useOrders(): UseOrdersReturn {
         err,
         'warn'
       );
-      setExecutedOrdersError('Failed to load executed orders. Retrying...');
+      setExecutedOrdersError('Failed to load executed orders. Click Refresh to try again.');
     } finally {
+      clearTimeout(safetyTimer);
       setExecutedOrdersLoading(false);
     }
   }, []);

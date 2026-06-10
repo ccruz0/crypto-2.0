@@ -114,16 +114,25 @@ export default function OrdersTab({
         case 'created_date':
           aVal = a.create_time || 0;
           bVal = b.create_time || 0;
-          if (typeof aVal !== 'number') aVal = new Date(aVal).getTime();
-          if (typeof bVal !== 'number') bVal = new Date(bVal).getTime();
+          if (typeof aVal !== 'number') aVal = new Date(aVal as string | number).getTime();
+          if (typeof bVal !== 'number') bVal = new Date(bVal as string | number).getTime();
           break;
       }
 
-      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
-      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      if ((aVal as number) < (bVal as number)) return sortDirection === 'asc' ? -1 : 1;
+      if ((aVal as number) > (bVal as number)) return sortDirection === 'asc' ? 1 : -1;
       return 0;
     });
   }, [filteredOrders, sortField, sortDirection]);
+
+  const openOrdersOnly = useMemo(
+    () => sortedOrders.filter((o) => !(o as OpenOrder & { is_trigger?: boolean }).is_trigger),
+    [sortedOrders]
+  );
+  const triggerOrdersOnly = useMemo(
+    () => sortedOrders.filter((o) => (o as OpenOrder & { is_trigger?: boolean }).is_trigger === true),
+    [sortedOrders]
+  );
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -243,121 +252,124 @@ export default function OrdersTab({
       ) : sortedOrders.length === 0 ? (
         <div className="text-center py-8 text-gray-500">No open orders</div>
       ) : (
-        <div className="bg-white dark:bg-slate-800 rounded-lg shadow overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-              <thead className="bg-gray-50 dark:bg-slate-700">
-                <tr>
-                  <th
-                    className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600"
-                    onClick={() => handleSort('created_date')}
-                  >
-                    Date {sortField === 'created_date' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600"
-                    onClick={() => handleSort('symbol')}
-                  >
-                    Symbol {sortField === 'symbol' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600"
-                    onClick={() => handleSort('side')}
-                  >
-                    Side {sortField === 'side' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600"
-                    onClick={() => handleSort('type')}
-                  >
-                    Type {sortField === 'type' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600"
-                    onClick={() => handleSort('quantity')}
-                  >
-                    Quantity {sortField === 'quantity' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600"
-                    onClick={() => handleSort('price')}
-                  >
-                    Price {sortField === 'price' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                    Total Value
-                  </th>
-                  <th
-                    className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600"
-                    onClick={() => handleSort('status')}
-                  >
-                    Status {sortField === 'status' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {sortedOrders.map((order) => {
-                  const quantity = parseFloat(order.quantity || '0');
-                  const price = parseFloat(order.price || '0');
-                  const totalValue = quantity * price;
-                  const createTime = order.create_time 
-                    ? (typeof order.create_time === 'number' ? new Date(order.create_time) : new Date(order.create_time))
-                    : null;
-                  const canCancel = order.status && 
-                    !isCancelledStatus(order.status) && 
-                    order.status.toUpperCase() !== 'FILLED' &&
-                    botStatus?.live_trading_enabled;
+        <>
+          {/* Open Orders (non-trigger) */}
+          <div className="mb-8">
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Open Orders</h3>
+            {openOrdersOnly.length === 0 ? (
+              <div className="text-center py-6 text-gray-500 bg-white dark:bg-slate-800 rounded-lg border border-gray-200 dark:border-slate-700">No open orders</div>
+            ) : (
+              <div className="bg-white dark:bg-slate-800 rounded-lg shadow overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <thead className="bg-gray-50 dark:bg-slate-700">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600" onClick={() => handleSort('created_date')}>Date {sortField === 'created_date' && (sortDirection === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600" onClick={() => handleSort('symbol')}>Symbol {sortField === 'symbol' && (sortDirection === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600" onClick={() => handleSort('side')}>Side {sortField === 'side' && (sortDirection === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600" onClick={() => handleSort('type')}>Type {sortField === 'type' && (sortDirection === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600" onClick={() => handleSort('quantity')}>Quantity {sortField === 'quantity' && (sortDirection === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600" onClick={() => handleSort('price')}>Price {sortField === 'price' && (sortDirection === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Total Value</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-600" onClick={() => handleSort('status')}>Status {sortField === 'status' && (sortDirection === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">
+                      {openOrdersOnly.map((order) => {
+                        const quantity = parseFloat(order.quantity || '0');
+                        const price = parseFloat(order.price || '0');
+                        const totalValue = quantity * price;
+                        const createTime = order.create_time ? (typeof order.create_time === 'number' ? new Date(order.create_time) : new Date(order.create_time)) : null;
+                        const canCancel = order.status && !isCancelledStatus(order.status) && order.status.toUpperCase() !== 'FILLED' && botStatus?.live_trading_enabled;
+                        return (
+                          <tr key={order.order_id} className="hover:bg-gray-50 dark:hover:bg-slate-700">
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{createTime ? formatDateTime(createTime) : 'N/A'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{order.instrument_name || 'N/A'}</td>
+                            <td className={`px-4 py-3 whitespace-nowrap text-sm ${getSideColor(order.side)}`}>{order.side || 'N/A'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{order.order_type || 'LIMIT'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">{formatNumber(quantity)}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">{price > 0 ? formatNumber(price) : 'Market'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">{totalValue > 0 ? `$${formatNumber(totalValue)}` : '-'}</td>
+                            <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium ${getStatusColor(order.status)}`}>{order.status || 'UNKNOWN'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-center text-sm">
+                              {canCancel && (
+                                <button onClick={() => handleCancelOrder(order.order_id)} disabled={cancellingOrderId === order.order_id} className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-xs">
+                                  {cancellingOrderId === order.order_id ? 'Cancelling...' : 'Cancel'}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-4 py-3 bg-gray-50 dark:bg-slate-700 text-sm text-gray-500 dark:text-gray-400">Total: {openOrdersOnly.length} order{openOrdersOnly.length !== 1 ? 's' : ''}</div>
+              </div>
+            )}
+          </div>
 
-                  return (
-                    <tr key={order.order_id} className="hover:bg-gray-50 dark:hover:bg-slate-700">
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                        {createTime ? formatDateTime(createTime) : 'N/A'}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
-                        {order.instrument_name || 'N/A'}
-                      </td>
-                      <td className={`px-4 py-3 whitespace-nowrap text-sm ${getSideColor(order.side)}`}>
-                        {order.side || 'N/A'}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                        {order.order_type || 'LIMIT'}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">
-                        {formatNumber(quantity)}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">
-                        {price > 0 ? formatNumber(price) : 'Market'}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">
-                        {totalValue > 0 ? `$${formatNumber(totalValue)}` : '-'}
-                      </td>
-                      <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium ${getStatusColor(order.status)}`}>
-                        {order.status || 'UNKNOWN'}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-center text-sm">
-                        {canCancel && (
-                          <button
-                            onClick={() => handleCancelOrder(order.order_id)}
-                            disabled={cancellingOrderId === order.order_id}
-                            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-xs"
-                          >
-                            {cancellingOrderId === order.order_id ? 'Cancelling...' : 'Cancel'}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          {/* Trigger Orders (TP/SL conditional) */}
+          <div>
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Trigger Orders</h3>
+            {triggerOrdersOnly.length === 0 ? (
+              <div className="text-center py-6 text-gray-500 bg-white dark:bg-slate-800 rounded-lg border border-gray-200 dark:border-slate-700">No trigger orders</div>
+            ) : (
+              <div className="bg-white dark:bg-slate-800 rounded-lg shadow overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <thead className="bg-gray-50 dark:bg-slate-700">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Symbol</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Side</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Type</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Quantity</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Trigger / Price</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Total Value</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">
+                      {triggerOrdersOnly.map((order) => {
+                        const quantity = parseFloat(order.quantity || '0');
+                        const price = parseFloat(order.price || '0');
+                        const triggerPrice = (order as OpenOrder & { trigger_price?: number | null }).trigger_price;
+                        const totalValue = quantity * (price || (triggerPrice ?? 0));
+                        const createTime = order.create_time ? (typeof order.create_time === 'number' ? new Date(order.create_time) : new Date(order.create_time)) : null;
+                        const canCancel = order.status && !isCancelledStatus(order.status) && order.status.toUpperCase() !== 'FILLED' && botStatus?.live_trading_enabled;
+                        return (
+                          <tr key={order.order_id} className="hover:bg-gray-50 dark:hover:bg-slate-700">
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{createTime ? formatDateTime(createTime) : 'N/A'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{order.instrument_name || 'N/A'}</td>
+                            <td className={`px-4 py-3 whitespace-nowrap text-sm ${getSideColor(order.side)}`}>{order.side || 'N/A'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{order.order_type || 'LIMIT'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">{formatNumber(quantity)}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">
+                              {triggerPrice != null && triggerPrice > 0 ? `@ ${formatNumber(triggerPrice)}` : price > 0 ? formatNumber(price) : 'Market'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900 dark:text-gray-100">{totalValue > 0 ? `$${formatNumber(totalValue)}` : '-'}</td>
+                            <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium ${getStatusColor(order.status)}`}>{order.status || 'UNKNOWN'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-center text-sm">
+                              {canCancel && (
+                                <button onClick={() => handleCancelOrder(order.order_id)} disabled={cancellingOrderId === order.order_id} className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-xs">
+                                  {cancellingOrderId === order.order_id ? 'Cancelling...' : 'Cancel'}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-4 py-3 bg-gray-50 dark:bg-slate-700 text-sm text-gray-500 dark:text-gray-400">Total: {triggerOrdersOnly.length} trigger order{triggerOrdersOnly.length !== 1 ? 's' : ''}</div>
+              </div>
+            )}
           </div>
-          <div className="px-4 py-3 bg-gray-50 dark:bg-slate-700 text-sm text-gray-500 dark:text-gray-400">
-            Total: {sortedOrders.length} order{sortedOrders.length !== 1 ? 's' : ''}
-          </div>
-        </div>
+        </>
       )}
     </div>
   );

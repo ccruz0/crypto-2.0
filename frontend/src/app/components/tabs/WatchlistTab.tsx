@@ -8,6 +8,7 @@ import { TopCoin, TradingSignals, saveCoinSettings, updateWatchlistAlert, update
 import { formatDateTime, formatNumber, normalizeSymbolKey } from '@/utils/formatting';
 import { logger } from '@/utils/logger';
 import { useWatchlist } from '@/hooks/useWatchlist';
+import { usePriceStream } from '@/app/context/PriceStreamContext';
 
 interface WatchlistTabProps {
   botStatus: { is_running: boolean; status: 'running' | 'stopped'; reason: string | null; live_trading_enabled?: boolean; mode?: 'LIVE' | 'DRY_RUN'; kill_switch_on?: boolean } | null;
@@ -68,6 +69,7 @@ export default function WatchlistTab({
   onAmountSaved,
   onCoinUpdated,
 }: WatchlistTabProps) {
+  const { getPrice: getLivePrice, connected: priceStreamConnected } = usePriceStream();
   const {
     topCoins: hookTopCoins,
     topCoinsLoading: watchlistLoading,
@@ -1184,7 +1186,20 @@ export default function WatchlistTab({
                         );
                       })()}
                     </td>
-                    <td className="px-4 py-2">${formatNumber(coin?.current_price, coin?.instrument_name)}</td>
+                    <td className="px-4 py-2">
+                      {(() => {
+                        const livePrice = coin?.instrument_name ? getLivePrice(coin.instrument_name) : undefined;
+                        const displayPrice = livePrice ?? coin?.current_price;
+                        return (
+                          <span title={priceStreamConnected ? 'Live price' : undefined}>
+                            ${formatNumber(displayPrice, coin?.instrument_name)}
+                            {priceStreamConnected && displayPrice != null && (
+                              <span className="ml-1 text-[10px] text-emerald-600 dark:text-emerald-400" aria-label="Live">●</span>
+                            )}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className={`px-4 py-2 ${getIndicatorColorClass('rsi', signal, coin)}`}>
                       {signal?.rsi ? signal.rsi.toFixed(2) : '-'}
                     </td>

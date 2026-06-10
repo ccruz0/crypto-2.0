@@ -137,11 +137,27 @@ export default function SystemHealthPanel({ className = '' }: SystemHealthProps)
   }
 
   if (error && !health) {
+    const is502 = error.includes('502') || error.includes('Bad Gateway');
+    const displayMessage = is502
+      ? 'Backend unreachable (502). The server may be down or restarting. Check that the API is running and try again.'
+      : `Error: ${error}`;
     return (
       <div className={`bg-white rounded-lg shadow p-4 ${className}`}>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-lg font-semibold">System Health</h3>
-          <div className="text-sm text-red-500">Error: {error}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-sm text-red-500 max-w-md">{displayMessage}</div>
+            <button
+              onClick={() => {
+                setError(null);
+                setLoading(true);
+                fetchHealth();
+              }}
+              className="text-sm px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
+            >
+              Retry
+            </button>
+          </div>
         </div>
       </div>
     );
