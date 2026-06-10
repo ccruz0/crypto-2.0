@@ -17,6 +17,9 @@
 | `scripts/aws/verify_github_app_cutover_ready.sh` | One-shot readiness check; prints `CUTOVER_READY=YES/NO` |
 | `scripts/aws/monitor_github_app_cutover.sh` | Post-cutover health monitor; prints `GITHUB_APP_CUTOVER_HEALTH=PASS/FAIL` |
 | `scripts/aws/finalize_github_app_pat_removal.sh` | Guarded legacy PAT removal after observation window |
+| `scripts/aws/run_github_app_cutover_monitor_with_alerts.sh` | Monitor + log rotation + Telegram alerts |
+| `scripts/aws/install_github_app_cutover_cron.sh` | Install hourly monitor cron for ubuntu user |
+| `scripts/aws/uninstall_github_app_cutover_cron.sh` | Remove hourly monitor cron |
 
 ---
 
@@ -428,6 +431,48 @@ CUTOVER_READY=YES
 
 `EXCHANGE_CREDENTIAL_WARNINGS=YES` is acceptable — Crypto.com credential log lines are
 unrelated to GitHub App cutover and do not fail the monitor alone.
+
+### Hourly monitor and Telegram alerts
+
+Install an hourly cron job that runs the monitor, appends logs, and sends Telegram
+alerts on failure (credentials from `secrets/runtime.env`).
+
+**Install:**
+
+```bash
+cd /home/ubuntu/crypto-2.0
+bash scripts/aws/install_github_app_cutover_cron.sh
+```
+
+**Manual test (same command cron runs):**
+
+```bash
+bash scripts/aws/run_github_app_cutover_monitor_with_alerts.sh
+```
+
+**View logs:**
+
+```bash
+tail -100 logs/github_app_monitor.log
+```
+
+**Uninstall cron (does not delete logs):**
+
+```bash
+bash scripts/aws/uninstall_github_app_cutover_cron.sh
+```
+
+**Alert behaviour:**
+
+| Event | Telegram |
+|-------|----------|
+| Monitor **FAIL** | Immediate alert with status and rerun command |
+| Monitor **PASS** | Success heartbeat at most once every **12 hours** |
+| After **2026-06-12 08:18 UTC** with **PASS** | One-time PAT-removal-ready message (marker: `logs/github_app_pat_removal_ready_alert_sent`) |
+
+Failures trigger Telegram immediately. Successful hourly runs do not spam Telegram;
+only the 12-hour heartbeat (during the observation window) and the one-time
+PAT-removal-ready message are sent on success.
 
 ### PAT removal schedule
 
