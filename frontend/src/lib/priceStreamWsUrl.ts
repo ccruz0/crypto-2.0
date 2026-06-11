@@ -6,12 +6,40 @@
 
 export const PRICE_STREAM_WS_PATH = '/api/ws/prices';
 
+const ABSOLUTE_OVERRIDE_PREFIX = /^(?:ws|wss|https?):\/\//i;
+
+const INTERNAL_HOSTNAMES = new Set([
+  'api',
+  'backend',
+  'backend-aws',
+  'backend-aws-canary',
+]);
+
 function isLocalHostname(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }
 
-function isInternalApiHostname(hostname: string): boolean {
-  return hostname === 'api' || hostname === 'backend-aws' || hostname.includes('backend-aws');
+function isProductionBrowserContext(): boolean {
+  if (typeof window === 'undefined') return false;
+  return !isLocalHostname(window.location.hostname);
+}
+
+function isRejectedOverrideHostname(hostname: string): boolean {
+  if (INTERNAL_HOSTNAMES.has(hostname)) return true;
+  if (isProductionBrowserContext() && isLocalHostname(hostname)) return true;
+  return false;
+}
+
+function isValidAbsoluteOverride(override: string): boolean {
+  if (!override || !ABSOLUTE_OVERRIDE_PREFIX.test(override)) {
+    return false;
+  }
+  try {
+    const u = new URL(override);
+    return !isRejectedOverrideHostname(u.hostname);
+  } catch {
+    return false;
+  }
 }
 
 function buildSameOriginPriceStreamWsUrl(): string {
@@ -19,81 +47,36 @@ function buildSameOriginPriceStreamWsUrl(): string {
   return `${protocol}//${window.location.host}${PRICE_STREAM_WS_PATH}`;
 }
 
-/** Normalize NEXT_PUBLIC_WS_PRICES_URL for the current page (https => wss, http => ws). */
+/** Normalize NEXT_PUBLIC_WS_PRICES_URL scheme to match the current page (https => wss, http => ws). */
 function normalizePriceStreamWsUrl(override: string): string {
-  if (typeof window === 'undefined') {
-    return override;
+  const u = new URL(override);
+  const pageSecure = window.location.protocol === 'https:';
+
+  if (u.protocol === 'http:' || u.protocol === 'https:') {
+    u.protocol = pageSecure ? 'wss:' : 'ws:';
+    return u.toString();
   }
-  try {
-    const u = new URL(override, window.location.href);
-    const pageSecure = window.location.protocol === 'https:';
 
-    if (isInternalApiHostname(u.hostname)) {
-      return buildSameOriginPriceStreamWsUrl();
-    }
-
-    if (u.protocol === 'http:' || u.protocol === 'https:') {
-      if (pageSecure && !isLocalHostname(u.hostname)) {
-        u.protocol = 'wss:';
-      } else if (!pageSecure) {
-        u.protocol = 'ws:';
-      } else if (pageSecure && isLocalHostname(u.hostname)) {
-        u.protocol = 'ws:';
-      } else {
-        u.protocol = pageSecure ? 'wss:' : 'ws:';
-      }
-      return u.toString();
-    }
-
-    if (u.protocol === 'ws:' || u.protocol === 'wss:') {
-      if (pageSecure && u.protocol === 'ws:' && !isLocalHostname(u.hostname)) {
-        u.protocol = 'wss:';
-      }
-      return u.toString();
-    }
-  } catch {
-    /* fall through */
+  if (u.protocol === 'ws:' || u.protocol === 'wss:') {
+    u.protocol = pageSecure ? 'wss:' : 'ws:';
+    return u.toString();
   }
+
   return override;
-}
-
-function sanitizePriceStreamWsUrl(url: string): string {
-  if (typeof window === 'undefined') {
-    return url;
-  }
-  if (/^wss?:\/\/api(?:\/|$)/i.test(url)) {
-    return buildSameOriginPriceStreamWsUrl();
-  }
-  try {
-    const u = new URL(url, window.location.href);
-    if (isInternalApiHostname(u.hostname)) {
-      return buildSameOriginPriceStreamWsUrl();
-    }
-    if (window.location.protocol === 'https:' && u.protocol === 'ws:' && !isLocalHostname(u.hostname)) {
-      u.protocol = 'wss:';
-      return u.toString();
-    }
-  } catch {
-    /* use url as-is */
-  }
-  return url;
 }
 
 /**
  * WebSocket URL for real-time price stream (/api/ws/prices).
- * Optional NEXT_PUBLIC_WS_PRICES_URL override (full ws(s)://, http(s)://, or path URL).
+ * Optional NEXT_PUBLIC_WS_PRICES_URL override (full ws(s):// or http(s):// URL only).
  */
 export function getWebSocketPricesUrl(): string {
-  const override = process.env.NEXT_PUBLIC_WS_PRICES_URL?.trim();
-  if (override) {
-    if (typeof window === 'undefined') {
-      return override;
-    }
-    return sanitizePriceStreamWsUrl(normalizePriceStreamWsUrl(override));
+  if (typeof window === 'undefined') {
+    return PRICE_STREAM_WS_PATH;
   }
 
-  if (typeof window === 'undefined') {
-    return `ws://127.0.0.1:8002${PRICE_STREAM_WS_PATH}`;
+  const override = process.env.NEXT_PUBLIC_WS_PRICES_URL?.trim();
+  if (override && isValidAbsoluteOverride(override)) {
+    return normalizePriceStreamWsUrl(override);
   }
 
   return buildSameOriginPriceStreamWsUrl();
