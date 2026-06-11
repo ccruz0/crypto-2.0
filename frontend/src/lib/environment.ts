@@ -226,65 +226,7 @@ export function getApiUrl(): string {
   return getEnvironmentManager().getApiUrl();
 }
 
-const PRICE_STREAM_WS_PATH = '/api/ws/prices';
-
-function isLocalHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
-}
-
-/** Normalize NEXT_PUBLIC_WS_PRICES_URL for the current page (https => wss, http => ws). */
-function normalizePriceStreamWsUrl(override: string): string {
-  if (typeof window === 'undefined') {
-    return override;
-  }
-  try {
-    const u = new URL(override, window.location.href);
-    const pageSecure = window.location.protocol === 'https:';
-
-    if (u.protocol === 'http:' || u.protocol === 'https:') {
-      if (pageSecure && !isLocalHostname(u.hostname)) {
-        u.protocol = 'wss:';
-      } else if (!pageSecure) {
-        u.protocol = 'ws:';
-      } else if (pageSecure && isLocalHostname(u.hostname)) {
-        u.protocol = 'ws:';
-      } else {
-        u.protocol = pageSecure ? 'wss:' : 'ws:';
-      }
-      return u.toString();
-    }
-
-    if (u.protocol === 'ws:' || u.protocol === 'wss:') {
-      if (pageSecure && u.protocol === 'ws:' && !isLocalHostname(u.hostname)) {
-        u.protocol = 'wss:';
-      }
-      return u.toString();
-    }
-  } catch {
-    /* use override as-is */
-  }
-  return override;
-}
-
-/**
- * WebSocket URL for real-time price stream (/api/ws/prices).
- * Browser: same-origin wss on HTTPS, ws on HTTP (never ws://api from relative /api).
- * Optional NEXT_PUBLIC_WS_PRICES_URL override (full ws(s):// or http(s):// URL).
- */
-export function getWebSocketPricesUrl(): string {
-  const override = process.env.NEXT_PUBLIC_WS_PRICES_URL?.trim();
-  if (override) {
-    return typeof window === 'undefined' ? override : normalizePriceStreamWsUrl(override);
-  }
-
-  if (typeof window === 'undefined') {
-    return `ws://127.0.0.1:8002${PRICE_STREAM_WS_PATH}`;
-  }
-
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = window.location.host;
-  return `${protocol}//${host}${PRICE_STREAM_WS_PATH}`;
-}
+export { getWebSocketPricesUrl, PRICE_STREAM_WS_PATH } from './priceStreamWsUrl';
 
 export function getEnvironmentConfig(): EnvironmentConfig {
   return getEnvironmentManager().getConfig();

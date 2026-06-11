@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { getWebSocketPricesUrl } from '@/lib/environment';
+import { getWebSocketPricesUrl } from '@/lib/priceStreamWsUrl';
 
 export interface PriceStreamSnapshot {
   prices: Record<string, number>;
