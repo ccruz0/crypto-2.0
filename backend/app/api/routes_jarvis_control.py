@@ -21,6 +21,7 @@ from app.core.environment import (
 )
 from app.jarvis.control import approvals as builder_approvals
 from app.jarvis.control import artifacts as builder_artifacts
+from app.jarvis.control import workflow as builder_workflow
 from app.jarvis.control.approvals import (
     BuilderApprovalConflictError,
     BuilderApprovalNotFoundError,
@@ -182,10 +183,21 @@ def builder_task_detail(
     task_id: str,
     _auth: None = Depends(_verify_governance_token),
 ) -> dict[str, Any]:
-    detail = _service.get_builder_task(task_id)
+    detail = builder_workflow.get_builder_task_detail(task_id)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Builder task not found: {task_id}")
     return detail
+
+
+@router.get("/builder/{task_id}/timeline")
+def builder_task_timeline(
+    task_id: str,
+    _auth: None = Depends(_verify_governance_token),
+) -> dict[str, Any]:
+    events = builder_workflow.get_builder_timeline(task_id)
+    if events is None:
+        raise HTTPException(status_code=404, detail=f"Builder task not found: {task_id}")
+    return {"task_id": task_id, "events": events, "count": len(events)}
 
 
 @router.post("/builder/{task_id}/approve")

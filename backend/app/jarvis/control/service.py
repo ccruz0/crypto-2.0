@@ -11,6 +11,7 @@ from app.core.environment import (
     is_jarvis_control_enabled,
 )
 from app.jarvis.control import persistence as jcp
+from app.jarvis.control import workflow as builder_workflow
 from app.jarvis.mvp.risk import classify_task_risk
 
 _BUILDER_STUB_ARTIFACT_MESSAGE = (
@@ -131,13 +132,13 @@ class JarvisControlService:
         }
 
     def get_builder_task(self, task_id: str) -> dict[str, Any] | None:
-        detail = jcp.get_control_task(task_id)
-        if detail is None or detail.get("mode") != "builder":
-            return None
-        return detail
+        return builder_workflow.get_builder_task_detail(task_id)
+
+    def get_builder_timeline(self, task_id: str) -> list[dict[str, Any]] | None:
+        return builder_workflow.get_builder_timeline(task_id)
 
     def list_builder_approvals(self, task_id: str) -> list[dict[str, Any]] | None:
-        task = self.get_builder_task(task_id)
-        if task is None:
+        context = jcp.get_builder_workflow_context(task_id)
+        if context is None:
             return None
-        return jcp.get_control_approvals(task_id)
+        return context["approvals"]

@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.jarvis.control import persistence as jcp
-from app.jarvis.control.persistence import ControlTaskTransitionError
+from app.jarvis.control import workflow as builder_workflow
+from app.jarvis.control.workflow import (
+    BuilderWorkflowConflictError,
+    BuilderWorkflowNotFoundError,
+)
 
 
 class BuilderApprovalNotFoundError(LookupError):
@@ -32,10 +36,14 @@ def approve_builder_task(
 ) -> dict[str, Any]:
     """Approve a builder task in awaiting_approval status."""
     try:
-        return jcp.approve_control_task(task_id, actor_id=actor_id, comment=comment)
-    except LookupError as exc:
+        return builder_workflow.approve_builder_task(
+            task_id,
+            actor_id=actor_id,
+            comment=comment,
+        )
+    except BuilderWorkflowNotFoundError as exc:
         raise BuilderApprovalNotFoundError(str(exc)) from exc
-    except ControlTaskTransitionError as exc:
+    except BuilderWorkflowConflictError as exc:
         raise BuilderApprovalConflictError(str(exc)) from exc
 
 
@@ -47,8 +55,12 @@ def reject_builder_task(
 ) -> dict[str, Any]:
     """Reject a builder task in awaiting_approval status."""
     try:
-        return jcp.reject_control_task(task_id, actor_id=actor_id, comment=comment)
-    except LookupError as exc:
+        return builder_workflow.reject_builder_task(
+            task_id,
+            actor_id=actor_id,
+            comment=comment,
+        )
+    except BuilderWorkflowNotFoundError as exc:
         raise BuilderApprovalNotFoundError(str(exc)) from exc
-    except ControlTaskTransitionError as exc:
+    except BuilderWorkflowConflictError as exc:
         raise BuilderApprovalConflictError(str(exc)) from exc

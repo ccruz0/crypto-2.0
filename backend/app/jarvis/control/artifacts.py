@@ -6,6 +6,11 @@ import json
 from typing import Any
 
 from app.jarvis.control import persistence as jcp
+from app.jarvis.control import workflow as builder_workflow
+from app.jarvis.control.workflow import (
+    BuilderWorkflowConflictError,
+    BuilderWorkflowNotFoundError,
+)
 
 
 class BuilderArtifactError(ValueError):
@@ -29,6 +34,7 @@ def _artifact_response(task: dict[str, Any]) -> dict[str, Any]:
         "artifact": task.get("builder_artifact") if isinstance(task.get("builder_artifact"), dict) else {},
         "updated_at": task.get("artifact_updated_at"),
         "version": int(task.get("artifact_version") or 0),
+        "status": task.get("status"),
     }
 
 
@@ -40,23 +46,47 @@ def get_builder_artifact(task_id: str) -> dict[str, Any] | None:
     return _artifact_response(task)
 
 
-def save_builder_artifact(task_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
-    """Replace the stored builder artifact and bump version."""
+def save_builder_artifact(
+    task_id: str,
+    artifact: dict[str, Any],
+    *,
+    actor_id: str = "dashboard",
+) -> dict[str, Any]:
+    """Replace the stored builder artifact, bump version, and advance workflow."""
     if not isinstance(artifact, dict):
         raise BuilderArtifactError("artifact must be a JSON object")
     _ensure_json_serializable(artifact)
-    updated = jcp.persist_builder_artifact(task_id, artifact, merge=False)
-    if updated is None:
-        raise BuilderArtifactNotFoundError(f"Builder task not found: {task_id}")
-    return _artifact_response(updated)
+    try:
+        return builder_workflow.save_builder_artifact(
+            task_id,
+            artifact,
+            merge=False,
+            actor_id=actor_id,
+        )
+    except BuilderWorkflowNotFoundError as exc:
+        raise BuilderArtifactNotFoundError(str(exc)) from exc
+    except BuilderWorkflowConflictError as exc:
+        raise BuilderArtifactError(str(exc)) from exc
 
 
-def update_builder_artifact(task_id: str, partial_update: dict[str, Any]) -> dict[str, Any]:
-    """Merge partial fields into the stored builder artifact and bump version."""
+def update_builder_artifact(
+    task_id: str,
+    partial_update: dict[str, Any],
+    *,
+    actor_id: str = "dashboard",
+) -> dict[str, Any]:
+    """Merge partial fields into the stored builder artifact and advance workflow."""
     if not isinstance(partial_update, dict):
         raise BuilderArtifactError("partial_update must be a JSON object")
     _ensure_json_serializable(partial_update)
-    updated = jcp.persist_builder_artifact(task_id, partial_update, merge=True)
-    if updated is None:
-        raise BuilderArtifactNotFoundError(f"Builder task not found: {task_id}")
-    return _artifact_response(updated)
+    try:
+        return builder_workflow.save_builder_artifact(
+            task_id,
+            partial_update,
+            merge=True,
+            actor_id=actor_id,
+        )
+    except BuilderWorkflowNotFoundError as exc:
+        raise BuilderArtifactNotFoundError(str(exc)) from exc
+    except BuilderWorkflowConflictError as exc:
+        raise BuilderArtifactError(str(exc)) from exc
