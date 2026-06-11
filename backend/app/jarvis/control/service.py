@@ -67,11 +67,19 @@ class JarvisControlService:
         actor = (requested_by or "dashboard").strip() or "dashboard"
         risk_level = classify_task_risk(prompt)
         session_env = _session_environment()
+        prompt_summary = _prompt_summary(prompt)
         artifact = {
             "stub": True,
             "bridge_invoked": False,
             "governance_created": False,
             "message": _BUILDER_STUB_ARTIFACT_MESSAGE,
+            "plan": {
+                "summary": prompt_summary,
+                "domain": normalized_domain,
+                "risk_level": risk_level,
+            },
+            "artifacts": [],
+            "next_action": "awaiting_builder_execution",
         }
 
         session_id = jcp.create_control_session(

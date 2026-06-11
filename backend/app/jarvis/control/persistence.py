@@ -176,6 +176,7 @@ def create_control_task(
     if rl not in RISK_LEVELS:
         raise ValueError(f"invalid risk_level {risk_level!r}")
 
+    artifact_version = 1 if builder_artifact else 0
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -183,11 +184,14 @@ def create_control_task(
                 INSERT INTO jarvis_control_tasks (
                     task_id, session_id, mode, domain, prompt, status, risk_level, dry_run,
                     plan_json, tool_results_json, final_answer, estimated_cost_usd,
-                    builder_artifact_json, governance_task_id, legacy_task_run_id, error
+                    builder_artifact_json, artifact_version, artifact_updated_at,
+                    governance_task_id, legacy_task_run_id, error
                 ) VALUES (
                     :task_id, :session_id, :mode, :domain, :prompt, :status, :risk_level, :dry_run,
                     :plan_json, :tool_results_json, :final_answer, :estimated_cost_usd,
-                    :builder_artifact_json, :governance_task_id, :legacy_task_run_id, :error
+                    :builder_artifact_json, :artifact_version,
+                    CASE WHEN :builder_artifact_json IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    :governance_task_id, :legacy_task_run_id, :error
                 )
                 """
             ),
@@ -205,6 +209,7 @@ def create_control_task(
                 "final_answer": final_answer or "",
                 "estimated_cost_usd": estimated_cost_usd,
                 "builder_artifact_json": _json_dumps(builder_artifact) if builder_artifact else None,
+                "artifact_version": artifact_version,
                 "governance_task_id": governance_task_id,
                 "legacy_task_run_id": legacy_task_run_id,
                 "error": error,
@@ -231,6 +236,8 @@ def _row_to_task_detail(row: Any) -> dict[str, Any]:
         if mapping.get("estimated_cost_usd") is not None
         else None,
         "builder_artifact": _json_loads(mapping.get("builder_artifact_json"), None),
+        "artifact_version": int(mapping.get("artifact_version") or 0),
+        "artifact_updated_at": _isoformat(mapping.get("artifact_updated_at")),
         "governance_task_id": mapping.get("governance_task_id"),
         "legacy_task_run_id": mapping.get("legacy_task_run_id"),
         "error": mapping.get("error"),
@@ -371,6 +378,48 @@ def update_control_task_status(
             params,
         )
     return result.rowcount > 0
+
+
+def persist_builder_artifact(
+    task_id: str,
+    artifact: dict[str, Any],
+    *,
+    merge: bool = False,
+) -> dict[str, Any] | None:
+    """Write builder artifact JSON and bump version. Returns updated task detail or None."""
+    _ensure_db()
+    tid = (task_id or "").strip()
+    if not tid:
+        return None
+    existing = get_control_task(tid)
+    if existing is None or existing.get("mode") != "builder":
+        return None
+
+    current_artifact = existing.get("builder_artifact")
+    if not isinstance(current_artifact, dict):
+        current_artifact = {}
+    next_artifact = {**current_artifact, **artifact} if merge else dict(artifact)
+    next_version = max(1, int(existing.get("artifact_version") or 0) + 1)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE jarvis_control_tasks SET
+                    builder_artifact_json = :builder_artifact_json,
+                    artifact_version = :artifact_version,
+                    artifact_updated_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = :task_id AND mode = 'builder'
+                """
+            ),
+            {
+                "task_id": tid,
+                "builder_artifact_json": _json_dumps(next_artifact),
+                "artifact_version": next_version,
+            },
+        )
+    return get_control_task(tid)
 
 
 def append_control_audit_event(

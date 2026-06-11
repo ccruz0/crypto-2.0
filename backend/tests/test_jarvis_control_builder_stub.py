@@ -142,6 +142,13 @@ def test_builder_prepare_task_has_stub_artifact(control_db, monkeypatch) -> None
     assert artifact["bridge_invoked"] is False
     assert artifact["governance_created"] is False
     assert "Cursor bridge not invoked" in artifact["message"]
+    assert artifact["plan"]["summary"] == "summarize dashboard health"
+    assert artifact["plan"]["domain"] == "software"
+    assert artifact["plan"]["risk_level"] in ("low", "medium", "high")
+    assert artifact["artifacts"] == []
+    assert artifact["next_action"] == "awaiting_builder_execution"
+    assert detail["artifact_version"] == 1
+    assert detail["artifact_updated_at"] is not None
 
 
 def test_builder_prepare_creates_audit_event(control_db, monkeypatch) -> None:

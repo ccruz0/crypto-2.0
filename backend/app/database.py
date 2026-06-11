@@ -498,9 +498,45 @@ def ensure_jarvis_control_center_tables(engine_to_use) -> bool:
                 )
                 Base.metadata.create_all(bind=engine_to_use, tables=[tbl])
                 logger.info("[BOOT] Created table %s", tname)
+        if not _ensure_jarvis_control_task_artifact_columns(engine_to_use):
+            logger.warning("ensure_jarvis_control_center_tables: artifact columns not fully applied")
         return all(table_exists(engine_to_use, tname) for _, tname in ordered)
     except Exception as e:
         logger.error("ensure_jarvis_control_center_tables failed: %s", e, exc_info=True)
+        return False
+
+
+def _ensure_jarvis_control_task_artifact_columns(engine_to_use) -> bool:
+    """Add artifact_version and artifact_updated_at to jarvis_control_tasks if missing."""
+    if engine_to_use is None:
+        return False
+    if not table_exists(engine_to_use, "jarvis_control_tasks"):
+        return False
+    try:
+        inspector = inspect(engine_to_use)
+        columns = {col["name"] for col in inspector.get_columns("jarvis_control_tasks")}
+        additions: list[tuple[str, str]] = []
+        if "artifact_version" not in columns:
+            additions.append(("artifact_version", "INTEGER NOT NULL DEFAULT 0"))
+        if "artifact_updated_at" not in columns:
+            if engine_to_use.dialect.name == "sqlite":
+                additions.append(("artifact_updated_at", "TIMESTAMP"))
+            else:
+                additions.append(("artifact_updated_at", "TIMESTAMPTZ"))
+        if not additions:
+            return True
+        with engine_to_use.begin() as conn:
+            for col_name, col_def in additions:
+                conn.execute(
+                    text(f"ALTER TABLE jarvis_control_tasks ADD COLUMN {col_name} {col_def}")
+                )
+        logger.info(
+            "[BOOT] Added jarvis_control_tasks artifact columns: %s",
+            [a[0] for a in additions],
+        )
+        return True
+    except Exception as e:
+        logger.warning("_ensure_jarvis_control_task_artifact_columns failed: %s", e)
         return False
 
 

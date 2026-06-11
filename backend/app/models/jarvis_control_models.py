@@ -59,6 +59,8 @@ class JarvisControlTask(Base):
     final_answer = Column(Text, nullable=True)
     estimated_cost_usd = Column(Numeric, nullable=True)
     builder_artifact_json = Column(Text, nullable=True)
+    artifact_version = Column(Integer, nullable=False, default=0)
+    artifact_updated_at = Column(DateTime(timezone=True), nullable=True)
     governance_task_id = Column(String(128), nullable=True, index=True)
     legacy_task_run_id = Column(String(128), nullable=True, index=True)
     error = Column(Text, nullable=True)
