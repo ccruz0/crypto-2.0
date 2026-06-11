@@ -19,7 +19,12 @@ from app.core.environment import (
     is_jarvis_builder_allowed,
     is_jarvis_control_enabled,
 )
+from app.jarvis.control import approvals as builder_approvals
 from app.jarvis.control import artifacts as builder_artifacts
+from app.jarvis.control.approvals import (
+    BuilderApprovalConflictError,
+    BuilderApprovalNotFoundError,
+)
 from app.jarvis.control.artifacts import BuilderArtifactError
 from app.jarvis.control.service import JarvisControlService
 
@@ -52,6 +57,11 @@ class BuilderArtifactUpdateRequest(BaseModel):
     artifact: dict[str, Any] = Field(..., description="Builder artifact JSON object")
 
 
+class BuilderApprovalRequest(BaseModel):
+    actor_id: str = Field(default="dashboard", description="Approving or rejecting user")
+    comment: str | None = Field(default=None, description="Optional approval comment")
+
+
 def _require_builder_prepare_allowed() -> None:
     if is_atp_trading_only():
         raise HTTPException(
@@ -78,6 +88,25 @@ def _require_builder_artifact_write_allowed() -> None:
             detail={
                 "error": "builder_artifact_blocked_trading_only",
                 "message": "Builder artifact writes are blocked when ATP_TRADING_ONLY=1.",
+            },
+        )
+
+
+def _require_builder_approval_mutations_allowed() -> None:
+    if is_atp_trading_only():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "builder_approval_blocked_trading_only",
+                "message": "Builder approvals are blocked when ATP_TRADING_ONLY=1.",
+            },
+        )
+    if not is_jarvis_builder_allowed():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "builder_not_allowed",
+                "message": "Builder approvals are disabled (set JARVIS_BUILDER_ALLOWED=1 on non-trading hosts).",
             },
         )
 
@@ -157,3 +186,64 @@ def builder_task_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Builder task not found: {task_id}")
     return detail
+
+
+@router.post("/builder/{task_id}/approve")
+def builder_approve_task(
+    task_id: str,
+    body: BuilderApprovalRequest,
+    _auth: None = Depends(_verify_governance_token),
+    _approval: None = Depends(_require_builder_approval_mutations_allowed),
+) -> dict[str, Any]:
+    try:
+        approval = builder_approvals.approve_builder_task(
+            task_id,
+            actor_id=body.actor_id or "dashboard",
+            comment=body.comment,
+        )
+    except BuilderApprovalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BuilderApprovalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    task = _service.get_builder_task(task_id)
+    return {
+        "task_id": task_id,
+        "status": task["status"] if task else "approved",
+        "approval": approval,
+    }
+
+
+@router.post("/builder/{task_id}/reject")
+def builder_reject_task(
+    task_id: str,
+    body: BuilderApprovalRequest,
+    _auth: None = Depends(_verify_governance_token),
+    _approval: None = Depends(_require_builder_approval_mutations_allowed),
+) -> dict[str, Any]:
+    try:
+        approval = builder_approvals.reject_builder_task(
+            task_id,
+            actor_id=body.actor_id or "dashboard",
+            comment=body.comment,
+        )
+    except BuilderApprovalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BuilderApprovalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    task = _service.get_builder_task(task_id)
+    return {
+        "task_id": task_id,
+        "status": task["status"] if task else "rejected",
+        "approval": approval,
+    }
+
+
+@router.get("/builder/{task_id}/approvals")
+def builder_list_approvals(
+    task_id: str,
+    _auth: None = Depends(_verify_governance_token),
+) -> dict[str, Any]:
+    approvals = builder_approvals.get_builder_approvals(task_id)
+    if approvals is None:
+        raise HTTPException(status_code=404, detail=f"Builder task not found: {task_id}")
+    return {"task_id": task_id, "approvals": approvals, "count": len(approvals)}

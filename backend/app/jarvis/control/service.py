@@ -135,3 +135,9 @@ class JarvisControlService:
         if detail is None or detail.get("mode") != "builder":
             return None
         return detail
+
+    def list_builder_approvals(self, task_id: str) -> list[dict[str, Any]] | None:
+        task = self.get_builder_task(task_id)
+        if task is None:
+            return None
+        return jcp.get_control_approvals(task_id)

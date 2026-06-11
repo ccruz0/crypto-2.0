@@ -476,6 +476,220 @@ def append_control_audit_event(
     return eid
 
 
+class ControlTaskTransitionError(ValueError):
+    """Raised when a control task status transition is not allowed."""
+
+
+def _row_to_approval(row: Any) -> dict[str, Any]:
+    mapping = row._mapping if hasattr(row, "_mapping") else row
+    return {
+        "approval_id": mapping["approval_id"],
+        "task_id": mapping["task_id"],
+        "action_id": mapping.get("action_id"),
+        "approval_status": mapping["approval_status"],
+        "execution_status": mapping.get("execution_status") or "not_executed",
+        "risk_level": mapping.get("risk_level") or "medium",
+        "scope_summary": mapping.get("scope_summary"),
+        "digest": mapping.get("digest"),
+        "allowed_envs": mapping.get("allowed_envs"),
+        "requested_by": mapping.get("requested_by") or "jarvis",
+        "approved_by": mapping.get("approved_by"),
+        "approved_at": _isoformat(mapping.get("approved_at")),
+        "comment": mapping.get("comment"),
+        "expires_at": _isoformat(mapping.get("expires_at")),
+        "governance_manifest_id": mapping.get("governance_manifest_id"),
+        "created_at": _isoformat(mapping.get("created_at")),
+        "updated_at": _isoformat(mapping.get("updated_at")),
+    }
+
+
+def get_control_approvals(task_id: str) -> list[dict[str, Any]]:
+    """Return approval rows for a control task, newest first."""
+    if engine is None or not ensure_jarvis_control_center_tables(engine):
+        return []
+    tid = (task_id or "").strip()
+    if not tid:
+        return []
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT * FROM jarvis_control_approvals
+                WHERE task_id = :task_id
+                ORDER BY created_at DESC
+                """
+            ),
+            {"task_id": tid},
+        ).fetchall()
+    return [_row_to_approval(row) for row in rows]
+
+
+def _assert_builder_approval_transition(task: dict[str, Any], *, action: str) -> None:
+    status = (task.get("status") or "").strip().lower()
+    if status == action:
+        raise ControlTaskTransitionError(f"task already {action}")
+    if status in ("approved", "rejected"):
+        raise ControlTaskTransitionError(f"task already {status}")
+    if status != "awaiting_approval":
+        raise ControlTaskTransitionError(
+            f"cannot {action} builder task in status {status!r}; expected awaiting_approval"
+        )
+
+
+def approve_control_task(
+    task_id: str,
+    *,
+    actor_id: str,
+    comment: str | None = None,
+) -> dict[str, Any]:
+    """Record dashboard approval for a builder task and move status to approved."""
+    _ensure_db()
+    tid = (task_id or "").strip()
+    if not tid:
+        raise ValueError("task_id required")
+    task = get_control_task(tid)
+    if task is None or task.get("mode") != "builder":
+        raise LookupError(f"Builder task not found: {tid}")
+    _assert_builder_approval_transition(task, action="approved")
+
+    actor = (actor_id or "dashboard").strip() or "dashboard"
+    approval_id = _new_approval_id()
+    comment_text = (comment or "").strip() or None
+    risk_level = (task.get("risk_level") or "medium").strip().lower()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO jarvis_control_approvals (
+                    approval_id, task_id, approval_status, execution_status,
+                    risk_level, scope_summary, requested_by, approved_by, approved_at, comment
+                ) VALUES (
+                    :approval_id, :task_id, 'approved', 'not_executed',
+                    :risk_level, :scope_summary, :requested_by, :approved_by, CURRENT_TIMESTAMP, :comment
+                )
+                """
+            ),
+            {
+                "approval_id": approval_id,
+                "task_id": tid,
+                "risk_level": risk_level,
+                "scope_summary": f"Builder task approved by {actor}"[:2000],
+                "requested_by": actor,
+                "approved_by": actor,
+                "comment": comment_text,
+            },
+        )
+        result = conn.execute(
+            text(
+                """
+                UPDATE jarvis_control_tasks SET
+                    status = 'approved',
+                    completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = :task_id AND status = 'awaiting_approval'
+                """
+            ),
+            {"task_id": tid},
+        )
+        if result.rowcount != 1:
+            raise ControlTaskTransitionError("task status changed during approval")
+
+    append_control_audit_event(
+        "builder_task_approved",
+        task_id=tid,
+        session_id=task.get("session_id"),
+        approval_id=approval_id,
+        actor_type="human",
+        actor_id=actor,
+        payload={
+            "approval_id": approval_id,
+            "comment": comment_text,
+            "previous_status": task.get("status"),
+            "new_status": "approved",
+        },
+    )
+    approvals = get_control_approvals(tid)
+    return approvals[0] if approvals else {"approval_id": approval_id, "task_id": tid}
+
+
+def reject_control_task(
+    task_id: str,
+    *,
+    actor_id: str,
+    comment: str | None = None,
+) -> dict[str, Any]:
+    """Record dashboard rejection for a builder task and move status to rejected."""
+    _ensure_db()
+    tid = (task_id or "").strip()
+    if not tid:
+        raise ValueError("task_id required")
+    task = get_control_task(tid)
+    if task is None or task.get("mode") != "builder":
+        raise LookupError(f"Builder task not found: {tid}")
+    _assert_builder_approval_transition(task, action="rejected")
+
+    actor = (actor_id or "dashboard").strip() or "dashboard"
+    approval_id = _new_approval_id()
+    comment_text = (comment or "").strip() or None
+    risk_level = (task.get("risk_level") or "medium").strip().lower()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO jarvis_control_approvals (
+                    approval_id, task_id, approval_status, execution_status,
+                    risk_level, scope_summary, requested_by, approved_by, approved_at, comment
+                ) VALUES (
+                    :approval_id, :task_id, 'rejected', 'not_executed',
+                    :risk_level, :scope_summary, :requested_by, :approved_by, CURRENT_TIMESTAMP, :comment
+                )
+                """
+            ),
+            {
+                "approval_id": approval_id,
+                "task_id": tid,
+                "risk_level": risk_level,
+                "scope_summary": f"Builder task rejected by {actor}"[:2000],
+                "requested_by": actor,
+                "approved_by": actor,
+                "comment": comment_text,
+            },
+        )
+        result = conn.execute(
+            text(
+                """
+                UPDATE jarvis_control_tasks SET
+                    status = 'rejected',
+                    completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = :task_id AND status = 'awaiting_approval'
+                """
+            ),
+            {"task_id": tid},
+        )
+        if result.rowcount != 1:
+            raise ControlTaskTransitionError("task status changed during rejection")
+
+    append_control_audit_event(
+        "builder_task_rejected",
+        task_id=tid,
+        session_id=task.get("session_id"),
+        approval_id=approval_id,
+        actor_type="human",
+        actor_id=actor,
+        payload={
+            "approval_id": approval_id,
+            "comment": comment_text,
+            "previous_status": task.get("status"),
+            "new_status": "rejected",
+        },
+    )
+    approvals = get_control_approvals(tid)
+    return approvals[0] if approvals else {"approval_id": approval_id, "task_id": tid}
+
+
 def create_control_approval(
     *,
     task_id: str,

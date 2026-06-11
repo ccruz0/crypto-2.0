@@ -12,6 +12,8 @@ TASK_STATUSES = frozenset({
     "planning",
     "running",
     "awaiting_approval",
+    "approved",
+    "rejected",
     "completed",
     "failed",
     "cancelled",

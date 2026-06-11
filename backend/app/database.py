@@ -500,9 +500,44 @@ def ensure_jarvis_control_center_tables(engine_to_use) -> bool:
                 logger.info("[BOOT] Created table %s", tname)
         if not _ensure_jarvis_control_task_artifact_columns(engine_to_use):
             logger.warning("ensure_jarvis_control_center_tables: artifact columns not fully applied")
+        if not ensure_jarvis_control_approval_comment_column(engine_to_use):
+            logger.warning(
+                "ensure_jarvis_control_center_tables: approval comment column not fully applied"
+            )
         return all(table_exists(engine_to_use, tname) for _, tname in ordered)
     except Exception as e:
         logger.error("ensure_jarvis_control_center_tables failed: %s", e, exc_info=True)
+        return False
+
+
+def ensure_jarvis_control_approval_comment_column(engine_to_use) -> bool:
+    """Add comment to jarvis_control_approvals if missing (Step 1 tables without Step 7 column)."""
+    if engine_to_use is None:
+        return False
+    if not table_exists(engine_to_use, "jarvis_control_approvals"):
+        return False
+    try:
+        inspector = inspect(engine_to_use)
+        columns = {col["name"] for col in inspector.get_columns("jarvis_control_approvals")}
+        if "comment" in columns:
+            return True
+        col_def = "TEXT"
+        with engine_to_use.begin() as conn:
+            if engine_to_use.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        "ALTER TABLE jarvis_control_approvals "
+                        "ADD COLUMN IF NOT EXISTS comment TEXT"
+                    )
+                )
+            else:
+                conn.execute(
+                    text(f"ALTER TABLE jarvis_control_approvals ADD COLUMN comment {col_def}")
+                )
+        logger.info("[BOOT] Added jarvis_control_approvals.comment column")
+        return True
+    except Exception as e:
+        logger.warning("ensure_jarvis_control_approval_comment_column failed: %s", e)
         return False
 
 

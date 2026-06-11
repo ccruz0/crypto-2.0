@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS jarvis_control_approvals (
     requested_by VARCHAR(255) NOT NULL DEFAULT 'jarvis',
     approved_by VARCHAR(255),
     approved_at TIMESTAMPTZ,
+    comment TEXT,
     expires_at TIMESTAMPTZ,
     governance_manifest_id VARCHAR(128),
     agent_approval_state_id INTEGER,

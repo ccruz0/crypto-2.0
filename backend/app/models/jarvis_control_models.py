@@ -97,6 +97,7 @@ class JarvisControlApproval(Base):
     requested_by = Column(String(255), nullable=False, default="jarvis")
     approved_by = Column(String(255), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
+    comment = Column(Text, nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     governance_manifest_id = Column(String(128), nullable=True)
     agent_approval_state_id = Column(Integer, nullable=True)
