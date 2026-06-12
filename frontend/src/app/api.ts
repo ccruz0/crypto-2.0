@@ -1,5 +1,4 @@
 import { getApiUrl } from '@/lib/environment';
-import { readStoredGovernanceBearer } from '@/lib/governanceAuth';
 
 const DEFAULT_API_URL = getApiUrl();
 
@@ -1764,6 +1763,78 @@ export interface UnifiedOpenOrder {
 export type { StrategyDecision } from '@/lib/api';
 
 // Agent Operations Visibility API
+export interface JarvisControlStatus {
+  available: boolean;
+  control_enabled?: boolean;
+  builder_allowed?: boolean;
+  trading_only?: boolean;
+  environment?: string;
+  builder_available?: boolean;
+  error?: 'disabled' | 'network' | 'unauthorized';
+  message?: string;
+}
+
+export async function getJarvisControlStatus(): Promise<JarvisControlStatus> {
+  try {
+    const apiUrl = (typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL).replace(/\/+$/, '');
+    const response = await fetch(`${apiUrl}/jarvis/control/status`, {
+      headers: { 'Content-Type': 'application/json', 'x-api-key': 'demo-key' },
+    });
+    if (response.status === 404) {
+      return {
+        available: false,
+        error: 'disabled',
+        trading_only: true,
+        control_enabled: false,
+        builder_allowed: false,
+        builder_available: false,
+        message: 'Jarvis automation is currently disabled in production.',
+      };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return {
+        available: false,
+        error: 'unauthorized',
+        message: 'Jarvis Control API requires authentication on this host.',
+      };
+    }
+    if (!response.ok) {
+      return {
+        available: false,
+        error: 'network',
+        message: 'Unable to reach Jarvis status API.',
+      };
+    }
+    const data = await response.json() as Record<string, unknown>;
+    return {
+      available: true,
+      control_enabled: Boolean(data.control_enabled),
+      builder_allowed: Boolean(data.builder_allowed),
+      trading_only: Boolean(data.trading_only),
+      environment: typeof data.environment === 'string' ? data.environment : undefined,
+      builder_available: Boolean(data.builder_available),
+    };
+  } catch {
+    return {
+      available: false,
+      error: 'network',
+      message: 'Unable to reach Jarvis status API.',
+    };
+  }
+}
+
+export async function probeAgentApiAvailable(): Promise<boolean> {
+  try {
+    const apiUrl = (typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL).replace(/\/+$/, '');
+    const response = await fetch(`${apiUrl}/agent/status`, {
+      headers: { 'Content-Type': 'application/json', 'x-api-key': 'demo-key' },
+    });
+    return response.status !== 404;
+  } catch {
+    return false;
+  }
+}
+
 export interface AgentStatus {
   scheduler_running: boolean;
   automation_enabled: boolean;
@@ -1945,162 +2016,4 @@ export async function getAgentOpsCursorBridgeDiagnostics(): Promise<AgentOpsCurs
     logRequestIssue('getAgentOpsCursorBridgeDiagnostics', 'Cursor bridge diagnostics fetch failed', error, 'warn');
     return { ok: false, error: String(error) };
   }
-}
-
-// --- Jarvis Control Center (Advisor mode — read-only via Bedrock MVP) ---
-
-export type JarvisRiskLevel = 'low' | 'medium' | 'high';
-export type JarvisTaskStatus = 'completed' | 'requires_approval' | 'failed';
-
-export interface JarvisTaskResponse {
-  task_id: string;
-  status: JarvisTaskStatus | string;
-  risk_level: JarvisRiskLevel;
-  plan: Array<Record<string, unknown>>;
-  tool_results: Array<Record<string, unknown>>;
-  review: Record<string, unknown>;
-  estimated_cost_usd: number;
-  final_answer: string;
-  audit_id?: string | null;
-  audit_output?: Record<string, unknown> | null;
-  crypto_audit_id?: string | null;
-  crypto_audit_output?: Record<string, unknown> | null;
-}
-
-export interface JarvisTaskRunSummary {
-  task_id: string;
-  task: string;
-  status: string;
-  risk_level: JarvisRiskLevel;
-  estimated_cost_usd: number;
-  created_at: string | null;
-  completed_at: string | null;
-}
-
-export interface JarvisTaskListResponse {
-  tasks: JarvisTaskRunSummary[];
-}
-
-export interface JarvisTaskRunDetail {
-  task_id: string;
-  task: string;
-  status: string;
-  risk_level: JarvisRiskLevel;
-  dry_run: boolean;
-  plan: Array<Record<string, unknown>>;
-  tool_results: Array<Record<string, unknown>>;
-  review: Record<string, unknown>;
-  estimated_cost_usd: number;
-  final_answer: string;
-  error: string | null;
-  created_at: string | null;
-  completed_at: string | null;
-}
-
-/** Submit a read-only Advisor question to Jarvis (always dry_run=true). */
-export async function postJarvisAdvisorTask(task: string): Promise<JarvisTaskResponse> {
-  return fetchAPI<JarvisTaskResponse>('/jarvis/task', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: task.trim(), dry_run: true }),
-  });
-}
-
-export async function getJarvisTaskList(limit = 20): Promise<JarvisTaskListResponse> {
-  return fetchAPI<JarvisTaskListResponse>(`/jarvis/tasks?limit=${limit}`);
-}
-
-export async function getJarvisTaskDetail(taskId: string): Promise<JarvisTaskRunDetail> {
-  return fetchAPI<JarvisTaskRunDetail>(`/jarvis/tasks/${encodeURIComponent(taskId)}`);
-}
-
-// --- Jarvis Control Center (Builder prepare stub — Phase 2A Step 4) ---
-
-export interface JarvisControlStatus {
-  control_enabled: boolean;
-  builder_allowed: boolean;
-  trading_only: boolean;
-  environment: string;
-  builder_available: boolean;
-}
-
-export interface JarvisBuilderPrepareResponse {
-  task_id: string;
-  status: string;
-  mode: 'builder' | string;
-  risk_level: JarvisRiskLevel;
-  stub: boolean;
-  message: string;
-}
-
-export interface JarvisBuilderTaskDetail {
-  task_id: string;
-  session_id: string;
-  mode: string;
-  domain: string;
-  prompt: string;
-  status: string;
-  risk_level: JarvisRiskLevel;
-  dry_run: boolean;
-  builder_artifact: {
-    stub?: boolean;
-    bridge_invoked?: boolean;
-    governance_created?: boolean;
-    message?: string;
-  } | null;
-  created_at: string | null;
-  updated_at: string | null;
-  completed_at: string | null;
-  error: string | null;
-}
-
-function jarvisControlAuthHeaders(): HeadersInit {
-  const bearer = readStoredGovernanceBearer();
-  return bearer ? { Authorization: `Bearer ${bearer}` } : {};
-}
-
-async function fetchJarvisControlAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  return fetchAPI<T>(endpoint, {
-    ...options,
-    headers: {
-      ...jarvisControlAuthHeaders(),
-      ...(options?.headers ?? {}),
-    },
-  });
-}
-
-/** Control Center environment gates (404 when JARVIS_CONTROL_ENABLED is off). */
-export async function getJarvisControlStatus(): Promise<JarvisControlStatus | null> {
-  try {
-    return await fetchJarvisControlAPI<JarvisControlStatus>('/jarvis/control/status');
-  } catch (error) {
-    const status = (error as Error & { status?: number }).status;
-    if (status === 404) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-/** Create a Builder prepare stub task (no execution). */
-export async function postJarvisBuilderPrepare(
-  prompt: string,
-  options?: { domain?: string; requested_by?: string }
-): Promise<JarvisBuilderPrepareResponse> {
-  return fetchJarvisControlAPI<JarvisBuilderPrepareResponse>('/jarvis/control/builder/prepare', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      prompt: prompt.trim(),
-      domain: options?.domain ?? 'software',
-      requested_by: options?.requested_by ?? 'dashboard',
-    }),
-  });
-}
-
-/** Fetch one Builder control task by id. */
-export async function getJarvisBuilderTask(taskId: string): Promise<JarvisBuilderTaskDetail> {
-  return fetchJarvisControlAPI<JarvisBuilderTaskDetail>(
-    `/jarvis/control/builder/${encodeURIComponent(taskId)}`
-  );
 }

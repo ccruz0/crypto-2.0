@@ -15,7 +15,7 @@ import WatchlistTab from '@/app/components/tabs/WatchlistTab';
 import OrdersTab from '@/app/components/tabs/OrdersTab';
 import ExpectedTakeProfitTab from '@/app/components/tabs/ExpectedTakeProfitTab';
 import ExecutedOrdersTab from '@/app/components/tabs/ExecutedOrdersTab';
-import JarvisTab from '@/app/components/tabs/JarvisTab';
+import JarvisControlTab from '@/app/components/tabs/JarvisControlTab';
 import SystemHealthPanel from '@/components/SystemHealth';
 import { palette } from '@/theme/palette';
 import { logger } from '@/utils/logger';
@@ -5157,7 +5157,7 @@ function resolveDecisionIndexColor(value: number): string {
             </div>
           )}
 
-          {activeTab === 'jarvis' && <JarvisTab />}
+          {activeTab === 'jarvis' && <JarvisControlTab />}
         </ErrorBoundary>
       </div>
 
