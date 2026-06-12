@@ -17,12 +17,13 @@ from scripts.automation.common import (  # noqa: E402
     automations_enabled,
     backend_base,
     check_websocket_prices,
+    classify_exchange_credential_issue,
     dashboard_url,
     default_cooldown_minutes,
     docker_container_running,
     http_get,
     load_runtime_env,
-    scan_docker_logs,
+    scan_docker_health_errors,
     setup_logging,
     utc_now_iso,
     ws_prices_url,
@@ -58,7 +59,7 @@ def run_checks() -> list[CheckResult]:
         ok, detail = docker_container_running(container)
         results.append(CheckResult(f"docker_{container}", ok, detail))
 
-    log_hits = scan_docker_logs("backend-aws", tail=120)
+    log_hits = scan_docker_health_errors("backend-aws", tail=120)
     if log_hits:
         results.append(
             CheckResult(
@@ -71,6 +72,11 @@ def run_checks() -> list[CheckResult]:
         results.append(CheckResult("backend_recent_errors", True, "no recent errors"))
 
     return results
+
+
+def collect_exchange_warnings() -> tuple[str, str]:
+    """Return (severity, message) for optional exchange integration issues."""
+    return classify_exchange_credential_issue()
 
 
 def format_alert(failures: list[CheckResult], ts: str) -> str:
@@ -97,10 +103,18 @@ def main() -> int:
     ts = utc_now_iso()
     results = run_checks()
     failures = [r for r in results if not r.ok]
+    warn_severity, warn_detail = collect_exchange_warnings()
 
     for item in results:
         status = "OK" if item.ok else "FAIL"
         log.info("check=%s status=%s detail=%s", item.name, status, item.detail[:200])
+
+    if warn_severity in ("warning", "error", "info"):
+        log.warning(
+            "exchange_integration severity=%s detail=%s",
+            warn_severity,
+            warn_detail[:200],
+        )
 
     if not failures:
         log.info("all checks passed")

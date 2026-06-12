@@ -19,9 +19,11 @@ from scripts.automation.common import (  # noqa: E402
     automations_enabled,
     backend_base,
     check_websocket_prices,
+    classify_exchange_credential_issue,
     dashboard_url,
     docker_container_running,
     ensure_backend_on_path,
+    exchange_integration_optional,
     http_fetch,
     http_get,
     load_runtime_env,
@@ -138,6 +140,8 @@ def build_report() -> str:
     jarvis = _query_jarvis_stats()
     errors = scan_docker_logs("backend-aws", tail=200, pattern=r"critical|fatal|traceback")
     error_snip = errors[0][:120] if errors else "none"
+    exchange_severity, exchange_detail = classify_exchange_credential_issue()
+    exchange_optional = exchange_integration_optional()
 
     lines = [
         f"📊 Jarvis Daily Production Report ({ts})",
@@ -145,6 +149,18 @@ def build_report() -> str:
         f"Frontend: {'OK' if fe_ok else 'FAIL'}",
         f"WebSocket prices: {'OK' if ws_ok else 'FAIL'} ({ws_detail[:60]})",
     ]
+
+    if exchange_severity == "ok":
+        lines.append("Crypto.com integration: OK")
+    elif exchange_severity == "warning":
+        lines.append(f"⚠️ Crypto.com integration: WARNING ({exchange_detail[:120]})")
+    elif exchange_severity == "error":
+        lines.append(f"❌ Crypto.com integration: ERROR ({exchange_detail[:120]})")
+    else:
+        lines.append(f"Crypto.com integration: INFO ({exchange_detail[:120]})")
+
+    if exchange_optional and exchange_severity != "ok":
+        lines.append("Exchange integration optional in current trading mode")
 
     if "error" in jarvis:
         lines.append(f"Jarvis tasks (24h): {jarvis['error']}")

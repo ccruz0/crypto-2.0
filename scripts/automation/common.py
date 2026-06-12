@@ -168,8 +168,110 @@ def docker_container_running(name_pattern: str) -> tuple[bool, str]:
     return False, f"no running container matching {name_pattern!r}"
 
 
-def scan_docker_logs(service: str, *, tail: int = 100, pattern: str = r"error|exception|critical") -> list[str]:
-    """Return recent log lines matching error pattern for a compose service."""
+EXCHANGE_CREDENTIAL_WARN_RE = re.compile(
+    r"API credentials not configured"
+    r"|Crypto\.com API credentials not configured"
+    r"|Missing EXCHANGE_CUSTOM_API_KEY"
+    r"|Missing EXCHANGE_CUSTOM_API_SECRET"
+    r"|Authentication failure"
+    r"|40101"
+    r"|not allowlisted"
+    r"|authentication failed"
+    r"|Crypto\.com API authentication",
+    re.IGNORECASE,
+)
+
+EXCHANGE_LOG_FALSE_POSITIVE_RE = re.compile(
+    r"password authentication failed",
+    re.IGNORECASE,
+)
+
+HEALTH_LOG_FALSE_POSITIVE_RE = re.compile(
+    r"last_error=None|last_error=\s*none",
+    re.IGNORECASE,
+)
+
+HEALTH_LOG_ERROR_RE = re.compile(
+    r"error|exception|critical",
+    re.IGNORECASE,
+)
+
+
+def is_exchange_credential_warning(line: str) -> bool:
+    """True when a log line reflects optional exchange integration, not a core outage."""
+    if EXCHANGE_LOG_FALSE_POSITIVE_RE.search(line):
+        return False
+    return bool(EXCHANGE_CREDENTIAL_WARN_RE.search(line))
+
+
+def exchange_credentials_configured() -> bool:
+    key = os.getenv("EXCHANGE_CUSTOM_API_KEY", "").strip()
+    secret = os.getenv("EXCHANGE_CUSTOM_API_SECRET", "").strip()
+    return bool(key and secret)
+
+
+def exchange_integration_optional() -> bool:
+    """Missing exchange credentials are non-fatal when trading is off or trading-only."""
+    trading_only = os.getenv("ATP_TRADING_ONLY", "").strip().lower()
+    if trading_only in ("1", "true", "yes", "on"):
+        return True
+
+    ok, _, _, body = http_fetch(f"{backend_base()}/api/trading/live-status", timeout=5.0)
+    if not ok or not body:
+        return True
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return True
+
+    if data.get("live_trading_enabled") is False:
+        return True
+
+    mode = str(data.get("mode", "")).upper()
+    if mode in ("DRY_RUN", "PAPER", "DISABLED", "OFF", "UNKNOWN"):
+        return True
+
+    return False
+
+
+def classify_exchange_credential_issue(
+    *,
+    log_warnings: list[str] | None = None,
+) -> tuple[str, str]:
+    """
+    Classify Crypto.com credential/integration state for monitoring reports.
+
+    Returns (severity, message) where severity is one of: ok, info, warning, error.
+    Missing credentials never imply a production outage for core services.
+    """
+    warnings = log_warnings if log_warnings is not None else scan_exchange_credential_warnings(
+        "backend-aws", tail=200
+    )
+    configured = exchange_credentials_configured()
+    optional = exchange_integration_optional()
+
+    if configured and not warnings:
+        return "ok", "Crypto.com credentials configured"
+
+    if not configured:
+        msg = (
+            "Crypto.com API credentials not configured "
+            "(EXCHANGE_CUSTOM_API_KEY/EXCHANGE_CUSTOM_API_SECRET)"
+        )
+        return "warning", msg
+
+    if warnings:
+        snippet = warnings[0][:160]
+        if optional:
+            return "warning", snippet
+        return "error", snippet
+
+    return "info", "Crypto.com integration not required in current mode"
+
+
+def fetch_docker_log_lines(service: str, *, tail: int = 100) -> list[str]:
+    """Return recent docker compose log lines for a service."""
     try:
         proc = subprocess.run(
             ["docker", "compose", "--profile", "aws", "logs", "--tail", str(tail), service],
@@ -185,11 +287,38 @@ def scan_docker_logs(service: str, *, tail: int = 100, pattern: str = r"error|ex
     if proc.returncode != 0 and not proc.stdout:
         return []
 
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def scan_docker_logs(service: str, *, tail: int = 100, pattern: str = r"error|exception|critical") -> list[str]:
+    """Return recent log lines matching error pattern for a compose service."""
     regex = re.compile(pattern, re.IGNORECASE)
     hits: list[str] = []
-    for line in proc.stdout.splitlines():
+    for line in fetch_docker_log_lines(service, tail=tail):
         if regex.search(line):
-            hits.append(line.strip()[:300])
+            hits.append(line[:300])
+    return hits[-5:]
+
+
+def scan_exchange_credential_warnings(service: str = "backend-aws", *, tail: int = 120) -> list[str]:
+    """Return recent exchange credential/auth warnings from backend logs."""
+    hits: list[str] = []
+    for line in fetch_docker_log_lines(service, tail=tail):
+        if is_exchange_credential_warning(line):
+            hits.append(line[:300])
+    return hits[-5:]
+
+
+def scan_docker_health_errors(service: str = "backend-aws", *, tail: int = 120) -> list[str]:
+    """Return backend error log lines that indicate a real production outage."""
+    hits: list[str] = []
+    for line in fetch_docker_log_lines(service, tail=tail):
+        if is_exchange_credential_warning(line):
+            continue
+        if HEALTH_LOG_FALSE_POSITIVE_RE.search(line):
+            continue
+        if HEALTH_LOG_ERROR_RE.search(line):
+            hits.append(line[:300])
     return hits[-5:]
 
 
