@@ -7,16 +7,17 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+from app.services._paths import workspace_root
 
 
 def search_files(pattern: str, *, max_results: int = 25) -> list[dict[str, str]]:
     """Search repository file contents (read-only, ripgrep if available)."""
+    repo_root = workspace_root()
     limit = max(1, min(max_results, 100))
     hits: list[dict[str, str]] = []
     try:
         proc = subprocess.run(
-            ["rg", "-n", "--no-heading", "--max-count", "3", pattern, str(_REPO_ROOT)],
+            ["rg", "-n", "--no-heading", "--max-count", "3", pattern, str(repo_root)],
             capture_output=True,
             text=True,
             timeout=20,
@@ -27,15 +28,15 @@ def search_files(pattern: str, *, max_results: int = 25) -> list[dict[str, str]]
             if len(parts) >= 3:
                 hits.append({"path": parts[0], "line": parts[1], "text": parts[2][:200]})
     except (OSError, subprocess.TimeoutExpired):
-        hits = _fallback_search(pattern, limit)
+        hits = _fallback_search(pattern, limit, repo_root)
     return hits
 
 
-def _fallback_search(pattern: str, limit: int) -> list[dict[str, str]]:
+def _fallback_search(pattern: str, limit: int, repo_root: Path) -> list[dict[str, str]]:
     regex = re.compile(re.escape(pattern), re.IGNORECASE)
     hits: list[dict[str, str]] = []
-    skip = {".git", "node_modules", ".next", "__pycache__", ".archive"}
-    for path in _REPO_ROOT.rglob("*"):
+    skip = {".git", "node_modules", ".next", "__pycache__", ".archive", "proc", "sys", "dev", "run"}
+    for path in repo_root.rglob("*"):
         if any(part in skip for part in path.parts):
             continue
         if not path.is_file() or path.suffix not in {".py", ".ts", ".tsx", ".sh", ".yml", ".md"}:
@@ -46,19 +47,20 @@ def _fallback_search(pattern: str, limit: int) -> list[dict[str, str]]:
             continue
         for idx, line in enumerate(text.splitlines(), start=1):
             if regex.search(line):
-                hits.append({"path": str(path.relative_to(_REPO_ROOT)), "line": str(idx), "text": line[:200]})
+                hits.append({"path": str(path.relative_to(repo_root)), "line": str(idx), "text": line[:200]})
                 if len(hits) >= limit:
                     return hits
     return hits
 
 
 def summarize_module(path: str) -> dict[str, Any]:
-    target = (_REPO_ROOT / path).resolve()
-    if not str(target).startswith(str(_REPO_ROOT)) or not target.is_file():
+    repo_root = workspace_root()
+    target = (repo_root / path).resolve()
+    if not str(target).startswith(str(repo_root)) or not target.is_file():
         return {"path": path, "error": "file not found or outside repo", "read_only": True}
     lines = target.read_text(encoding="utf-8", errors="ignore").splitlines()
     return {
-        "path": str(target.relative_to(_REPO_ROOT)),
+        "path": str(target.relative_to(repo_root)),
         "line_count": len(lines),
         "preview": "\n".join(lines[:40]),
         "read_only": True,

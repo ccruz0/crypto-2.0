@@ -10,8 +10,7 @@ from typing import Any, Literal
 
 ArtifactFormat = Literal["markdown", "json", "text", "report"]
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-_ARTIFACTS_DIR = _REPO_ROOT / "backend" / "app" / "jarvis" / "artifacts" / "data"
+_ARTIFACTS_DIR = Path(__file__).resolve().parent / "data"
 
 
 def _ensure_dir() -> Path:
@@ -47,7 +46,7 @@ def create_artifact(
     file_path = target / f"{artifact_id}.{ext}"
     file_path.write_text(body, encoding="utf-8")
     try:
-        rel_path = str(file_path.relative_to(_REPO_ROOT))
+        rel_path = str(file_path.relative_to(_ARTIFACTS_DIR.parent))
     except ValueError:
         rel_path = str(file_path)
     record = {
@@ -69,7 +68,9 @@ def load_artifact_content(record: dict[str, Any]) -> str:
     rel = record.get("path")
     if not rel:
         return ""
-    path = _REPO_ROOT / str(rel)
+    path = Path(str(rel))
+    if not path.is_absolute():
+        path = _ARTIFACTS_DIR.parent / path
     if not path.is_file():
         return ""
     return path.read_text(encoding="utf-8")
