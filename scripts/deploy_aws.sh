@@ -104,6 +104,13 @@ bash scripts/aws/safe_compose_check.sh || {
   exit 1
 }
 
+# Step 5e: Refuse deploy/build if frontend working tree has drift (Docker copies disk, not HEAD)
+echo "🔍 Verifying clean frontend working tree..."
+bash scripts/verify_clean_worktree.sh --frontend-only || {
+  echo -e "${RED}❌ ERROR: frontend working tree is dirty. Run git status frontend/ and remove drift before deploy.${NC}" >&2
+  exit 1
+}
+
 # Step 6: Pull Docker images (if applicable)
 echo "🐳 Pulling Docker images..."
 docker compose --profile aws pull || {

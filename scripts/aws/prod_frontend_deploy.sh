@@ -19,6 +19,9 @@ if [[ ! -f docker-compose.yml ]] || ! printf '%s\n' "$_compose_svc_out" | grep -
   exit 1
 fi
 
+echo "==> verify clean frontend working tree (block dirty Docker build context)"
+bash scripts/verify_clean_worktree.sh --frontend-only
+
 echo "==> reset frontend-aws container (stale recreate / missing id)"
 docker compose --profile aws stop frontend-aws 2>/dev/null || true
 docker compose --profile aws rm -f frontend-aws 2>/dev/null || true

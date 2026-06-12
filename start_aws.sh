@@ -8,6 +8,7 @@ export ENVIRONMENT=aws
 export NODE_ENV=production
 
 # Start services with AWS profile
+bash scripts/verify_clean_worktree.sh --frontend-only
 docker compose --profile aws up -d --build
 
 echo "AWS environment started!"

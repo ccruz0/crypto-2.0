@@ -22,7 +22,7 @@ echo "📤 Sending redeploy command (pull, build, up, nginx restart)..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids "$INSTANCE_ID" \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["set -e","cd /home/ubuntu/crypto-2.0","git -c safe.directory=/home/ubuntu/crypto-2.0 pull origin main || true","docker compose --profile aws build --no-cache backend-aws frontend-aws","docker compose --profile aws up -d","sleep 5","sudo systemctl restart nginx || true","docker compose --profile aws ps","echo Done."]' \
+    --parameters 'commands=["set -e","cd /home/ubuntu/crypto-2.0","git -c safe.directory=/home/ubuntu/crypto-2.0 pull origin main || true","bash scripts/verify_clean_worktree.sh --frontend-only","docker compose --profile aws build --no-cache backend-aws frontend-aws","docker compose --profile aws up -d","sleep 5","sudo systemctl restart nginx || true","docker compose --profile aws ps","echo Done."]' \
     --region "$REGION" \
     --timeout-seconds 600 \
     --output text \
