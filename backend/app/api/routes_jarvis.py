@@ -74,6 +74,13 @@ from app.jarvis.mvp.schemas import (
     JarvisTaskResponse,
     JarvisTaskRunDetail,
 )
+from app.jarvis.execution.schemas import (
+    JarvisExecutionTaskDetail,
+    JarvisExecutionTaskListResponse,
+    JarvisTaskApprovalRequest,
+    JarvisTaskSubmitRequest,
+    JarvisTaskSubmitResponse,
+)
 from app.jarvis.mvp.service import run_jarvis_task
 
 logger = logging.getLogger(__name__)
@@ -754,3 +761,94 @@ def jarvis_objective_analytics() -> dict[str, Any]:
     if engine is None or not ensure_jarvis_objectives_table(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
     return get_objective_analytics()
+
+
+# --- Phase 3: Task execution framework ---
+
+
+@router.post("/api/jarvis/tasks/submit", response_model=JarvisTaskSubmitResponse)
+def jarvis_execution_submit(body: JarvisTaskSubmitRequest) -> dict[str, Any]:
+    """Submit a structured Jarvis execution task (investigation-only by default)."""
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.service import submit_execution_task
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        detail = submit_execution_task(
+            objective=body.objective,
+            priority=body.priority,
+            approval_mode=body.approval_mode,
+            dry_run=body.dry_run,
+        )
+        return {
+            "task_id": detail["task_id"],
+            "status": detail["status"],
+            "objective": detail["objective"],
+            "plan": detail.get("plan") or {},
+            "approval_required": detail.get("approval_required", False),
+            "approval_status": detail.get("approval_status", "not_required"),
+            "estimated_cost_usd": detail.get("estimated_cost_usd", 0.0),
+            "actual_cost_usd": detail.get("actual_cost_usd", 0.0),
+            "current_step": detail.get("current_step"),
+            "artifacts": detail.get("artifacts") or [],
+            "execution_log": detail.get("execution_log") or [],
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("jarvis.execution.submit_failed err=%s", exc)
+        raise HTTPException(status_code=500, detail=f"jarvis_execution_submit_failed: {exc}") from exc
+
+
+@router.get("/api/jarvis/tasks/execution", response_model=JarvisExecutionTaskListResponse)
+def jarvis_execution_task_list(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.persistence import list_execution_tasks
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"tasks": list_execution_tasks(limit=limit)}
+
+
+@router.get("/api/jarvis/tasks/execution/{task_id}", response_model=JarvisExecutionTaskDetail)
+def jarvis_execution_task_detail(task_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.service import get_execution_task_detail
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return get_execution_task_detail(task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+
+
+@router.post("/api/jarvis/tasks/{task_id}/approve", response_model=JarvisExecutionTaskDetail)
+def jarvis_execution_approve(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.service import approve_task
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return approve_task(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/api/jarvis/tasks/{task_id}/reject", response_model=JarvisExecutionTaskDetail)
+def jarvis_execution_reject(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.service import reject_task
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return reject_task(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
