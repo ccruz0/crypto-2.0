@@ -1763,78 +1763,6 @@ export interface UnifiedOpenOrder {
 export type { StrategyDecision } from '@/lib/api';
 
 // Agent Operations Visibility API
-export interface JarvisControlStatus {
-  available: boolean;
-  control_enabled?: boolean;
-  builder_allowed?: boolean;
-  trading_only?: boolean;
-  environment?: string;
-  builder_available?: boolean;
-  error?: 'disabled' | 'network' | 'unauthorized';
-  message?: string;
-}
-
-export async function getJarvisControlStatus(): Promise<JarvisControlStatus> {
-  try {
-    const apiUrl = (typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL).replace(/\/+$/, '');
-    const response = await fetch(`${apiUrl}/jarvis/control/status`, {
-      headers: { 'Content-Type': 'application/json', 'x-api-key': 'demo-key' },
-    });
-    if (response.status === 404) {
-      return {
-        available: false,
-        error: 'disabled',
-        trading_only: true,
-        control_enabled: false,
-        builder_allowed: false,
-        builder_available: false,
-        message: 'Jarvis automation is currently disabled in production.',
-      };
-    }
-    if (response.status === 401 || response.status === 403) {
-      return {
-        available: false,
-        error: 'unauthorized',
-        message: 'Jarvis Control API requires authentication on this host.',
-      };
-    }
-    if (!response.ok) {
-      return {
-        available: false,
-        error: 'network',
-        message: 'Unable to reach Jarvis status API.',
-      };
-    }
-    const data = await response.json() as Record<string, unknown>;
-    return {
-      available: true,
-      control_enabled: Boolean(data.control_enabled),
-      builder_allowed: Boolean(data.builder_allowed),
-      trading_only: Boolean(data.trading_only),
-      environment: typeof data.environment === 'string' ? data.environment : undefined,
-      builder_available: Boolean(data.builder_available),
-    };
-  } catch {
-    return {
-      available: false,
-      error: 'network',
-      message: 'Unable to reach Jarvis status API.',
-    };
-  }
-}
-
-export async function probeAgentApiAvailable(): Promise<boolean> {
-  try {
-    const apiUrl = (typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL).replace(/\/+$/, '');
-    const response = await fetch(`${apiUrl}/agent/status`, {
-      headers: { 'Content-Type': 'application/json', 'x-api-key': 'demo-key' },
-    });
-    return response.status !== 404;
-  } catch {
-    return false;
-  }
-}
-
 export interface AgentStatus {
   scheduler_running: boolean;
   automation_enabled: boolean;
@@ -2016,4 +1944,108 @@ export async function getAgentOpsCursorBridgeDiagnostics(): Promise<AgentOpsCurs
     logRequestIssue('getAgentOpsCursorBridgeDiagnostics', 'Cursor bridge diagnostics fetch failed', error, 'warn');
     return { ok: false, error: String(error) };
   }
+}
+
+// --- Jarvis Phase 3 task execution ---
+
+export interface JarvisExecutionStep {
+  id: string;
+  action: string;
+  tool: string;
+  description: string;
+  safety_level?: string;
+  estimated_cost_usd?: number;
+}
+
+export interface JarvisExecutionPlan {
+  steps: JarvisExecutionStep[];
+  total_estimated_cost_usd?: number;
+  overall_safety?: string;
+  objective_summary?: string;
+}
+
+export interface JarvisExecutionTaskSummary {
+  task_id: string;
+  objective: string;
+  status: string;
+  priority?: string;
+  approval_status?: string;
+  estimated_cost_usd?: number;
+  actual_cost_usd?: number;
+  created_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface JarvisExecutionLogEntry {
+  log_id: string;
+  agent: string;
+  tool: string;
+  input_summary?: string;
+  output_summary?: string;
+  duration_ms?: number;
+  timestamp?: string;
+}
+
+export interface JarvisArtifactRecord {
+  artifact_id: string;
+  name: string;
+  format: string;
+  step_id?: string | null;
+  preview?: string;
+}
+
+export interface JarvisExecutionTaskDetail {
+  task_id: string;
+  objective: string;
+  status: string;
+  plan?: JarvisExecutionPlan | Record<string, unknown>;
+  artifacts?: JarvisArtifactRecord[];
+  approval_required?: boolean;
+  approval_status?: string;
+  estimated_cost_usd?: number;
+  actual_cost_usd?: number;
+  current_step?: string | null;
+  execution_log?: JarvisExecutionLogEntry[];
+  final_answer?: string;
+  error?: string | null;
+}
+
+export async function submitJarvisExecutionTask(body: {
+  objective: string;
+  priority?: string;
+  approval_mode?: string;
+  dry_run?: boolean;
+}): Promise<JarvisExecutionTaskDetail> {
+  return fetchAPI<JarvisExecutionTaskDetail>('/jarvis/tasks/submit', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listJarvisExecutionTasks(limit = 20): Promise<{ tasks: JarvisExecutionTaskSummary[] }> {
+  return fetchAPI<{ tasks: JarvisExecutionTaskSummary[] }>(`/jarvis/tasks/execution?limit=${limit}`);
+}
+
+export async function getJarvisExecutionTask(taskId: string): Promise<JarvisExecutionTaskDetail> {
+  return fetchAPI<JarvisExecutionTaskDetail>(`/jarvis/tasks/execution/${taskId}`);
+}
+
+export async function approveJarvisTask(
+  taskId: string,
+  body: { actor_id?: string; comment?: string } = {},
+): Promise<JarvisExecutionTaskDetail> {
+  return fetchAPI<JarvisExecutionTaskDetail>(`/jarvis/tasks/${taskId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function rejectJarvisTask(
+  taskId: string,
+  body: { actor_id?: string; comment?: string } = {},
+): Promise<JarvisExecutionTaskDetail> {
+  return fetchAPI<JarvisExecutionTaskDetail>(`/jarvis/tasks/${taskId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
