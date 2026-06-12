@@ -417,6 +417,14 @@ def ensure_jarvis_task_runs_table(engine_to_use) -> bool:
                                 tool_results_json TEXT,
                                 review_json TEXT,
                                 estimated_cost_usd REAL,
+                                actual_cost_usd REAL DEFAULT 0,
+                                objective TEXT DEFAULT '',
+                                priority TEXT DEFAULT 'normal',
+                                artifacts_json TEXT,
+                                approval_required BOOLEAN DEFAULT 0,
+                                approval_status TEXT DEFAULT 'not_required',
+                                current_step TEXT,
+                                started_at TIMESTAMP,
                                 final_answer TEXT,
                                 error TEXT,
                                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -444,6 +452,14 @@ def ensure_jarvis_task_runs_table(engine_to_use) -> bool:
                                 tool_results_json JSONB,
                                 review_json JSONB,
                                 estimated_cost_usd NUMERIC,
+                                actual_cost_usd NUMERIC DEFAULT 0,
+                                objective TEXT DEFAULT '',
+                                priority TEXT DEFAULT 'normal',
+                                artifacts_json JSONB,
+                                approval_required BOOLEAN DEFAULT FALSE,
+                                approval_status TEXT DEFAULT 'not_required',
+                                current_step TEXT,
+                                started_at TIMESTAMPTZ,
                                 final_answer TEXT,
                                 error TEXT,
                                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -457,9 +473,151 @@ def ensure_jarvis_task_runs_table(engine_to_use) -> bool:
                         text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_task_runs_created_at ON {tname} (created_at DESC)")
                     )
             logger.info("[BOOT] Created table %s", tname)
+        if table_exists(engine_to_use, tname):
+            _ensure_jarvis_task_runs_phase3_columns(engine_to_use)
         return table_exists(engine_to_use, tname)
     except Exception as e:
         logger.error("ensure_jarvis_task_runs_table failed: %s", e, exc_info=True)
+        return False
+
+
+def _ensure_jarvis_task_runs_phase3_columns(engine_to_use) -> bool:
+    """Add Phase 3 task execution columns to jarvis_task_runs if missing."""
+    if engine_to_use is None or not table_exists(engine_to_use, "jarvis_task_runs"):
+        return False
+    try:
+        inspector = inspect(engine_to_use)
+        columns = {col["name"] for col in inspector.get_columns("jarvis_task_runs")}
+        is_sqlite = engine_to_use.dialect.name == "sqlite"
+        additions: list[tuple[str, str]] = []
+        spec = [
+            ("objective", "TEXT DEFAULT ''"),
+            ("priority", "TEXT DEFAULT 'normal'"),
+            ("artifacts_json", "TEXT" if is_sqlite else "JSONB"),
+            ("approval_required", "BOOLEAN DEFAULT 0" if is_sqlite else "BOOLEAN DEFAULT FALSE"),
+            ("approval_status", "TEXT DEFAULT 'not_required'"),
+            ("actual_cost_usd", "REAL DEFAULT 0" if is_sqlite else "NUMERIC DEFAULT 0"),
+            ("current_step", "TEXT"),
+            ("started_at", "TIMESTAMP" if is_sqlite else "TIMESTAMPTZ"),
+        ]
+        for col_name, col_def in spec:
+            if col_name not in columns:
+                additions.append((col_name, col_def))
+        if not additions:
+            return True
+        with engine_to_use.begin() as conn:
+            for col_name, col_def in additions:
+                conn.execute(text(f"ALTER TABLE jarvis_task_runs ADD COLUMN {col_name} {col_def}"))
+        logger.info("[BOOT] Added jarvis_task_runs Phase 3 columns: %s", [a[0] for a in additions])
+        return True
+    except Exception as e:
+        logger.warning("_ensure_jarvis_task_runs_phase3_columns failed: %s", e)
+        return False
+
+
+def ensure_jarvis_execution_log_table(engine_to_use) -> bool:
+    """Persist Jarvis Phase 3 execution audit log."""
+    if engine_to_use is None:
+        return False
+    tname = "jarvis_execution_log"
+    try:
+        if not table_exists(engine_to_use, tname):
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                log_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT NOT NULL,
+                                agent TEXT NOT NULL,
+                                tool TEXT NOT NULL,
+                                input_summary TEXT,
+                                output_summary TEXT,
+                                duration_ms INTEGER DEFAULT 0,
+                                metadata_json TEXT,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                log_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT NOT NULL,
+                                agent TEXT NOT NULL,
+                                tool TEXT NOT NULL,
+                                input_summary TEXT,
+                                output_summary TEXT,
+                                duration_ms INTEGER DEFAULT 0,
+                                metadata_json JSONB,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+                conn.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_execution_log_task_id ON {tname} (task_id)")
+                )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_execution_log_table failed: %s", e, exc_info=True)
+        return False
+
+
+def ensure_jarvis_task_approvals_table(engine_to_use) -> bool:
+    """Persist Jarvis Phase 3 task approval history."""
+    if engine_to_use is None:
+        return False
+    tname = "jarvis_task_approvals"
+    try:
+        if not table_exists(engine_to_use, tname):
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                approval_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT NOT NULL,
+                                decision TEXT NOT NULL,
+                                actor_id TEXT NOT NULL,
+                                comment TEXT,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                approval_id TEXT NOT NULL UNIQUE,
+                                task_id TEXT NOT NULL,
+                                decision TEXT NOT NULL,
+                                actor_id TEXT NOT NULL,
+                                comment TEXT,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+                conn.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS ix_jarvis_task_approvals_task_id ON {tname} (task_id)")
+                )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_task_approvals_table failed: %s", e, exc_info=True)
         return False
 
 
@@ -1647,6 +1805,18 @@ def ensure_optional_columns(db_engine=None):
             logger.info("[BOOT] jarvis_task_runs table OK")
     except Exception as task_runs_err:
         logger.warning("Could not ensure jarvis_task_runs table: %s", task_runs_err)
+
+    try:
+        if ensure_jarvis_execution_log_table(engine_to_use):
+            logger.info("[BOOT] jarvis_execution_log table OK")
+    except Exception as exec_log_err:
+        logger.warning("Could not ensure jarvis_execution_log table: %s", exec_log_err)
+
+    try:
+        if ensure_jarvis_task_approvals_table(engine_to_use):
+            logger.info("[BOOT] jarvis_task_approvals table OK")
+    except Exception as approvals_err:
+        logger.warning("Could not ensure jarvis_task_approvals table: %s", approvals_err)
 
     try:
         if ensure_jarvis_control_center_tables(engine_to_use):
