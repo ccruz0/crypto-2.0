@@ -23,6 +23,11 @@ from scripts.automation.common import (  # noqa: E402
     setup_logging,
     utc_now_iso,
 )
+from scripts.automation.remediation import (  # noqa: E402
+    auto_remediation_enabled,
+    remediate_audit_findings,
+)
+from scripts.automation.remediation_safety import auto_remediation_dry_run  # noqa: E402
 from scripts.automation.telegram_helper import send_telegram_alert  # noqa: E402
 
 STALE_MINUTES = 30
@@ -198,6 +203,14 @@ def main() -> int:
     if not findings:
         log.info("no issues found")
         return 0
+
+    if auto_remediation_enabled():
+        remediation_dry_run = args.dry_run or auto_remediation_dry_run()
+        remediation = remediate_audit_findings(findings, dry_run=remediation_dry_run, log=log)
+        log.info(
+            "task_auditor remediation dispatched=%s",
+            remediation.get("dispatched", 0),
+        )
 
     ts = utc_now_iso()
     cooldown = CooldownStore()

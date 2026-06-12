@@ -182,6 +182,96 @@ RUNBOOK_ATP_HEALTH_ALERT = (
 )
 
 
+@router.post("/monitoring/jarvis-incident", name="jarvis_incident_auto_remediate")
+async def jarvis_incident_auto_remediate(payload: Dict[str, Any] = Body(default={})):
+    """
+    Create a Notion incident from Jarvis automation (health check / task auditor) and
+    run one agent scheduler cycle in investigation-only mode (no prod mutation).
+
+    Called from host scripts (scripts/automation/*) on the same machine; no auth required.
+    """
+    failures = payload.get("failures") or []
+    if not isinstance(failures, list) or not failures:
+        return {"ok": False, "reason": "no_failures"}
+
+    source = (payload.get("source") or "jarvis-automation").strip() or "jarvis-automation"
+    category = (payload.get("category") or "health_check").strip() or "health_check"
+    ts = (payload.get("timestamp") or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    check_names = [
+        str((f or {}).get("name") or "").strip()
+        for f in failures[:5]
+        if isinstance(f, dict)
+    ]
+    check_names = [n for n in check_names if n]
+    title_checks = ", ".join(check_names[:3]) or category
+    title = f"Jarvis auto-fix: {title_checks}"
+
+    detail_lines = [
+        f"Source: {source}",
+        f"Category: {category}",
+        f"Detected: {ts}",
+        "",
+        "Failures:",
+    ]
+    for f in failures[:8]:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "unknown").strip()
+        detail = str(f.get("detail") or "")[:400]
+        detail_lines.append(f"- {name}: {detail}")
+    investigation_only = bool(payload.get("investigation_only", True))
+    detail_lines.extend(
+        [
+            "",
+            "Auto-dispatched by Jarvis automation (investigation only — no prod changes without approval).",
+            f"investigation_only={investigation_only}",
+            "Runbook: " + RUNBOOK_ATP_HEALTH_ALERT,
+        ]
+    )
+    details = "\n".join(detail_lines)
+
+    notion_task_id = ""
+    try:
+        from app.services.notion_tasks import (
+            TASK_STATUS_READY_FOR_INVESTIGATION,
+            create_incident_task,
+            update_notion_task_status,
+        )
+
+        result = create_incident_task(title=title, details=details, source=source)
+        if result and result.get("id"):
+            notion_task_id = str(result.get("id") or "").strip()
+            try:
+                update_notion_task_status(notion_task_id, TASK_STATUS_READY_FOR_INVESTIGATION)
+            except Exception as promote_err:
+                log.debug("jarvis-incident: promote to ready-for-investigation failed: %s", promote_err)
+            log.info("Jarvis incident Notion task created id=%s title=%r", notion_task_id[:12], title[:80])
+    except Exception as notion_err:
+        log.warning("jarvis-incident: Notion task creation failed: %s", notion_err)
+        return {"ok": False, "reason": "notion_unavailable", "error": str(notion_err)[:300]}
+
+    scheduler_result: dict[str, Any] = {}
+    try:
+        from app.services.agent_scheduler import run_agent_scheduler_cycle
+
+        scheduler_result = run_agent_scheduler_cycle(
+            project="Infrastructure",
+            task_id=notion_task_id or None,
+            investigation_only=investigation_only,
+        )
+    except Exception as sched_err:
+        log.warning("jarvis-incident: agent scheduler cycle failed: %s", sched_err)
+        scheduler_result = {"ok": False, "error": str(sched_err)[:300]}
+
+    return {
+        "ok": True,
+        "notion_task_id": notion_task_id,
+        "scheduler": scheduler_result,
+        "investigation_only": investigation_only,
+    }
+
+
 @router.post("/monitoring/health-alert", name="create_health_alert_notion_task")
 async def create_health_alert_notion_task(payload: Dict[str, Any] = Body(default={})):
     """

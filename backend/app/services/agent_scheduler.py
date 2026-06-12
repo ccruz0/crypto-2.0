@@ -164,21 +164,34 @@ def run_agent_scheduler_cycle(
     project: str | None = None,
     type_filter: str | None = None,
     task_id: str | None = None,
+    investigation_only: bool = False,
 ) -> dict[str, Any]:
     """
     Run one scheduler cycle: prepare at most one task, then either request approval
     or auto-execute if low-risk. Process at most one task per cycle. Never raises.
 
     If task_id is provided, runs that specific Notion task (must be planned/backlog/ready-for-investigation/blocked).
+
+    When investigation_only is True (Jarvis auto-remediation incidents), prepare the task
+    but never execute production mutations — human approval is required first.
     """
     logger.info(
-        "scheduler_cycle_start project=%r type_filter=%r task_id=%r ts=%s",
+        "scheduler_cycle_start project=%r type_filter=%r task_id=%r investigation_only=%s ts=%s",
         project,
         type_filter,
         task_id[:12] + "…" if task_id and len(task_id) > 12 else task_id,
+        investigation_only,
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
-    _log_event("scheduler_cycle_started", details={"project": project, "type_filter": type_filter, "task_id": task_id})
+    _log_event(
+        "scheduler_cycle_started",
+        details={
+            "project": project,
+            "type_filter": type_filter,
+            "task_id": task_id,
+            "investigation_only": investigation_only,
+        },
+    )
 
     try:
         from app.services.agent_queue_state import prune_anomaly_dedup
@@ -339,6 +352,32 @@ def run_agent_scheduler_cycle(
             "task_id": task_id,
             "task_title": task_title,
             "reason": "already in flight or completed",
+        }
+
+    if investigation_only:
+        try:
+            from app.services.agent_task_executor import append_notion_page_comment
+
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+            comment = (
+                f"[{ts}] Jarvis auto-remediation: investigation only.\n"
+                "Task prepared. No production changes until human approval is recorded."
+            )
+            append_notion_page_comment(task_id, comment)
+        except Exception as e:
+            logger.debug("agent_scheduler: investigation_only comment failed (non-fatal) %s", e)
+        _log_event(
+            "scheduler_investigation_prepared",
+            task_id=task_id,
+            task_title=task_title,
+            details={"reason": "investigation_only: execution blocked pending approval"},
+        )
+        return {
+            "ok": True,
+            "action": "investigation_prepared",
+            "task_id": task_id,
+            "task_title": task_title,
+            "reason": "investigation_only: no production mutation without approval",
         }
 
     approval = (prepared_bundle.get("approval") or {})

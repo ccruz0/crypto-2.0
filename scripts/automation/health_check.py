@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Jarvis health check automation — runs every 5 minutes (read-only)."""
+"""Jarvis health check automation — runs every 5 minutes with auto-remediation."""
 
 from __future__ import annotations
 
@@ -28,6 +28,18 @@ from scripts.automation.common import (  # noqa: E402
     utc_now_iso,
     ws_prices_url,
 )
+from scripts.automation.remediation import (  # noqa: E402
+    FailureItem,
+    auto_remediation_enabled,
+    clear_remediation_state,
+    dispatch_agent_for_incident,
+    filter_false_positive_failures,
+    mark_remediation_attempt,
+    remediate_health_failures,
+    should_attempt_remediation,
+    should_trigger_remediation,
+)
+from scripts.automation.remediation_safety import auto_remediation_dry_run  # noqa: E402
 from scripts.automation.telegram_helper import send_telegram_alert  # noqa: E402
 
 
@@ -79,10 +91,20 @@ def collect_exchange_warnings() -> tuple[str, str]:
     return classify_exchange_credential_issue()
 
 
-def format_alert(failures: list[CheckResult], ts: str) -> str:
+def format_alert(
+    failures: list[CheckResult],
+    ts: str,
+    *,
+    remediated: bool = False,
+    agent_dispatched: bool = False,
+) -> str:
     lines = [f"🚨 Jarvis Health Check FAIL ({ts})"]
     for item in failures:
         lines.append(f"• {item.name}: {item.detail[:180]}")
+    if remediated:
+        lines.append("🔧 Auto-remediation attempted (safe restarts / health fix).")
+    if agent_dispatched:
+        lines.append("🤖 Agent dispatched — Notion task created and scheduler triggered.")
     return "\n".join(lines)
 
 
@@ -102,7 +124,7 @@ def main() -> int:
 
     ts = utc_now_iso()
     results = run_checks()
-    failures = [r for r in results if not r.ok]
+    failures = filter_false_positive_failures([r for r in results if not r.ok])
     warn_severity, warn_detail = collect_exchange_warnings()
 
     for item in results:
@@ -118,7 +140,49 @@ def main() -> int:
 
     if not failures:
         log.info("all checks passed")
+        clear_remediation_state()
         return 0
+
+    remediated = False
+    agent_dispatched = False
+    failure_items = [FailureItem.from_check(f) for f in failures]
+    remediation_dry_run = args.dry_run or auto_remediation_dry_run()
+
+    if (
+        auto_remediation_enabled()
+        and should_trigger_remediation(failure_items)
+        and should_attempt_remediation(failure_items)
+    ):
+        attempt = mark_remediation_attempt(failure_items)
+        log.info(
+            "auto-remediation starting attempt=%s dry_run=%s checks=%s",
+            attempt,
+            remediation_dry_run,
+            [f.name for f in failures],
+        )
+        remediate_health_failures(failure_items, dry_run=remediation_dry_run, log=log)
+        remediated = True
+        results = run_checks()
+        failures = filter_false_positive_failures([r for r in results if not r.ok])
+        failure_items = [FailureItem.from_check(f) for f in failures]
+        if not failures:
+            log.info("all checks passed after remediation")
+            clear_remediation_state()
+            send_telegram_alert(
+                f"✅ Jarvis Health Check recovered ({ts})\nAuto-remediation succeeded.",
+                dry_run=args.dry_run,
+            )
+            return 0
+
+    if auto_remediation_enabled() and failure_items:
+        dispatch = dispatch_agent_for_incident(
+            failure_items,
+            source="jarvis-health-check",
+            category="health_check",
+            dry_run=remediation_dry_run,
+            log=log,
+        )
+        agent_dispatched = bool(dispatch.get("ok"))
 
     cooldown = CooldownStore()
     alert_key = "health_check:" + "|".join(sorted(f.name for f in failures))
@@ -128,7 +192,12 @@ def main() -> int:
         log.info("cooldown active for key=%s (%s min); skip Telegram", alert_key, cooldown_mins)
         return 1
 
-    message = format_alert(failures, ts)
+    message = format_alert(
+        failures,
+        ts,
+        remediated=remediated,
+        agent_dispatched=agent_dispatched,
+    )
     sent = send_telegram_alert(message, dry_run=args.dry_run)
     if sent and not args.dry_run:
         cooldown.mark_sent(alert_key)

@@ -238,9 +238,10 @@ def test_daily_report_includes_exchange_warning(monkeypatch):
     assert "Exchange integration optional in current trading mode" in report
 
 
-def test_health_check_main_exits_zero_with_exchange_warning_only(monkeypatch):
+def test_health_check_main_exits_zero_with_exchange_warning_only(monkeypatch, tmp_path):
     from scripts.automation import health_check as hc
 
+    monkeypatch.setenv("JARVIS_AUTOMATION_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("JARVIS_AUTOMATIONS_ENABLED", "true")
     monkeypatch.setattr(sys, "argv", ["health_check.py"])
     monkeypatch.setattr(
@@ -281,6 +282,67 @@ def test_health_check_passes_when_only_exchange_warnings(monkeypatch):
     failures = [r for r in results if not r.ok]
     assert failures == []
     assert all(r.ok for r in results)
+
+
+def test_filter_false_positive_exchange_errors(monkeypatch):
+    from scripts.automation.health_check import CheckResult
+    from scripts.automation.remediation import filter_false_positive_failures
+
+    monkeypatch.setenv("ATP_TRADING_ONLY", "1")
+    failures = [
+        CheckResult(
+            "backend_recent_errors",
+            False,
+            "backend-aws | ERROR API credentials not configured. Cannot get order history.",
+        )
+    ]
+    assert filter_false_positive_failures(failures) == []
+
+
+def test_auto_remediation_enabled_default_false(monkeypatch):
+    from scripts.automation.remediation import auto_remediation_enabled
+
+    monkeypatch.delenv("JARVIS_AUTO_REMEDIATION_ENABLED", raising=False)
+    assert auto_remediation_enabled() is False
+    monkeypatch.setenv("JARVIS_AUTO_REMEDIATION_ENABLED", "true")
+    assert auto_remediation_enabled() is True
+
+
+def test_health_check_dispatches_agent_on_persistent_failure(monkeypatch, tmp_path):
+    from scripts.automation import health_check as hc
+    from scripts.automation.health_check import CheckResult
+
+    monkeypatch.setenv("JARVIS_AUTOMATION_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMATIONS_ENABLED", "true")
+    monkeypatch.setenv("JARVIS_AUTO_REMEDIATION_ENABLED", "true")
+    monkeypatch.setattr(sys, "argv", ["health_check.py", "--force-alert"])
+
+    fail = CheckResult("backend_ping_fast", False, "connection refused")
+
+    def always_fail():
+        return [fail]
+
+    monkeypatch.setattr(hc, "run_checks", always_fail)
+    monkeypatch.setattr(hc, "collect_exchange_warnings", lambda: ("ok", ""))
+    monkeypatch.setattr(hc, "remediate_health_failures", lambda *a, **k: [])
+    monkeypatch.setattr(
+        hc,
+        "dispatch_agent_for_incident",
+        lambda *a, **k: {"ok": True, "notion_task_id": "abc"},
+    )
+    monkeypatch.setattr(hc.CooldownStore, "should_send", lambda self, key, mins: True)
+    monkeypatch.setattr(hc.CooldownStore, "mark_sent", lambda self, key: None)
+
+    sent_messages: list[str] = []
+
+    def capture_alert(msg, *, dry_run=False):
+        sent_messages.append(msg)
+        return True
+
+    monkeypatch.setattr(hc, "send_telegram_alert", capture_alert)
+    assert hc.main() == 1
+    assert sent_messages
+    assert "Agent dispatched" in sent_messages[0]
 
 
 def test_load_runtime_env_does_not_override_existing(monkeypatch, tmp_path):
