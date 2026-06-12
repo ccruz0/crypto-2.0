@@ -93,6 +93,7 @@ venv.bak/
 venv/
 .venv/
 runtime-history/
+runtime-report.json
 wheels/
 yarn-debug.log*
 yarn-error.log*
