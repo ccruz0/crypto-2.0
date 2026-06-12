@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenClaw regression guard (read-only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO_ROOT@
+EnvironmentFile=-@REPO_ROOT@/secrets/runtime.env
+EnvironmentFile=-@REPO_ROOT@/.env.aws
+ExecStart=@PYTHON@ @REPO_ROOT@/scripts/automation/openclaw_guard.py
+User=root
+
+[Install]
+WantedBy=multi-user.target

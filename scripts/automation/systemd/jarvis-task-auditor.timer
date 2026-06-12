@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Jarvis task auditor every hour
+
+[Timer]
+OnBootSec=180
+OnCalendar=hourly
+AccuracySec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
