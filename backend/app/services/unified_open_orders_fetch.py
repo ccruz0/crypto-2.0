@@ -26,12 +26,54 @@ def _extract_orders(response: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
     return []
 
 
-def _order_dedup_key(raw: dict[str, Any]) -> Optional[str]:
+def _is_valid_order_id(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        lowered = stripped.lower()
+        if lowered in ("0", "none", "null"):
+            return False
+        return True
+    return True
+
+
+def _composite_dedup_key(raw: dict[str, Any]) -> str:
+    order_type = (raw.get("order_type") or raw.get("type") or "").upper()
+    status = (raw.get("status") or raw.get("order_status") or "").upper()
+    price = raw.get("limit_price") or raw.get("price")
+    trigger_price = raw.get("ref_price") or raw.get("trigger_price") or raw.get("stop_price")
+    timestamp = (
+        raw.get("create_time")
+        or raw.get("order_time")
+        or raw.get("created_at")
+        or raw.get("update_time")
+        or raw.get("updated_at")
+    )
+    parts = [
+        raw.get("source_endpoint") or "",
+        raw.get("instrument_name") or "",
+        order_type,
+        (raw.get("side") or "").upper(),
+        str(price or ""),
+        str(trigger_price or ""),
+        str(raw.get("quantity") or ""),
+        status,
+        str(timestamp or ""),
+    ]
+    return "composite:" + "|".join(parts)
+
+
+def _order_dedup_key(raw: dict[str, Any]) -> str:
     for field in ("exchange_order_id", "order_id", "client_oid"):
         value = raw.get(field)
-        if value not in (None, ""):
+        if _is_valid_order_id(value):
             return str(value).strip()
-    return None
+    return _composite_dedup_key(raw)
 
 
 def classify_advanced_open_order(raw: dict[str, Any]) -> tuple[bool, bool]:
@@ -81,8 +123,6 @@ def _merge_raw_orders(
 
     def upsert(raw: dict[str, Any], is_trigger: bool) -> None:
         key = _order_dedup_key(raw)
-        if not key:
-            return
         existing = merged.get(key)
         if existing is None:
             merged[key] = (raw, is_trigger)
@@ -280,6 +320,8 @@ def fetch_unified_open_orders(trade_client: Any | None = None) -> dict[str, Any]
 
 __all__ = [
     "ADVANCED_SOURCE_ENDPOINT",
+    "_is_valid_order_id",
+    "_order_dedup_key",
     "classify_advanced_open_order",
     "fetch_unified_open_orders",
 ]

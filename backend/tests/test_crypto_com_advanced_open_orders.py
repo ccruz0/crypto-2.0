@@ -11,8 +11,11 @@ from app.services.crypto_com_sync_errors import build_private_api_error, build_p
 from app.services.open_orders_sync_status import reset_open_orders_sync_status_for_tests
 from app.services.unified_open_orders_fetch import (
     ADVANCED_SOURCE_ENDPOINT,
+    _is_valid_order_id,
+    _order_dedup_key,
     classify_advanced_open_order,
     fetch_unified_open_orders,
+    _merge_raw_orders,
 )
 
 
@@ -53,6 +56,20 @@ def _advanced_margin_buy_59k():
 def _advanced_tp(order_id: str, ref_price: str):
     return {
         "order_id": order_id,
+        "instrument_name": "BTC_USD",
+        "side": "SELL",
+        "status": "ACTIVE",
+        "order_type": "TAKE_PROFIT_LIMIT",
+        "quantity": "0.29925",
+        "ref_price": ref_price,
+        "limit_price": ref_price,
+        "source_endpoint": ADVANCED_SOURCE_ENDPOINT,
+    }
+
+
+def _advanced_tp_zero_exchange_id(ref_price: str):
+    return {
+        "exchange_order_id": "0",
         "instrument_name": "BTC_USD",
         "side": "SELL",
         "status": "ACTIVE",
@@ -249,3 +266,62 @@ def test_dashboard_api_includes_source_endpoint_and_is_trigger():
     dash_order = dash_resp.json()["orders"][0]
     assert dash_order["is_trigger"] is True
     assert dash_order["source_endpoint"] == ADVANCED_SOURCE_ENDPOINT
+
+
+def test_invalid_order_ids_are_not_used_for_dedup():
+    assert _is_valid_order_id(None) is False
+    assert _is_valid_order_id("") is False
+    assert _is_valid_order_id("0") is False
+    assert _is_valid_order_id(0) is False
+    assert _is_valid_order_id("None") is False
+    assert _is_valid_order_id("null") is False
+    assert _is_valid_order_id("5755600489253467765") is True
+
+    raw = {
+        "exchange_order_id": "0",
+        "order_id": "tp-71000",
+        "instrument_name": "BTC_USD",
+    }
+    assert _order_dedup_key(raw) == "tp-71000"
+
+
+def test_valid_exchange_order_id_dedups_duplicates():
+    shared_id = "5755600489253467765"
+    first = dict(_legacy_sell_82k())
+    second = dict(_legacy_sell_82k())
+    second["exchange_order_id"] = shared_id
+
+    merged = _merge_raw_orders([first], [], [second])
+    assert len(merged) == 1
+
+
+def test_advanced_triggers_with_exchange_order_id_zero_are_unique():
+    from app.services.brokers.crypto_com_trade import CryptoComTradeClient
+
+    real_client = CryptoComTradeClient.__new__(CryptoComTradeClient)
+    triggers = [
+        _advanced_tp_zero_exchange_id("65000"),
+        _advanced_tp_zero_exchange_id("71000"),
+        _advanced_tp_zero_exchange_id("78000"),
+    ]
+
+    mock_client = MagicMock()
+    mock_client.get_open_orders.return_value = build_private_api_success([_legacy_sell_82k()])
+    mock_client.get_trigger_orders.return_value = build_private_api_error(
+        sync_status="api_error",
+        error_message="ERR_INTERNAL",
+        error_code=50001,
+    )
+    mock_client.get_advanced_open_orders.return_value = build_private_api_success(
+        [_advanced_margin_buy_59k(), *triggers]
+    )
+    mock_client._map_incoming_order.side_effect = lambda raw, is_trigger=False: real_client._map_incoming_order(
+        raw, is_trigger
+    )
+
+    result = fetch_unified_open_orders(mock_client)
+
+    tp_orders = [o for o in result["orders"] if o.is_trigger]
+    assert len(tp_orders) == 3
+    assert {float(o.trigger_price) for o in tp_orders} == {65000.0, 71000.0, 78000.0}
+    assert len(result["orders"]) == 5
