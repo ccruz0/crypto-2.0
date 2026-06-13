@@ -1,8 +1,4 @@
-"""Jarvis Phase 3 agents."""
-
-from app.jarvis.agents.executor_agent import execute_plan
-from app.jarvis.agents.planner_agent import build_plan, plan_to_dict
-from app.jarvis.agents.repository_agent import investigate_objective, search_files, summarize_module
+"""Jarvis agents (planner, executor, repository, patch, reviewer, test)."""
 
 __all__ = [
     "build_plan",
