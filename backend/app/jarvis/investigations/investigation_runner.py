@@ -95,14 +95,22 @@ def _collect_portfolio_evidence() -> list[EvidenceItem]:
 
         cache_result = get_portfolio_cache()
         if cache_result.get("ok"):
-            summary = cache_result.get("summary") or {}
-            total = summary.get("total_usd")
+            from app.services.portfolio_cache import get_portfolio_summary
+
             last_updated = cache_result.get("last_updated")
+            summary = get_portfolio_summary() or {}
+            total = summary.get("total_usd")
+            equity_source = summary.get("equity_source") or summary.get("total_usd_source")
+            detail = f"Portfolio cache total_usd={total}; last_updated={last_updated}"
+            if equity_source:
+                detail += f"; equity_source={equity_source}"
+            elif total is not None:
+                detail += "; equity_source=derived_from_balances (exchange API omits equity field)"
             items.append(
                 {
                     "source": "dashboard",
                     "reference": "portfolio_cache",
-                    "detail": f"Portfolio cache total_usd={total}; last_updated={last_updated}",
+                    "detail": detail,
                     "confidence": "high",
                 }
             )

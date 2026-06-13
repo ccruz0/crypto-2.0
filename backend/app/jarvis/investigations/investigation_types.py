@@ -99,7 +99,7 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
             EvidenceCollector("query_database", "open_positions"),
             EvidenceCollector("inspect_health", "inspect_health"),
             EvidenceCollector("search_repository", "search_repository", {"topic": "portfolio"}),
-            EvidenceCollector("search_logs", "search_logs", {"keywords": ("portfolio", "equity", "balance")}),
+            EvidenceCollector("search_logs", "search_logs", {"keywords": ("portfolio", "equity", "derived", "balance")}),
             EvidenceCollector("inspect_runtime", "inspect_runtime"),
         ),
         keywords=("portfolio", "equity", "derived"),
