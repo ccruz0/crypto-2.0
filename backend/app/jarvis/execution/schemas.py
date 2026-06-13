@@ -56,7 +56,7 @@ class JarvisTaskApprovalRequest(BaseModel):
 class JarvisTaskApprovalRecord(BaseModel):
     approval_id: str
     task_id: str
-    decision: Literal["approved", "rejected"]
+    decision: str
     actor_id: str
     comment: str = ""
     created_at: str | None = None
@@ -139,3 +139,22 @@ class JarvisApprovalQueueResponse(BaseModel):
 class JarvisChangeTaskDetail(JarvisExecutionTaskDetail):
     workflow_type: str = "phase4_change"
     review: dict[str, Any] = Field(default_factory=dict)
+    phase5: dict[str, Any] = Field(default_factory=dict)
+
+
+class JarvisPhase5StatusResponse(BaseModel):
+    task_id: str
+    status: str = ""
+    workflow_type: str = "phase5_change"
+    safety_flags: dict[str, bool] = Field(default_factory=dict)
+    gate1_approved: bool = False
+    gate2_approved: bool = False
+    can_approve_apply: bool = False
+    can_approve_pr: bool = False
+    tests_passed: bool = False
+    sandbox_applied: bool = False
+    pr_url: str | None = None
+    branch_name: str | None = None
+    changed_files: list[str] = Field(default_factory=list)
+    test_results: dict[str, Any] = Field(default_factory=dict)
+    forbidden_check: dict[str, Any] = Field(default_factory=dict)

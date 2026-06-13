@@ -99,7 +99,7 @@ def is_forbidden(level: SafetyLevel) -> bool:
     return level == SafetyLevel.FORBIDDEN
 
 
-# Phase 4 action classifications (patch/PR/deploy/trading/secrets).
+# Phase 4/5 action classifications (patch/PR/deploy/trading/secrets).
 PHASE4_ACTION_CLASSIFICATION: dict[str, SafetyLevel] = {
     "patch_generation": SafetyLevel.SAFE_AUTO,
     "patch_application": SafetyLevel.NEEDS_APPROVAL,
@@ -112,6 +112,25 @@ PHASE4_ACTION_CLASSIFICATION: dict[str, SafetyLevel] = {
     "code_review": SafetyLevel.SAFE_AUTO,
     "test_execution": SafetyLevel.SAFE_AUTO,
     "github_read": SafetyLevel.SAFE_AUTO,
+    "test_selection": SafetyLevel.SAFE_AUTO,
+}
+
+# Phase 5 extended classifications.
+PHASE5_ACTION_CLASSIFICATION: dict[str, SafetyLevel] = {
+    **PHASE4_ACTION_CLASSIFICATION,
+    "create_branch": SafetyLevel.NEEDS_APPROVAL,
+    "apply_patch": SafetyLevel.NEEDS_APPROVAL,
+    "run_write_git": SafetyLevel.NEEDS_APPROVAL,
+    "create_pr": SafetyLevel.NEEDS_APPROVAL,
+    "update_pr": SafetyLevel.NEEDS_APPROVAL,
+    "push_to_main": SafetyLevel.FORBIDDEN,
+    "force_push": SafetyLevel.FORBIDDEN,
+    "delete_branch": SafetyLevel.FORBIDDEN,
+    "close_pr": SafetyLevel.FORBIDDEN,
+    "database_destructive_write": SafetyLevel.FORBIDDEN,
+    "volume_deletion": SafetyLevel.FORBIDDEN,
+    "disable_security": SafetyLevel.FORBIDDEN,
+    "expose_openclaw": SafetyLevel.FORBIDDEN,
 }
 
 
@@ -143,3 +162,11 @@ def classify_phase4_action(action: str) -> SafetyLevel:
     if key in PHASE4_ACTION_CLASSIFICATION:
         return PHASE4_ACTION_CLASSIFICATION[key]
     return classify_action(key)
+
+
+def classify_phase5_action(action: str) -> SafetyLevel:
+    """Phase 5 change execution safety classification."""
+    key = (action or "").strip().lower()
+    if key in PHASE5_ACTION_CLASSIFICATION:
+        return PHASE5_ACTION_CLASSIFICATION[key]
+    return classify_phase4_action(key)

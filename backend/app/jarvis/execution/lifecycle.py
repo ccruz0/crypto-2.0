@@ -16,6 +16,12 @@ class TaskLifecycleState(str, Enum):
     TESTING = "testing"
     APPROVED = "approved"
     WAITING_FOR_APPROVAL = "waiting_for_approval"
+    # Phase 5 change execution states
+    APPLYING_PATCH = "applying_patch"
+    SANDBOX_TESTING = "sandbox_testing"
+    WAITING_FOR_PR_APPROVAL = "waiting_for_pr_approval"
+    CREATING_PR = "creating_pr"
+    PR_CREATED = "pr_created"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -74,10 +80,25 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
         {
             TaskLifecycleState.EXECUTING,
             TaskLifecycleState.APPROVED,
+            TaskLifecycleState.APPLYING_PATCH,
             TaskLifecycleState.CANCELLED,
             TaskLifecycleState.FAILED,
         }
     ),
+    # Phase 5 transitions
+    TaskLifecycleState.APPLYING_PATCH: frozenset(
+        {TaskLifecycleState.SANDBOX_TESTING, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+    ),
+    TaskLifecycleState.SANDBOX_TESTING: frozenset(
+        {TaskLifecycleState.WAITING_FOR_PR_APPROVAL, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+    ),
+    TaskLifecycleState.WAITING_FOR_PR_APPROVAL: frozenset(
+        {TaskLifecycleState.CREATING_PR, TaskLifecycleState.CANCELLED, TaskLifecycleState.FAILED}
+    ),
+    TaskLifecycleState.CREATING_PR: frozenset(
+        {TaskLifecycleState.PR_CREATED, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+    ),
+    TaskLifecycleState.PR_CREATED: frozenset({TaskLifecycleState.COMPLETED, TaskLifecycleState.FAILED}),
     TaskLifecycleState.EXECUTING: frozenset(
         {TaskLifecycleState.COMPLETED, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
     ),
