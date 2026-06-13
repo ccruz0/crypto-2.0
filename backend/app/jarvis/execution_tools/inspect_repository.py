@@ -10,7 +10,7 @@ from typing import Any
 from app.services._paths import workspace_root
 
 
-def inspect_repository(*, path: str = ".") -> dict[str, Any]:
+def inspect_repository(*, path: str = ".", **_kwargs: Any) -> dict[str, Any]:
     repo_root = workspace_root()
     target = (repo_root / path).resolve()
     if not str(target).startswith(str(repo_root)):

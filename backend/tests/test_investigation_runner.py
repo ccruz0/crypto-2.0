@@ -99,11 +99,12 @@ class TestInvestigationRunner:
         )
         mock_registry_factory.return_value = registry
 
-        evidence, outputs, category, template_id = collect_evidence("Why are open orders empty?")
+        evidence, outputs, category, template_id, collector_status, collector_reasons = collect_evidence("Why are open orders empty?")
         assert evidence
         assert category == "orders"
         assert template_id == "open_orders_empty"
         assert outputs
+        assert collector_status is None
 
     def test_historical_incident_lookup(self, inv_db):
         report = build_investigation_report(

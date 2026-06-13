@@ -17,7 +17,7 @@ function StatusBadge({ status }: { status: string }) {
   const variant =
     normalized === 'completed'
       ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
-      : normalized === 'insufficient_evidence' || normalized === 'failed'
+      : normalized === 'insufficient_evidence' || normalized === 'failed' || normalized === 'partial_failure'
         ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
         : 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200';
   return (

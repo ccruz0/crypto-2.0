@@ -47,9 +47,11 @@ class TestQueryDatabaseSafety:
 
 
 class TestDiagnoseOpenOrders:
+    @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_live_exchange")
+    @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_dashboard_effective")
     @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_open_orders_cache")
     @patch("app.jarvis.execution_tools.diagnose_open_orders.query_database")
-    def test_returns_evidence(self, mock_query, mock_cache):
+    def test_returns_evidence(self, mock_query, mock_cache, mock_dashboard, mock_exchange):
         def _side_effect(*, preset=None, **kwargs):
             if preset == "count_open_orders":
                 return {"ok": True, "count": 0, "numeric_result": 0, "query_executed": "SELECT COUNT(*)", "row_count": 1, "rows": [{"count": 0}]}
@@ -63,6 +65,24 @@ class TestDiagnoseOpenOrders:
 
         mock_query.side_effect = _side_effect
         mock_cache.return_value = (0, {"source": "api", "reference": "cache", "detail": "empty", "confidence": "high"})
+        mock_dashboard.return_value = (
+            0,
+            "crypto.com",
+            "ok",
+            {"source": "dashboard", "reference": "resolve", "detail": "effective=0", "confidence": "high"},
+        )
+        mock_exchange.return_value = (
+            {
+                "regular_count": 0,
+                "trigger_count": 0,
+                "total_count": 0,
+                "data_verified": True,
+                "skipped": False,
+                "trigger_orders_error": None,
+                "trigger_orders_error_code": None,
+            },
+            {"source": "exchange", "reference": "live", "detail": "live exchange zero", "confidence": "high"},
+        )
 
         result = diagnose_open_orders(objective="Why are open orders empty?")
         assert result["ok"] is True
@@ -208,9 +228,11 @@ class TestExecutionIntegrationWithDiagnostics:
         assert validation.get("passed") is True
         assert validation.get("numeric_result") == 5
 
+    @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_live_exchange")
+    @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_dashboard_effective")
     @patch("app.jarvis.execution_tools.query_database._execute_query")
     @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_open_orders_cache")
-    def test_why_open_orders_completes(self, mock_cache, mock_exec, exec_db, monkeypatch):
+    def test_why_open_orders_completes(self, mock_cache, mock_exec, mock_dashboard, mock_exchange, exec_db, monkeypatch):
         monkeypatch.setenv("JARVIS_ENABLED", "true")
 
         def _exec_side(query, *, limit):
@@ -220,6 +242,22 @@ class TestExecutionIntegrationWithDiagnostics:
 
         mock_exec.side_effect = _exec_side
         mock_cache.return_value = (0, {"source": "api", "reference": "cache", "detail": "empty", "confidence": "high"})
+        mock_dashboard.return_value = (
+            0,
+            "crypto.com",
+            "ok",
+            {"source": "dashboard", "reference": "resolve", "detail": "effective=0", "confidence": "high"},
+        )
+        mock_exchange.return_value = (
+            {
+                "regular_count": 0,
+                "trigger_count": 0,
+                "total_count": 0,
+                "data_verified": True,
+                "skipped": False,
+            },
+            {"source": "exchange", "reference": "live", "detail": "zero", "confidence": "high"},
+        )
 
         detail = submit_execution_task(objective="Why are open orders empty?", dry_run=True)
         assert detail["status"] == TaskLifecycleState.COMPLETED.value

@@ -10,6 +10,7 @@ from app.jarvis.execution.audit import log_execution_event
 from app.jarvis.execution.cost_guard import CostGuard, CostGuardViolation
 from app.jarvis.execution.schemas import JarvisExecutionPlan, JarvisExecutionStep
 from app.jarvis.execution_tools.registry import ToolRegistry, build_default_registry
+from app.jarvis.execution_tools.tool_invocation import build_tool_kwargs
 
 
 def execute_plan(
@@ -41,7 +42,12 @@ def execute_plan(
         except CostGuardViolation as exc:
             return _failure(task_id, str(exc), tool_results, artifacts, current_step, guard)
 
-        result = reg.execute(step.tool, action=step.action, objective=plan_obj.objective_summary)
+        kwargs = build_tool_kwargs(
+            step.tool,
+            objective=plan_obj.objective_summary,
+            action=step.action,
+        )
+        result = reg.execute(step.tool, **kwargs)
         tool_results.append(
             {
                 "step_id": step.id,

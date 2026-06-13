@@ -25,6 +25,7 @@ class InvestigationStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    PARTIAL_FAILURE = "partial_failure"
     FAILED = "failed"
 
 
@@ -35,6 +36,7 @@ class EvidenceCollector:
     tool: str
     action: str = ""
     params: dict[str, Any] = field(default_factory=dict)
+    mandatory: bool = True
 
 
 @dataclass(frozen=True)
@@ -62,9 +64,9 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         collectors=(
             EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
             EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
-            EvidenceCollector("query_database", "count_open_orders"),
-            EvidenceCollector("search_logs", "search_logs", {"keywords": ("open orders", "sync", "cache")}),
-            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}),
+            EvidenceCollector("query_database", "count_open_orders", {"preset": "count_open_orders"}),
+            EvidenceCollector("search_logs", "search_logs", {"keywords": ("open orders", "sync", "cache")}, mandatory=False),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
         ),
         keywords=("open orders", "empty", "zero"),
     ),
@@ -81,9 +83,9 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         collectors=(
             EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
             EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
-            EvidenceCollector("search_logs", "search_logs", {"keywords": ("trigger", "50001", "open_orders", "sync")}),
-            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}),
-            EvidenceCollector("inspect_health", "inspect_health"),
+            EvidenceCollector("search_logs", "search_logs", {"keywords": ("trigger", "50001", "open_orders", "sync")}, mandatory=False),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
+            EvidenceCollector("inspect_health", "inspect_health", mandatory=False),
         ),
         keywords=("dashboard", "exchange", "mismatch", "reconcile"),
     ),

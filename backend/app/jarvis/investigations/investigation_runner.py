@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from app.jarvis.execution_tools.registry import build_default_registry
+from app.jarvis.execution_tools.tool_invocation import build_tool_kwargs
 from app.jarvis.investigations.evidence_model import (
     EvidenceItem,
     evidence_from_tool_output,
@@ -48,8 +50,25 @@ _READ_ONLY_TOOLS = frozenset(
 )
 
 
+@dataclass
+class CollectorRunResult:
+    output: dict[str, Any]
+    mandatory: bool
+    tool: str
+    ok: bool
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _tool_succeeded(output: dict[str, Any]) -> bool:
+    if output.get("ok") is False:
+        return False
+    error = output.get("error")
+    if isinstance(error, str) and error.strip():
+        return False
+    return True
 
 
 def _invoke_collector(
@@ -57,34 +76,37 @@ def _invoke_collector(
     *,
     objective: str,
     registry: Any,
-) -> dict[str, Any]:
+) -> CollectorRunResult:
     """Invoke a read-only evidence collector safely."""
-    if collector.tool not in _READ_ONLY_TOOLS:
-        return {"tool": collector.tool, "ok": False, "error": "write tool blocked"}
+    tool = collector.tool
+    if tool not in _READ_ONLY_TOOLS:
+        output = {"tool": tool, "ok": False, "error": "write tool blocked", "mandatory": collector.mandatory}
+        return CollectorRunResult(output=output, mandatory=collector.mandatory, tool=tool, ok=False)
 
-    action = collector.action or collector.tool
-    kwargs: dict[str, Any] = {}
-    if collector.tool in {
-        "diagnose_open_orders",
-        "reconcile_crypto_com_open_orders",
-        "search_logs",
-        "search_repository",
-        "query_database",
-        "read_logs",
-    }:
-        kwargs["objective"] = objective
-        kwargs["action"] = action
-    if collector.tool == "search_logs" and collector.params.get("keywords"):
-        kwargs["keywords"] = collector.params["keywords"]
-    if collector.tool == "search_repository" and collector.params.get("topic"):
-        kwargs["topic"] = collector.params["topic"]
-
-    result = registry.execute(collector.tool, **kwargs)
+    action = collector.action or tool
+    kwargs = build_tool_kwargs(tool, objective=objective, action=action, params=collector.params)
+    result = registry.execute(tool, **kwargs)
     output = dict(result.output or {})
-    output["ok"] = result.ok and output.get("ok", True)
-    if result.error:
-        output["error"] = result.error
-    return output
+    output["tool"] = tool
+    output["mandatory"] = collector.mandatory
+    error_text = result.error if isinstance(result.error, str) and result.error.strip() else None
+    if error_text:
+        output["error"] = error_text
+    output["ok"] = bool(result.ok) and output.get("ok", True) is not False and not error_text
+    ok = _tool_succeeded(output)
+    return CollectorRunResult(output=output, mandatory=collector.mandatory, tool=tool, ok=ok)
+
+
+def _evaluate_collector_runs(runs: list[CollectorRunResult]) -> tuple[InvestigationStatus | None, list[str]]:
+    """Return failure status when mandatory collectors fail."""
+    failures = [r for r in runs if r.mandatory and not r.ok]
+    if not failures:
+        return None, []
+    reasons = [f"{r.tool}: {r.output.get('error') or 'failed'}" for r in failures]
+    mandatory_total = sum(1 for r in runs if r.mandatory)
+    if len(failures) >= mandatory_total and mandatory_total > 0:
+        return InvestigationStatus.FAILED, reasons
+    return InvestigationStatus.PARTIAL_FAILURE, reasons
 
 
 def _collect_portfolio_evidence() -> list[EvidenceItem]:
@@ -269,7 +291,7 @@ def collect_evidence(
     objective: str,
     *,
     collectors: tuple[EvidenceCollector, ...] | None = None,
-) -> tuple[list[EvidenceItem], list[dict[str, Any]], str, str]:
+) -> tuple[list[EvidenceItem], list[dict[str, Any]], str, str, InvestigationStatus | None, list[str]]:
     """Collect multi-source evidence for an investigation objective."""
     category, template_id, resolved_collectors = get_collectors_for_objective(objective)
     use_collectors = collectors or resolved_collectors
@@ -277,15 +299,32 @@ def collect_evidence(
     registry = build_default_registry()
     tool_outputs: list[dict[str, Any]] = []
     evidence_chunks: list[list[EvidenceItem]] = []
+    runs: list[CollectorRunResult] = []
 
     for collector in use_collectors:
         try:
-            output = _invoke_collector(collector, objective=objective, registry=registry)
-            tool_outputs.append(output)
-            evidence_chunks.append(evidence_from_tool_output(output))
+            run = _invoke_collector(collector, objective=objective, registry=registry)
+            runs.append(run)
+            tool_outputs.append(run.output)
+            if run.ok:
+                evidence_chunks.append(evidence_from_tool_output(run.output))
         except Exception as exc:
             logger.warning("investigation collector %s failed: %s", collector.tool, exc)
-            tool_outputs.append({"tool": collector.tool, "ok": False, "error": str(exc)})
+            failure_output = {
+                "tool": collector.tool,
+                "ok": False,
+                "error": str(exc),
+                "mandatory": collector.mandatory,
+            }
+            tool_outputs.append(failure_output)
+            runs.append(
+                CollectorRunResult(
+                    output=failure_output,
+                    mandatory=collector.mandatory,
+                    tool=collector.tool,
+                    ok=False,
+                )
+            )
 
     if category == "portfolio":
         evidence_chunks.append(_collect_portfolio_evidence())
@@ -293,7 +332,8 @@ def collect_evidence(
         evidence_chunks.append(_collect_auth_evidence())
 
     evidence = merge_evidence(*evidence_chunks)
-    return evidence, tool_outputs, category, template_id
+    collector_status, collector_reasons = _evaluate_collector_runs(runs)
+    return evidence, tool_outputs, category, template_id, collector_status, collector_reasons
 
 
 def run_investigation(
@@ -312,7 +352,9 @@ def run_investigation(
     if not objective_text:
         raise ValueError("investigation objective is required")
 
-    evidence, tool_outputs, category, template_id = collect_evidence(objective_text)
+    evidence, tool_outputs, category, template_id, collector_status, collector_reasons = collect_evidence(
+        objective_text
+    )
     recent_failures = _count_recent_failures(tool_outputs)
     ranked = rank_root_causes(
         evidence=evidence,
@@ -330,6 +372,8 @@ def run_investigation(
         ranked_causes=ranked,
         tool_outputs=tool_outputs,
         created_at=_now_iso(),
+        collector_status=collector_status,
+        collector_failure_reasons=collector_reasons,
     )
 
     if persist:

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def inspect_health(*, endpoint: str = "/api/ping_fast") -> dict[str, Any]:
+def inspect_health(*, endpoint: str = "/api/ping_fast", **_kwargs: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "tool": "inspect_health",
         "endpoint": endpoint,

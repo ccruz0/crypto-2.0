@@ -443,6 +443,17 @@ def validate_task_result(
     passed = True
     final_status = "completed"
 
+    failed_tools = [
+        r for r in (tool_results or [])
+        if r.get("ok") is False or r.get("error")
+    ]
+    if failed_tools:
+        tool_names = [str(r.get("tool") or r.get("action") or "?") for r in failed_tools]
+        checks.append(_check("Mandatory tool execution succeeded", False))
+        passed = False
+        final_status = "failed"
+        explanations.append(f"Tool failures: {', '.join(tool_names)}")
+
     report_complete = all(_is_present(completion_report.get(k)) for k in ("summary", "evidence", "conclusion", "next_action"))
     checks.append(_check("Completion report complete", report_complete))
     if not report_complete:

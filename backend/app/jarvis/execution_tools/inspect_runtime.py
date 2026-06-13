@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def inspect_runtime() -> dict[str, Any]:
+def inspect_runtime(**_kwargs: Any) -> dict[str, Any]:
     return {
         "tool": "inspect_runtime",
         "environment": os.environ.get("ENVIRONMENT", "unknown"),

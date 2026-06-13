@@ -115,6 +115,36 @@ def evidence_from_tool_output(output: dict[str, Any]) -> list[EvidenceItem]:
                 }
             )
 
+    if tool == "diagnose_open_orders":
+        counts_detail = (
+            f"exchange_total={output.get('exchange_total_count')}, "
+            f"regular={output.get('exchange_regular_count')}, "
+            f"trigger={output.get('exchange_trigger_count')}, "
+            f"cache_raw={output.get('cache_raw_count')}, "
+            f"dashboard_effective={output.get('dashboard_effective_count')} "
+            f"(source={output.get('dashboard_source')})"
+        )
+        items.append(
+            {
+                "source": "diagnostic",
+                "reference": "open_orders_counts",
+                "detail": counts_detail,
+                "confidence": "high",
+            }
+        )
+        if output.get("trigger_orders_error"):
+            items.append(
+                {
+                    "source": "exchange",
+                    "reference": "trigger_orders_api",
+                    "detail": (
+                        f"Trigger-order API error_code={output.get('trigger_orders_error_code')}: "
+                        f"{output.get('trigger_orders_error')}"
+                    ),
+                    "confidence": "high",
+                }
+            )
+
     if tool == "inspect_health":
         status = output.get("status")
         if status:

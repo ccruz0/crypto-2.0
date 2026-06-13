@@ -172,9 +172,13 @@ class TestValidationGates:
 
 
 class TestExecutionIntegration:
+    @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_live_exchange")
+    @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_dashboard_effective")
     @patch("app.jarvis.execution_tools.query_database._execute_query")
     @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_open_orders_cache")
-    def test_why_open_orders_completes_with_diagnostics(self, mock_cache, mock_exec, exec_db, monkeypatch):
+    def test_why_open_orders_completes_with_diagnostics(
+        self, mock_cache, mock_exec, mock_dashboard, mock_exchange, exec_db, monkeypatch
+    ):
         monkeypatch.setenv("JARVIS_ENABLED", "true")
 
         def _exec_side(query, *, limit):
@@ -184,6 +188,22 @@ class TestExecutionIntegration:
 
         mock_exec.side_effect = _exec_side
         mock_cache.return_value = (0, {"source": "api", "reference": "cache", "detail": "empty", "confidence": "high"})
+        mock_dashboard.return_value = (
+            0,
+            "crypto.com",
+            "ok",
+            {"source": "dashboard", "reference": "resolve", "detail": "effective=0", "confidence": "high"},
+        )
+        mock_exchange.return_value = (
+            {
+                "regular_count": 0,
+                "trigger_count": 0,
+                "total_count": 0,
+                "data_verified": True,
+                "skipped": False,
+            },
+            {"source": "exchange", "reference": "live", "detail": "zero", "confidence": "high"},
+        )
 
         detail = submit_execution_task(objective="Why are open orders empty?", dry_run=True)
         assert detail["status"] == TaskLifecycleState.COMPLETED.value
@@ -265,7 +285,11 @@ class TestValidationApiSurface:
         client = TestClient(app)
         with patch("app.jarvis.execution_tools.query_database._execute_query") as mock_exec, patch(
             "app.jarvis.execution_tools.diagnose_open_orders._inspect_open_orders_cache"
-        ) as mock_cache:
+        ) as mock_cache, patch(
+            "app.jarvis.execution_tools.diagnose_open_orders._inspect_dashboard_effective"
+        ) as mock_dashboard, patch(
+            "app.jarvis.execution_tools.diagnose_open_orders._inspect_live_exchange"
+        ) as mock_exchange:
             mock_exec.side_effect = lambda query, *, limit: {
                 "query_executed": query,
                 "row_count": 1 if "COUNT(*)" in query and "GROUP BY" not in query else 0,
@@ -274,6 +298,22 @@ class TestValidationApiSurface:
                 "checked_at": "",
             }
             mock_cache.return_value = (0, {"source": "api", "reference": "cache", "detail": "empty", "confidence": "high"})
+            mock_dashboard.return_value = (
+                0,
+                "crypto.com",
+                "ok",
+                {"source": "dashboard", "reference": "resolve", "detail": "effective=0", "confidence": "high"},
+            )
+            mock_exchange.return_value = (
+                {
+                    "regular_count": 0,
+                    "trigger_count": 0,
+                    "total_count": 0,
+                    "data_verified": True,
+                    "skipped": False,
+                },
+                {"source": "exchange", "reference": "live", "detail": "zero", "confidence": "high"},
+            )
             submit = client.post(
                 "/api/jarvis/tasks/submit",
                 json={"objective": "Why are open orders empty?", "dry_run": True},

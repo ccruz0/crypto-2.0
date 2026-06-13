@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def inspect_container(*, service: str = "frontend-aws") -> dict[str, Any]:
+def inspect_container(*, service: str = "frontend-aws", **_kwargs: Any) -> dict[str, Any]:
     containers: list[dict[str, Any]] = []
     try:
         proc = subprocess.run(

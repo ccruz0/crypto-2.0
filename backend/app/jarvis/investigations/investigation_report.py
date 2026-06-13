@@ -41,6 +41,8 @@ class InvestigationReport:
     verification_steps: list[str]
     next_action: str
     created_at: str
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
+    collector_failures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +70,9 @@ class InvestigationReport:
             "verification_steps": self.verification_steps,
             "next_action": self.next_action,
             "created_at": self.created_at,
+            "tool_results": self.tool_results,
+            "collector_failures": self.collector_failures,
+            "passed": self.status == InvestigationStatus.COMPLETED,
         }
 
 
@@ -235,6 +240,85 @@ def _cross_source_bonus(evidence: list[EvidenceItem], supporting: list[str]) -> 
     return 0.0
 
 
+def _reconcile_output(tool_outputs: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for output in tool_outputs or []:
+        if output.get("tool") == "reconcile_crypto_com_open_orders" and output.get("ok") is not False:
+            return output
+    return None
+
+
+def _diagnose_output(tool_outputs: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for output in tool_outputs or []:
+        if output.get("tool") == "diagnose_open_orders" and output.get("ok") is not False:
+            return output
+    return None
+
+
+def _filter_tool_root_causes(
+    *,
+    candidates: list[RootCauseCandidate],
+    tool_outputs: list[dict[str, Any]] | None,
+) -> list[RootCauseCandidate]:
+    """Prefer reconcile over diagnose; drop stale diagnose cache-only conclusions."""
+    reconcile = _reconcile_output(tool_outputs)
+    diagnose = _diagnose_output(tool_outputs)
+    if not reconcile and not diagnose:
+        return candidates
+
+    exchange_live = int((reconcile or {}).get("counts", {}).get("exchange_live") or 0)
+    if not exchange_live and diagnose:
+        exchange_live = int(diagnose.get("exchange_total_count") or 0)
+
+    dashboard_effective = int((diagnose or {}).get("dashboard_effective_count") or 0)
+    cache_raw = int((diagnose or {}).get("cache_raw_count") or diagnose.get("cache_open_count") or 0)
+
+    stale_diagnose_markers = (
+        "api cache returned 0",
+        "crypto.com open orders cache is empty",
+        "database has pending orders but",
+    )
+
+    filtered: list[RootCauseCandidate] = []
+    for candidate in candidates:
+        cause_lower = candidate.cause.lower()
+        if any(marker in cause_lower for marker in stale_diagnose_markers):
+            if exchange_live > 0 or dashboard_effective > 0:
+                continue
+        filtered.append(candidate)
+
+    if reconcile and reconcile.get("root_cause"):
+        reconcile_cause = str(reconcile["root_cause"])
+        if not any(c.cause == reconcile_cause for c in filtered):
+            filtered.insert(
+                0,
+                RootCauseCandidate(
+                    cause=reconcile_cause,
+                    score=85.0,
+                    supporting_evidence=["reconcile_crypto_com_open_orders authoritative counts"],
+                    explanation="Three-way reconciliation against live exchange API.",
+                ),
+            )
+
+    if exchange_live > 0 and cache_raw == 0 and dashboard_effective > 0:
+        fallback_cause = "Open orders cache empty but dashboard API serves database fallback"
+        if not any(fallback_cause.lower() in c.cause.lower() for c in filtered):
+            filtered.insert(
+                0,
+                RootCauseCandidate(
+                    cause=fallback_cause,
+                    score=90.0,
+                    supporting_evidence=[
+                        f"exchange_live={exchange_live}",
+                        f"dashboard_effective={dashboard_effective}",
+                        f"cache_raw={cache_raw}",
+                    ],
+                    explanation="resolve_open_orders DB fallback active; raw cache empty is not dashboard-empty.",
+                ),
+            )
+
+    return filtered or candidates
+
+
 def rank_root_causes(
     *,
     evidence: list[EvidenceItem],
@@ -321,6 +405,7 @@ def rank_root_causes(
             continue
         seen.add(key)
         deduped.append(c)
+    deduped = _filter_tool_root_causes(candidates=deduped, tool_outputs=tool_outputs)
     return deduped[:8]
 
 
@@ -349,8 +434,22 @@ def build_investigation_report(
     ranked_causes: list[RootCauseCandidate],
     tool_outputs: list[dict[str, Any]] | None = None,
     created_at: str,
+    collector_status: InvestigationStatus | None = None,
+    collector_failure_reasons: list[str] | None = None,
 ) -> InvestigationReport:
     """Assemble a full investigation report from evidence and ranked causes."""
+    tool_results = [
+        {
+            "tool": output.get("tool"),
+            "ok": output.get("ok", True),
+            "error": output.get("error"),
+            "mandatory": output.get("mandatory", True),
+            "root_cause": output.get("root_cause"),
+        }
+        for output in (tool_outputs or [])
+    ]
+    failures = list(collector_failure_reasons or [])
+
     top = ranked_causes[0] if ranked_causes else None
     min_score = 15.0 if category == "portfolio" else 25.0
     root_cause = top.cause if top and top.score >= min_score else None
@@ -369,6 +468,8 @@ def build_investigation_report(
         summary_lines.append(f"- {item['detail'][:120]}")
     if root_cause:
         summary_lines.append(f"Likely cause: {root_cause}")
+    if failures:
+        summary_lines.append(f"Collector failures: {'; '.join(failures[:3])}")
 
     next_action = recommended_fix
     for output in tool_outputs or []:
@@ -381,6 +482,8 @@ def build_investigation_report(
         evidence=evidence,
         confidence=confidence,
         recommended_fix=recommended_fix,
+        collector_status=collector_status,
+        collector_failure_reasons=failures,
     )
 
     return InvestigationReport(
@@ -399,6 +502,8 @@ def build_investigation_report(
         verification_steps=verification_steps,
         next_action=next_action,
         created_at=created_at,
+        tool_results=tool_results,
+        collector_failures=failures,
     )
 
 
@@ -408,8 +513,16 @@ def validate_investigation_report_fields(
     evidence: list[EvidenceItem],
     confidence: float,
     recommended_fix: str,
+    collector_status: InvestigationStatus | None = None,
+    collector_failure_reasons: list[str] | None = None,
 ) -> InvestigationStatus:
-    """Return COMPLETED only when all mandatory fields are present."""
+    """Return COMPLETED only when mandatory collectors succeeded and fields are present."""
+    if collector_status in (InvestigationStatus.FAILED, InvestigationStatus.PARTIAL_FAILURE):
+        return collector_status
+
+    if collector_failure_reasons:
+        return InvestigationStatus.PARTIAL_FAILURE
+
     if (
         _is_present(root_cause)
         and evidence
