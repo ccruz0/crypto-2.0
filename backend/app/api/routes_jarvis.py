@@ -85,6 +85,7 @@ from app.jarvis.execution.schemas import (
     JarvisInvestigationPresetsResponse,
     JarvisInvestigationRunRequest,
     JarvisProposalEligibilityResponse,
+    JarvisProposalTaskDetail,
     JarvisPatchRevisionRequest,
     JarvisPhase5StatusResponse,
     JarvisTaskApprovalRequest,
@@ -363,6 +364,30 @@ def jarvis_proposal_eligibility(investigation_id: str) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail="investigation not found")
     return check_proposal_eligibility(row).to_dict()
+
+
+@router.post(
+    "/api/jarvis/investigations/{investigation_id}/propose-patch",
+    response_model=JarvisProposalTaskDetail,
+)
+def jarvis_investigation_propose_patch(investigation_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table, ensure_jarvis_task_runs_table
+    from app.jarvis.proposals.proposal_service import ProposalWorkflowError, submit_patch_proposal
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return submit_patch_proposal(investigation_id)
+    except ProposalWorkflowError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"message": exc.message, "reasons": exc.reasons},
+        ) from exc
+    except Exception as exc:
+        logger.exception("jarvis.propose_patch_failed investigation_id=%s err=%s", investigation_id, exc)
+        raise HTTPException(status_code=500, detail=f"jarvis_propose_patch_failed: {exc}") from exc
 
 
 # --- Phase 4: Change workflow (patch generation + review + approval, no application) ---

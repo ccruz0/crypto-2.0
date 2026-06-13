@@ -223,6 +223,13 @@ class JarvisProposalEligibilityResponse(BaseModel):
     existing_proposal_task_id: str | None = None
 
 
+class JarvisProposalTaskDetail(JarvisExecutionTaskDetail):
+    workflow_type: str = "phase4b_patch_proposal"
+    source_investigation_id: str | None = None
+    fix_template_id: str | None = None
+    sandbox_summary: dict[str, Any] = Field(default_factory=dict)
+
+
 class JarvisInvestigationListResponse(BaseModel):
     investigations: list[JarvisInvestigationSummary] = Field(default_factory=list)
 
