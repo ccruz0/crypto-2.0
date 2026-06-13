@@ -1994,6 +1994,25 @@ export interface JarvisArtifactRecord {
   preview?: string;
 }
 
+export interface JarvisValidationCheck {
+  label: string;
+  passed: boolean;
+}
+
+export interface JarvisValidationOutcome {
+  task_type?: string;
+  passed?: boolean;
+  final_status?: string;
+  checks?: JarvisValidationCheck[];
+  explanation?: string;
+  completion_report?: {
+    summary?: string;
+    evidence?: string;
+    conclusion?: string;
+    next_action?: string;
+  };
+}
+
 export interface JarvisExecutionTaskDetail {
   task_id: string;
   objective: string;
@@ -2008,6 +2027,10 @@ export interface JarvisExecutionTaskDetail {
   execution_log?: JarvisExecutionLogEntry[];
   final_answer?: string;
   error?: string | null;
+  review?: {
+    validation?: JarvisValidationOutcome;
+    [key: string]: unknown;
+  };
 }
 
 export async function submitJarvisExecutionTask(body: {

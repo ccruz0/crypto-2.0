@@ -24,6 +24,7 @@ class TaskLifecycleState(str, Enum):
     PR_CREATED = "pr_created"
     COMPLETED = "completed"
     FAILED = "failed"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     CANCELLED = "cancelled"
 
 
@@ -40,6 +41,7 @@ TERMINAL_STATES: frozenset[TaskLifecycleState] = frozenset(
     {
         TaskLifecycleState.COMPLETED,
         TaskLifecycleState.FAILED,
+        TaskLifecycleState.INSUFFICIENT_EVIDENCE,
         TaskLifecycleState.CANCELLED,
     }
 )
@@ -57,7 +59,12 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
     ),
     # Phase 4 change pipeline
     TaskLifecycleState.INVESTIGATING: frozenset(
-        {TaskLifecycleState.PATCH_READY, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+        {
+            TaskLifecycleState.PATCH_READY,
+            TaskLifecycleState.FAILED,
+            TaskLifecycleState.INSUFFICIENT_EVIDENCE,
+            TaskLifecycleState.CANCELLED,
+        }
     ),
     TaskLifecycleState.PATCH_READY: frozenset(
         {TaskLifecycleState.REVIEWING, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
@@ -71,7 +78,12 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
         }
     ),
     TaskLifecycleState.TESTING: frozenset(
-        {TaskLifecycleState.WAITING_FOR_APPROVAL, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+        {
+            TaskLifecycleState.WAITING_FOR_APPROVAL,
+            TaskLifecycleState.FAILED,
+            TaskLifecycleState.INSUFFICIENT_EVIDENCE,
+            TaskLifecycleState.CANCELLED,
+        }
     ),
     TaskLifecycleState.APPROVED: frozenset(
         {TaskLifecycleState.COMPLETED, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
@@ -100,10 +112,16 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
     ),
     TaskLifecycleState.PR_CREATED: frozenset({TaskLifecycleState.COMPLETED, TaskLifecycleState.FAILED}),
     TaskLifecycleState.EXECUTING: frozenset(
-        {TaskLifecycleState.COMPLETED, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+        {
+            TaskLifecycleState.COMPLETED,
+            TaskLifecycleState.FAILED,
+            TaskLifecycleState.INSUFFICIENT_EVIDENCE,
+            TaskLifecycleState.CANCELLED,
+        }
     ),
     TaskLifecycleState.COMPLETED: frozenset(),
     TaskLifecycleState.FAILED: frozenset(),
+    TaskLifecycleState.INSUFFICIENT_EVIDENCE: frozenset(),
     TaskLifecycleState.CANCELLED: frozenset(),
 }
 

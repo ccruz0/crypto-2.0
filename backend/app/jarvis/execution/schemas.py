@@ -72,6 +72,7 @@ class JarvisExecutionTaskDetail(BaseModel):
     plan: JarvisExecutionPlan | dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
+    review: dict[str, Any] = Field(default_factory=dict)
     approval_required: bool = False
     approval_status: ApprovalStatus = "not_required"
     estimated_cost_usd: float = 0.0

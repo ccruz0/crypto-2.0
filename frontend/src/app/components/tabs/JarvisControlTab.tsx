@@ -21,7 +21,7 @@ function StatusBadge({ status }: { status: string }) {
   const variant =
     normalized === 'completed'
       ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
-      : normalized === 'failed' || normalized === 'cancelled'
+      : normalized === 'failed' || normalized === 'cancelled' || normalized === 'insufficient_evidence'
         ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
         : normalized === 'waiting_for_approval'
           ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
@@ -30,6 +30,35 @@ function StatusBadge({ status }: { status: string }) {
     <span className={`inline-flex px-2 py-0.5 rounded text-xs font-semibold ${variant}`}>
       {status}
     </span>
+  );
+}
+
+
+function ValidationOutcome({ validation }: { validation: JarvisExecutionTaskDetail['review'] }) {
+  const outcome = validation?.validation;
+  if (!outcome) return null;
+  const checks = outcome.checks || [];
+  const finalStatus = (outcome.final_status || 'unknown').toUpperCase();
+  return (
+    <div
+      data-testid="jarvis-validation-outcome"
+      className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900/60 p-3 space-y-2"
+    >
+      <h4 className="font-medium text-gray-900 dark:text-white">Validation</h4>
+      <ul className="space-y-1 text-xs">
+        {checks.map((check) => (
+          <li key={check.label} className={check.passed ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}>
+            {check.passed ? '✅' : '❌'} {check.label}
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-gray-600 dark:text-gray-400">
+        <span className="font-medium">Final Status:</span> {finalStatus}
+      </p>
+      {outcome.explanation && (
+        <p className="text-xs text-gray-600 dark:text-gray-400">{outcome.explanation}</p>
+      )}
+    </div>
   );
 }
 
@@ -221,6 +250,7 @@ export default function JarvisControlTab() {
                 <span className="text-gray-500">Est: ${detail.estimated_cost_usd?.toFixed(4)}</span>
                 <span className="text-gray-500">Actual: ${detail.actual_cost_usd?.toFixed(4)}</span>
               </div>
+              <ValidationOutcome validation={detail.review} />
               {detail.status === 'waiting_for_approval' && (
                 <div className="flex gap-2">
                   <button type="button" onClick={onApprove} className="px-3 py-1 bg-green-600 text-white rounded text-xs">

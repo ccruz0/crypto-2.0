@@ -22,6 +22,10 @@ from app.jarvis.execution.persistence import (
     record_approval,
     transition_task_status,
 )
+from app.jarvis.execution.result_validation import (
+    apply_validation_to_review,
+    validate_task_result,
+)
 from app.jarvis.execution.safety import SafetyLevel, is_forbidden, merge_safety_levels
 from app.jarvis.execution.schemas import JarvisExecutionPlan
 from app.jarvis.mvp.config import jarvis_dry_run_only, jarvis_enabled
@@ -147,6 +151,70 @@ def reject_task(task_id: str, *, actor_id: str = "dashboard", comment: str = "")
     return _detail(task_id)
 
 
+def _finalize_execution(
+    task_id: str,
+    *,
+    objective: str,
+    exec_result: dict[str, Any],
+    repo_result: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+) -> None:
+    """Run supervisor validation and assign terminal status."""
+    validation = validate_task_result(
+        objective=objective,
+        tool_results=exec_result.get("tool_results", []),
+        repo_investigation=repo_result,
+        artifacts=artifacts,
+        final_answer=exec_result.get("final_answer", ""),
+    )
+    review = apply_validation_to_review({}, validation)
+    completion = validation.get("completion_report") or {}
+    report_text = "\n\n".join(
+        f"## {section.title()}\n{completion.get(section, '')}"
+        for section in ("summary", "evidence", "conclusion", "next_action")
+        if completion.get(section)
+    )
+
+    log_execution_event(
+        task_id=task_id,
+        agent="supervisor",
+        tool="validate_result",
+        input_summary=objective[:300],
+        output_summary=f"passed={validation.get('passed')} status={validation.get('final_status')}",
+        duration_ms=0,
+        metadata={"validation": validation},
+    )
+
+    common_fields = {
+        "tool_results_json": exec_result.get("tool_results", []),
+        "artifacts_json": artifacts,
+        "actual_cost_usd": exec_result.get("actual_cost_usd", 0.0),
+        "review_json": review,
+        "final_answer": report_text or exec_result.get("final_answer", ""),
+        "completed_at": _now_iso(),
+    }
+
+    if not validation.get("passed"):
+        target = validation.get("final_status") or TaskLifecycleState.FAILED.value
+        if target == "insufficient_evidence":
+            target_state = TaskLifecycleState.INSUFFICIENT_EVIDENCE
+        else:
+            target_state = TaskLifecycleState.FAILED
+        transition_task_status(
+            task_id,
+            target_state,
+            error=validation.get("explanation"),
+            **common_fields,
+        )
+        return
+
+    transition_task_status(
+        task_id,
+        TaskLifecycleState.COMPLETED,
+        **common_fields,
+    )
+
+
 def _run_execution(task_id: str, plan: JarvisExecutionPlan, *, already_executing: bool = False) -> dict[str, Any]:
     if not already_executing:
         transition_task_status(task_id, TaskLifecycleState.EXECUTING)
@@ -183,14 +251,12 @@ def _run_execution(task_id: str, plan: JarvisExecutionPlan, *, already_executing
         )
         return _detail(task_id)
 
-    transition_task_status(
+    _finalize_execution(
         task_id,
-        TaskLifecycleState.COMPLETED,
-        tool_results_json=exec_result.get("tool_results", []),
-        artifacts_json=artifacts,
-        actual_cost_usd=exec_result.get("actual_cost_usd", 0.0),
-        final_answer=exec_result.get("final_answer", ""),
-        completed_at=_now_iso(),
+        objective=plan.objective_summary,
+        exec_result=exec_result,
+        repo_result=repo_result,
+        artifacts=artifacts,
     )
     return _detail(task_id)
 

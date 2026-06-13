@@ -80,6 +80,7 @@ def _is_terminal(status: str) -> bool:
     return status in {
         TaskLifecycleState.COMPLETED.value,
         TaskLifecycleState.FAILED.value,
+        TaskLifecycleState.INSUFFICIENT_EVIDENCE.value,
         TaskLifecycleState.CANCELLED.value,
     }
 
@@ -209,7 +210,10 @@ def build_agent_pipeline(task: dict[str, Any]) -> dict[str, Any]:
     total_actual = float(task.get("actual_cost_usd") or 0)
     active_agent = STATUS_ACTIVE_AGENT.get(status)
     terminal = _is_terminal(status)
-    failed = status == TaskLifecycleState.FAILED.value
+    failed = status in {
+        TaskLifecycleState.FAILED.value,
+        TaskLifecycleState.INSUFFICIENT_EVIDENCE.value,
+    }
 
     agents_out: list[dict[str, Any]] = []
     reached_running = False
@@ -311,6 +315,7 @@ def build_agent_pipeline(task: dict[str, Any]) -> dict[str, Any]:
         "task_id": task.get("task_id"),
         "workflow_type": workflow,
         "task_status": status,
+        "validation": (task.get("review") or {}).get("validation"),
         "agents": agents_out,
         "totals": {
             "estimated_cost_usd": total_estimated,

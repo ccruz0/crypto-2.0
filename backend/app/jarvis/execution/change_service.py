@@ -25,6 +25,10 @@ from app.jarvis.execution.persistence import (
     transition_task_status,
 )
 from app.jarvis.execution.safety import SafetyLevel, classify_change_objective, is_forbidden
+from app.jarvis.execution.result_validation import (
+    apply_validation_to_review,
+    validate_task_result,
+)
 from app.jarvis.github.integration import github_readonly_summary
 from app.jarvis.mvp.config import jarvis_dry_run_only, jarvis_enabled
 from app.jarvis.repository.graph import build_repository_graph
@@ -169,6 +173,42 @@ def submit_change_task(
         tests=test_result,
         repo_report={"report": repo_report, "investigation": investigation},
     )
+
+    validation = validate_task_result(
+        objective=objective_text,
+        task_type="patch",
+        tool_results=[],
+        repo_investigation=investigation,
+        artifacts=artifacts,
+        review=review,
+        workflow_type=WORKFLOW_TYPE,
+    )
+    review = apply_validation_to_review(review, validation)
+    _audit(
+        task_id,
+        "supervisor",
+        "validate_result",
+        objective_text,
+        f"passed={validation.get('passed')} status={validation.get('final_status')}",
+    )
+
+    if not validation.get("passed"):
+        target = validation.get("final_status") or TaskLifecycleState.FAILED.value
+        target_state = (
+            TaskLifecycleState.INSUFFICIENT_EVIDENCE
+            if target == "insufficient_evidence"
+            else TaskLifecycleState.FAILED
+        )
+        transition_task_status(
+            task_id,
+            target_state,
+            artifacts_json=artifacts,
+            review_json=review,
+            error=validation.get("explanation"),
+            completed_at=_now_iso(),
+            current_step="validation_failed",
+        )
+        return _detail(task_id)
 
     risk_score = review.get("risk_score", 50)
     _update_task(
