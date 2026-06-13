@@ -14,6 +14,8 @@ def resolve_repo_file(repo_root: Path, rel_path: str) -> Path | None:
         candidates.append(repo_root / stripped)
     if (repo_root / "backend").is_dir():
         candidates.append(repo_root / "backend" / rel.removeprefix("backend/"))
+    if rel.startswith("frontend/") and (repo_root / "app").is_dir():
+        candidates.append(repo_root.parent / rel)
     for path in candidates:
         if path.is_file():
             return path

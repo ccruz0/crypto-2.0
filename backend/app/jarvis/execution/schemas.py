@@ -221,6 +221,41 @@ class JarvisProposalEligibilityResponse(BaseModel):
     confidence: float = 0.0
     fix_template_candidates: list[dict[str, Any]] = Field(default_factory=list)
     existing_proposal_task_id: str | None = None
+    primary_template: str | None = None
+    score: int = 0
+    template_score: int = 0
+    template_confidence: float = 0.0
+    alternatives: list[dict[str, Any]] = Field(default_factory=list)
+    no_fix_required_reason: str | None = None
+
+
+class JarvisFixTemplateSummary(BaseModel):
+    fix_template_id: str
+    description: str
+    target_files: list[str] = Field(default_factory=list)
+    supported_investigations: list[str] = Field(default_factory=list)
+    risk_level: str
+
+
+class JarvisFixTemplateListResponse(BaseModel):
+    templates: list[JarvisFixTemplateSummary] = Field(default_factory=list)
+    count: int = 0
+
+
+class JarvisFixTemplateDetailResponse(BaseModel):
+    fix_template_id: str
+    description: str
+    match_patterns: list[str] = Field(default_factory=list)
+    target_files: list[str] = Field(default_factory=list)
+    recommended_fix: str = ""
+    risk_level: str = "low"
+    test_paths: list[str] = Field(default_factory=list)
+    validation_rules: list[str] = Field(default_factory=list)
+    supported_investigations: list[str] = Field(default_factory=list)
+    strategy: str = "template"
+    root_cause_exact: str | None = None
+    noop_reason: str = ""
+    match: str = ""
 
 
 class JarvisProposalTaskDetail(JarvisExecutionTaskDetail):

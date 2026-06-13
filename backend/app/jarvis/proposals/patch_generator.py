@@ -8,6 +8,7 @@ from typing import Any
 
 from app.jarvis.proposals.fix_templates import get_fix_template
 from app.jarvis.proposals.path_utils import resolve_repo_file, rewrite_patch_paths_for_workspace
+from app.jarvis.proposals.template_matching import get_template_match
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -25,6 +26,39 @@ _FIX_PRESENT_MARKERS: dict[str, list[tuple[str, str]]] = {
             "backend/tests/test_crypto_com_sync_status.py",
             "test_fetch_unified_open_orders_regular_ok_trigger_50001_non_fatal",
         ),
+    ],
+    "crypto.auth_40101_mismatch": [
+        ("backend/scripts/diagnose_crypto_com_auth.py", "40101 usually means"),
+        ("backend/scripts/diagnose_crypto_com_auth.py", "resolve_crypto_credentials"),
+        ("backend/app/core/crypto_com_guardrail.py", "AUTH_40101_MESSAGE"),
+    ],
+    "dashboard.cache_db_mismatch": [
+        ("backend/app/services/open_orders_resolver.py", "resolve_open_orders"),
+        ("backend/app/api/routes_orders.py", "resolve_open_orders"),
+        ("backend/app/services/open_orders_cache.py", "get_open_orders_cache"),
+    ],
+    "portfolio.equity_derived_fallback": [
+        ("backend/app/services/portfolio_cache.py", "derived:collateral_minus_borrowed"),
+        ("backend/app/services/portfolio_cache.py", "Exchange equity not found"),
+    ],
+    "websocket.same_origin_regression": [
+        ("frontend/src/lib/priceStreamWsUrl.ts", "window.location.host"),
+        ("frontend/src/lib/priceStreamWsUrl.ts", "isRejectedOverrideHostname"),
+    ],
+    "open_orders.stale_cache_fallback": [
+        ("backend/app/services/open_orders_resolver.py", "stale_cache_db_fallback"),
+        ("backend/app/services/open_orders_resolver.py", "ok_db_fallback"),
+    ],
+    "exchange_sync_blocked_by_order_history": [
+        (
+            "backend/app/services/exchange_sync.py",
+            "sync_order_history now runs BEFORE sync_open_orders",
+        ),
+        ("backend/app/services/exchange_sync.py", "def sync_open_orders"),
+    ],
+    "telegram.bot_command_setup_failure": [
+        ("backend/app/services/telegram_commands.py", "setMyCommands"),
+        ("backend/app/services/telegram_commands.py", "_run_startup_diagnostics"),
     ],
 }
 
@@ -81,6 +115,13 @@ def _noop_patch_content(fix_template_id: str, *, reason: str) -> str:
     )
 
 
+def _noop_reason_for_template(fix_template_id: str) -> str:
+    template = get_template_match(fix_template_id)
+    if template and template.noop_reason:
+        return template.noop_reason
+    return "Fix already present in repository."
+
+
 def _load_canonical_patch(fix_template_id: str) -> str:
     filename = _PATCH_FILES.get(fix_template_id)
     if not filename:
@@ -104,10 +145,7 @@ def generate_patch_for_template(
     target_files = list(template.get("target_files") or [])
 
     if is_fix_already_present(repo_root, fix_template_id):
-        reason = (
-            "The trigger-order 50001 cache-independent fetch path is already implemented "
-            "in the repository."
-        )
+        reason = _noop_reason_for_template(fix_template_id)
         return PatchGenerationResult(
             fix_template_id=fix_template_id,
             patch_content=_noop_patch_content(fix_template_id, reason=reason),

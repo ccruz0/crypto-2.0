@@ -84,6 +84,8 @@ from app.jarvis.execution.schemas import (
     JarvisInvestigationListResponse,
     JarvisInvestigationPresetsResponse,
     JarvisInvestigationRunRequest,
+    JarvisFixTemplateDetailResponse,
+    JarvisFixTemplateListResponse,
     JarvisProposalEligibilityResponse,
     JarvisProposalTaskDetail,
     JarvisPatchRevisionRequest,
@@ -347,6 +349,30 @@ def jarvis_investigation_detail(investigation_id: str) -> dict[str, Any]:
 
 
 # --- Phase 4B: Patch proposal eligibility (read-only foundation) ---
+
+
+@router.get(
+    "/api/jarvis/templates",
+    response_model=JarvisFixTemplateListResponse,
+)
+def jarvis_list_fix_templates() -> dict[str, Any]:
+    from app.jarvis.proposals.fix_templates import list_fix_template_summaries
+
+    templates = list_fix_template_summaries()
+    return {"templates": templates, "count": len(templates)}
+
+
+@router.get(
+    "/api/jarvis/templates/{template_id}",
+    response_model=JarvisFixTemplateDetailResponse,
+)
+def jarvis_get_fix_template(template_id: str) -> dict[str, Any]:
+    from app.jarvis.proposals.fix_templates import get_fix_template_detail
+
+    detail = get_fix_template_detail(template_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    return detail
 
 
 @router.get(
