@@ -75,8 +75,12 @@ from app.jarvis.mvp.schemas import (
     JarvisTaskRunDetail,
 )
 from app.jarvis.execution.schemas import (
+    JarvisApprovalQueueResponse,
+    JarvisChangeTaskDetail,
+    JarvisChangeTaskSubmitRequest,
     JarvisExecutionTaskDetail,
     JarvisExecutionTaskListResponse,
+    JarvisPatchRevisionRequest,
     JarvisTaskApprovalRequest,
     JarvisTaskSubmitRequest,
     JarvisTaskSubmitResponse,
@@ -240,6 +244,113 @@ def jarvis_execution_reject(task_id: str, body: JarvisTaskApprovalRequest) -> di
         raise HTTPException(status_code=404, detail="task not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# --- Phase 4: Change workflow (patch generation + review + approval, no application) ---
+
+
+@router.post("/api/jarvis/tasks/change/submit", response_model=JarvisChangeTaskDetail)
+def jarvis_change_submit(body: JarvisChangeTaskSubmitRequest) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.change_service import submit_change_task
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return submit_change_task(
+            objective=body.objective,
+            priority=body.priority,
+            target_files=body.target_files or None,
+            dry_run=body.dry_run,
+            run_tests=body.run_tests,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("jarvis.change.submit_failed err=%s", exc)
+        raise HTTPException(status_code=500, detail=f"jarvis_change_submit_failed: {exc}") from exc
+
+
+@router.get("/api/jarvis/tasks/change/{task_id}", response_model=JarvisChangeTaskDetail)
+def jarvis_change_task_detail(task_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.change_service import get_change_task_detail
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return get_change_task_detail(task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+
+
+@router.get("/api/jarvis/approval-queue", response_model=JarvisApprovalQueueResponse)
+def jarvis_approval_queue(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    from app.jarvis.execution.change_service import list_approval_queue
+
+    return {"items": list_approval_queue(limit=limit)}
+
+
+@router.post("/api/jarvis/tasks/change/{task_id}/approve", response_model=JarvisChangeTaskDetail)
+def jarvis_change_approve(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.change_service import approve_change_task
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return approve_change_task(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/api/jarvis/tasks/change/{task_id}/reject", response_model=JarvisChangeTaskDetail)
+def jarvis_change_reject(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.change_service import reject_change_task
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return reject_change_task(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/api/jarvis/tasks/change/{task_id}/patch", response_model=JarvisChangeTaskDetail)
+def jarvis_change_patch_revision(task_id: str, body: JarvisPatchRevisionRequest) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.change_service import update_change_patch
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return update_change_patch(task_id, notes=body.notes, objective=body.objective)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+
+
+@router.get("/api/jarvis/repository/graph")
+def jarvis_repository_graph(refresh: bool = Query(default=False)) -> dict[str, Any]:
+    from app.jarvis.repository.persistence import get_repository_metadata, refresh_repository_metadata
+
+    if refresh:
+        return refresh_repository_metadata(incremental=True)
+    meta = get_repository_metadata()
+    if meta is None:
+        return refresh_repository_metadata(incremental=False)
+    return meta
+
+
+@router.get("/api/jarvis/github/readonly")
+def jarvis_github_readonly() -> dict[str, Any]:
+    from app.jarvis.github.integration import github_readonly_summary
+
+    return github_readonly_summary()
 
 
 @router.get("/api/jarvis/tasks/{task_id}", response_model=JarvisTaskRunDetail)
