@@ -10,7 +10,8 @@ import {
   getOpenOrders,
   getOrderHistory,
   DashboardState, 
-  OpenOrder 
+  OpenOrder,
+  OpenOrdersSyncMeta,
 } from '@/app/api';
 import { logger } from '@/utils/logger';
 
@@ -19,6 +20,9 @@ export interface UseOrdersReturn {
   openOrdersLoading: boolean;
   openOrdersError: string | null;
   openOrdersLastUpdate: Date | null;
+  openOrdersSyncStatus: OpenOrdersSyncMeta['sync_status'] | null;
+  openOrdersDataVerified: boolean | null;
+  openOrdersSyncError: string | null;
   executedOrders: OpenOrder[];
   executedOrdersLoading: boolean;
   executedOrdersError: string | null;
@@ -34,6 +38,9 @@ export function useOrders(): UseOrdersReturn {
   const [openOrdersLoading, setOpenOrdersLoading] = useState(true);
   const [openOrdersError, setOpenOrdersError] = useState<string | null>(null);
   const [openOrdersLastUpdate, setOpenOrdersLastUpdate] = useState<Date | null>(null);
+  const [openOrdersSyncStatus, setOpenOrdersSyncStatus] = useState<OpenOrdersSyncMeta['sync_status'] | null>(null);
+  const [openOrdersDataVerified, setOpenOrdersDataVerified] = useState<boolean | null>(null);
+  const [openOrdersSyncError, setOpenOrdersSyncError] = useState<string | null>(null);
   const [executedOrders, setExecutedOrders] = useState<OpenOrder[]>([]);
   const [executedOrdersLoading, setExecutedOrdersLoading] = useState(true);
   const [executedOrdersError, setExecutedOrdersError] = useState<string | null>(null);
@@ -45,7 +52,20 @@ export function useOrders(): UseOrdersReturn {
       setOpenOrdersLoading(true);
     }
     setOpenOrdersError(null);
-    
+
+    const applySyncMeta = (payload: Partial<OpenOrdersSyncMeta>) => {
+      if (payload.sync_status !== undefined) setOpenOrdersSyncStatus(payload.sync_status ?? null);
+      if (payload.data_verified !== undefined) setOpenOrdersDataVerified(payload.data_verified ?? null);
+      if (payload.data_verified === false) {
+        setOpenOrdersSyncError(
+          payload.error_message ||
+            'Open orders could not be verified. Crypto.com authentication failed. Showing cached or unavailable data.'
+        );
+      } else if (payload.data_verified === true) {
+        setOpenOrdersSyncError(null);
+      }
+    };
+
     const updateOrdersFromState = (dashboardState: DashboardState, source: string): boolean => {
       if (dashboardState.open_orders && dashboardState.open_orders.length > 0) {
         const mappedOrders: OpenOrder[] = dashboardState.open_orders.map(order => {
@@ -94,6 +114,10 @@ export function useOrders(): UseOrdersReturn {
         setOpenOrders(mappedOrders);
         setOpenOrdersLastUpdate(new Date());
         setOpenOrdersError(null);
+        applySyncMeta({
+          sync_status: dashboardState.open_orders_sync_status,
+          data_verified: dashboardState.open_orders_data_verified,
+        });
         return true;
       }
       return false;
@@ -141,6 +165,7 @@ export function useOrders(): UseOrdersReturn {
                 setOpenOrders(response.orders || []);
                 setOpenOrdersLastUpdate(new Date());
                 setOpenOrdersError(null);
+                applySyncMeta(response);
               } catch (fallbackErr) {
                 logger.logHandledError(
                   'fetchOpenOrders:fallback',
@@ -167,6 +192,7 @@ export function useOrders(): UseOrdersReturn {
                 setOpenOrders(response.orders || []);
                 setOpenOrdersLastUpdate(new Date());
                 setOpenOrdersError(null);
+                applySyncMeta(response);
               } catch (fallbackErr) {
                 logger.logHandledError(
                   'fetchOpenOrders:fallback',
@@ -263,6 +289,9 @@ export function useOrders(): UseOrdersReturn {
     openOrdersLoading,
     openOrdersError,
     openOrdersLastUpdate,
+    openOrdersSyncStatus,
+    openOrdersDataVerified,
+    openOrdersSyncError,
     executedOrders,
     executedOrdersLoading,
     executedOrdersError,

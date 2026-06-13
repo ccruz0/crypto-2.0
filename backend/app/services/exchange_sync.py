@@ -436,15 +436,48 @@ class ExchangeSyncService:
     
     def sync_open_orders(self, db: Session):
         """Sync open orders from Crypto.com"""
+        from app.services.crypto_com_sync_errors import (
+            extract_sync_failure,
+            is_sync_failure_response,
+        )
+        from app.services.open_orders_sync_status import (
+            record_open_orders_sync_failure,
+            record_open_orders_sync_success,
+        )
+
         try:
             response = trade_client.get_open_orders()
             # Call get_trigger_orders with default parameters (page=0, page_size=200)
             trigger_response = trade_client.get_trigger_orders(page=0, page_size=200)
-            
-            # Check if API calls failed before processing
+
+            if is_sync_failure_response(response):
+                failure = extract_sync_failure(response)
+                record_open_orders_sync_failure(**failure)
+                logger.warning(
+                    "Open orders sync failed (%s): %s — preserving existing cache",
+                    failure.get("sync_status"),
+                    failure.get("error_message"),
+                )
+                return
+
+            if is_sync_failure_response(trigger_response):
+                failure = extract_sync_failure(trigger_response)
+                record_open_orders_sync_failure(**failure)
+                logger.warning(
+                    "Trigger orders sync failed (%s): %s — preserving existing cache",
+                    failure.get("sync_status"),
+                    failure.get("error_message"),
+                )
+                return
+
+            # Check if API calls failed before processing (legacy guard)
             api_failed = (not response or "data" not in response)
-            
+
             if api_failed:
+                record_open_orders_sync_failure(
+                    sync_status="api_error",
+                    error_message="No open orders data received from Crypto.com",
+                )
                 logger.warning("No open orders data received from Crypto.com - preserving existing cache")
                 # Don't update cache with empty data - preserve last valid cached data
                 return
@@ -456,6 +489,10 @@ class ExchangeSyncService:
             # Only update cache if we have valid data
             if unified_orders or orders or trigger_orders:
                 update_open_orders_cache(unified_orders)
+            elif response.get("data_verified") is True or trigger_response.get("data_verified") is True:
+                # Verified empty exchange snapshot — safe to store empty cache
+                update_open_orders_cache(unified_orders)
+            record_open_orders_sync_success(order_count=len(unified_orders))
             
             # Mark orders not in response as cancelled/closed
             # Include both regular orders and trigger orders in the check

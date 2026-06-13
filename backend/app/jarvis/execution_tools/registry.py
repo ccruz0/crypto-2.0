@@ -66,6 +66,9 @@ class ToolRegistry:
 
 def build_default_registry() -> ToolRegistry:
     from app.jarvis.execution_tools.diagnose_open_orders import diagnose_open_orders
+    from app.jarvis.execution_tools.reconcile_crypto_com_open_orders import (
+        reconcile_crypto_com_open_orders,
+    )
     from app.jarvis.execution_tools.inspect_container import inspect_container
     from app.jarvis.execution_tools.inspect_costs import inspect_costs
     from app.jarvis.execution_tools.inspect_health import inspect_health
@@ -82,6 +85,10 @@ def build_default_registry() -> ToolRegistry:
         (search_logs, "Search backend/container logs by keyword (read-only)"),
         (query_database, "Run approved SELECT-only database diagnostics (read-only)"),
         (diagnose_open_orders, "End-to-end open orders pipeline diagnostic (read-only)"),
+        (
+            reconcile_crypto_com_open_orders,
+            "Three-way Crypto.com open orders reconciliation: exchange vs DB vs dashboard (read-only)",
+        ),
         (search_repository, "Search repository for orders/positions/API code (read-only)"),
         (inspect_container, "Inspect running container status (read-only)"),
         (inspect_repository, "Inspect repository layout and git status (read-only)"),

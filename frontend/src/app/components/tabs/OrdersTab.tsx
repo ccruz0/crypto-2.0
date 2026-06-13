@@ -44,6 +44,8 @@ export default function OrdersTab({
     openOrders,
     openOrdersLoading,
     openOrdersError,
+    openOrdersSyncError,
+    openOrdersDataVerified,
     openOrdersLastUpdate,
     fetchOpenOrders,
   } = useOrders();
@@ -186,6 +188,13 @@ export default function OrdersTab({
 
   return (
     <div>
+
+      {(openOrdersSyncError || (openOrdersDataVerified === false && !openOrdersLoading)) && (
+        <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {openOrdersSyncError ||
+            'Open orders could not be verified. Crypto.com authentication failed. Showing cached or unavailable data.'}
+        </div>
+      )}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-4">
         <h2 className="text-xl font-semibold">Open Orders - Crypto.com</h2>
         <div className="flex flex-wrap items-center gap-2 md:gap-4">

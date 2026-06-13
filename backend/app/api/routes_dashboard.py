@@ -988,7 +988,17 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         open_orders_summary = {
             "orders": open_orders_list,
             "last_updated": last_updated_iso,
+            **{k: cached_open_orders.get(k) for k in (
+                "source",
+                "sync_status",
+                "error_code",
+                "error_message",
+                "data_verified",
+            ) if cached_open_orders.get(k) is not None},
         }
+        if "data_verified" not in open_orders_summary:
+            from app.services.open_orders_sync_status import sync_status_public_dict
+            open_orders_summary.update(sync_status_public_dict())
         
         # Calculate portfolio order metrics
         metrics_start = time.time()
@@ -1241,6 +1251,8 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
             "open_orders": open_orders_list,
             "open_position_counts": open_position_counts,
             "open_orders_summary": open_orders_summary,
+            "open_orders_sync_status": open_orders_summary.get("sync_status"),
+            "open_orders_data_verified": open_orders_summary.get("data_verified"),
             "last_sync": last_updated,
             "portfolio_last_updated": last_updated,
             "portfolio": {
@@ -1391,9 +1403,14 @@ def get_open_orders_summary():
         last_updated_iso = last_updated.isoformat()
     elif last_updated is not None:
         last_updated_iso = str(last_updated)
+    from app.services.open_orders_sync_status import sync_status_public_dict
+
+    sync_meta = sync_status_public_dict()
     return {
         "orders": orders,
         "last_updated": last_updated_iso,
+        "count": len(orders),
+        **sync_meta,
     }
 
 

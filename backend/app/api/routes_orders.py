@@ -1155,6 +1155,10 @@ def get_open_orders(
         
         if elapsed_time > 0.3:
             logger.warning(f"⚠️ Open orders fetch took {elapsed_time:.3f}s - this is slow! Should be < 0.2 seconds.")
+
+        from app.services.open_orders_sync_status import sync_status_public_dict
+
+        sync_meta = sync_status_public_dict()
         
         return {
             "ok": True,
@@ -1163,7 +1167,8 @@ def get_open_orders(
             "count": len(orders_list),
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "sorted_by": "creation_time_desc",
-            "source": "crypto_com_api"  # Indicate orders come from Crypto.com API
+            "source": "crypto_com_api",
+            **sync_meta,
         }
     except Exception as e:
         logger.exception("Error getting open orders")

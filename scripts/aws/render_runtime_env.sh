@@ -46,6 +46,8 @@ SSM_NOTION_TASK_DB="/automated-trading-platform/prod/notion/task_db"
 SSM_NOTION_API_KEY_LAB="/automated-trading-platform/lab/notion/api_key"
 SSM_ATP_CONTROL_CHAT_ID="/automated-trading-platform/prod/telegram/atp_control_chat_id"
 SSM_ATP_CONTROL_BOT_TOKEN="/automated-trading-platform/prod/telegram/atp_control_bot_token"
+SSM_EXCHANGE_API_KEY="/automated-trading-platform/prod/exchange_custom/api_key"
+SSM_EXCHANGE_API_SECRET="/automated-trading-platform/prod/exchange_custom/api_secret"
 NOTION_TASK_DB_DEFAULT="eb90cfa139f94724a8b476315908510a"
 
 SOURCE="none"
@@ -164,6 +166,35 @@ if (( ${#missing[@]} > 0 )); then
   exit 1
 fi
 
+# Preserve exchange credentials before overwrite (never print values)
+PRESERVE_EXCHANGE_API_KEY=""
+PRESERVE_EXCHANGE_API_SECRET=""
+if [[ -f "$RUNTIME_ENV" ]]; then
+  PRESERVE_EXCHANGE_API_KEY="$(grep -E '^EXCHANGE_CUSTOM_API_KEY=' "$RUNTIME_ENV" 2>/dev/null | cut -d= -f2- || true)"
+  PRESERVE_EXCHANGE_API_SECRET="$(grep -E '^EXCHANGE_CUSTOM_API_SECRET=' "$RUNTIME_ENV" 2>/dev/null | cut -d= -f2- || true)"
+fi
+EXCHANGE_API_KEY_VAL=""
+EXCHANGE_API_SECRET_VAL=""
+EXCHANGE_CREDS_SOURCE="none"
+if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
+  EXCHANGE_API_KEY_VAL="$(fetch_ssm "$SSM_EXCHANGE_API_KEY" || true)"
+  EXCHANGE_API_SECRET_VAL="$(fetch_ssm "$SSM_EXCHANGE_API_SECRET" || true)"
+  [[ -n "$EXCHANGE_API_KEY_VAL" && -n "$EXCHANGE_API_SECRET_VAL" ]] && EXCHANGE_CREDS_SOURCE="ssm"
+fi
+if [[ -z "$EXCHANGE_API_KEY_VAL" || -z "$EXCHANGE_API_SECRET_VAL" ]]; then
+  if [[ -n "$PRESERVE_EXCHANGE_API_KEY" && -n "$PRESERVE_EXCHANGE_API_SECRET" ]]; then
+    EXCHANGE_API_KEY_VAL="$PRESERVE_EXCHANGE_API_KEY"
+    EXCHANGE_API_SECRET_VAL="$PRESERVE_EXCHANGE_API_SECRET"
+    EXCHANGE_CREDS_SOURCE="preserved"
+  elif [[ -f "$ROOT_DIR/.env.aws" ]]; then
+    ( set +u; set -a; source "$ROOT_DIR/.env.aws" 2>/dev/null; set +a; set -u
+      EXCHANGE_API_KEY_VAL="${EXCHANGE_CUSTOM_API_KEY:-}"
+      EXCHANGE_API_SECRET_VAL="${EXCHANGE_CUSTOM_API_SECRET:-}"
+    )
+    [[ -n "$EXCHANGE_API_KEY_VAL" && -n "$EXCHANGE_API_SECRET_VAL" ]] && EXCHANGE_CREDS_SOURCE="env.aws"
+  fi
+fi
+
 # ATP_API_KEY: from SSM/fallback or generate if missing (for x-api-key header)
 if [[ -z "$ATP_API_KEY" ]]; then
   if command -v python3 >/dev/null 2>&1; then
@@ -278,5 +309,13 @@ else
   fi
 fi
 
+# Crypto.com exchange credentials (SSM > preserved runtime.env > .env.aws). Never echo values.
+if [[ -n "$EXCHANGE_API_KEY_VAL" && -n "$EXCHANGE_API_SECRET_VAL" ]]; then
+  grep -q '^EXCHANGE_CUSTOM_API_KEY=' "$RUNTIME_ENV" 2>/dev/null && sed -i '/^EXCHANGE_CUSTOM_API_KEY=/d' "$RUNTIME_ENV"
+  grep -q '^EXCHANGE_CUSTOM_API_SECRET=' "$RUNTIME_ENV" 2>/dev/null && sed -i '/^EXCHANGE_CUSTOM_API_SECRET=/d' "$RUNTIME_ENV"
+  printf "EXCHANGE_CUSTOM_API_KEY=%s\n" "$EXCHANGE_API_KEY_VAL" >> "$RUNTIME_ENV"
+  printf "EXCHANGE_CUSTOM_API_SECRET=%s\n" "$EXCHANGE_API_SECRET_VAL" >> "$RUNTIME_ENV"
+fi
+
 echo "Rendered (source=$SOURCE)"
-echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ "$HAS_GITHUB_PAT" == "YES" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL GITHUB_AUTH_MODE=$GITHUB_AUTH_MODE ALLOW_LEGACY_GITHUB_PAT=$([[ "$GITHUB_AUTH_MODE" == "legacy_transition" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO)"
+echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ "$HAS_GITHUB_PAT" == "YES" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL GITHUB_AUTH_MODE=$GITHUB_AUTH_MODE ALLOW_LEGACY_GITHUB_PAT=$([[ "$GITHUB_AUTH_MODE" == "legacy_transition" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM=$([[ -n "$EXCHANGE_API_KEY_VAL" && -n "$EXCHANGE_API_SECRET_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM_SOURCE=$EXCHANGE_CREDS_SOURCE"

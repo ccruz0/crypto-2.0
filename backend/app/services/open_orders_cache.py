@@ -28,19 +28,35 @@ def get_unified_open_orders() -> Tuple[List[UnifiedOpenOrder], Optional[datetime
 
 def get_open_orders_cache() -> Dict[str, Optional[object]]:
     """Return a raw cache dict for consumers that expect the legacy shape."""
+    from app.services.open_orders_sync_status import sync_status_public_dict
+
     orders, last_updated = get_unified_open_orders()
+    sync_meta = sync_status_public_dict()
     return {
         "orders": orders,
         "last_updated": last_updated,
+        "source": sync_meta.get("source"),
+        "sync_status": sync_meta.get("sync_status"),
+        "error_code": sync_meta.get("error_code"),
+        "error_message": sync_meta.get("error_message"),
+        "data_verified": sync_meta.get("data_verified"),
     }
 
 
 def get_unified_open_orders_summary() -> dict:
     """Return a serializable snapshot used by API responses."""
+    from app.services.open_orders_sync_status import sync_status_public_dict
+
     orders, last_updated = get_unified_open_orders()
+    sync_meta = sync_status_public_dict()
     return {
         "orders": [order.to_public_dict() for order in orders],
         "last_updated": last_updated.isoformat() if last_updated else None,
+        "source": sync_meta.get("source"),
+        "sync_status": sync_meta.get("sync_status"),
+        "error_code": sync_meta.get("error_code"),
+        "error_message": sync_meta.get("error_message"),
+        "data_verified": sync_meta.get("data_verified"),
     }
 
 

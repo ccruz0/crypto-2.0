@@ -203,6 +203,15 @@ export interface DashboardOrder {
   updated_at?: string | null;
 }
 
+export interface OpenOrdersSyncMeta {
+  source?: string;
+  last_updated?: string | null;
+  sync_status?: 'ok' | 'failed_auth' | 'missing_credentials' | 'api_error' | 'stale' | 'skipped';
+  error_code?: number | null;
+  error_message?: string | null;
+  data_verified?: boolean;
+}
+
 export interface DashboardState {
   source?: string;  // "crypto.com" when using direct API values
   total_usd_value?: number;  // Total USD value from Crypto.com
@@ -211,7 +220,9 @@ export interface DashboardState {
   slow_signals: DashboardSignal[];
   open_orders: DashboardOrder[];
   open_position_counts?: { [symbol: string]: number };
-  open_orders_summary?: UnifiedOpenOrder[];  // Open orders summary
+  open_orders_summary?: UnifiedOpenOrder[] | OpenOrdersSummary;
+  open_orders_sync_status?: OpenOrdersSyncMeta['sync_status'];
+  open_orders_data_verified?: boolean;
   last_sync: string | null;
   portfolio?: {
     assets?: PortfolioAsset[];
@@ -675,10 +686,19 @@ export async function getAccountBalance(): Promise<AccountSummary[]> {
 }
 
 // Orders
-export async function getOpenOrders(): Promise<{ orders: OpenOrder[], count: number }> {
+export async function getOpenOrders(): Promise<{ orders: OpenOrder[]; count: number } & OpenOrdersSyncMeta> {
   try {
-    const data = await fetchAPI<{ orders?: OpenOrder[]; count?: number }>('/orders/open');
-    return { orders: data.orders || [], count: data.count || 0 };
+    const data = await fetchAPI<{ orders?: OpenOrder[]; count?: number } & OpenOrdersSyncMeta>('/orders/open');
+    return {
+      orders: data.orders || [],
+      count: data.count || 0,
+      source: data.source,
+      last_updated: data.last_updated ?? null,
+      sync_status: data.sync_status,
+      error_code: data.error_code,
+      error_message: data.error_message,
+      data_verified: data.data_verified,
+    };
   } catch (error) {
     logRequestIssue(
       'getOpenOrders',
@@ -1562,7 +1582,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
 }
 
 // Open Orders Summary API
-export interface OpenOrdersSummary {
+export interface OpenOrdersSummary extends OpenOrdersSyncMeta {
   orders: UnifiedOpenOrder[];
   last_updated: string | null;
   count: number;

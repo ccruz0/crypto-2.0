@@ -28,6 +28,11 @@ from app.core.failover_config import (
     CRYPTO_REST_BASE, CRYPTO_TIMEOUT, CRYPTO_RETRIES,
     TRADEBOT_BASE, FAILOVER_ENABLED
 )
+from app.services.crypto_com_sync_errors import (
+    build_private_api_error,
+    build_private_api_success,
+    parse_http_auth_error,
+)
 from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
 
 logger = logging.getLogger(__name__)
@@ -1722,17 +1727,17 @@ class CryptoComTradeClient:
                             data = fr.json()
                             orders = data.get("orders", [])
                             logger.info(f"Failover successful: retrieved {len(orders)} orders from TRADE_BOT")
-                            return {"data": orders if isinstance(orders, list) else []}
+                            return build_private_api_success(orders if isinstance(orders, list) else [])
                         else:
                             logger.error(f"TRADE_BOT failover failed with status {fr.status_code}")
                     logger.error("Failover not available or enabled")
-                    return {"data": []}
+                    return parse_http_auth_error(result if isinstance(result, dict) else {"code": 40101, "message": "Authentication failure"})
                 
                 # Handle successful proxy response
                 if isinstance(result, dict) and "result" in result and "data" in result["result"]:
                     data = result["result"]["data"]
                     logger.info(f"Successfully retrieved {len(data) if isinstance(data, list) else 0} open orders via proxy")
-                    return {"data": data}
+                    return build_private_api_success(data if isinstance(data, list) else [])
                 else:
                     logger.warning(f"Unexpected proxy response: {result} - attempting failover")
                     if _should_failover(500):
@@ -1741,8 +1746,11 @@ class CryptoComTradeClient:
                             data = fr.json()
                             orders = data.get("orders", [])
                             logger.info(f"Failover successful: retrieved {len(orders)} orders from TRADE_BOT")
-                            return {"data": orders if isinstance(orders, list) else []}
-                    return {"data": []}
+                            return build_private_api_success(orders if isinstance(orders, list) else [])
+                    return build_private_api_error(
+                        sync_status="api_error",
+                        error_message="Unexpected proxy response for open orders",
+                    )
             except requests_exceptions.RequestException as e:
                 logger.warning(f"Proxy error: {e} - attempting failover to TRADE_BOT")
                 if _should_failover(None, e):
@@ -1751,20 +1759,21 @@ class CryptoComTradeClient:
                         data = fr.json()
                         orders = data.get("orders", [])
                         logger.info(f"Failover successful: retrieved {len(orders)} orders from TRADE_BOT")
-                        return {"data": orders if isinstance(orders, list) else []}
+                        return build_private_api_success(orders if isinstance(orders, list) else [])
                 logger.error("Failover not available or enabled")
-                return {"data": []}
+                return build_private_api_error(sync_status="api_error", error_message=str(e))
         
         # Check if API credentials are configured
         if not self.api_key or not self.api_secret:
             logger.warning("API credentials not configured. Cannot fetch open orders.")
-            # IMPORTANT: return without 'data' so callers treat this as API failure
-            # and preserve existing cache/state (avoid marking everything CANCELLED).
-            return {"error": "API credentials not configured"}
+            return build_private_api_error(
+                sync_status="missing_credentials",
+                error_message="API credentials not configured",
+            )
         
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
-            return {"data": [], **payload}
+            return {**payload, "sync_status": "skipped", "data_verified": False}
         logger.info(f"Live: Calling {method}")
         
         try:
@@ -1779,7 +1788,7 @@ class CryptoComTradeClient:
                 error_msg = error_data.get("message", "")
                 
                 logger.error(f"Authentication failed: {error_code} - {error_msg}")
-                return {"error": f"Authentication failed: {error_code} - {error_msg}"}
+                return parse_http_auth_error(error_data)
             
             response.raise_for_status()
             result = response.json()
@@ -1789,14 +1798,14 @@ class CryptoComTradeClient:
             
             # Crypto.com returns {"result": {"data": [...]}}
             data = result.get("result", {}).get("data", [])
-            return {"data": data}
+            return build_private_api_success(data if isinstance(data, list) else [])
             
         except requests_exceptions.RequestException as e:
             logger.error(f"Network error getting open orders: {e}")
-            return {"error": str(e)}
+            return build_private_api_error(sync_status="api_error", error_message=str(e))
         except Exception as e:
             logger.error(f"Error getting open orders: {e}")
-            return {"error": str(e)}
+            return build_private_api_error(sync_status="api_error", error_message=str(e))
 
     TRIGGER_ORDER_TYPES = ("STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT")
 
@@ -1808,10 +1817,13 @@ class CryptoComTradeClient:
         method = "private/advanced/get-open-orders"
         params = {}  # Omit instrument_name for 'all' per Exchange API docs
         if not self.api_key or not self.api_secret:
-            return {"data": []}
+            return build_private_api_error(
+                sync_status="missing_credentials",
+                error_message="API credentials not configured",
+            )
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
-            return {"data": []}
+            return {**payload, "sync_status": "skipped", "data_verified": False}
         try:
             url = f"{self.base_url}/{method}"
             response = http_post(
@@ -1821,24 +1833,36 @@ class CryptoComTradeClient:
                 timeout=10,
                 calling_module="crypto_com_trade.get_trigger_orders_advanced"
             )
+            if response.status_code == 401:
+                return parse_http_auth_error(response.json())
             if response.status_code != 200:
                 logger.warning(
                     "Advanced get-open-orders returned HTTP %s (body: %s)",
                     response.status_code,
                     (response.text or "")[:200],
                 )
-                return {"data": []}
+                return build_private_api_error(
+                    sync_status="api_error",
+                    error_message=f"Advanced get-open-orders HTTP {response.status_code}",
+                )
             result = response.json()
             if result.get("code") != 0:
+                code = result.get("code")
+                if code in (40101, 40103):
+                    return parse_http_auth_error(result)
                 logger.warning(
                     "Advanced get-open-orders code=%s message=%s",
                     result.get("code"),
                     result.get("message"),
                 )
-                return {"data": []}
+                return build_private_api_error(
+                    sync_status="api_error",
+                    error_message=str(result.get("message") or "Advanced get-open-orders failed"),
+                    error_code=code if isinstance(code, int) else None,
+                )
             data = result.get("result", {}).get("data", [])
             if not isinstance(data, list):
-                return {"data": []}
+                return build_private_api_success([])
             # Filter to trigger-type orders only (advanced returns LIMIT + STOP_LOSS/TAKE_PROFIT etc.)
             filtered = [
                 o for o in data
@@ -1857,16 +1881,16 @@ class CryptoComTradeClient:
                     len(data),
                     self.TRIGGER_ORDER_TYPES,
                 )
-            return {"data": filtered}
+            return build_private_api_success(filtered)
         except Exception as e:
             logger.debug("Advanced get-open-orders fallback failed: %s", e)
-            return {"data": []}
+            return build_private_api_error(sync_status="api_error", error_message=str(e))
 
     def get_trigger_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get trigger-based (TP/SL) open orders."""
         skip = require_aws_or_skip("get_trigger_orders")
         if skip:
-            return {"data": [], **skip}
+            return {**skip, "sync_status": "skipped", "data_verified": False}
         # NOTE: Reading trigger orders must NOT depend on LIVE_TRADING.
         self._refresh_runtime_flags()
 
@@ -1887,29 +1911,35 @@ class CryptoComTradeClient:
             try:
                 result = self._call_proxy(method, params)
                 if isinstance(result, dict) and result.get("skipped"):
-                    return {"data": [], **result}
+                    return {**result, "sync_status": "skipped", "data_verified": False}
                 if isinstance(result, dict) and result.get("code") in [40101, 40103]:
                     logger.warning(f"Proxy authentication error while fetching trigger orders: {result.get('message')}")
-                    return {"data": []}
+                    return parse_http_auth_error(result)
 
                 if isinstance(result, dict) and "result" in result and "data" in result["result"]:
                     data = result["result"]["data"]
                     logger.info(f"Successfully retrieved {len(data) if isinstance(data, list) else 0} trigger orders via proxy")
-                    return {"data": data if isinstance(data, list) else []}
+                    return build_private_api_success(data if isinstance(data, list) else [])
 
                 logger.warning(f"Unexpected proxy response for trigger orders: {result}")
-                return {"data": []}
+                return build_private_api_error(
+                    sync_status="api_error",
+                    error_message="Unexpected proxy response for trigger orders",
+                )
             except requests_exceptions.RequestException as exc:
                 logger.error(f"Proxy trigger orders error: {exc}")
-                return {"data": []}
+                return build_private_api_error(sync_status="api_error", error_message=str(exc))
 
         if not self.api_key or not self.api_secret:
-            logger.warning("API credentials not configured. Returning empty trigger orders.")
-            return {"data": []}
+            logger.warning("API credentials not configured.")
+            return build_private_api_error(
+                sync_status="missing_credentials",
+                error_message="API credentials not configured",
+            )
 
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
-            return {"data": [], **payload}
+            return {**payload, "sync_status": "skipped", "data_verified": False}
         try:
             url = f"{self.base_url}/{method}"
             response = http_post(
@@ -1925,32 +1955,32 @@ class CryptoComTradeClient:
                 logger.error(f"Authentication failed for trigger orders: {error_data}")
 
                 if error_code == 40101:
-                    # Legacy get-trigger-orders not allowed for this key; try Advanced Order API fallback
                     logger.info("get-trigger-orders returned 40101, trying private/advanced/get-open-orders fallback")
                     fallback = self._get_trigger_orders_via_advanced()
-                    fallback_data = fallback.get("data") or []
-                    if fallback_data:
+                    if fallback.get("data_verified") is True:
                         return fallback
-                    # Fallback also empty; treat as trigger orders not available
+                    if fallback.get("sync_status") == "failed_auth":
+                        return fallback
                     self._trigger_orders_available = False
                     logger.warning(
-                        "⚠️ Trigger orders not available (40101 on legacy endpoint, advanced fallback returned no trigger orders). "
-                        "SL/TP will use STOP_LIMIT/TAKE_PROFIT_LIMIT orders instead."
+                        "Trigger orders not available (40101 on legacy endpoint, advanced fallback returned no trigger orders)."
                     )
                     self._send_trigger_orders_unavailable_alert()
-                return {"data": []}
+                    return parse_http_auth_error(error_data)
+
+                return parse_http_auth_error(error_data)
 
             response.raise_for_status()
             result = response.json()
             data = result.get("result", {}).get("data", [])
             logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders from Crypto.com")
-            return {"data": data if isinstance(data, list) else []}
+            return build_private_api_success(data if isinstance(data, list) else [])
         except requests_exceptions.RequestException as exc:
             logger.error(f"Network error getting trigger orders: {exc}")
-            return {"data": []}
+            return build_private_api_error(sync_status="api_error", error_message=str(exc))
         except Exception as exc:
-                logger.error(f"Error getting trigger orders: {exc}")
-                return {"data": []}
+            logger.error(f"Error getting trigger orders: {exc}")
+            return build_private_api_error(sync_status="api_error", error_message=str(exc))
 
     def _check_trigger_orders_health(self) -> bool:
         """Check if trigger orders are available for this account (once per 24h cache)."""
@@ -3120,10 +3150,18 @@ class CryptoComTradeClient:
                 combined.append(mapped)
                 stats["trigger" if is_trigger else "normal"] += 1
 
+        from app.services.crypto_com_sync_errors import is_sync_failure_response
+
         page = 0
         page_size = 200
         while True:
             response = self.get_open_orders(page=page, page_size=page_size)
+            if is_sync_failure_response(response):
+                logger.error(
+                    "Unified open orders fetch stopped: open orders sync failure (%s)",
+                    response.get("sync_status"),
+                )
+                break
             raw_orders = _extract_orders(response)
             if not raw_orders:
                 break
@@ -3136,6 +3174,12 @@ class CryptoComTradeClient:
         try:
             while True:
                 response = self.get_trigger_orders(page=page, page_size=page_size)
+                if is_sync_failure_response(response):
+                    logger.error(
+                        "Unified open orders fetch stopped: trigger orders sync failure (%s)",
+                        response.get("sync_status"),
+                    )
+                    break
                 raw_orders = _extract_orders(response)
                 if not raw_orders:
                     break
