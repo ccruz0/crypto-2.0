@@ -65,6 +65,9 @@ _READ_ONLY_TOOL_ACTIONS: frozenset[str] = frozenset(
         "inspect_code",
         "summarize_architecture",
         "summarize_modules",
+        "run_investigation",
+        "reconcile_exchange",
+        "reconcile_crypto_com_open_orders",
     }
 )
 

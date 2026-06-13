@@ -159,3 +159,70 @@ class JarvisPhase5StatusResponse(BaseModel):
     changed_files: list[str] = Field(default_factory=list)
     test_results: dict[str, Any] = Field(default_factory=dict)
     forbidden_check: dict[str, Any] = Field(default_factory=dict)
+
+
+# --- Phase 4A: Production diagnostic investigations ---
+
+
+class JarvisInvestigationRunRequest(BaseModel):
+    objective: str = Field(..., min_length=1, description="Production diagnostic objective")
+
+
+class JarvisInvestigationRankedCause(BaseModel):
+    cause: str
+    score: float
+    supporting_evidence: list[str] = Field(default_factory=list)
+    explanation: str = ""
+
+
+class JarvisInvestigationEvidence(BaseModel):
+    source: str
+    reference: str
+    detail: str
+    confidence: str = "medium"
+
+
+class JarvisInvestigationSummary(BaseModel):
+    investigation_id: str
+    objective: str
+    status: str
+    root_cause: str | None = None
+    confidence: float = 0.0
+    evidence_count: int = 0
+    recommended_fix: str | None = None
+    category: str = "api"
+    created_at: str | None = None
+
+
+class JarvisInvestigationDetail(BaseModel):
+    investigation_id: str
+    objective: str
+    category: str = "api"
+    template_id: str = "generic"
+    status: str
+    summary: str = ""
+    evidence: list[JarvisInvestigationEvidence] = Field(default_factory=list)
+    evidence_count: int = 0
+    root_cause: str | None = None
+    confidence: float = 0.0
+    ranked_causes: list[JarvisInvestigationRankedCause] = Field(default_factory=list)
+    impact: str = ""
+    recommended_fix: str = ""
+    verification_steps: list[str] = Field(default_factory=list)
+    next_action: str = ""
+    created_at: str | None = None
+
+
+class JarvisInvestigationListResponse(BaseModel):
+    investigations: list[JarvisInvestigationSummary] = Field(default_factory=list)
+
+
+class JarvisInvestigationPreset(BaseModel):
+    id: str
+    label: str
+    objective: str
+
+
+class JarvisInvestigationPresetsResponse(BaseModel):
+    presets: list[JarvisInvestigationPreset] = Field(default_factory=list)
+

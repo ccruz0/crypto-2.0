@@ -80,6 +80,10 @@ from app.jarvis.execution.schemas import (
     JarvisChangeTaskSubmitRequest,
     JarvisExecutionTaskDetail,
     JarvisExecutionTaskListResponse,
+    JarvisInvestigationDetail,
+    JarvisInvestigationListResponse,
+    JarvisInvestigationPresetsResponse,
+    JarvisInvestigationRunRequest,
     JarvisPatchRevisionRequest,
     JarvisPhase5StatusResponse,
     JarvisTaskApprovalRequest,
@@ -261,6 +265,83 @@ def jarvis_execution_reject(task_id: str, body: JarvisTaskApprovalRequest) -> di
         raise HTTPException(status_code=404, detail="task not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# --- Phase 4A: Production diagnostic investigations (read-only) ---
+
+
+@router.get("/api/jarvis/investigations/presets", response_model=JarvisInvestigationPresetsResponse)
+def jarvis_investigation_presets() -> dict[str, Any]:
+    from app.jarvis.investigations.investigation_types import DIAGNOSTIC_PRESETS
+
+    return {"presets": list(DIAGNOSTIC_PRESETS)}
+
+
+@router.post("/api/jarvis/investigations/run", response_model=JarvisInvestigationDetail)
+def jarvis_investigation_run(body: JarvisInvestigationRunRequest) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.investigations.investigation_runner import run_investigation
+    from app.jarvis.mvp.config import jarvis_enabled
+
+    if not jarvis_enabled():
+        raise HTTPException(status_code=403, detail="Jarvis is disabled (JARVIS_ENABLED=false)")
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        report = run_investigation(body.objective)
+        return report.to_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("jarvis.investigation.run_failed err=%s", exc)
+        raise HTTPException(status_code=500, detail=f"jarvis_investigation_run_failed: {exc}") from exc
+
+
+@router.get("/api/jarvis/investigations", response_model=JarvisInvestigationListResponse)
+def jarvis_investigation_list(
+    limit: int = Query(default=20, ge=1, le=100),
+    q: str = Query(default="", description="Search prior incidents by keyword"),
+) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.investigations.investigation_runner import (
+        list_investigation_history,
+        search_prior_investigations,
+    )
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if q.strip():
+        rows = search_prior_investigations(q.strip(), limit=limit)
+        investigations = [
+            {
+                "investigation_id": r.get("investigation_id"),
+                "objective": r.get("objective"),
+                "status": r.get("status"),
+                "root_cause": r.get("root_cause"),
+                "confidence": r.get("confidence", 0),
+                "evidence_count": r.get("evidence_count", 0),
+                "recommended_fix": r.get("recommended_fix"),
+                "category": r.get("category"),
+                "created_at": r.get("created_at"),
+            }
+            for r in rows
+        ]
+    else:
+        investigations = list_investigation_history(limit=limit)
+    return {"investigations": investigations}
+
+
+@router.get("/api/jarvis/investigations/{investigation_id}", response_model=JarvisInvestigationDetail)
+def jarvis_investigation_detail(investigation_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.investigations.investigation_runner import get_investigation_detail
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_investigation_detail(investigation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="investigation not found")
+    return row
 
 
 # --- Phase 4: Change workflow (patch generation + review + approval, no application) ---

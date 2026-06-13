@@ -19,6 +19,8 @@ WORKDIR /app
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG BACKEND_URL=http://backend-aws:8002
+ENV BACKEND_URL=${BACKEND_URL}
 
 RUN npm run build
 

@@ -44,6 +44,33 @@ _TOPIC_QUERIES: dict[str, list[str]] = {
         "/orders/open",
         "get_open_orders",
     ],
+    "portfolio": [
+        "portfolio_cache",
+        "get_portfolio_summary",
+        "wallet_reconciliation",
+        "total_usd",
+    ],
+    "websocket": [
+        "websocket",
+        "WebSocket",
+        "price_feed",
+        "market-updater",
+    ],
+    "credentials": [
+        "credential_resolver",
+        "EXCHANGE_CUSTOM_API_KEY",
+        "runtime.env",
+    ],
+    "cache": [
+        "open_orders_cache",
+        "portfolio_cache",
+        "last_updated",
+    ],
+    "jarvis": [
+        "jarvis/execution",
+        "investigation_runner",
+        "JarvisControlTab",
+    ],
 }
 
 _TOPIC_EXPLANATIONS: dict[str, str] = {
@@ -53,6 +80,11 @@ _TOPIC_EXPLANATIONS: dict[str, str] = {
     "trade_history": "Historical trade/order endpoints and data models",
     "dashboard_tabs": "Dashboard UI tabs and state that render trading data",
     "api_routes": "FastAPI route modules exposing order and dashboard endpoints",
+    "portfolio": "Portfolio cache, equity calculation, and wallet reconciliation",
+    "websocket": "Websocket price feed and market updater modules",
+    "credentials": "Exchange API credential resolution and runtime.env loading",
+    "cache": "Dashboard cache layers for orders and portfolio data",
+    "jarvis": "Jarvis execution framework and control UI",
 }
 
 

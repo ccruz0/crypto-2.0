@@ -621,6 +621,73 @@ def ensure_jarvis_task_approvals_table(engine_to_use) -> bool:
         return False
 
 
+def ensure_jarvis_investigations_table(engine_to_use) -> bool:
+    """Persist Jarvis Phase 4A production diagnostic investigation reports."""
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_investigations_table: engine is None")
+        return False
+    tname = "jarvis_investigations"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Jarvis investigations)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                investigation_id TEXT NOT NULL UNIQUE,
+                                objective TEXT NOT NULL,
+                                category TEXT NOT NULL DEFAULT 'api',
+                                template_id TEXT NOT NULL DEFAULT 'generic',
+                                status TEXT NOT NULL DEFAULT 'running',
+                                summary TEXT,
+                                root_cause TEXT,
+                                confidence REAL DEFAULT 0,
+                                evidence_json TEXT,
+                                recommended_fix TEXT,
+                                impact TEXT,
+                                ranked_causes_json TEXT,
+                                verification_steps_json TEXT,
+                                next_action TEXT,
+                                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {tname} (
+                                id SERIAL PRIMARY KEY,
+                                investigation_id TEXT NOT NULL UNIQUE,
+                                objective TEXT NOT NULL,
+                                category TEXT NOT NULL DEFAULT 'api',
+                                template_id TEXT NOT NULL DEFAULT 'generic',
+                                status TEXT NOT NULL DEFAULT 'running',
+                                summary TEXT,
+                                root_cause TEXT,
+                                confidence NUMERIC DEFAULT 0,
+                                evidence_json JSONB,
+                                recommended_fix TEXT,
+                                impact TEXT,
+                                ranked_causes_json JSONB,
+                                verification_steps_json JSONB,
+                                next_action TEXT,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+            logger.info("[BOOT] Created table %s", tname)
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_jarvis_investigations_table failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_jarvis_control_center_tables(engine_to_use) -> bool:
     """
     Persist Jarvis Control Center sessions, tasks, approvals, and audit events.
@@ -1817,6 +1884,12 @@ def ensure_optional_columns(db_engine=None):
             logger.info("[BOOT] jarvis_task_approvals table OK")
     except Exception as approvals_err:
         logger.warning("Could not ensure jarvis_task_approvals table: %s", approvals_err)
+
+    try:
+        if ensure_jarvis_investigations_table(engine_to_use):
+            logger.info("[BOOT] jarvis_investigations table OK")
+    except Exception as investigations_err:
+        logger.warning("Could not ensure jarvis_investigations table: %s", investigations_err)
 
     try:
         if ensure_jarvis_control_center_tables(engine_to_use):

@@ -14,6 +14,21 @@ _STEP_COST_USD = 0.02
 # Ordered objective patterns -> plan template (deterministic).
 _PLAN_TEMPLATES: list[tuple[re.Pattern[str], list[tuple[str, str, str]]]] = [
     (
+        re.compile(
+            r"why\s+are\s+open\s+orders\s+empty|why\s+does\s+dashboard\s+differ|"
+            r"portfolio\s+value\s+incorrect|websocket\s+prices?\s+stale|"
+            r"jarvis\s+task\s+failing|deployment\s+unhealthy|exchange\s+auth\s+fail|"
+            r"dashboard\s+showing\s+stale|crypto\.?com\s+auth\s+fail",
+            re.IGNORECASE,
+        ),
+        [
+            ("step_1", "run_investigation", "diagnose_open_orders", "Collect multi-source production evidence"),
+            ("step_2", "reconcile_exchange", "reconcile_crypto_com_open_orders", "Reconcile exchange vs DB vs dashboard"),
+            ("step_3", "search_logs", "search_logs", "Search logs for sync and API errors"),
+            ("step_4", "search_repository", "search_repository", "Locate related code and configuration"),
+        ],
+    ),
+    (
         re.compile(r"count.*open\s+orders|how\s+many.*open\s+orders|number\s+of\s+open\s+orders", re.IGNORECASE),
         [
             ("step_1", "count_open_orders", "query_database", "Count open orders in exchange_orders table"),

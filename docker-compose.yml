@@ -521,12 +521,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        BACKEND_URL: http://backend-aws:8002
     env_file:
       - .env
       - .env.local
       - .env.aws
     environment:
       - NODE_ENV=production
+      - BACKEND_URL=http://backend-aws:8002
       # Use relative path for client-side - environment.ts will detect hostname at runtime
       # Empty string can cause issues, so use relative path which works in both SSR and browser
       - NEXT_PUBLIC_API_URL=/api

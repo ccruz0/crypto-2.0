@@ -2092,3 +2092,85 @@ export async function rejectJarvisTask(
     body: JSON.stringify(body),
   });
 }
+
+// --- Phase 4A: Production diagnostic investigations ---
+
+export interface JarvisInvestigationEvidence {
+  source: string;
+  reference: string;
+  detail: string;
+  confidence: string;
+}
+
+export interface JarvisInvestigationRankedCause {
+  cause: string;
+  score: number;
+  supporting_evidence?: string[];
+  explanation?: string;
+}
+
+export interface JarvisInvestigationSummary {
+  investigation_id: string;
+  objective: string;
+  status: string;
+  root_cause?: string | null;
+  confidence: number;
+  evidence_count: number;
+  recommended_fix?: string | null;
+  category?: string;
+  created_at?: string | null;
+}
+
+export interface JarvisInvestigationDetail {
+  investigation_id: string;
+  objective: string;
+  category: string;
+  template_id: string;
+  status: string;
+  summary: string;
+  evidence: JarvisInvestigationEvidence[];
+  evidence_count: number;
+  root_cause: string | null;
+  confidence: number;
+  ranked_causes: JarvisInvestigationRankedCause[];
+  impact: string;
+  recommended_fix: string;
+  verification_steps: string[];
+  next_action: string;
+  created_at?: string | null;
+}
+
+export interface JarvisInvestigationPreset {
+  id: string;
+  label: string;
+  objective: string;
+}
+
+export async function runJarvisInvestigation(objective: string): Promise<JarvisInvestigationDetail> {
+  return fetchAPI<JarvisInvestigationDetail>('/jarvis/investigations/run', {
+    method: 'POST',
+    body: JSON.stringify({ objective }),
+  });
+}
+
+export async function listJarvisInvestigations(
+  limit = 20,
+  q = '',
+): Promise<{ investigations: JarvisInvestigationSummary[] }> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (q) params.set('q', q);
+  return fetchAPI<{ investigations: JarvisInvestigationSummary[] }>(
+    `/jarvis/investigations?${params.toString()}`,
+  );
+}
+
+export async function getJarvisInvestigation(
+  investigationId: string,
+): Promise<JarvisInvestigationDetail> {
+  return fetchAPI<JarvisInvestigationDetail>(`/jarvis/investigations/${investigationId}`);
+}
+
+export async function listJarvisInvestigationPresets(): Promise<{ presets: JarvisInvestigationPreset[] }> {
+  return fetchAPI<{ presets: JarvisInvestigationPreset[] }>('/jarvis/investigations/presets');
+}
+
