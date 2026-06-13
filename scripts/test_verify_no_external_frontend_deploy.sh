@@ -58,7 +58,16 @@ for workflow in \
   }
 done
 
-echo "-- guard rejects synthetic forbidden reference"
+echo "-- deploy_session_manager SSM git pull must run as ubuntu"
+grep -q 'sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main' .github/workflows/deploy_session_manager.yml || {
+  echo "FAIL: deploy_session_manager.yml must fetch as ubuntu via sudo -u ubuntu git -C" >&2
+  exit 1
+}
+grep -q 'sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 pull --ff-only origin main' .github/workflows/deploy_session_manager.yml || {
+  echo "FAIL: deploy_session_manager.yml must pull as ubuntu via sudo -u ubuntu git -C" >&2
+  exit 1
+}
+
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 cp ".github/workflows/deploy_session_manager.yml" "$TMP"
