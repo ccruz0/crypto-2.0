@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -170,9 +172,46 @@ class TestValidationGates:
 
 
 class TestExecutionIntegration:
-    def test_why_open_orders_not_completed(self, exec_db, monkeypatch):
+    @patch("app.jarvis.execution_tools.query_database._execute_query")
+    @patch("app.jarvis.execution_tools.diagnose_open_orders._inspect_open_orders_cache")
+    def test_why_open_orders_completes_with_diagnostics(self, mock_cache, mock_exec, exec_db, monkeypatch):
         monkeypatch.setenv("JARVIS_ENABLED", "true")
+
+        def _exec_side(query, *, limit):
+            if "COUNT(*)" in query and "GROUP BY" not in query:
+                return {"query_executed": query, "row_count": 1, "rows": [{"count": 0}], "read_only": True, "checked_at": ""}
+            return {"query_executed": query, "row_count": 0, "rows": [], "read_only": True, "checked_at": ""}
+
+        mock_exec.side_effect = _exec_side
+        mock_cache.return_value = (0, {"source": "api", "reference": "cache", "detail": "empty", "confidence": "high"})
+
         detail = submit_execution_task(objective="Why are open orders empty?", dry_run=True)
+        assert detail["status"] == TaskLifecycleState.COMPLETED.value
+        validation = (detail.get("review") or {}).get("validation") or {}
+        assert validation.get("passed") is True
+
+    @patch("app.jarvis.execution_tools.query_database._execute_query")
+    def test_count_orders_completes_with_numeric(self, mock_exec, exec_db, monkeypatch):
+        monkeypatch.setenv("JARVIS_ENABLED", "true")
+        mock_exec.return_value = {
+            "query_executed": "SELECT COUNT(*) ...",
+            "row_count": 1,
+            "rows": [{"count": 12}],
+            "read_only": True,
+            "checked_at": "",
+        }
+        detail = submit_execution_task(
+            objective="Count how many open orders exist in the database",
+            dry_run=True,
+        )
+        assert detail["status"] == TaskLifecycleState.COMPLETED.value
+        validation = (detail.get("review") or {}).get("validation") or {}
+        assert validation.get("passed") is True
+        assert validation.get("numeric_result") == 12
+
+    def test_why_open_orders_not_completed_without_diagnostics(self, exec_db, monkeypatch):
+        monkeypatch.setenv("JARVIS_ENABLED", "true")
+        detail = submit_execution_task(objective="Why is websocket reconnect failing?", dry_run=True)
         assert detail["status"] in {
             TaskLifecycleState.FAILED.value,
             TaskLifecycleState.INSUFFICIENT_EVIDENCE.value,
@@ -180,8 +219,10 @@ class TestExecutionIntegration:
         validation = (detail.get("review") or {}).get("validation") or {}
         assert validation.get("passed") is False
 
-    def test_count_orders_not_completed(self, exec_db, monkeypatch):
+    @patch("app.jarvis.execution_tools.query_database._execute_query")
+    def test_count_orders_fails_without_db(self, mock_exec, exec_db, monkeypatch):
         monkeypatch.setenv("JARVIS_ENABLED", "true")
+        mock_exec.side_effect = Exception("no such table: exchange_orders")
         detail = submit_execution_task(
             objective="Count how many open orders exist in the database",
             dry_run=True,
@@ -222,16 +263,28 @@ class TestValidationApiSurface:
         app = FastAPI()
         app.include_router(jarvis_router)
         client = TestClient(app)
-        submit = client.post(
-            "/api/jarvis/tasks/submit",
-            json={"objective": "Why are open orders empty?", "dry_run": True},
-        )
+        with patch("app.jarvis.execution_tools.query_database._execute_query") as mock_exec, patch(
+            "app.jarvis.execution_tools.diagnose_open_orders._inspect_open_orders_cache"
+        ) as mock_cache:
+            mock_exec.side_effect = lambda query, *, limit: {
+                "query_executed": query,
+                "row_count": 1 if "COUNT(*)" in query and "GROUP BY" not in query else 0,
+                "rows": [{"count": 0}] if "COUNT(*)" in query and "GROUP BY" not in query else [],
+                "read_only": True,
+                "checked_at": "",
+            }
+            mock_cache.return_value = (0, {"source": "api", "reference": "cache", "detail": "empty", "confidence": "high"})
+            submit = client.post(
+                "/api/jarvis/tasks/submit",
+                json={"objective": "Why are open orders empty?", "dry_run": True},
+            )
         assert submit.status_code == 200
         task_id = submit.json()["task_id"]
         detail = client.get(f"/api/jarvis/tasks/execution/{task_id}")
         assert detail.status_code == 200
         body = detail.json()
-        assert body["review"]["validation"]["passed"] is False
+        assert body["review"]["validation"]["passed"] is True
+        assert body["review"]["validation"]["root_cause"]
 
     def test_agent_pipeline_includes_validation(self, exec_db, monkeypatch, tmp_path):
         monkeypatch.setenv("JARVIS_ENABLED", "true")
@@ -244,11 +297,20 @@ class TestValidationApiSurface:
         app = FastAPI()
         app.include_router(jarvis_router)
         client = TestClient(app)
-        submit = client.post(
-            "/api/jarvis/tasks/submit",
-            json={"objective": "Count how many open orders exist in the database", "dry_run": True},
-        )
+        with patch("app.jarvis.execution_tools.query_database._execute_query") as mock_exec:
+            mock_exec.return_value = {
+                "query_executed": "SELECT COUNT(*) ...",
+                "row_count": 1,
+                "rows": [{"count": 9}],
+                "read_only": True,
+                "checked_at": "",
+            }
+            submit = client.post(
+                "/api/jarvis/tasks/submit",
+                json={"objective": "Count how many open orders exist in the database", "dry_run": True},
+            )
         task_id = submit.json()["task_id"]
         pipeline = client.get(f"/api/jarvis/tasks/execution/{task_id}/agents")
         assert pipeline.status_code == 200
-        assert pipeline.json()["validation"]["passed"] is False
+        assert pipeline.json()["validation"]["passed"] is True
+        assert pipeline.json()["validation"]["numeric_result"] == 9

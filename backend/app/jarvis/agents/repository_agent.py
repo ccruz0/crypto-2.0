@@ -79,6 +79,14 @@ def investigate_objective(objective: str) -> dict[str, Any]:
         queries.extend(["deploy", "prod_frontend_deploy", "docker compose"])
     if "jarvis" in objective_l or "architecture" in objective_l:
         queries.extend(["jarvis", "routes_jarvis"])
+    if "open order" in objective_l or "open_orders" in objective_l:
+        queries.extend(["getOpenOrders", "/orders/open", "open_orders", "routes_orders"])
+    if "position" in objective_l:
+        queries.extend(["open_positions", "OpenPosition", "count_open_positions"])
+    if "trade" in objective_l or "history" in objective_l:
+        queries.extend(["order_history", "trade_history", "exchange_orders"])
+    if "count" in objective_l and "order" in objective_l:
+        queries.extend(["exchange_orders", "OrderStatusEnum"])
     if not queries:
         queries.append(objective.split()[0] if objective.split() else "jarvis")
 

@@ -14,6 +14,37 @@ _STEP_COST_USD = 0.02
 # Ordered objective patterns -> plan template (deterministic).
 _PLAN_TEMPLATES: list[tuple[re.Pattern[str], list[tuple[str, str, str]]]] = [
     (
+        re.compile(r"count.*open\s+orders|how\s+many.*open\s+orders|number\s+of\s+open\s+orders", re.IGNORECASE),
+        [
+            ("step_1", "count_open_orders", "query_database", "Count open orders in exchange_orders table"),
+            ("step_2", "search_repository", "search_repository", "Locate open orders API route and frontend hook"),
+        ],
+    ),
+    (
+        re.compile(r"diagnos.*open\s+orders|open\s+orders.*end[\s-]to[\s-]end", re.IGNORECASE),
+        [
+            ("step_1", "diagnose_open_orders", "diagnose_open_orders", "Run end-to-end open orders diagnostic"),
+            ("step_2", "search_repository", "search_repository", "Find open orders API and frontend code"),
+            ("step_3", "search_logs", "search_logs", "Search logs for order sync and API errors"),
+        ],
+    ),
+    (
+        re.compile(r"open\s+orders|why.*empty.*order|empty.*open\s+order", re.IGNORECASE),
+        [
+            ("step_1", "diagnose_open_orders", "diagnose_open_orders", "Diagnose open orders DB vs cache vs API"),
+            ("step_2", "search_repository", "search_repository", "Find open orders frontend and API mapping"),
+            ("step_3", "search_logs", "search_logs", "Search backend logs for open orders issues"),
+        ],
+    ),
+    (
+        re.compile(r"position|trade\s+history", re.IGNORECASE),
+        [
+            ("step_1", "query_positions", "query_database", "Inspect open positions from exchange_orders"),
+            ("step_2", "search_repository", "search_repository", "Find positions and trade history code"),
+            ("step_3", "search_logs", "search_logs", "Search logs for position/trade events"),
+        ],
+    ),
+    (
         re.compile(r"deploy|deployment|health", re.IGNORECASE),
         [
             ("step_1", "gather_logs", "read_logs", "Gather recent deployment/application logs"),

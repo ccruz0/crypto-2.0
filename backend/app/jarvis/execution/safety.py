@@ -46,6 +46,13 @@ _NEEDS_APPROVAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 _READ_ONLY_TOOL_ACTIONS: frozenset[str] = frozenset(
     {
         "read_logs",
+        "search_logs",
+        "query_database",
+        "diagnose_open_orders",
+        "search_repository",
+        "count_open_orders",
+        "count_orders",
+        "query_positions",
         "inspect_container",
         "inspect_repository",
         "inspect_runtime",
@@ -55,7 +62,6 @@ _READ_ONLY_TOOL_ACTIONS: frozenset[str] = frozenset(
         "analyze_failure",
         "identify_root_cause",
         "recommend_fix",
-        "search_repository",
         "inspect_code",
         "summarize_architecture",
         "summarize_modules",

@@ -92,6 +92,86 @@ def _tool_output(tool_results: list[dict[str, Any]], action: str) -> dict[str, A
     return {}
 
 
+def _tool_output_by_name(tool_results: list[dict[str, Any]], tool: str) -> dict[str, Any]:
+    for entry in tool_results:
+        if str(entry.get("tool") or "").lower() == tool.lower():
+            output = entry.get("output")
+            return output if isinstance(output, dict) else {}
+    return {}
+
+
+def _format_structured_evidence(items: list[Any]) -> str | None:
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source", "?")
+        reference = item.get("reference", "?")
+        detail = item.get("detail", "")
+        confidence = item.get("confidence", "medium")
+        if _is_present(detail):
+            parts.append(f"[{source}|{reference}|{confidence}] {detail[:300]}")
+    return "\n".join(parts) if parts else None
+
+
+def extract_structured_evidence(
+    *,
+    tool_results: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    """Collect structured evidence items from diagnostic tool outputs."""
+    items: list[dict[str, str]] = []
+    for entry in tool_results or []:
+        if not entry.get("ok", True):
+            continue
+        output = entry.get("output")
+        if not isinstance(output, dict):
+            continue
+        structured = output.get("evidence")
+        if isinstance(structured, list):
+            for row in structured:
+                if isinstance(row, dict) and _is_present(row.get("detail")):
+                    items.append(
+                        {
+                            "source": str(row.get("source", "unknown")),
+                            "reference": str(row.get("reference", "")),
+                            "detail": str(row.get("detail", ""))[:800],
+                            "confidence": str(row.get("confidence", "medium")),
+                        }
+                    )
+        elif output.get("query_executed"):
+            items.append(
+                {
+                    "source": "database",
+                    "reference": output.get("preset") or "query",
+                    "detail": f"{output.get('query_executed', '')} -> row_count={output.get('row_count', 0)}",
+                    "confidence": "high" if output.get("ok") else "low",
+                }
+            )
+        elif output.get("matches"):
+            for match in (output.get("matches") or [])[:3]:
+                if isinstance(match, dict):
+                    items.append(
+                        {
+                            "source": "repository",
+                            "reference": str(match.get("path", "")),
+                            "detail": str(match.get("text", ""))[:300],
+                            "confidence": str(match.get("confidence", "medium")),
+                        }
+                    )
+        elif output.get("match_count") is not None and output.get("matches") is not None:
+            for match in (output.get("matches") or [])[:3]:
+                if isinstance(match, dict):
+                    items.append(
+                        {
+                            "source": "logs",
+                            "reference": str(match.get("source", "")),
+                            "detail": str(match.get("message", ""))[:300],
+                            "confidence": "medium",
+                        }
+                    )
+    return items
+
+
 def extract_root_cause(
     *,
     tool_results: list[dict[str, Any]] | None = None,
@@ -104,6 +184,13 @@ def extract_root_cause(
         for key in ("root_cause", "probable_root_cause", "cause"):
             if _is_present(output.get(key)):
                 return str(output[key]).strip()
+
+    for tool_name in ("diagnose_open_orders",):
+        output = _tool_output_by_name(tool_results or [], tool_name)
+        if not output:
+            output = _tool_output(tool_results or [], tool_name)
+        if _is_present(output.get("root_cause")):
+            return str(output["root_cause"]).strip()
 
     repo = repo_investigation or {}
     for key in ("root_cause", "root_cause_summary", "probable_root_causes"):
@@ -128,7 +215,15 @@ def extract_evidence(
     artifacts: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Collect non-empty evidence from tool outputs and artifacts."""
-    parts: list[str] = []
+    structured = extract_structured_evidence(tool_results=tool_results)
+    if structured:
+        formatted = _format_structured_evidence(structured)
+        if formatted:
+            parts: list[str] = [formatted]
+        else:
+            parts = []
+    else:
+        parts = []
     for entry in tool_results or []:
         if not entry.get("ok", True):
             continue
@@ -253,6 +348,21 @@ def build_completion_report(
         conclusion_parts.append(f"Numeric result: {numeric_result}")
     if remediation_plan:
         conclusion_parts.append(f"Remediation: {remediation_plan}")
+
+    for tool_name in ("diagnose_open_orders",):
+        diag = _tool_output_by_name(tool_results or [], tool_name)
+        if not diag:
+            diag = _tool_output(tool_results or [], tool_name)
+        if _is_present(diag.get("conclusion")):
+            conclusion_parts.append(str(diag["conclusion"]).strip())
+        if _is_present(diag.get("next_action")) and task_type in ("investigation", "operational"):
+            next_action_override = str(diag["next_action"]).strip()
+        else:
+            next_action_override = None
+        break
+    else:
+        next_action_override = None
+
     if not conclusion_parts and final_answer and _is_present(final_answer):
         conclusion_parts.append(str(final_answer).strip()[:600])
     conclusion = "\n".join(conclusion_parts) if conclusion_parts else ""
@@ -267,6 +377,8 @@ def build_completion_report(
         next_action = "Run a read-only database count query and attach the numeric result."
     elif remediation_plan:
         next_action = remediation_plan
+    elif next_action_override:
+        next_action = next_action_override
     elif root_cause:
         next_action = "Implement recommended fix behind approval gate."
     else:
@@ -419,6 +531,7 @@ def validate_task_result(
         "numeric_result": numeric_result,
         "patch_present": bool(patch_diff),
         "remediation_plan": remediation_plan,
+        "structured_evidence": extract_structured_evidence(tool_results=tool_results),
     }
 
 
@@ -432,5 +545,8 @@ def apply_validation_to_review(existing_review: dict[str, Any] | None, validatio
         "checks": validation.get("checks") or [],
         "explanation": validation.get("explanation"),
         "completion_report": validation.get("completion_report") or {},
+        "root_cause": validation.get("root_cause"),
+        "numeric_result": validation.get("numeric_result"),
+        "structured_evidence": validation.get("structured_evidence") or [],
     }
     return review

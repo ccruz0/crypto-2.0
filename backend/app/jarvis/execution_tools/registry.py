@@ -65,16 +65,24 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
+    from app.jarvis.execution_tools.diagnose_open_orders import diagnose_open_orders
     from app.jarvis.execution_tools.inspect_container import inspect_container
     from app.jarvis.execution_tools.inspect_costs import inspect_costs
     from app.jarvis.execution_tools.inspect_health import inspect_health
     from app.jarvis.execution_tools.inspect_repository import inspect_repository
     from app.jarvis.execution_tools.inspect_runtime import inspect_runtime
+    from app.jarvis.execution_tools.query_database import query_database
     from app.jarvis.execution_tools.read_logs import read_logs
+    from app.jarvis.execution_tools.search_logs import search_logs
+    from app.jarvis.execution_tools.search_repository import search_repository
 
     registry = ToolRegistry()
     for fn, desc in (
         (read_logs, "Read recent application log summary (read-only)"),
+        (search_logs, "Search backend/container logs by keyword (read-only)"),
+        (query_database, "Run approved SELECT-only database diagnostics (read-only)"),
+        (diagnose_open_orders, "End-to-end open orders pipeline diagnostic (read-only)"),
+        (search_repository, "Search repository for orders/positions/API code (read-only)"),
         (inspect_container, "Inspect running container status (read-only)"),
         (inspect_repository, "Inspect repository layout and git status (read-only)"),
         (inspect_runtime, "Inspect runtime environment flags (read-only)"),
