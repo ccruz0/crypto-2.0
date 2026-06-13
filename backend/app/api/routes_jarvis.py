@@ -81,6 +81,7 @@ from app.jarvis.execution.schemas import (
     JarvisExecutionTaskDetail,
     JarvisExecutionTaskListResponse,
     JarvisPatchRevisionRequest,
+    JarvisPhase5StatusResponse,
     JarvisTaskApprovalRequest,
     JarvisTaskSubmitRequest,
     JarvisTaskSubmitResponse,
@@ -310,15 +311,85 @@ def jarvis_change_approve(task_id: str, body: JarvisTaskApprovalRequest) -> dict
 def jarvis_change_reject(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
     from app.database import engine, ensure_jarvis_task_runs_table
     from app.jarvis.execution.change_service import reject_change_task
+    from app.jarvis.change_execution.service import reject_change_execution
 
     if engine is None or not ensure_jarvis_task_runs_table(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
     try:
+        from app.jarvis.execution.persistence import get_execution_task
+        from app.jarvis.execution.lifecycle import TaskLifecycleState
+
+        task = get_execution_task(task_id)
+        if task and task.get("status") in (
+            TaskLifecycleState.WAITING_FOR_PR_APPROVAL.value,
+            TaskLifecycleState.APPLYING_PATCH.value,
+            TaskLifecycleState.SANDBOX_TESTING.value,
+        ):
+            return reject_change_execution(task_id, actor_id=body.actor_id, comment=body.comment)
         return reject_change_task(task_id, actor_id=body.actor_id, comment=body.comment)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="task not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# --- Phase 5: Sandbox apply + PR creation ---
+
+
+@router.post("/api/jarvis/tasks/change/{task_id}/approve-apply", response_model=JarvisChangeTaskDetail)
+def jarvis_change_approve_apply(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    """Gate 1: Approve patch apply in isolated sandbox."""
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.change_execution.service import approve_patch_apply
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return approve_patch_apply(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.post("/api/jarvis/tasks/change/{task_id}/approve-pr", response_model=JarvisChangeTaskDetail)
+def jarvis_change_approve_pr(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    """Gate 2: Approve GitHub PR creation after sandbox tests pass."""
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.change_execution.service import approve_pr_creation
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return approve_pr_creation(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/api/jarvis/tasks/change/{task_id}/phase5-status", response_model=JarvisPhase5StatusResponse)
+def jarvis_change_phase5_status(task_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.change_execution.service import get_phase5_status
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return get_phase5_status(task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+
+
+@router.get("/api/jarvis/safety-status")
+def jarvis_phase5_safety_status() -> dict[str, Any]:
+    from app.jarvis.change_execution.config import phase5_safety_status
+
+    return {"phase5": phase5_safety_status()}
 
 
 @router.post("/api/jarvis/tasks/change/{task_id}/patch", response_model=JarvisChangeTaskDetail)
