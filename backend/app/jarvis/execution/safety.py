@@ -97,3 +97,49 @@ def approval_required_for_level(level: SafetyLevel) -> bool:
 
 def is_forbidden(level: SafetyLevel) -> bool:
     return level == SafetyLevel.FORBIDDEN
+
+
+# Phase 4 action classifications (patch/PR/deploy/trading/secrets).
+PHASE4_ACTION_CLASSIFICATION: dict[str, SafetyLevel] = {
+    "patch_generation": SafetyLevel.SAFE_AUTO,
+    "patch_application": SafetyLevel.NEEDS_APPROVAL,
+    "pr_creation": SafetyLevel.NEEDS_APPROVAL,
+    "merge": SafetyLevel.FORBIDDEN,
+    "deploy": SafetyLevel.FORBIDDEN,
+    "trading": SafetyLevel.FORBIDDEN,
+    "secrets_access": SafetyLevel.FORBIDDEN,
+    "repository_scan": SafetyLevel.SAFE_AUTO,
+    "code_review": SafetyLevel.SAFE_AUTO,
+    "test_execution": SafetyLevel.SAFE_AUTO,
+    "github_read": SafetyLevel.SAFE_AUTO,
+}
+
+
+def classify_change_objective(text: str) -> SafetyLevel:
+    """Phase 4 change workflow: patch generation objectives stay SAFE unless clearly forbidden."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return SafetyLevel.SAFE_AUTO
+    change_forbidden = (
+        r"\btrade\b",
+        r"\bexecute\s+order\b",
+        r"\bmerge\b",
+        r"\bdelete\b",
+        r"\bterminate\b",
+        r"\bmodify\b.*\bsecret",
+        r"\bchange\b.*\bsecret",
+        r"\brm\s+-rf\b",
+        r"\bdeploy\s+to\s+(prod|production)\b",
+        r"\bwrite\b.*\b(file|secret|env|database)\b",
+    )
+    for pattern in change_forbidden:
+        if re.search(pattern, normalized, re.IGNORECASE):
+            return SafetyLevel.FORBIDDEN
+    return SafetyLevel.SAFE_AUTO
+
+
+def classify_phase4_action(action: str) -> SafetyLevel:
+    key = (action or "").strip().lower()
+    if key in PHASE4_ACTION_CLASSIFICATION:
+        return PHASE4_ACTION_CLASSIFICATION[key]
+    return classify_action(key)

@@ -100,3 +100,42 @@ class JarvisExecutionTaskSummary(BaseModel):
 
 class JarvisExecutionTaskListResponse(BaseModel):
     tasks: list[JarvisExecutionTaskSummary] = Field(default_factory=list)
+
+
+# --- Phase 4: Change workflow schemas ---
+
+
+class JarvisChangeTaskSubmitRequest(BaseModel):
+    objective: str = Field(..., min_length=1)
+    priority: TaskPriority = "normal"
+    target_files: list[str] = Field(default_factory=list)
+    dry_run: bool = Field(default=True, description="Investigation and patch generation only; no application")
+    run_tests: bool = Field(default=True, description="Run relevant tests in dry-run or local mode")
+
+
+class JarvisPatchRevisionRequest(BaseModel):
+    notes: str = ""
+    objective: str | None = None
+
+
+class JarvisApprovalQueueItem(BaseModel):
+    task_id: str
+    objective: str
+    status: str
+    patch_summary: str = ""
+    files_affected: list[str] = Field(default_factory=list)
+    risk_score: int | None = None
+    test_results: dict[str, Any] = Field(default_factory=dict)
+    review_findings: list[dict[str, Any]] = Field(default_factory=list)
+    approval_status: ApprovalStatus = "pending"
+    created_at: str | None = None
+    workflow_type: str = "phase4_change"
+
+
+class JarvisApprovalQueueResponse(BaseModel):
+    items: list[JarvisApprovalQueueItem] = Field(default_factory=list)
+
+
+class JarvisChangeTaskDetail(JarvisExecutionTaskDetail):
+    workflow_type: str = "phase4_change"
+    review: dict[str, Any] = Field(default_factory=dict)

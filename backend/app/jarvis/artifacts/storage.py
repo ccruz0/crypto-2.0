@@ -74,3 +74,52 @@ def load_artifact_content(record: dict[str, Any]) -> str:
     if not path.is_file():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+# Phase 4 standard artifact names (versioned per task).
+PHASE4_ARTIFACT_NAMES = frozenset({"patch.diff", "review.md", "tests.json", "repository_report.json"})
+
+
+def create_versioned_artifact(
+    *,
+    task_id: str,
+    name: str,
+    content: Any,
+    fmt: ArtifactFormat = "text",
+    version: int = 1,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist a versioned artifact with standard Phase 4 naming."""
+    meta = dict(metadata or {})
+    meta["version"] = version
+    meta["standard_name"] = name
+    record = create_artifact(
+        task_id=task_id,
+        name=f"{name}@v{version}",
+        content=content,
+        fmt=fmt,
+        metadata=meta,
+    )
+    record["version"] = version
+    record["standard_name"] = name
+    return record
+
+
+def list_task_artifact_versions(task_id: str) -> list[dict[str, Any]]:
+    """List artifact files for a task from filesystem."""
+    target = _ensure_dir() / task_id
+    if not target.is_dir():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in sorted(target.iterdir()):
+        if not path.is_file():
+            continue
+        records.append(
+            {
+                "task_id": task_id,
+                "path": str(path.relative_to(_ARTIFACTS_DIR.parent)),
+                "size_bytes": path.stat().st_size,
+                "name": path.stem,
+            }
+        )
+    return records

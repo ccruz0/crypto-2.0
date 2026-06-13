@@ -9,6 +9,12 @@ class TaskLifecycleState(str, Enum):
     QUEUED = "queued"
     PLANNING = "planning"
     EXECUTING = "executing"
+    # Phase 4 change workflow states
+    INVESTIGATING = "investigating"
+    PATCH_READY = "patch_ready"
+    REVIEWING = "reviewing"
+    TESTING = "testing"
+    APPROVED = "approved"
     WAITING_FOR_APPROVAL = "waiting_for_approval"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -37,14 +43,37 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
     TaskLifecycleState.PLANNING: frozenset(
         {
             TaskLifecycleState.EXECUTING,
+            TaskLifecycleState.INVESTIGATING,
             TaskLifecycleState.WAITING_FOR_APPROVAL,
             TaskLifecycleState.FAILED,
             TaskLifecycleState.CANCELLED,
         }
     ),
+    # Phase 4 change pipeline
+    TaskLifecycleState.INVESTIGATING: frozenset(
+        {TaskLifecycleState.PATCH_READY, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+    ),
+    TaskLifecycleState.PATCH_READY: frozenset(
+        {TaskLifecycleState.REVIEWING, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+    ),
+    TaskLifecycleState.REVIEWING: frozenset(
+        {
+            TaskLifecycleState.TESTING,
+            TaskLifecycleState.WAITING_FOR_APPROVAL,
+            TaskLifecycleState.FAILED,
+            TaskLifecycleState.CANCELLED,
+        }
+    ),
+    TaskLifecycleState.TESTING: frozenset(
+        {TaskLifecycleState.WAITING_FOR_APPROVAL, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+    ),
+    TaskLifecycleState.APPROVED: frozenset(
+        {TaskLifecycleState.COMPLETED, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+    ),
     TaskLifecycleState.WAITING_FOR_APPROVAL: frozenset(
         {
             TaskLifecycleState.EXECUTING,
+            TaskLifecycleState.APPROVED,
             TaskLifecycleState.CANCELLED,
             TaskLifecycleState.FAILED,
         }
@@ -56,6 +85,19 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
     TaskLifecycleState.FAILED: frozenset(),
     TaskLifecycleState.CANCELLED: frozenset(),
 }
+
+# Phase 4 ordered pipeline (for progress reporting).
+CHANGE_WORKFLOW_PIPELINE: tuple[TaskLifecycleState, ...] = (
+    TaskLifecycleState.QUEUED,
+    TaskLifecycleState.PLANNING,
+    TaskLifecycleState.INVESTIGATING,
+    TaskLifecycleState.PATCH_READY,
+    TaskLifecycleState.REVIEWING,
+    TaskLifecycleState.TESTING,
+    TaskLifecycleState.WAITING_FOR_APPROVAL,
+    TaskLifecycleState.APPROVED,
+    TaskLifecycleState.COMPLETED,
+)
 
 
 class InvalidTaskTransitionError(ValueError):
