@@ -22,20 +22,14 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Fetch frontend source
+    - name: Verify monorepo frontend (no external repo)
       run: |
         set -e
-        if [ -d "frontend/.git" ]; then
-          echo "Updating existing frontend repo..."
-          git -C frontend pull --ff-only
-        else
-          echo "Cloning frontend repo..."
-          rm -rf frontend
-          git clone --depth 1 https://github.com/ccruz0/frontend.git frontend
-        fi
-        echo "Frontend HEAD:"
-        git -C frontend rev-parse HEAD
-        git -C frontend log -1 --oneline
+        bash scripts/verify_no_external_frontend_deploy.sh --ci
+        bash scripts/verify_no_external_frontend_deploy.sh --runtime
+        echo "Monorepo commit: $(git rev-parse HEAD)"
+        echo "Frontend source: ./frontend (same commit as monorepo)"
+        test ! -d frontend/.git || { echo "ERROR: frontend/ must not be a separate git repo"; exit 1; }
 
     - name: Show frontend version entry
       run: |
@@ -79,30 +73,22 @@ jobs:
           echo "⚠️ Could not send GITHUB_TOKEN inject (SSM may be unreachable)"
         fi
         
-        # Update code on EC2 using git pull
-        echo "📥 Pulling latest code from git on EC2..."
+        # Update code on EC2 using git pull (frontend/ is part of monorepo — no external frontend clone)
+        echo "📥 Pulling latest monorepo code on EC2..."
         PULL_COMMAND_ID=$(aws ssm send-command \
           --instance-ids $INSTANCE_ID \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
-            "git pull origin main || echo \"Git pull failed, continuing...\"",
-            "if [ -d frontend ]; then",
-            "  echo \"Removing existing frontend directory to ensure clean clone...\"",
-            "  rm -rf frontend",
-            "fi",
-            "echo \"Cloning fresh frontend repo...\"",
-            "git clone https://github.com/ccruz0/frontend.git frontend || { echo \"⚠️ Clone failed\" && exit 1; }",
+            "git pull origin main || { echo \"❌ Git pull failed\" && exit 1; }",
+            "bash scripts/verify_no_external_frontend_deploy.sh --runtime",
             "echo \"🔍 Verifying frontend version...\"",
-            "if ! grep -A 2 \"version: '0.46'\" frontend/src/app/page.tsx | head -1 > /dev/null; then",
-            "  echo \"⚠️ Version 0.46 not found in frontend! Current version:\"",
+            "if ! grep -A 2 \"version: '\''0.46'\''\" frontend/src/app/page.tsx | head -1 > /dev/null; then",
+            "  echo \"⚠️ Version 0.46 not found in monorepo frontend! Current version:\"",
             "  grep -n \"version:\" frontend/src/app/page.tsx | head -1",
-            "  echo \"Frontend HEAD:\"",
-            "  git -C frontend rev-parse HEAD",
-            "  git -C frontend log -1 --oneline",
             "  exit 1",
             "fi",
-            "echo \"✅ Code updated and verified\""
+            "echo \"✅ Monorepo code updated and frontend verified\""
           ]' \
           --region ap-southeast-1 \
           --output text \
@@ -131,8 +117,9 @@ jobs:
           --query "Status" --output text 2>/dev/null || echo "Unknown")
         
         if [ "$PULL_STATUS" != "Success" ]; then
-          echo "⚠️ Git pull status: $PULL_STATUS"
-          echo "⚠️ Continuing anyway, but frontend may not be updated..."
+          echo "❌ Git pull status: $PULL_STATUS"
+          echo "❌ Aborting deploy — monorepo frontend must be at latest commit"
+          exit 1
         fi
         
         # Now rebuild and restart
@@ -145,6 +132,7 @@ jobs:
           --parameters 'commands=[
             "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
             "echo \"📁 Current directory: $(pwd)\"",
+            "bash scripts/verify_no_external_frontend_deploy.sh --runtime",
             "echo \"🔍 Verifying frontend version before build...\"",
             "LAST_VERSION=$(grep -n \"version:\" frontend/src/app/page.tsx | tail -1 | grep -o \"'0\\.[0-9]*'\" | head -1)",
             "if [ \"$LAST_VERSION\" = \"'0.46'\" ]; then",
