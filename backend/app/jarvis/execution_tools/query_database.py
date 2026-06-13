@@ -69,6 +69,10 @@ def _ensure_limit(query: str, limit: int) -> str:
 
 
 def _serialize_value(value: Any) -> Any:
+    from decimal import Decimal
+
+    if isinstance(value, Decimal):
+        return float(value)
     if isinstance(value, datetime):
         return value.isoformat()
     if hasattr(value, "isoformat"):
