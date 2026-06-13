@@ -34,8 +34,7 @@ jobs:
     - name: Show frontend version entry
       run: |
         set -e
-        echo "Checking version entry in frontend/src/app/page.tsx"
-        grep -n "version: '0.46'" frontend/src/app/page.tsx || (echo "Version 0.46 not found" && exit 1)
+        bash scripts/verify_frontend_version.sh
       
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -84,12 +83,7 @@ jobs:
             "sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 pull --ff-only origin main || { echo \"❌ Git pull failed\" && exit 1; }",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && git rev-parse --short HEAD\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_no_external_frontend_deploy.sh --runtime\" || { echo \"❌ Runtime frontend guard failed\" && exit 1; }",
-            "echo \"🔍 Verifying frontend version...\"",
-            "if ! sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && grep -A 2 \\\"version: '\\''0.46'\\''\\\" frontend/src/app/page.tsx | head -1 > /dev/null\"; then",
-            "  echo \"⚠️ Version 0.46 not found in monorepo frontend! Current version:\"",
-            "  sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && grep -n \\\"version:\\\" frontend/src/app/page.tsx | head -1\"",
-            "  exit 1",
-            "fi",
+            "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_frontend_version.sh\" || { echo \"❌ Frontend version check failed\" && exit 1; }",
             "echo \"✅ Monorepo code updated and frontend verified\""
           ]' \
           --region ap-southeast-1 \
@@ -135,16 +129,7 @@ jobs:
             "cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
             "echo \"📁 Current directory: $(pwd)\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_no_external_frontend_deploy.sh --runtime\"",
-            "echo \"🔍 Verifying frontend version before build...\"",
-            "LAST_VERSION=$(sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && grep -n \\\"version:\\\" frontend/src/app/page.tsx | tail -1 | grep -o \\\"'0\\.[0-9]*'\\\" | head -1\")",
-            "if [ \"$LAST_VERSION\" = \"'0.46'\" ]; then",
-            "  echo \"✅ Found version 0.46 (last version in array)\"",
-            "  echo \"✅ Frontend version 0.46 verified\"",
-            "else",
-            "  echo \"⚠️ Version 0.46 not found! Last version: $LAST_VERSION\"",
-            "  sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && grep -n \\\"version:\\\" frontend/src/app/page.tsx | tail -3\"",
-            "  exit 1",
-            "fi",
+            "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_frontend_version.sh\" || { echo \"❌ Frontend version check failed\" && exit 1; }",
             "echo \"🔐 Rendering secrets/runtime.env from SSM (ensures GITHUB_TOKEN and other deploy secrets)...\"",
             "bash scripts/aws/render_runtime_env.sh || { echo \"⚠️ render_runtime_env failed; continuing with existing secrets/runtime.env\" && true; }",
             "echo \"🔍 Verifying clean frontend working tree before Docker build...\"",
