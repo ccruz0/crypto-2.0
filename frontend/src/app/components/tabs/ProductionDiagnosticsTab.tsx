@@ -10,6 +10,7 @@ import {
   type JarvisInvestigationPreset,
   type JarvisInvestigationSummary,
 } from '@/app/api';
+import ProposalEligibilityPanel from '@/app/components/tabs/ProposalEligibilityPanel';
 
 function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
@@ -73,6 +74,16 @@ export default function ProductionDiagnosticsTab() {
     getJarvisInvestigation(selectedId)
       .then(setDetail)
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load detail'));
+  }, [selectedId]);
+
+  const refreshDetail = useCallback(async () => {
+    if (!selectedId) return;
+    try {
+      const row = await getJarvisInvestigation(selectedId);
+      setDetail(row);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load detail');
+    }
   }, [selectedId]);
 
   const handleRun = async () => {
@@ -270,6 +281,12 @@ export default function ProductionDiagnosticsTab() {
                 <h4 className="text-sm font-medium mb-1">Next Action</h4>
                 <p className="text-sm text-gray-700 dark:text-gray-300">{detail.next_action}</p>
               </section>
+
+              <ProposalEligibilityPanel
+                investigationId={detail.investigation_id}
+                detail={detail}
+                onProposalCreated={refreshDetail}
+              />
             </>
           )}
         </div>

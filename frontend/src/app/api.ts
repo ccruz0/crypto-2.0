@@ -2137,7 +2137,33 @@ export interface JarvisInvestigationDetail {
   recommended_fix: string;
   verification_steps: string[];
   next_action: string;
+  proposal_task_id?: string | null;
+  proposal_status?: string | null;
   created_at?: string | null;
+}
+
+export interface JarvisFixTemplateCandidate {
+  fix_template_id: string;
+  match: string;
+  target_files?: string[];
+  test_paths?: string[];
+  strategy?: string;
+  no_fix_required?: boolean;
+}
+
+export interface JarvisProposalEligibility {
+  eligible: boolean;
+  reasons: string[];
+  confidence: number;
+  fix_template_candidates: JarvisFixTemplateCandidate[];
+  existing_proposal_task_id: string | null;
+}
+
+export interface JarvisProposalTaskDetail extends JarvisExecutionTaskDetail {
+  workflow_type?: string;
+  source_investigation_id?: string | null;
+  fix_template_id?: string | null;
+  sandbox_summary?: Record<string, unknown>;
 }
 
 export interface JarvisInvestigationPreset {
@@ -2172,5 +2198,20 @@ export async function getJarvisInvestigation(
 
 export async function listJarvisInvestigationPresets(): Promise<{ presets: JarvisInvestigationPreset[] }> {
   return fetchAPI<{ presets: JarvisInvestigationPreset[] }>('/jarvis/investigations/presets');
+}
+
+export async function getProposalEligibility(
+  investigationId: string,
+): Promise<JarvisProposalEligibility> {
+  return fetchAPI<JarvisProposalEligibility>(`/jarvis/proposals/eligibility/${investigationId}`);
+}
+
+export async function proposePatchFromInvestigation(
+  investigationId: string,
+): Promise<JarvisProposalTaskDetail> {
+  return fetchAPI<JarvisProposalTaskDetail>(
+    `/jarvis/investigations/${investigationId}/propose-patch`,
+    { method: 'POST' },
+  );
 }
 
