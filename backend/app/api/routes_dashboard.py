@@ -994,6 +994,9 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                 "error_code",
                 "error_message",
                 "data_verified",
+                "trigger_orders_status",
+                "trigger_orders_error",
+                "trigger_orders_error_code",
             ) if cached_open_orders.get(k) is not None},
         }
         if "data_verified" not in open_orders_summary:

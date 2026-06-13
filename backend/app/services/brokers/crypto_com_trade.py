@@ -3124,76 +3124,17 @@ class CryptoComTradeClient:
         """
         Fetch open orders (standard + trigger) and normalize them into a single list.
         """
-        combined: List[UnifiedOpenOrder] = []
-        seen_ids = set()
-        stats = {"normal": 0, "trigger": 0}
+        from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 
-        def _extract_orders(response: Optional[dict]) -> List[dict]:
-            if not response:
-                return []
-            if isinstance(response.get("data"), list):
-                return response["data"]
-            if isinstance(response.get("orders"), list):
-                return response["orders"]
+        fetch_result = fetch_unified_open_orders(self)
+        if not fetch_result.get("data_verified"):
+            logger.error(
+                "Unified open orders fetch failed (%s): %s",
+                fetch_result.get("sync_status"),
+                fetch_result.get("error_message"),
+            )
             return []
-
-        def _append_orders(raw_orders: List[dict], is_trigger: bool):
-            for raw in raw_orders:
-                try:
-                    mapped = self._map_incoming_order(raw, is_trigger=is_trigger)
-                except Exception as exc:
-                    logger.warning(f"Failed to normalize order payload: {exc}")
-                    continue
-                if mapped.order_id in seen_ids:
-                    continue
-                seen_ids.add(mapped.order_id)
-                combined.append(mapped)
-                stats["trigger" if is_trigger else "normal"] += 1
-
-        from app.services.crypto_com_sync_errors import is_sync_failure_response
-
-        page = 0
-        page_size = 200
-        while True:
-            response = self.get_open_orders(page=page, page_size=page_size)
-            if is_sync_failure_response(response):
-                logger.error(
-                    "Unified open orders fetch stopped: open orders sync failure (%s)",
-                    response.get("sync_status"),
-                )
-                break
-            raw_orders = _extract_orders(response)
-            if not raw_orders:
-                break
-            _append_orders(raw_orders, is_trigger=False)
-            if len(raw_orders) < page_size:
-                break
-            page += 1
-
-        page = 0
-        try:
-            while True:
-                response = self.get_trigger_orders(page=page, page_size=page_size)
-                if is_sync_failure_response(response):
-                    logger.error(
-                        "Unified open orders fetch stopped: trigger orders sync failure (%s)",
-                        response.get("sync_status"),
-                    )
-                    break
-                raw_orders = _extract_orders(response)
-                if not raw_orders:
-                    break
-                _append_orders(raw_orders, is_trigger=True)
-                if len(raw_orders) < page_size:
-                    break
-                page += 1
-        except Exception as exc:
-            logger.error(f"Trigger orders fetch failed, continuing with standard orders only: {exc}")
-
-        logger.info(
-            f"Unified open orders fetched: normal={stats['normal']}, trigger={stats['trigger']}, total={len(combined)}"
-        )
-        return combined
+        return fetch_result.get("orders") or []
     
     def get_order_history(
         self,

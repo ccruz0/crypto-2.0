@@ -106,11 +106,12 @@ def test_get_open_orders_returns_structured_auth_failure():
 
 def test_exchange_sync_preserves_cache_on_auth_failure():
     from app.services.exchange_sync import ExchangeSyncService
-    from app.services.open_orders_cache import store_unified_open_orders, get_unified_open_orders
+    from app.services.open_orders_cache import store_unified_open_orders, get_unified_open_orders, clear_open_orders_cache
     from app.services.open_orders import UnifiedOpenOrder
 
     from decimal import Decimal
 
+    clear_open_orders_cache()
     existing = [
         UnifiedOpenOrder(
             order_id="123",
@@ -127,14 +128,21 @@ def test_exchange_sync_preserves_cache_on_auth_failure():
 
     svc = ExchangeSyncService()
     db = MagicMock()
-    auth_error = build_private_api_error(
-        sync_status="failed_auth",
-        error_message="Authentication failure",
-        error_code=40101,
-    )
-    with patch("app.services.exchange_sync.trade_client") as mock_client:
-        mock_client.get_open_orders.return_value = auth_error
-        mock_client.get_trigger_orders.return_value = auth_error
+    fetch_payload = {
+        "orders": [],
+        "regular_raw": [],
+        "trigger_raw": [],
+        "sync_status": "failed_auth",
+        "data_verified": False,
+        "error_code": 40101,
+        "error_message": "Authentication failure",
+        "trigger_orders_status": None,
+        "trigger_orders_error": None,
+        "trigger_orders_error_code": None,
+        "regular_count": 0,
+        "trigger_count": 0,
+    }
+    with patch("app.services.unified_open_orders_fetch.fetch_unified_open_orders", return_value=fetch_payload):
         svc.sync_open_orders(db)
 
     orders, _ = get_unified_open_orders()
@@ -154,3 +162,199 @@ def test_record_success_sets_data_verified_true():
 def test_extract_sync_failure_from_legacy_error_shape():
     failure = extract_sync_failure({"error": "Authentication failed: 40101 - Authentication failure", "error_code": 40101})
     assert failure["sync_status"] == "failed_auth"
+
+
+def _btc_usd_regular_order():
+    return {
+        "order_id": "5755600489253467765",
+        "instrument_name": "BTC_USD",
+        "side": "SELL",
+        "status": "ACTIVE",
+        "order_type": "LIMIT",
+        "quantity": "0.001",
+        "limit_price": "100000",
+        "create_time": 1700000000000,
+    }
+
+
+def test_fetch_unified_open_orders_regular_ok_trigger_50001_non_fatal():
+    from app.services.unified_open_orders_fetch import fetch_unified_open_orders
+    from app.services.crypto_com_sync_errors import build_private_api_error, build_private_api_success
+    from app.services.brokers.crypto_com_trade import CryptoComTradeClient
+
+    real_client = CryptoComTradeClient.__new__(CryptoComTradeClient)
+    mock_client = MagicMock()
+    mock_client.get_open_orders.return_value = build_private_api_success([_btc_usd_regular_order()])
+    mock_client.get_trigger_orders.return_value = build_private_api_error(
+        sync_status="api_error",
+        error_message="Invalid request",
+        error_code=50001,
+    )
+    mock_client._map_incoming_order.side_effect = lambda raw, is_trigger=False: real_client._map_incoming_order(
+        raw, is_trigger
+    )
+
+    result = fetch_unified_open_orders(mock_client)
+
+    assert result["sync_status"] == "ok"
+    assert result["data_verified"] is True
+    assert len(result["orders"]) == 1
+    assert result["orders"][0].symbol == "BTC_USD"
+    assert result["orders"][0].side == "SELL"
+    assert result["orders"][0].status == "ACTIVE"
+    assert result["orders"][0].order_type == "LIMIT"
+    assert result["trigger_orders_status"] == "api_error"
+    assert result["trigger_orders_error_code"] == 50001
+
+
+def test_exchange_sync_updates_cache_when_trigger_orders_fail():
+    from app.services.exchange_sync import ExchangeSyncService
+    from app.services.open_orders_cache import get_unified_open_orders, clear_open_orders_cache
+    from app.services.unified_open_orders_fetch import fetch_unified_open_orders
+    from app.services.crypto_com_sync_errors import build_private_api_error, build_private_api_success
+    from app.services.brokers.crypto_com_trade import CryptoComTradeClient
+
+    clear_open_orders_cache()
+    real_client = CryptoComTradeClient.__new__(CryptoComTradeClient)
+    fetch_payload = {
+        "orders": [real_client._map_incoming_order(_btc_usd_regular_order(), False)],
+        "regular_raw": [_btc_usd_regular_order()],
+        "trigger_raw": [],
+        "sync_status": "ok",
+        "data_verified": True,
+        "error_code": None,
+        "error_message": None,
+        "trigger_orders_status": "api_error",
+        "trigger_orders_error": "Invalid request",
+        "trigger_orders_error_code": 50001,
+        "regular_count": 1,
+        "trigger_count": 0,
+    }
+
+    svc = ExchangeSyncService()
+    db = MagicMock()
+    with patch("app.services.unified_open_orders_fetch.fetch_unified_open_orders", return_value=fetch_payload):
+        svc.sync_open_orders(db)
+
+    orders, _ = get_unified_open_orders()
+    assert len(orders) == 1
+    assert orders[0].symbol == "BTC_USD"
+    meta = sync_status_public_dict()
+    assert meta["sync_status"] == "ok"
+    assert meta["data_verified"] is True
+    assert meta["trigger_orders_status"] == "api_error"
+
+
+def test_fetch_unified_open_orders_40101_maps_to_failed_auth():
+    from app.services.unified_open_orders_fetch import fetch_unified_open_orders
+    from app.services.crypto_com_sync_errors import build_private_api_error
+
+    mock_client = MagicMock()
+    mock_client.get_open_orders.return_value = build_private_api_error(
+        sync_status="failed_auth",
+        error_message="Authentication failure",
+        error_code=40101,
+    )
+
+    result = fetch_unified_open_orders(mock_client)
+
+    assert result["sync_status"] == "failed_auth"
+    assert result["data_verified"] is False
+    assert result["orders"] == []
+
+
+def test_fetch_unified_open_orders_missing_credentials():
+    from app.services.unified_open_orders_fetch import fetch_unified_open_orders
+    from app.services.crypto_com_sync_errors import build_private_api_error
+
+    mock_client = MagicMock()
+    mock_client.get_open_orders.return_value = build_private_api_error(
+        sync_status="missing_credentials",
+        error_message="API credentials not configured",
+    )
+
+    result = fetch_unified_open_orders(mock_client)
+
+    assert result["sync_status"] == "missing_credentials"
+    assert result["data_verified"] is False
+
+
+def test_orders_open_api_returns_btc_usd_from_cache():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.services.open_orders import UnifiedOpenOrder
+    from app.services.open_orders_cache import store_unified_open_orders, clear_open_orders_cache
+    from app.services.open_orders_sync_status import record_open_orders_sync_success
+    from decimal import Decimal
+
+    clear_open_orders_cache()
+    store_unified_open_orders(
+        [
+            UnifiedOpenOrder(
+                order_id="5755600489253467765",
+                symbol="BTC_USD",
+                side="SELL",
+                order_type="LIMIT",
+                status="ACTIVE",
+                quantity=Decimal("0.001"),
+                price=Decimal("100000"),
+                is_trigger=False,
+                created_at="2024-01-01T00:00:00+00:00",
+            )
+        ]
+    )
+    record_open_orders_sync_success(
+        order_count=1,
+        trigger_orders_status="api_error",
+        trigger_orders_error="Invalid request",
+        trigger_orders_error_code=50001,
+    )
+
+    client = TestClient(app)
+    response = client.get("/api/orders/open")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["sync_status"] == "ok"
+    assert payload["data_verified"] is True
+    assert payload["trigger_orders_status"] == "api_error"
+    order = payload["orders"][0]
+    assert order["order_id"] == "5755600489253467765"
+    assert order["instrument_name"] == "BTC_USD"
+    assert order["side"] == "SELL"
+    assert order["status"] == "ACTIVE"
+
+
+def test_dashboard_open_orders_summary_matches_cache_count():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.services.open_orders import UnifiedOpenOrder
+    from app.services.open_orders_cache import store_unified_open_orders, clear_open_orders_cache
+    from app.services.open_orders_sync_status import record_open_orders_sync_success
+    from decimal import Decimal
+
+    clear_open_orders_cache()
+    store_unified_open_orders(
+        [
+            UnifiedOpenOrder(
+                order_id="5755600489253467765",
+                symbol="BTC_USD",
+                side="SELL",
+                order_type="LIMIT",
+                status="ACTIVE",
+                quantity=Decimal("0.001"),
+                price=Decimal("100000"),
+                is_trigger=False,
+            )
+        ]
+    )
+    record_open_orders_sync_success(order_count=1, trigger_orders_status="api_error")
+
+    client = TestClient(app)
+    response = client.get("/api/dashboard/open-orders-summary")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["sync_status"] == "ok"
+    assert payload["data_verified"] is True
+    assert payload["orders"][0]["symbol"] == "BTC_USD"

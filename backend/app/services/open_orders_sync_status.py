@@ -16,6 +16,9 @@ _state: dict[str, Any] = {
     "error_code": None,
     "error_message": None,
     "data_verified": False,
+    "trigger_orders_status": None,
+    "trigger_orders_error": None,
+    "trigger_orders_error_code": None,
 }
 
 
@@ -23,7 +26,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def record_open_orders_sync_success(*, order_count: int = 0) -> None:
+def record_open_orders_sync_success(
+    *,
+    order_count: int = 0,
+    trigger_orders_status: str | None = None,
+    trigger_orders_error: str | None = None,
+    trigger_orders_error_code: int | None = None,
+) -> None:
     """Record a verified successful sync from the exchange."""
     with _lock:
         _state.update(
@@ -35,6 +44,9 @@ def record_open_orders_sync_success(*, order_count: int = 0) -> None:
                 "error_message": None,
                 "data_verified": True,
                 "order_count": order_count,
+                "trigger_orders_status": trigger_orders_status,
+                "trigger_orders_error": trigger_orders_error,
+                "trigger_orders_error_code": trigger_orders_error_code,
             }
         )
 
@@ -74,6 +86,9 @@ def sync_status_public_dict() -> dict[str, Any]:
         "error_code": status.get("error_code"),
         "error_message": status.get("error_message"),
         "data_verified": bool(status.get("data_verified")),
+        "trigger_orders_status": status.get("trigger_orders_status"),
+        "trigger_orders_error": status.get("trigger_orders_error"),
+        "trigger_orders_error_code": status.get("trigger_orders_error_code"),
     }
 
 
@@ -88,6 +103,9 @@ def reset_open_orders_sync_status_for_tests() -> None:
                 "error_code": None,
                 "error_message": None,
                 "data_verified": False,
+                "trigger_orders_status": None,
+                "trigger_orders_error": None,
+                "trigger_orders_error_code": None,
             }
         )
 

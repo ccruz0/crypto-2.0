@@ -40,6 +40,9 @@ def get_open_orders_cache() -> Dict[str, Optional[object]]:
         "error_code": sync_meta.get("error_code"),
         "error_message": sync_meta.get("error_message"),
         "data_verified": sync_meta.get("data_verified"),
+        "trigger_orders_status": sync_meta.get("trigger_orders_status"),
+        "trigger_orders_error": sync_meta.get("trigger_orders_error"),
+        "trigger_orders_error_code": sync_meta.get("trigger_orders_error_code"),
     }
 
 
@@ -57,6 +60,9 @@ def get_unified_open_orders_summary() -> dict:
         "error_code": sync_meta.get("error_code"),
         "error_message": sync_meta.get("error_message"),
         "data_verified": sync_meta.get("data_verified"),
+        "trigger_orders_status": sync_meta.get("trigger_orders_status"),
+        "trigger_orders_error": sync_meta.get("trigger_orders_error"),
+        "trigger_orders_error_code": sync_meta.get("trigger_orders_error_code"),
     }
 
 

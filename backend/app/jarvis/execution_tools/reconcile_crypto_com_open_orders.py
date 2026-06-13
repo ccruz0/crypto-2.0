@@ -97,30 +97,31 @@ def _fetch_exchange_orders() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         meta["data_verified"] = False
         return [], meta
 
-    from app.services.crypto_com_sync_errors import extract_sync_failure, is_sync_failure_response
-
-    probe = trade_client.get_open_orders(page=0, page_size=1)
-    if is_sync_failure_response(probe):
-        failure = extract_sync_failure(probe)
-        meta["error"] = failure.get("error_message")
-        meta["sync_status"] = failure.get("sync_status")
-        meta["error_code"] = failure.get("error_code")
-        meta["data_verified"] = False
-        return [], meta
+    from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 
     try:
-        unified = trade_client.get_all_unified_orders()
+        fetch_result = fetch_unified_open_orders(trade_client)
     except Exception as exc:
         meta["error"] = str(exc)
         meta["sync_status"] = "api_error"
         meta["data_verified"] = False
         return [], meta
 
+    if not fetch_result.get("data_verified"):
+        meta["error"] = fetch_result.get("error_message")
+        meta["sync_status"] = fetch_result.get("sync_status")
+        meta["error_code"] = fetch_result.get("error_code")
+        meta["data_verified"] = False
+        return [], meta
+
     meta["sync_status"] = "ok"
     meta["data_verified"] = True
+    meta["trigger_orders_status"] = fetch_result.get("trigger_orders_status")
+    meta["trigger_orders_error"] = fetch_result.get("trigger_orders_error")
+    meta["trigger_orders_error_code"] = fetch_result.get("trigger_orders_error_code")
 
     orders: list[dict[str, Any]] = []
-    for item in unified:
+    for item in fetch_result.get("orders") or []:
         orders.append(
             _order_snapshot(
                 order_id=item.order_id,
