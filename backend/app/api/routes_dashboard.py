@@ -904,104 +904,82 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         # Log raw data for debugging
         log.debug(f"Portfolio data: assets={len(portfolio_assets)}, balances={len(balances_list)}, total_usd={total_usd_value}, source={portfolio_value_source}, last_updated={last_updated}")
         
-        # Get unified open orders from cache - Crypto.com API is the source of truth
+        # Get unified open orders — cache first, database fallback when stale/empty
         unified_orders_start = time.time()
-        cached_open_orders = get_open_orders_cache() or {}
-        _orders_raw = cached_open_orders.get("orders", [])
-        unified_open_orders = cast(list, _orders_raw) if isinstance(_orders_raw, list) else []
-        
-        # Log Crypto.com API response for debugging
+        from app.services.open_orders_resolver import resolve_open_orders
+
+        resolved_open_orders = resolve_open_orders(db)
+        unified_open_orders = resolved_open_orders.orders
+
         cached_order_ids = {order.order_id for order in unified_open_orders}
         cached_symbols = {order.symbol for order in unified_open_orders}
-        log.info(f"[OPEN_ORDERS] Crypto.com API returned {len(unified_open_orders)} open orders. Order IDs: {sorted(cached_order_ids)[:10]}... Symbols: {sorted(cached_symbols)}")
-        
-        # CRITICAL FIX: Only show orders that exist in Crypto.com API response
-        # Do NOT merge database orders that don't exist in Crypto.com - they are stale/ghost orders
-        # The cache is populated by exchange_sync.py from Crypto.com API, so it's the source of truth
-        
-        # Verify database orders against Crypto.com cache and log any ghost orders
-        try:
-            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-            from sqlalchemy import func
-            from datetime import timezone as tz
-            
-            open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
-            
-            # Check database for orders that claim to be open but aren't in Crypto.com response
-            from sqlalchemy import or_
-            
-            db_orders = db.query(ExchangeOrder).filter(
-                or_(
-                    # Standard open orders (ACTIVE, NEW, PARTIALLY_FILLED)
-                    ExchangeOrder.status.in_(open_statuses),
-                    # OR all SL/TP orders (might be active on exchange even if marked CANCELLED)
-                    ExchangeOrder.order_role.in_(['STOP_LOSS', 'TAKE_PROFIT']),  # type: ignore[reportGeneralTypeIssues]
-                    # OR orders with trigger types (STOP_LIMIT, TAKE_PROFIT_LIMIT, etc.)
-                    ExchangeOrder.order_type.in_(['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'])
-                )
-            ).order_by(
-                func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
-            ).limit(500).all()
-            
-            # Log database orders for debugging
-            db_order_ids = {str(order.exchange_order_id) for order in db_orders}
-            db_symbols = {str(getattr(o, "symbol", "") or "") for o in db_orders if getattr(o, "symbol", None)}
-            log.info(f"[OPEN_ORDERS] Database has {len(db_orders)} orders with open status. Order IDs: {sorted(db_order_ids)[:10]}... Symbols: {sorted(db_symbols)}")
-            
-            # Detect and log ghost orders (in database but not in Crypto.com)
-            ghost_orders = []
-            for db_order in db_orders:
-                order_id_str = str(db_order.exchange_order_id)
-                if order_id_str not in cached_order_ids:
-                    ghost_orders.append({
-                        "order_id": order_id_str,
-                        "symbol": db_order.symbol,
-                        "status": db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status),
-                        "side": db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
-                    })
-            
-            if ghost_orders:
-                log.warning(f"[GHOST_ORDERS] Detected {len(ghost_orders)} ghost orders in database that don't exist in Crypto.com: {ghost_orders[:5]}")
-                # Log each ghost order once per dashboard load
-                for ghost in ghost_orders[:10]:  # Limit to first 10 to avoid log spam
-                    log.warning(f"[GHOST_ORDER] Dropping ghost order: {ghost['order_id']} ({ghost['symbol']}) - status={ghost['status']}, side={ghost['side']} - NOT in Crypto.com API response")
-                
-        except Exception as db_err:
-            log.warning(f"Error checking database for ghost orders: {db_err}")
-            # Continue with cached orders only if database check fails
-        
+        log.info(
+            "[OPEN_ORDERS] Resolved %s open orders (source=%s, sync_status=%s). Order IDs: %s... Symbols: %s",
+            len(unified_open_orders),
+            resolved_open_orders.source,
+            resolved_open_orders.sync_status,
+            sorted(cached_order_ids)[:10],
+            sorted(cached_symbols),
+        )
+
+        if resolved_open_orders.source == "crypto_com_api":
+            try:
+                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+                from sqlalchemy import func
+                from datetime import timezone as tz
+
+                open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+
+                from sqlalchemy import or_
+
+                db_orders = db.query(ExchangeOrder).filter(
+                    or_(
+                        ExchangeOrder.status.in_(open_statuses),
+                        ExchangeOrder.order_role.in_(['STOP_LOSS', 'TAKE_PROFIT']),  # type: ignore[reportGeneralTypeIssues]
+                        ExchangeOrder.order_type.in_(['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'])
+                    )
+                ).order_by(
+                    func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
+                ).limit(500).all()
+
+                db_order_ids = {str(order.exchange_order_id) for order in db_orders}
+                db_symbols = {str(getattr(o, "symbol", "") or "") for o in db_orders if getattr(o, "symbol", None)}
+                log.info(f"[OPEN_ORDERS] Database has {len(db_orders)} orders with open status. Order IDs: {sorted(db_order_ids)[:10]}... Symbols: {sorted(db_symbols)}")
+
+                ghost_orders = []
+                for db_order in db_orders:
+                    order_id_str = str(db_order.exchange_order_id)
+                    if order_id_str not in cached_order_ids:
+                        ghost_orders.append({
+                            "order_id": order_id_str,
+                            "symbol": db_order.symbol,
+                            "status": db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status),
+                            "side": db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
+                        })
+
+                if ghost_orders:
+                    log.warning(f"[GHOST_ORDERS] Detected {len(ghost_orders)} ghost orders in database that don't exist in Crypto.com: {ghost_orders[:5]}")
+                    for ghost in ghost_orders[:10]:
+                        log.warning(f"[GHOST_ORDER] Dropping ghost order: {ghost['order_id']} ({ghost['symbol']}) - status={ghost['status']}, side={ghost['side']} - NOT in Crypto.com API response")
+
+            except Exception as db_err:
+                log.warning(f"Error checking database for ghost orders: {db_err}")
+        elif resolved_open_orders.source == "database_fallback":
+            log.info(
+                "[OPEN_ORDERS] Dashboard using database fallback (%s orders, sync_status=%s)",
+                len(unified_open_orders),
+                resolved_open_orders.sync_status,
+            )
+
         open_orders_list = [serialize_unified_order(order) for order in unified_open_orders]
         unified_orders_elapsed = time.time() - unified_orders_start
-        log.info(f"[PERF] get_unified_open_orders (with DB merge) took {unified_orders_elapsed:.3f} seconds, total orders: {len(open_orders_list)}")
-        
-        # Safely get last_updated with null-safety
-        last_updated_value = cached_open_orders.get("last_updated")
-        last_updated_iso = None
-        if last_updated_value:
-            # Check if it's already a datetime object
-            if isinstance(last_updated_value, datetime):
-                last_updated_iso = last_updated_value.isoformat()
-            elif isinstance(last_updated_value, str):
-                # Already a string, use as-is
-                last_updated_iso = last_updated_value
-        
+        log.info(f"[PERF] resolve_open_orders took {unified_orders_elapsed:.3f} seconds, total orders: {len(open_orders_list)}")
+
         open_orders_summary = {
             "orders": open_orders_list,
-            "last_updated": last_updated_iso,
-            **{k: cached_open_orders.get(k) for k in (
-                "source",
-                "sync_status",
-                "error_code",
-                "error_message",
-                "data_verified",
-                "trigger_orders_status",
-                "trigger_orders_error",
-                "trigger_orders_error_code",
-            ) if cached_open_orders.get(k) is not None},
+            "last_updated": resolved_open_orders.last_updated,
+            **resolved_open_orders.to_sync_meta(),
         }
-        if "data_verified" not in open_orders_summary:
-            from app.services.open_orders_sync_status import sync_status_public_dict
-            open_orders_summary.update(sync_status_public_dict())
         
         # Calculate portfolio order metrics
         metrics_start = time.time()
@@ -1368,47 +1346,16 @@ async def get_dashboard_state(
 
 
 @router.get("/dashboard/open-orders-summary")
-def get_open_orders_summary():
-    """Return the cached unified open orders."""
-    cache = get_open_orders_cache() or {}
-    _orders_raw = cache.get("orders", [])
-    cached_orders = cast(list, _orders_raw) if isinstance(_orders_raw, list) else []
-    
-    # If cache is empty, try to get orders from the same source as /dashboard/state
-    if not cached_orders:
-        log.warning("Open orders cache is empty, attempting to get from exchange_sync...")
-        try:
-            from app.services.exchange_sync import ExchangeSyncService
-            from app.database import SessionLocal
-            sync_service = ExchangeSyncService()
-            db = SessionLocal()  # type: ignore[reportOptionalCall]
-            try:
-                # Trigger a sync to populate the cache
-                if sync_service is not None and db is not None:
-                    sync_service.sync_open_orders(db)
-                if db is not None:
-                    db.commit()
-                # Re-read from cache after sync
-                cache = get_open_orders_cache() or {}
-                _orders_raw2 = cache.get("orders", [])
-                cached_orders = cast(list, _orders_raw2) if isinstance(_orders_raw2, list) else []
-                log.info(f"Synced {len(cached_orders)} orders to cache")
-            finally:
-                if db is not None:
-                    db.close()
-        except Exception as e:
-            log.error(f"Failed to sync orders for open-orders-summary: {e}", exc_info=True)
-    
-    orders = [serialize_unified_order(order) for order in cached_orders]
-    last_updated = cache.get("last_updated")
-    last_updated_iso: Optional[str] = None
-    if isinstance(last_updated, datetime):
-        last_updated_iso = last_updated.isoformat()
-    elif last_updated is not None:
-        last_updated_iso = str(last_updated)
-    from app.services.open_orders_sync_status import sync_status_public_dict
+def get_open_orders_summary(db: Session = Depends(get_db)):
+    """Return unified open orders from cache, with database fallback when cache is stale."""
+    from app.services.open_orders import serialize_unified_order
+    from app.services.open_orders_resolver import resolve_open_orders
 
-    sync_meta = sync_status_public_dict()
+    resolved = resolve_open_orders(db)
+    orders = [serialize_unified_order(order) for order in resolved.orders]
+    sync_meta = resolved.to_sync_meta()
+    last_updated_iso = sync_meta.get("last_updated")
+
     return {
         "orders": orders,
         "last_updated": last_updated_iso,

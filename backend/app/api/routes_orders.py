@@ -1049,117 +1049,63 @@ def get_open_orders(
     from sqlalchemy import func, or_
     start_time = time_module.time()
     try:
-        logger.info("get_open_orders called - fetching open orders from Crypto.com cache")
-        
-        # CRITICAL FIX: Use Crypto.com API cache as source of truth
-        # Only return orders that actually exist in Crypto.com Exchange
-        from app.services.open_orders_cache import get_open_orders_cache
-        from app.services.open_orders import serialize_unified_order
-        
-        cached_open_orders = get_open_orders_cache()
-        _orders_raw = cached_open_orders.get("orders", []) or []
-        unified_open_orders = cast(list, _orders_raw) if isinstance(_orders_raw, list) else []
-        
-        # Log Crypto.com API response for debugging
+        logger.info("get_open_orders called - resolving open orders from cache with DB fallback")
+
+        from app.services.open_orders_resolver import resolve_open_orders, unified_order_to_frontend_dict
+
+        resolved = resolve_open_orders(db)
+        unified_open_orders = resolved.orders
+
         cached_order_ids = {order.order_id for order in unified_open_orders}
         cached_symbols = {order.symbol for order in unified_open_orders}
-        logger.info(f"[OPEN_ORDERS] Crypto.com API returned {len(unified_open_orders)} open orders. Order IDs: {sorted(cached_order_ids)[:10]}... Symbols: {sorted(cached_symbols)}")
-        
-        # Convert UnifiedOpenOrder to frontend format
+        logger.info(
+            "[OPEN_ORDERS] Resolved %s open orders (source=%s, sync_status=%s). Order IDs: %s... Symbols: %s",
+            len(unified_open_orders),
+            resolved.source,
+            resolved.sync_status,
+            sorted(cached_order_ids)[:10],
+            sorted(cached_symbols),
+        )
+
         orders_list = []
         for unified_order in unified_open_orders:
-            # Only include orders with valid order_id (must exist in Crypto.com)
             if not unified_order.order_id:
                 logger.warning(f"[GHOST_ORDER] Dropping order without order_id: {unified_order.symbol}")
                 continue
-            
-            # Get creation time from unified order
-            create_time = None
-            create_timestamp_ms = None
-            create_datetime_str = "N/A"
-            
-            if unified_order.created_at:
-                try:
-                    # Parse ISO format datetime string
-                    if isinstance(unified_order.created_at, str):
-                        create_time = datetime.fromisoformat(unified_order.created_at.replace('Z', '+00:00'))
-                    else:
-                        create_time = unified_order.created_at
-                    
-                    if create_time.tzinfo is None:
-                        create_time = create_time.replace(tzinfo=timezone.utc)
-                    
-                    create_timestamp_ms = int(create_time.timestamp() * 1000)
-                    create_datetime_str = create_time.isoformat()
-                except Exception as e:
-                    logger.debug(f"Error parsing created_at for order {unified_order.order_id}: {e}")
-            
-            # Get update time
-            update_timestamp_ms = None
-            if unified_order.updated_at:
-                try:
-                    if isinstance(unified_order.updated_at, str):
-                        update_time = datetime.fromisoformat(unified_order.updated_at.replace('Z', '+00:00'))
-                    else:
-                        update_time = unified_order.updated_at
-                    
-                    if update_time.tzinfo is None:
-                        update_time = update_time.replace(tzinfo=timezone.utc)
-                    
-                    update_timestamp_ms = int(update_time.timestamp() * 1000)
-                except Exception:
-                    update_timestamp_ms = create_timestamp_ms
-            
-            orders_list.append({
-                "order_id": unified_order.order_id,
-                "client_oid": unified_order.client_oid,
-                "instrument_name": unified_order.symbol,
-                "order_type": unified_order.order_type or "LIMIT",
-                "order_role": unified_order.metadata.get("order_role") if unified_order.metadata else None,
-                "side": unified_order.side,
-                "status": unified_order.status,
-                "quantity": float(unified_order.quantity) if unified_order.quantity else 0.0,
-                "price": float(unified_order.price) if unified_order.price else None,
-                "trigger_price": float(unified_order.trigger_price) if unified_order.trigger_price is not None else None,
-                "is_trigger": getattr(unified_order, "is_trigger", False),
-                "avg_price": None,  # Not available in unified order
-                "cumulative_quantity": 0.0,  # Not available in unified order
-                "cumulative_value": 0.0,  # Not available in unified order
-                "create_time": create_timestamp_ms,
-                "create_datetime": create_datetime_str,
-                "update_time": update_timestamp_ms or create_timestamp_ms,
-            })
-        
-        # Sort by creation time (newest first)
+            orders_list.append(unified_order_to_frontend_dict(unified_order))
+
         orders_list.sort(key=lambda x: x.get("create_time") or 0, reverse=True)
-        
-        # Check database for ghost orders (for logging only)
-        if db:
+
+        if db and resolved.source == "crypto_com_api":
             try:
                 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
                 open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
                 db_orders = db.query(ExchangeOrder).filter(
                     ExchangeOrder.status.in_(open_statuses)
                 ).limit(100).all()
-                
+
                 db_order_ids = {str(order.exchange_order_id) for order in db_orders}
                 ghost_orders = [oid for oid in db_order_ids if oid not in cached_order_ids]
-                
+
                 if ghost_orders:
                     logger.warning(f"[GHOST_ORDERS] Database has {len(ghost_orders)} orders marked as open that don't exist in Crypto.com: {ghost_orders[:5]}")
             except Exception as db_err:
                 logger.debug(f"Error checking database for ghost orders: {db_err}")
-        
+        elif db and resolved.source == "database_fallback":
+            logger.info(
+                "[OPEN_ORDERS] Serving %s orders from database fallback (cache sync_status=%s)",
+                len(orders_list),
+                resolved.sync_status,
+            )
+
         elapsed_time = time_module.time() - start_time
-        logger.info(f"Retrieved {len(orders_list)} open orders from Crypto.com API in {elapsed_time:.3f}s")
-        
+        logger.info(f"Retrieved {len(orders_list)} open orders in {elapsed_time:.3f}s (source={resolved.source})")
+
         if elapsed_time > 0.3:
             logger.warning(f"⚠️ Open orders fetch took {elapsed_time:.3f}s - this is slow! Should be < 0.2 seconds.")
 
-        from app.services.open_orders_sync_status import sync_status_public_dict
+        sync_meta = resolved.to_sync_meta()
 
-        sync_meta = sync_status_public_dict()
-        
         return {
             "ok": True,
             "exchange": "CRYPTO_COM",
@@ -1167,7 +1113,6 @@ def get_open_orders(
             "count": len(orders_list),
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "sorted_by": "creation_time_desc",
-            "source": "crypto_com_api",
             **sync_meta,
         }
     except Exception as e:
