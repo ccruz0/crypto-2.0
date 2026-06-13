@@ -51,7 +51,9 @@ def save_investigation(report: InvestigationReport) -> bool:
                         impact = EXCLUDED.impact,
                         ranked_causes_json = EXCLUDED.ranked_causes_json,
                         verification_steps_json = EXCLUDED.verification_steps_json,
-                        next_action = EXCLUDED.next_action
+                        next_action = EXCLUDED.next_action,
+                        proposal_task_id = jarvis_investigations.proposal_task_id,
+                        proposal_status = jarvis_investigations.proposal_status
                     """
                 ),
                 {
@@ -129,8 +131,43 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "ranked_causes": ranked or [],
         "verification_steps": verification or [],
         "next_action": mapping.get("next_action"),
+        "proposal_task_id": mapping.get("proposal_task_id"),
+        "proposal_status": mapping.get("proposal_status"),
         "created_at": mapping.get("created_at"),
     }
+
+
+def update_investigation_proposal_linkage(
+    investigation_id: str,
+    *,
+    proposal_task_id: str | None = None,
+    proposal_status: str | None = None,
+) -> bool:
+    """Update Phase 4B proposal linkage fields for an investigation."""
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        logger.warning("update_investigation_proposal_linkage: database unavailable")
+        return False
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE jarvis_investigations
+                    SET proposal_task_id = :proposal_task_id,
+                        proposal_status = :proposal_status
+                    WHERE investigation_id = :investigation_id
+                    """
+                ),
+                {
+                    "investigation_id": investigation_id,
+                    "proposal_task_id": proposal_task_id,
+                    "proposal_status": proposal_status,
+                },
+            )
+        return result.rowcount > 0
+    except Exception as exc:
+        logger.error("update_investigation_proposal_linkage failed: %s", exc, exc_info=True)
+        return False
 
 
 def get_investigation(investigation_id: str) -> dict[str, Any] | None:

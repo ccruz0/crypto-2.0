@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS jarvis_investigations (
     ranked_causes_json JSONB,
     verification_steps_json JSONB,
     next_action TEXT,
+    proposal_task_id TEXT,
+    proposal_status TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

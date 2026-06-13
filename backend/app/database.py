@@ -621,6 +621,40 @@ def ensure_jarvis_task_approvals_table(engine_to_use) -> bool:
         return False
 
 
+def _ensure_jarvis_investigations_phase4b_columns(engine_to_use) -> bool:
+    """Add Phase 4B proposal linkage columns to jarvis_investigations if missing."""
+    if engine_to_use is None or not table_exists(engine_to_use, "jarvis_investigations"):
+        return False
+    try:
+        additions: list[tuple[str, str]] = []
+        for col_name in ("proposal_task_id", "proposal_status"):
+            if not table_has_column(engine_to_use, "jarvis_investigations", col_name):
+                additions.append((col_name, "TEXT"))
+        if not additions:
+            return True
+        with engine_to_use.begin() as conn:
+            for col_name, col_def in additions:
+                if engine_to_use.dialect.name == "postgresql":
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE jarvis_investigations "
+                            f"ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(f"ALTER TABLE jarvis_investigations ADD COLUMN {col_name} {col_def}")
+                    )
+        logger.info(
+            "[BOOT] Added jarvis_investigations Phase 4B columns: %s",
+            [a[0] for a in additions],
+        )
+        return True
+    except Exception as e:
+        logger.warning("_ensure_jarvis_investigations_phase4b_columns failed: %s", e)
+        return False
+
+
 def ensure_jarvis_investigations_table(engine_to_use) -> bool:
     """Persist Jarvis Phase 4A production diagnostic investigation reports."""
     if engine_to_use is None:
@@ -651,6 +685,8 @@ def ensure_jarvis_investigations_table(engine_to_use) -> bool:
                                 ranked_causes_json TEXT,
                                 verification_steps_json TEXT,
                                 next_action TEXT,
+                                proposal_task_id TEXT,
+                                proposal_status TEXT,
                                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                             )
                             """
@@ -676,12 +712,16 @@ def ensure_jarvis_investigations_table(engine_to_use) -> bool:
                                 ranked_causes_json JSONB,
                                 verification_steps_json JSONB,
                                 next_action TEXT,
+                                proposal_task_id TEXT,
+                                proposal_status TEXT,
                                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                             )
                             """
                         )
                     )
             logger.info("[BOOT] Created table %s", tname)
+        if table_exists(engine_to_use, tname):
+            _ensure_jarvis_investigations_phase4b_columns(engine_to_use)
         return table_exists(engine_to_use, tname)
     except Exception as e:
         logger.error("ensure_jarvis_investigations_table failed: %s", e, exc_info=True)

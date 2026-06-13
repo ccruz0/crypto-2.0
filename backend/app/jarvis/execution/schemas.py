@@ -210,7 +210,17 @@ class JarvisInvestigationDetail(BaseModel):
     recommended_fix: str = ""
     verification_steps: list[str] = Field(default_factory=list)
     next_action: str = ""
+    proposal_task_id: str | None = None
+    proposal_status: str | None = None
     created_at: str | None = None
+
+
+class JarvisProposalEligibilityResponse(BaseModel):
+    eligible: bool
+    reasons: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    fix_template_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    existing_proposal_task_id: str | None = None
 
 
 class JarvisInvestigationListResponse(BaseModel):

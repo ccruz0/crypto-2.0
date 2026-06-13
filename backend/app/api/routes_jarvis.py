@@ -84,6 +84,7 @@ from app.jarvis.execution.schemas import (
     JarvisInvestigationListResponse,
     JarvisInvestigationPresetsResponse,
     JarvisInvestigationRunRequest,
+    JarvisProposalEligibilityResponse,
     JarvisPatchRevisionRequest,
     JarvisPhase5StatusResponse,
     JarvisTaskApprovalRequest,
@@ -344,6 +345,26 @@ def jarvis_investigation_detail(investigation_id: str) -> dict[str, Any]:
     return row
 
 
+# --- Phase 4B: Patch proposal eligibility (read-only foundation) ---
+
+
+@router.get(
+    "/api/jarvis/proposals/eligibility/{investigation_id}",
+    response_model=JarvisProposalEligibilityResponse,
+)
+def jarvis_proposal_eligibility(investigation_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.investigations.persistence import get_investigation
+    from app.jarvis.proposals.eligibility import check_proposal_eligibility
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    row = get_investigation(investigation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="investigation not found")
+    return check_proposal_eligibility(row).to_dict()
+
+
 # --- Phase 4: Change workflow (patch generation + review + approval, no application) ---
 
 
@@ -485,8 +506,12 @@ def jarvis_change_phase5_status(task_id: str) -> dict[str, Any]:
 @router.get("/api/jarvis/safety-status")
 def jarvis_phase5_safety_status() -> dict[str, Any]:
     from app.jarvis.change_execution.config import phase5_safety_status
+    from app.jarvis.proposals.config import phase4b_safety_status
 
-    return {"phase5": phase5_safety_status()}
+    return {
+        "phase4b": phase4b_safety_status(),
+        "phase5": phase5_safety_status(),
+    }
 
 
 @router.post("/api/jarvis/tasks/change/{task_id}/patch", response_model=JarvisChangeTaskDetail)
