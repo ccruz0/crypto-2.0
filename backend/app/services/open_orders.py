@@ -96,9 +96,11 @@ class UnifiedOpenOrder(BaseModel):
         return None
 
     def to_public_dict(self) -> Dict[str, Any]:
+        exchange_order_id = self.metadata.get("exchange_order_id") if self.metadata else None
+        source_endpoint = self.metadata.get("source_endpoint") if self.metadata else None
         return {
             "order_id": self.order_id,
-            "exchange_order_id": self.order_id,
+            "exchange_order_id": exchange_order_id or self.order_id,
             "symbol": self.symbol,
             "base_symbol": self.base_symbol,
             "side": self.side,
@@ -114,6 +116,7 @@ class UnifiedOpenOrder(BaseModel):
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "source": self.source,
+            "source_endpoint": source_endpoint,
             "raw": self.metadata,
         }
 

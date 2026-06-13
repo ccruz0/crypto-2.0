@@ -124,6 +124,12 @@ def unified_order_to_frontend_dict(unified_order: UnifiedOpenOrder) -> dict[str,
 
     return {
         "order_id": unified_order.order_id,
+        "exchange_order_id": (
+            unified_order.metadata.get("exchange_order_id")
+            if unified_order.metadata
+            else None
+        )
+        or unified_order.order_id,
         "client_oid": unified_order.client_oid,
         "instrument_name": unified_order.symbol,
         "order_type": unified_order.order_type or "LIMIT",
@@ -134,6 +140,9 @@ def unified_order_to_frontend_dict(unified_order: UnifiedOpenOrder) -> dict[str,
         "price": float(unified_order.price) if unified_order.price else None,
         "trigger_price": float(unified_order.trigger_price) if unified_order.trigger_price is not None else None,
         "is_trigger": getattr(unified_order, "is_trigger", False),
+        "source_endpoint": (
+            unified_order.metadata.get("source_endpoint") if unified_order.metadata else None
+        ),
         "avg_price": None,
         "cumulative_quantity": 0.0,
         "cumulative_value": 0.0,

@@ -459,8 +459,14 @@ class ExchangeSyncService:
                 return
 
             unified_orders = fetch_result.get("orders") or []
-            orders = fetch_result.get("regular_raw") or []
+            all_raw_orders = fetch_result.get("all_raw_orders") or []
+            orders = all_raw_orders or (
+                (fetch_result.get("regular_raw") or [])
+                + (fetch_result.get("trigger_raw") or [])
+                + (fetch_result.get("advanced_raw") or [])
+            )
             trigger_orders = fetch_result.get("trigger_raw") or []
+            advanced_orders = fetch_result.get("advanced_raw") or []
 
             update_open_orders_cache(unified_orders)
             record_open_orders_sync_success(
@@ -471,14 +477,15 @@ class ExchangeSyncService:
             )
             
             # Mark orders not in response as cancelled/closed
-            # Include both regular orders and trigger orders in the check
+            # Include regular, trigger, and advanced orders in the live ID set
             all_exchange_order_ids = set()
-            if orders:
-                all_exchange_order_ids.update(order.get('order_id') for order in orders if order.get('order_id'))
-            if trigger_orders:
-                all_exchange_order_ids.update(order.get('order_id') for order in trigger_orders if order.get('order_id'))
+            for order in orders:
+                for id_field in ("order_id", "exchange_order_id", "client_oid"):
+                    oid = order.get(id_field)
+                    if oid:
+                        all_exchange_order_ids.add(str(oid))
             
-            if all_exchange_order_ids or orders or trigger_orders:  # Check even if exchange returns empty list
+            if all_exchange_order_ids or orders or trigger_orders or advanced_orders:
                 existing_orders = db.query(ExchangeOrder).filter(
                     and_(
                         ExchangeOrder.exchange_order_id.notin_(all_exchange_order_ids),
@@ -666,11 +673,12 @@ class ExchangeSyncService:
                         logger.warning(f"⚠️ Failed to send Telegram notification for cancelled orders from sync: {notify_err}", exc_info=True)
                         # Don't fail sync if notification fails
             
-            # Upsert orders from response
+            # Upsert orders from merged live response (regular + trigger + advanced)
             for order_data in orders:
-                order_id = order_data.get('order_id')
+                order_id = order_data.get('order_id') or order_data.get('exchange_order_id')
                 if not order_id:
                     continue
+                order_id = str(order_id)
                 
                 symbol = order_data.get('instrument_name', '')
                 side = order_data.get('side', '').upper()

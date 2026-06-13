@@ -32,6 +32,7 @@ from app.services.crypto_com_sync_errors import (
     build_private_api_error,
     build_private_api_success,
     parse_http_auth_error,
+    parse_http_error_body,
 )
 from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
 
@@ -1789,11 +1790,21 @@ class CryptoComTradeClient:
                 
                 logger.error(f"Authentication failed: {error_code} - {error_msg}")
                 return parse_http_auth_error(error_data)
+
+            if response.status_code != 200:
+                parsed = parse_http_error_body(response, method)
+                error_code = parsed.get("error_code")
+                if error_code in (40101, 40103):
+                    return parse_http_auth_error({"code": error_code, "message": parsed.get("message")})
+                return build_private_api_error(
+                    sync_status="api_error",
+                    error_message=parsed.get("message") or f"HTTP {parsed.get('http_status')}",
+                    error_code=error_code,
+                    http_status=parsed.get("http_status"),
+                    endpoint=method,
+                )
             
-            response.raise_for_status()
             result = response.json()
-            
-            logger.info(f"Successfully retrieved open orders")
             logger.debug(f"Response: {result}")
             
             # Crypto.com returns {"result": {"data": [...]}}
@@ -1808,22 +1819,58 @@ class CryptoComTradeClient:
             return build_private_api_error(sync_status="api_error", error_message=str(e))
 
     TRIGGER_ORDER_TYPES = ("STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT")
+    ADVANCED_OPEN_ORDERS_ENDPOINT = "private/advanced/get-open-orders"
 
-    def _get_trigger_orders_via_advanced(self) -> dict:
-        """
-        Fallback when private/get-trigger-orders returns 40101: use private/advanced/get-open-orders
-        and filter for trigger-type orders (STOP_LOSS, TAKE_PROFIT, etc.). Same auth as other private calls.
-        """
-        method = "private/advanced/get-open-orders"
-        params = {}  # Omit instrument_name for 'all' per Exchange API docs
+    def get_advanced_open_orders(self) -> dict:
+        """Fetch all open orders from private/advanced/get-open-orders (unfiltered)."""
+        skip = require_aws_or_skip("get_advanced_open_orders")
+        if skip:
+            return {**skip, "sync_status": "skipped", "data_verified": False}
+        self._refresh_runtime_flags()
+
+        method = self.ADVANCED_OPEN_ORDERS_ENDPOINT
+        params: dict[str, Any] = {}
+
+        if self.use_proxy:
+            logger.info("Using PROXY to get advanced open orders")
+            try:
+                result = self._call_proxy(method, params)
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {**result, "sync_status": "skipped", "data_verified": False}
+                if isinstance(result, dict) and result.get("code") in (40101, 40103):
+                    return parse_http_auth_error(result)
+                if isinstance(result, dict) and result.get("code") not in (0, None):
+                    code = result.get("code")
+                    if isinstance(code, str) and code.isdigit():
+                        code = int(code)
+                    return build_private_api_error(
+                        sync_status="api_error",
+                        error_message=str(result.get("message") or "Advanced get-open-orders failed"),
+                        error_code=code if isinstance(code, int) else None,
+                        endpoint=method,
+                    )
+                if isinstance(result, dict) and "result" in result and "data" in result["result"]:
+                    data = result["result"]["data"]
+                    tagged = self._tag_advanced_open_orders(data if isinstance(data, list) else [])
+                    return build_private_api_success(tagged)
+                return build_private_api_error(
+                    sync_status="api_error",
+                    error_message="Unexpected proxy response for advanced open orders",
+                    endpoint=method,
+                )
+            except requests_exceptions.RequestException as exc:
+                return build_private_api_error(sync_status="api_error", error_message=str(exc), endpoint=method)
+
         if not self.api_key or not self.api_secret:
             return build_private_api_error(
                 sync_status="missing_credentials",
                 error_message="API credentials not configured",
             )
+
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
             return {**payload, "sync_status": "skipped", "data_verified": False}
+
         try:
             url = f"{self.base_url}/{method}"
             response = http_post(
@@ -1831,60 +1878,89 @@ class CryptoComTradeClient:
                 json=payload,
                 headers={"Content-Type": "application/json"},
                 timeout=10,
-                calling_module="crypto_com_trade.get_trigger_orders_advanced"
+                calling_module="crypto_com_trade.get_advanced_open_orders",
             )
             if response.status_code == 401:
                 return parse_http_auth_error(response.json())
             if response.status_code != 200:
-                logger.warning(
-                    "Advanced get-open-orders returned HTTP %s (body: %s)",
-                    response.status_code,
-                    (response.text or "")[:200],
-                )
+                parsed = parse_http_error_body(response, method)
+                error_code = parsed.get("error_code")
+                if error_code in (40101, 40103):
+                    return parse_http_auth_error({"code": error_code, "message": parsed.get("message")})
                 return build_private_api_error(
                     sync_status="api_error",
-                    error_message=f"Advanced get-open-orders HTTP {response.status_code}",
+                    error_message=parsed.get("message") or f"HTTP {parsed.get('http_status')}",
+                    error_code=error_code,
+                    http_status=parsed.get("http_status"),
+                    endpoint=method,
                 )
             result = response.json()
             if result.get("code") != 0:
                 code = result.get("code")
+                if isinstance(code, str) and code.isdigit():
+                    code = int(code)
                 if code in (40101, 40103):
                     return parse_http_auth_error(result)
-                logger.warning(
-                    "Advanced get-open-orders code=%s message=%s",
-                    result.get("code"),
-                    result.get("message"),
-                )
                 return build_private_api_error(
                     sync_status="api_error",
                     error_message=str(result.get("message") or "Advanced get-open-orders failed"),
                     error_code=code if isinstance(code, int) else None,
+                    endpoint=method,
                 )
             data = result.get("result", {}).get("data", [])
-            if not isinstance(data, list):
-                return build_private_api_success([])
-            # Filter to trigger-type orders only (advanced returns LIMIT + STOP_LOSS/TAKE_PROFIT etc.)
-            filtered = [
-                o for o in data
-                if isinstance(o, dict)
-                and (o.get("order_type") or o.get("type") or "").upper() in self.TRIGGER_ORDER_TYPES
-            ]
-            logger.info(
-                "Trigger orders via advanced/get-open-orders fallback: %d trigger orders from %d total (order_types in data: %s)",
-                len(filtered),
+            tagged = self._tag_advanced_open_orders(data if isinstance(data, list) else [])
+            logger.info("Retrieved %d advanced open orders from Crypto.com", len(tagged))
+            return build_private_api_success(tagged)
+        except requests_exceptions.RequestException as exc:
+            logger.error("Network error getting advanced open orders: %s", exc)
+            return build_private_api_error(sync_status="api_error", error_message=str(exc), endpoint=method)
+        except Exception as exc:
+            logger.error("Error getting advanced open orders: %s", exc)
+            return build_private_api_error(sync_status="api_error", error_message=str(exc), endpoint=method)
+
+    def _tag_advanced_open_orders(self, orders: list[Any]) -> list[dict[str, Any]]:
+        tagged: list[dict[str, Any]] = []
+        for item in orders:
+            if not isinstance(item, dict):
+                continue
+            enriched = dict(item)
+            enriched["source_endpoint"] = self.ADVANCED_OPEN_ORDERS_ENDPOINT
+            exec_inst = enriched.get("exec_inst") or []
+            if isinstance(exec_inst, str):
+                exec_inst = [exec_inst]
+            enriched["is_margin_order"] = "MARGIN_ORDER" in exec_inst
+            contingency = enriched.get("contingency_type") or enriched.get("contingencyType")
+            enriched["contingency_type"] = contingency
+            enriched["is_spot_attach"] = bool(enriched.get("is_spot_attach")) or contingency == "SPOT_ATTACH"
+            tagged.append(enriched)
+        return tagged
+
+    def _get_trigger_orders_via_advanced(self) -> dict:
+        """
+        Fallback when private/get-trigger-orders returns 40101: use private/advanced/get-open-orders
+        and filter for trigger-type orders (STOP_LOSS, TAKE_PROFIT, etc.). Same auth as other private calls.
+        """
+        advanced = self.get_advanced_open_orders()
+        if advanced.get("data_verified") is not True:
+            return advanced
+        data = advanced.get("data") or []
+        filtered = [
+            o for o in data
+            if isinstance(o, dict)
+            and (o.get("order_type") or o.get("type") or "").upper() in self.TRIGGER_ORDER_TYPES
+        ]
+        logger.info(
+            "Trigger orders via advanced/get-open-orders fallback: %d trigger orders from %d total",
+            len(filtered),
+            len(data),
+        )
+        if data and not filtered:
+            logger.warning(
+                "Advanced get-open-orders returned %d orders but none matched trigger types %s",
                 len(data),
-                [((x.get("order_type") or x.get("type")) or "?") for x in (data[:5] if isinstance(data, list) else [])],
+                self.TRIGGER_ORDER_TYPES,
             )
-            if data and not filtered:
-                logger.warning(
-                    "Advanced get-open-orders returned %d orders but none matched trigger types %s; check order_type/type field",
-                    len(data),
-                    self.TRIGGER_ORDER_TYPES,
-                )
-            return build_private_api_success(filtered)
-        except Exception as e:
-            logger.debug("Advanced get-open-orders fallback failed: %s", e)
-            return build_private_api_error(sync_status="api_error", error_message=str(e))
+        return build_private_api_success(filtered)
 
     def get_trigger_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get trigger-based (TP/SL) open orders."""
@@ -1915,6 +1991,16 @@ class CryptoComTradeClient:
                 if isinstance(result, dict) and result.get("code") in [40101, 40103]:
                     logger.warning(f"Proxy authentication error while fetching trigger orders: {result.get('message')}")
                     return parse_http_auth_error(result)
+                if isinstance(result, dict) and result.get("code") not in (0, None):
+                    code = result.get("code")
+                    if isinstance(code, str) and code.isdigit():
+                        code = int(code)
+                    return build_private_api_error(
+                        sync_status="api_error",
+                        error_message=str(result.get("message") or "Trigger orders request failed"),
+                        error_code=code if isinstance(code, int) else None,
+                        endpoint=method,
+                    )
 
                 if isinstance(result, dict) and "result" in result and "data" in result["result"]:
                     data = result["result"]["data"]
@@ -1970,7 +2056,29 @@ class CryptoComTradeClient:
 
                 return parse_http_auth_error(error_data)
 
-            response.raise_for_status()
+            if response.status_code != 200:
+                parsed = parse_http_error_body(response, method)
+                error_code = parsed.get("error_code")
+                if error_code == 40101:
+                    logger.info(
+                        "get-trigger-orders returned %s, trying private/advanced/get-open-orders fallback",
+                        error_code,
+                    )
+                    fallback = self._get_trigger_orders_via_advanced()
+                    if fallback.get("data_verified") is True:
+                        return fallback
+                    if fallback.get("sync_status") == "failed_auth":
+                        return fallback
+                if error_code in (40101, 40103):
+                    return parse_http_auth_error({"code": error_code, "message": parsed.get("message")})
+                return build_private_api_error(
+                    sync_status="api_error",
+                    error_message=parsed.get("message") or f"HTTP {parsed.get('http_status')}",
+                    error_code=error_code,
+                    http_status=parsed.get("http_status"),
+                    endpoint=method,
+                )
+
             result = response.json()
             data = result.get("result", {}).get("data", [])
             logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders from Crypto.com")
@@ -3074,21 +3182,33 @@ class CryptoComTradeClient:
         except (InvalidOperation, ValueError, TypeError):
             quantity = Decimal("0")
 
-        price = _optional_decimal(
-            raw.get("limit_price")
-            or raw.get("price")
-            or raw.get("ref_price")
-            or raw.get("reference_price")
-        )
-        trigger_price = _optional_decimal(
-            raw.get("trigger_price")
-            or raw.get("stop_price")
-            or raw.get("trigger_price_value")
-        )
+        if is_trigger:
+            trigger_price = _optional_decimal(
+                raw.get("ref_price")
+                or raw.get("trigger_price")
+                or raw.get("stop_price")
+                or raw.get("trigger_price_value")
+            )
+            price = _optional_decimal(raw.get("limit_price") or raw.get("price"))
+        else:
+            price = _optional_decimal(
+                raw.get("limit_price")
+                or raw.get("price")
+                or raw.get("ref_price")
+                or raw.get("reference_price")
+            )
+            trigger_price = _optional_decimal(
+                raw.get("trigger_price")
+                or raw.get("stop_price")
+                or raw.get("trigger_price_value")
+            )
 
         status = (raw.get("status") or raw.get("order_status") or "NEW").upper()
+        exchange_order_id = raw.get("exchange_order_id") or raw.get("order_id")
+        advanced_order_id = raw.get("advanced_order_id") or raw.get("id")
         order_id = str(
             raw.get("order_id")
+            or raw.get("exchange_order_id")
             or raw.get("id")
             or raw.get("orderId")
             or raw.get("client_oid")
@@ -3096,6 +3216,12 @@ class CryptoComTradeClient:
             or uuid.uuid4()
         )
         client_oid = raw.get("client_oid") or raw.get("clientOrderId")
+
+        metadata = dict(raw)
+        if exchange_order_id not in (None, ""):
+            metadata["exchange_order_id"] = str(exchange_order_id)
+        if advanced_order_id not in (None, ""):
+            metadata["advanced_order_id"] = str(advanced_order_id)
 
         # Format timestamps as ISO strings (required by app.services.open_orders.UnifiedOpenOrder)
         created_at_str = _format_timestamp(raw.get("create_time") or raw.get("order_time") or raw.get("created_at"))
@@ -3117,7 +3243,7 @@ class CryptoComTradeClient:
             created_at=created_at_str,  # ISO string format
             updated_at=updated_at_str,  # ISO string format
             source="trigger" if is_trigger else "standard",
-            metadata=raw,  # Changed from 'raw' to 'metadata'
+            metadata=metadata,
         )
 
     def get_all_unified_orders(self) -> List[UnifiedOpenOrder]:

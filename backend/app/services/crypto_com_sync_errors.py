@@ -15,20 +15,62 @@ def map_error_code_to_sync_status(error_code: Optional[int]) -> str:
     return "api_error"
 
 
+def parse_http_error_body(response: Any, endpoint: str) -> dict[str, Any]:
+    """
+    Parse Crypto.com HTTP error JSON before ``raise_for_status()``.
+
+    Surfaces ``code`` from bodies like ``{"code":50001,"message":"ERR_INTERNAL"}``.
+    """
+    http_status = getattr(response, "status_code", None)
+    try:
+        body = response.json()
+    except Exception:
+        text = (getattr(response, "text", None) or "")[:500]
+        return {
+            "error_code": None,
+            "message": text or f"HTTP {http_status}",
+            "http_status": http_status,
+            "endpoint": endpoint,
+        }
+    if not isinstance(body, dict):
+        return {
+            "error_code": None,
+            "message": str(body)[:500],
+            "http_status": http_status,
+            "endpoint": endpoint,
+        }
+    error_code = body.get("code")
+    if isinstance(error_code, str) and error_code.isdigit():
+        error_code = int(error_code)
+    return {
+        "error_code": error_code if isinstance(error_code, int) else None,
+        "message": str(body.get("message") or body.get("error") or f"HTTP {http_status}"),
+        "http_status": http_status,
+        "endpoint": endpoint,
+    }
+
+
 def build_private_api_error(
     *,
     sync_status: str,
     error_message: str,
     error_code: Optional[int] = None,
+    http_status: Optional[int] = None,
+    endpoint: Optional[str] = None,
 ) -> dict[str, Any]:
     """Structured failure payload — never includes verified empty ``data``."""
-    return {
+    payload: dict[str, Any] = {
         "error": error_message,
         "error_code": error_code,
         "error_message": error_message,
         "sync_status": sync_status,
         "data_verified": False,
     }
+    if http_status is not None:
+        payload["http_status"] = http_status
+    if endpoint is not None:
+        payload["endpoint"] = endpoint
+    return payload
 
 
 def build_private_api_success(data: list[Any]) -> dict[str, Any]:
