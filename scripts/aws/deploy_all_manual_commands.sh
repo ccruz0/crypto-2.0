@@ -13,10 +13,14 @@ cat << 'MANUAL_EOF'
 
 cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo "❌ No project dir"; exit 1; }
 
-# 1) Pull code + frontend
-git pull origin main || true
-rm -rf frontend
-git clone https://github.com/ccruz0/frontend.git frontend
+# 1) Pull monorepo (frontend/ is tracked in-repo — never clone external frontend)
+git pull origin main || { echo "❌ Git pull failed"; exit 1; }
+# Remove stale nested frontend git repo if a legacy deploy left one behind
+if [ -d frontend/.git ]; then
+  sudo rm -rf frontend/.git || rm -rf frontend/.git
+  git checkout HEAD -- frontend/
+fi
+bash scripts/verify_no_external_frontend_deploy.sh --runtime
 
 # 2) Render secrets (needs AWS CLI on the instance)
 bash scripts/aws/render_runtime_env.sh || true

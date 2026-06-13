@@ -45,27 +45,20 @@ jobs:
       API_BASE_URL: ${{ vars.API_BASE_URL }}
     
     steps:
-    - name: Checkout API
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
         persist-credentials: true
-        submodules: false  # Disable submodules since frontend is cloned manually
       
-    - name: Fetch frontend source
+    - name: Verify monorepo frontend (no external repo)
       run: |
         set -e
-        if [ -d "frontend/.git" ]; then
-          echo "Updating existing frontend repo..."
-          git -C frontend pull --ff-only
-        else
-          echo "Cloning frontend repo..."
-          rm -rf frontend
-          git clone --depth 1 https://github.com/ccruz0/frontend.git frontend
-        fi
-        echo "Frontend HEAD:"
-        git -C frontend rev-parse HEAD
-        git -C frontend log -1 --oneline
+        bash scripts/verify_no_external_frontend_deploy.sh --ci
+        bash scripts/verify_no_external_frontend_deploy.sh --runtime
+        echo "Monorepo commit: $(git rev-parse HEAD)"
+        echo "Frontend source: ./frontend (same commit as monorepo)"
+        test ! -d frontend/.git || { echo "ERROR: frontend/ must not be a separate git repo"; exit 1; }
       
     - name: Verify checkout
       run: |

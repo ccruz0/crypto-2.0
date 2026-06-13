@@ -22,6 +22,9 @@ fail() {
 
 DEPLOY_ARTIFACTS=(
   ".github/workflows/deploy_session_manager.yml"
+  ".github/workflows/deploy.yml"
+  ".github/workflows/dashboard-data-integrity.yml"
+  "scripts/aws/deploy_all_manual_commands.sh"
 )
 if [[ -n "$EXTRA_SCAN" ]]; then
   DEPLOY_ARTIFACTS+=("$EXTRA_SCAN")
@@ -55,7 +58,7 @@ FORBIDDEN_LITERALS=(
 FORBIDDEN_REGEXES=(
   'git[[:space:]]+clone.*frontend\.git'
   'git[[:space:]]+-C[[:space:]]+frontend[[:space:]]+pull'
-  'rm[[:space:]]+-rf[[:space:]]+frontend'
+  'rm[[:space:]]+-rf[[:space:]]+frontend([[:space:]]|$)'
 )
 
 scan_deploy_artifact() {

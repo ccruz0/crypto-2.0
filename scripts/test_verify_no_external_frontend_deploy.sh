@@ -5,7 +5,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-WORKFLOW=".github/workflows/deploy_session_manager.yml"
+DEPLOY_ARTIFACTS=(
+  ".github/workflows/deploy_session_manager.yml"
+  ".github/workflows/deploy.yml"
+  ".github/workflows/dashboard-data-integrity.yml"
+  "scripts/aws/deploy_all_manual_commands.sh"
+)
 GUARD="scripts/verify_no_external_frontend_deploy.sh"
 
 echo "==> test_verify_no_external_frontend_deploy"
@@ -28,28 +33,35 @@ else
   bash "$GUARD" --runtime
 fi
 
-echo "-- workflow must not mention external frontend repo"
-if grep -qE 'ccruz0/frontend|github\.com/ccruz0/frontend' "$WORKFLOW"; then
-  echo "FAIL: $WORKFLOW still references ccruz0/frontend" >&2
-  exit 1
-fi
+for artifact in "${DEPLOY_ARTIFACTS[@]}"; do
+  echo "-- $artifact must not mention external frontend repo"
+  if grep -qE 'ccruz0/frontend|github\.com/ccruz0/frontend' "$artifact"; then
+    echo "FAIL: $artifact still references ccruz0/frontend" >&2
+    exit 1
+  fi
 
-echo "-- workflow must not clone or remove monorepo frontend/"
-if grep -qE 'git clone.*frontend\.git|rm -rf frontend' "$WORKFLOW"; then
-  echo "FAIL: $WORKFLOW still clones or deletes frontend/" >&2
-  exit 1
-fi
+  echo "-- $artifact must not clone external frontend"
+  if grep -qE 'git clone.*frontend\.git' "$artifact"; then
+    echo "FAIL: $artifact still clones external frontend" >&2
+    exit 1
+  fi
+done
 
-echo "-- workflow must call verify_no_external_frontend_deploy.sh"
-grep -q 'verify_no_external_frontend_deploy.sh' "$WORKFLOW" || {
-  echo "FAIL: $WORKFLOW must invoke verify_no_external_frontend_deploy.sh" >&2
-  exit 1
-}
+echo "-- deploy workflows must call verify_no_external_frontend_deploy.sh"
+for workflow in \
+  ".github/workflows/deploy_session_manager.yml" \
+  ".github/workflows/deploy.yml" \
+  ".github/workflows/dashboard-data-integrity.yml"; do
+  grep -q 'verify_no_external_frontend_deploy.sh' "$workflow" || {
+    echo "FAIL: $workflow must invoke verify_no_external_frontend_deploy.sh" >&2
+    exit 1
+  }
+done
 
 echo "-- guard rejects synthetic forbidden reference"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
-cp "$WORKFLOW" "$TMP"
+cp ".github/workflows/deploy_session_manager.yml" "$TMP"
 printf '\n# bad: ccruz0/frontend\n' >> "$TMP"
 if ! grep -qF 'ccruz0/frontend' "$TMP"; then
   echo "FAIL: synthetic test setup broken" >&2
