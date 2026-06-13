@@ -28,14 +28,14 @@ export interface ChangeTaskDetail {
 }
 
 export async function fetchApprovalQueue(limit = 20): Promise<ApprovalQueueItem[]> {
-  const resp = await fetch(`${API}/api/jarvis/approval-queue?limit=${limit}`, { cache: 'no-store' });
+  const resp = await fetch(`${API}/jarvis/approval-queue?limit=${limit}`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`approval queue failed: ${resp.status}`);
   const data = await resp.json();
   return data.items ?? [];
 }
 
 export async function submitChangeTask(objective: string, dryRun = true): Promise<ChangeTaskDetail> {
-  const resp = await fetch(`${API}/api/jarvis/tasks/change/submit`, {
+  const resp = await fetch(`${API}/jarvis/tasks/change/submit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ objective, dry_run: dryRun, run_tests: true }),
@@ -45,7 +45,7 @@ export async function submitChangeTask(objective: string, dryRun = true): Promis
 }
 
 export async function approveChangeTask(taskId: string, actorId = 'dashboard', comment = ''): Promise<ChangeTaskDetail> {
-  const resp = await fetch(`${API}/api/jarvis/tasks/change/${taskId}/approve`, {
+  const resp = await fetch(`${API}/jarvis/tasks/change/${taskId}/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ actor_id: actorId, comment }),
@@ -55,7 +55,7 @@ export async function approveChangeTask(taskId: string, actorId = 'dashboard', c
 }
 
 export async function rejectChangeTask(taskId: string, actorId = 'dashboard', comment = ''): Promise<ChangeTaskDetail> {
-  const resp = await fetch(`${API}/api/jarvis/tasks/change/${taskId}/reject`, {
+  const resp = await fetch(`${API}/jarvis/tasks/change/${taskId}/reject`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ actor_id: actorId, comment }),
@@ -65,7 +65,7 @@ export async function rejectChangeTask(taskId: string, actorId = 'dashboard', co
 }
 
 export async function fetchChangeTask(taskId: string): Promise<ChangeTaskDetail> {
-  const resp = await fetch(`${API}/api/jarvis/tasks/change/${taskId}`, { cache: 'no-store' });
+  const resp = await fetch(`${API}/jarvis/tasks/change/${taskId}`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`task detail failed: ${resp.status}`);
   return resp.json();
 }

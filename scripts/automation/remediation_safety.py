@@ -52,7 +52,7 @@ ALLOWED_AUTO_ACTIONS: frozenset[str] = frozenset(
 COMPOSE_SERVICE_TO_ACTION: dict[str, str] = {
     "backend-aws": ACTION_RESTART_BACKEND,
     "frontend-aws": ACTION_RESTART_FRONTEND,
-    "market-updater": ACTION_RESTART_MARKET_UPDATER,
+    "market-updater-aws": ACTION_RESTART_MARKET_UPDATER,
 }
 
 # Health-check failure names -> safe auto actions (only allowlisted actions).
@@ -157,7 +157,7 @@ def assert_command_safe(command: list[str]) -> None:
             if service in joined:
                 if is_auto_action_allowed(action_id):
                     return
-        raise ValueError("docker compose restart only allowed for backend-aws, frontend-aws, market-updater")
+        raise ValueError("docker compose restart only allowed for backend-aws, frontend-aws, market-updater-aws")
     if "compose" not in joined and "restart" in joined:
         raise ValueError("bare docker restart not allowed in auto-remediation")
 

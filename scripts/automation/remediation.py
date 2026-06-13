@@ -351,7 +351,7 @@ def remediate_health_failures(
         elif action_id == ACTION_RESTART_FRONTEND:
             actions.append(_restart_compose_service("frontend-aws", dry_run=effective_dry_run, failure_label=failure_label))
         elif action_id == ACTION_RESTART_MARKET_UPDATER:
-            actions.append(_restart_compose_service("market-updater", dry_run=effective_dry_run, failure_label=failure_label))
+            actions.append(_restart_compose_service("market-updater-aws", dry_run=effective_dry_run, failure_label=failure_label))
 
     for action in actions:
         status = "ok" if action.ok else "fail"
