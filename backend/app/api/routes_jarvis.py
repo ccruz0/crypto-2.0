@@ -217,6 +217,22 @@ def jarvis_execution_task_detail(task_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="task not found") from exc
 
 
+@router.get("/api/jarvis/tasks/execution/{task_id}/agents")
+def jarvis_execution_agent_pipeline(task_id: str) -> dict[str, Any]:
+    """Multi-agent operational panel payload derived from task execution log."""
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.execution.agent_pipeline import build_agent_pipeline
+    from app.jarvis.execution.service import get_execution_task_detail
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        detail = get_execution_task_detail(task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    return build_agent_pipeline(detail)
+
+
 @router.post("/api/jarvis/tasks/{task_id}/approve", response_model=JarvisExecutionTaskDetail)
 def jarvis_execution_approve(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
     from app.database import engine, ensure_jarvis_task_runs_table

@@ -67,6 +67,14 @@ def submit_execution_task(
     transition_task_status(task_id, TaskLifecycleState.PLANNING, started_at=_now_iso())
     plan = build_plan(objective_text)
     plan_dict = plan_to_dict(plan)
+    log_execution_event(
+        task_id=task_id,
+        agent="planner_agent",
+        tool="build_plan",
+        input_summary=objective_text[:500],
+        output_summary=f"steps={len(plan.steps)} safety={plan.overall_safety}",
+        duration_ms=0,
+    )
 
     if is_forbidden(SafetyLevel(plan.overall_safety)):
         _update_task(

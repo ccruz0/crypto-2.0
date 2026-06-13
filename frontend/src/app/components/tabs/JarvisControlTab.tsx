@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   approveJarvisTask,
   getJarvisExecutionTask,
@@ -10,6 +11,8 @@ import {
   type JarvisExecutionTaskDetail,
   type JarvisExecutionTaskSummary,
 } from '@/app/api';
+import JarvisAgentPanel from '@/app/components/jarvis/JarvisAgentPanel';
+import JarvisOperationalStatus from '@/app/components/jarvis/JarvisOperationalStatus';
 
 const POLL_MS = 10000;
 
@@ -17,12 +20,12 @@ function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
   const variant =
     normalized === 'completed'
-      ? 'bg-green-100 text-green-800'
+      ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
       : normalized === 'failed' || normalized === 'cancelled'
-        ? 'bg-red-100 text-red-800'
+        ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
         : normalized === 'waiting_for_approval'
-          ? 'bg-amber-100 text-amber-800'
-          : 'bg-blue-100 text-blue-800';
+          ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+          : 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200';
   return (
     <span className={`inline-flex px-2 py-0.5 rounded text-xs font-semibold ${variant}`}>
       {status}
@@ -36,6 +39,7 @@ export default function JarvisControlTab() {
   const [approvalMode, setApprovalMode] = useState<'auto' | 'manual'>('auto');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const [tasks, setTasks] = useState<JarvisExecutionTaskSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<JarvisExecutionTaskDetail | null>(null);
@@ -76,6 +80,7 @@ export default function JarvisControlTab() {
     if (!objective.trim()) return;
     setSubmitting(true);
     setError(null);
+    setSubmitMessage(null);
     try {
       const res = await submitJarvisExecutionTask({
         objective: objective.trim(),
@@ -86,9 +91,12 @@ export default function JarvisControlTab() {
       setSelectedId(res.task_id);
       setDetail(res as JarvisExecutionTaskDetail);
       setObjective('');
+      setSubmitMessage(`Task ${res.task_id.slice(0, 8)} submitted — status: ${res.status}`);
       await refreshList();
     } catch (err) {
-      setError(String(err));
+      const msg = String(err);
+      setError(msg);
+      setSubmitMessage(msg.includes('fetch') || msg.includes('503') ? 'Task not executed — Unable to reach Jarvis API.' : msg);
     } finally {
       setSubmitting(false);
     }
@@ -109,13 +117,18 @@ export default function JarvisControlTab() {
   };
 
   return (
-    <div className="space-y-6">
+    <div data-testid="jarvis-tab" className="space-y-6">
+      <JarvisOperationalStatus />
+
+      <JarvisAgentPanel detail={detail} />
+
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 p-4">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">Submit Task</h2>
         <form onSubmit={onSubmit} className="space-y-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Objective</label>
             <textarea
+              data-testid="jarvis-prompt-input"
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
               rows={3}
@@ -150,13 +163,18 @@ export default function JarvisControlTab() {
           </div>
           <button
             type="submit"
+            data-testid="jarvis-submit-button"
             disabled={submitting || !objective.trim()}
             className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 text-sm"
           >
-            {submitting ? 'Submitting…' : 'Submit investigation task'}
+            {submitting ? 'Submitting…' : 'Submit to Jarvis'}
           </button>
         </form>
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+        {(error || submitMessage) && (
+          <p data-testid="jarvis-submit-message" className={`mt-2 text-sm ${error ? 'text-red-600' : 'text-green-700 dark:text-green-300'}`}>
+            {error || submitMessage}
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -187,7 +205,12 @@ export default function JarvisControlTab() {
         </div>
 
         <div className="lg:col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 p-4">
-          <h3 className="font-semibold text-gray-900 dark:text-white mb-2">Task execution</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h3 className="font-semibold text-gray-900 dark:text-white">Task execution</h3>
+            <Link href="/jarvis/approval" className="text-xs text-blue-600 hover:underline dark:text-blue-400">
+              Approval center →
+            </Link>
+          </div>
           {!detail ? (
             <p className="text-sm text-gray-500">Select a task to view plan, artifacts, and logs.</p>
           ) : (
@@ -237,6 +260,9 @@ export default function JarvisControlTab() {
                   ))}
                 </ul>
               </div>
+              {detail.error && (
+                <div className="text-xs text-red-600 bg-red-50 dark:bg-red-900/20 p-2 rounded">{detail.error}</div>
+              )}
               {detail.final_answer && (
                 <div>
                   <h4 className="font-medium mb-1">Result</h4>
