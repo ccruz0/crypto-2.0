@@ -265,7 +265,10 @@ def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
     tasks = list_execution_tasks(limit=limit)
     queue: list[dict[str, Any]] = []
     for task in tasks:
-        if task.get("status") != TaskLifecycleState.WAITING_FOR_APPROVAL.value:
+        if task.get("status") not in (
+            TaskLifecycleState.WAITING_FOR_APPROVAL.value,
+            TaskLifecycleState.WAITING_FOR_PR_APPROVAL.value,
+        ):
             continue
         detail = get_execution_task(task["task_id"])
         if detail is None:
@@ -295,6 +298,7 @@ def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
                 "approval_status": detail.get("approval_status"),
                 "created_at": detail.get("created_at"),
                 "workflow_type": WORKFLOW_TYPE,
+                "phase5_available": True,
             }
         )
     return queue
