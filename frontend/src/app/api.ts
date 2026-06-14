@@ -2370,6 +2370,8 @@ export interface JarvisImprovementTemplates {
 
 export interface JarvisImprovementToolEffectiveness {
   tool: string;
+  category: string;
+  assessment_display: string;
   executions: number;
   successes: number;
   failures: number;
@@ -2377,6 +2379,11 @@ export interface JarvisImprovementToolEffectiveness {
   useful_outcomes: number;
   investigations_using: number;
   utility_ratio: number;
+  useful_findings?: number;
+  false_positive_contribution?: number;
+  workflow_usage_rate?: number | null;
+  successful_completion_rate?: number | null;
+  failure_association_rate?: number | null;
   average_duration_ms: number;
   assessment: string;
 }
@@ -2415,5 +2422,19 @@ export async function getJarvisImprovementTools(): Promise<JarvisImprovementTool
 
 export async function getJarvisImprovementTrends(): Promise<JarvisImprovementTrends> {
   return fetchAPI<JarvisImprovementTrends>('/jarvis/improvement/trends');
+}
+
+export interface JarvisImprovementQuality {
+  quality_score: number;
+  recommendation_count: number;
+  high_priority_count: number;
+  suppressed_recommendations: number;
+  duplicate_recommendations: number;
+  evidence_coverage: number;
+  read_only: boolean;
+}
+
+export async function getJarvisImprovementQuality(): Promise<JarvisImprovementQuality> {
+  return fetchAPI<JarvisImprovementQuality>('/jarvis/improvement/quality');
 }
 

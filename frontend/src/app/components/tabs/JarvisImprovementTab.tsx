@@ -2,10 +2,12 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  getJarvisImprovementQuality,
   getJarvisImprovementRecommendations,
   getJarvisImprovementTemplates,
   getJarvisImprovementTools,
   getJarvisImprovementTrends,
+  type JarvisImprovementQuality,
   type JarvisImprovementRecommendation,
   type JarvisImprovementTemplateGap,
   type JarvisImprovementToolEffectiveness,
@@ -103,16 +105,19 @@ function GapTable({ gaps }: { gaps: JarvisImprovementTemplateGap[] }) {
 }
 
 function ToolEfficiencyTable({ tools }: { tools: JarvisImprovementToolEffectiveness[] }) {
+  const isWorkflowTool = (row: JarvisImprovementToolEffectiveness) =>
+    row.category === 'orchestration' || row.category === 'execution' || row.category === 'validation';
+
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm" data-testid="jarvis-improvement-tools-table">
         <thead className="bg-gray-50 dark:bg-slate-900/50">
           <tr>
             <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Tool</th>
+            <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Tool Category</th>
             <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Executions</th>
             <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Success %</th>
-            <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Useful Outcomes</th>
-            <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Utility Ratio</th>
+            <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Key Metric</th>
             <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Assessment</th>
           </tr>
         </thead>
@@ -120,21 +125,35 @@ function ToolEfficiencyTable({ tools }: { tools: JarvisImprovementToolEffectiven
           {tools.map((row) => (
             <tr key={row.tool} className="border-t border-gray-100 dark:border-slate-700">
               <td className="px-3 py-2 font-mono text-xs">{row.tool}</td>
+              <td className="px-3 py-2 text-xs">{row.assessment_display || row.category}</td>
               <td className="px-3 py-2">{row.executions}</td>
               <td className="px-3 py-2">{row.success_rate_pct.toFixed(1)}%</td>
-              <td className="px-3 py-2">{row.useful_outcomes}</td>
-              <td className="px-3 py-2">{(row.utility_ratio * 100).toFixed(1)}%</td>
+              <td className="px-3 py-2 text-xs">
+                {isWorkflowTool(row) ? (
+                  <>
+                    Workflow: {((row.workflow_usage_rate ?? 0) * 100).toFixed(1)}% · Completion:{' '}
+                    {((row.successful_completion_rate ?? 0) * 100).toFixed(1)}%
+                  </>
+                ) : (
+                  <>
+                    Utility: {((row.utility_ratio ?? 0) * 100).toFixed(1)}% · Findings: {row.useful_findings ?? row.useful_outcomes}
+                  </>
+                )}
+              </td>
               <td className="px-3 py-2">
                 <span
                   className={`text-xs font-medium ${
-                    row.assessment === 'high_value'
+                    row.assessment === 'high_value' || row.assessment === 'workflow_healthy'
                       ? 'text-green-600 dark:text-green-400'
-                      : row.assessment === 'low_utility'
+                      : row.assessment === 'low_utility' || row.assessment === 'unreliable'
                         ? 'text-red-600 dark:text-red-400'
-                        : 'text-gray-600 dark:text-slate-400'
+                        : row.assessment === 'workflow_active'
+                          ? 'text-blue-600 dark:text-blue-400'
+                          : 'text-gray-600 dark:text-slate-400'
                   }`}
+                  data-testid={`tool-assessment-${row.tool}`}
                 >
-                  {row.assessment.replace('_', ' ')}
+                  {row.assessment_display || row.assessment.replace(/_/g, ' ')}
                 </span>
               </td>
             </tr>
@@ -216,6 +235,7 @@ export default function JarvisImprovementTab() {
   const [templateData, setTemplateData] = useState<Awaited<ReturnType<typeof getJarvisImprovementTemplates>> | null>(null);
   const [toolData, setToolData] = useState<Awaited<ReturnType<typeof getJarvisImprovementTools>> | null>(null);
   const [trendData, setTrendData] = useState<JarvisImprovementTrends | null>(null);
+  const [qualityData, setQualityData] = useState<JarvisImprovementQuality | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -223,11 +243,12 @@ export default function JarvisImprovementTab() {
     setLoading(true);
     setError(null);
     try {
-      const [recs, tmpl, tools, trends] = await Promise.all([
+      const [recs, tmpl, tools, trends, quality] = await Promise.all([
         getJarvisImprovementRecommendations(),
         getJarvisImprovementTemplates(),
         getJarvisImprovementTools(),
         getJarvisImprovementTrends(),
+        getJarvisImprovementQuality(),
       ]);
       setRecommendations(recs.recommendations || []);
       setBacklog(recs.backlog || []);
@@ -235,6 +256,7 @@ export default function JarvisImprovementTab() {
       setTemplateData(tmpl);
       setToolData(tools);
       setTrendData(trends);
+      setQualityData(quality);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load improvement data');
     } finally {
@@ -282,7 +304,18 @@ export default function JarvisImprovementTab() {
       )}
 
       {!loading && recommendations.length > 0 && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {qualityData && (
+            <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/10 p-3 text-center col-span-2 md:col-span-1">
+              <div className="text-2xl font-bold text-blue-700 dark:text-blue-300" data-testid="jarvis-improvement-quality-score">
+                {qualityData.quality_score.toFixed(1)}
+              </div>
+              <div className="text-xs uppercase text-blue-600 dark:text-blue-400">Quality Score</div>
+              <div className="text-xs text-blue-500 dark:text-blue-400 mt-1">
+                {qualityData.suppressed_recommendations} suppressed · {qualityData.evidence_coverage.toFixed(0)}% evidence
+              </div>
+            </div>
+          )}
           <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-3 text-center">
             <div className="text-2xl font-bold text-red-700 dark:text-red-300">{counts.high || highPriority.length}</div>
             <div className="text-xs uppercase text-red-600 dark:text-red-400">High Priority</div>

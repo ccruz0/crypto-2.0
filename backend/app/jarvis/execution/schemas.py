@@ -470,6 +470,8 @@ class JarvisImprovementTemplatesResponse(BaseModel):
 
 class JarvisImprovementToolEffectiveness(BaseModel):
     tool: str
+    category: str = "diagnostic"
+    assessment_display: str = "Diagnostic Tool"
     executions: int = 0
     successes: int = 0
     failures: int = 0
@@ -477,6 +479,11 @@ class JarvisImprovementToolEffectiveness(BaseModel):
     useful_outcomes: int = 0
     investigations_using: int = 0
     utility_ratio: float = 0.0
+    useful_findings: int = 0
+    false_positive_contribution: int = 0
+    workflow_usage_rate: float | None = None
+    successful_completion_rate: float | None = None
+    failure_association_rate: float | None = None
     average_duration_ms: float = 0.0
     assessment: str = "moderate"
 
@@ -498,5 +505,15 @@ class JarvisImprovementTrendsResponse(BaseModel):
     open_orders_share_pct: float = 0.0
     quality_score_daily: list[JarvisAnalyticsQualityTrend] = Field(default_factory=list)
     recommendations: list[JarvisImprovementRecommendation] = Field(default_factory=list)
+    read_only: bool = True
+
+
+class JarvisImprovementQualityResponse(BaseModel):
+    quality_score: float = 0.0
+    recommendation_count: int = 0
+    high_priority_count: int = 0
+    suppressed_recommendations: int = 0
+    duplicate_recommendations: int = 0
+    evidence_coverage: float = 0.0
     read_only: bool = True
 

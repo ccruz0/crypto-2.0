@@ -19,8 +19,14 @@ from app.database import (
 )
 from app.jarvis.execution import audit as audit_mod
 from app.jarvis.execution import persistence as persist_mod
-from app.jarvis.improvement.recommendation_ranker import compute_priority_score, rank_backlog, rank_priority
+from app.jarvis.improvement.recommendation_ranker import (
+    compute_priority_score,
+    filter_suppressed_recommendations,
+    rank_backlog,
+    rank_priority,
+)
 from app.jarvis.improvement.recommendation_engine import (
+    get_improvement_quality,
     get_improvement_recommendations,
     get_improvement_templates,
     get_improvement_tools,
@@ -309,7 +315,18 @@ class TestToolEffectiveness:
         for tool in analysis["tools"]:
             assert "utility_ratio" in tool
             assert "useful_outcomes" in tool
-            assert tool["assessment"] in ("high_value", "low_utility", "unreliable", "moderate", "insufficient_data")
+            assert "category" in tool
+            assert "assessment_display" in tool
+            assert tool["assessment"] in (
+                "high_value",
+                "low_utility",
+                "unreliable",
+                "moderate",
+                "insufficient_data",
+                "workflow_healthy",
+                "workflow_active",
+                "low_participation",
+            )
 
 
 class TestQualityTrends:
@@ -407,6 +424,7 @@ class TestImprovementAPI:
             "/api/jarvis/improvement/templates",
             "/api/jarvis/improvement/tools",
             "/api/jarvis/improvement/trends",
+            "/api/jarvis/improvement/quality",
         ):
             resp = improvement_client.get(path)
             assert resp.json().get("read_only") is True
@@ -416,6 +434,18 @@ class TestImprovementAPI:
         templates = get_improvement_templates()
         tools = get_improvement_tools()
         trends = get_improvement_trends()
+        quality = get_improvement_quality()
         assert templates["read_only"] is True
         assert tools["read_only"] is True
         assert trends["read_only"] is True
+        assert quality["read_only"] is True
+        assert "quality_score" in quality
+
+    def test_quality_route(self, improvement_client, improvement_db):
+        _seed_improvement_data(improvement_db)
+        resp = improvement_client.get("/api/jarvis/improvement/quality")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["read_only"] is True
+        assert "quality_score" in body
+        assert "suppressed_recommendations" in body

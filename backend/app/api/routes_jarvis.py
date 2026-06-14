@@ -82,6 +82,7 @@ from app.jarvis.execution.schemas import (
     JarvisAnalyticsTemplatesResponse,
     JarvisAnalyticsToolsResponse,
     JarvisImprovementRecommendationsResponse,
+    JarvisImprovementQualityResponse,
     JarvisImprovementTemplatesResponse,
     JarvisImprovementToolsResponse,
     JarvisImprovementTrendsResponse,
@@ -529,6 +530,18 @@ def jarvis_improvement_trends() -> dict[str, Any]:
     if not ensure_jarvis_execution_log_table(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
     return get_improvement_trends()
+
+
+@router.get("/api/jarvis/improvement/quality", response_model=JarvisImprovementQualityResponse)
+def jarvis_improvement_quality() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_execution_log_table, ensure_jarvis_investigations_table
+    from app.jarvis.improvement.recommendation_engine import get_improvement_quality
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_execution_log_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_improvement_quality()
 
 
 # --- Phase 4: Change workflow (patch generation + review + approval, no application) ---

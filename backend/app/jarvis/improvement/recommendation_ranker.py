@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Literal
 
+from app.jarvis.improvement.tool_classification import (
+    extract_tool_from_recommendation_id,
+    is_workflow_measured_tool,
+    should_suppress_workflow_recommendation,
+)
+
 PriorityLevel = Literal["high", "medium", "low"]
 ImpactLevel = Literal["high", "medium", "low"]
 
@@ -26,9 +32,42 @@ def rank_priority(score: float) -> PriorityLevel:
     return "low"
 
 
+def is_workflow_deprecation_recommendation(item: dict) -> bool:
+    """True when recommendation suggests removing or deprioritizing a workflow tool."""
+    return should_suppress_workflow_recommendation(item)
+
+
+def filter_suppressed_recommendations(items: list[dict]) -> tuple[list[dict], int]:
+    """Remove workflow-tool deprecation recommendations; return kept items and suppressed count."""
+    kept: list[dict] = []
+    suppressed = 0
+    for item in items:
+        if should_suppress_workflow_recommendation(item):
+            suppressed += 1
+            continue
+        kept.append(item)
+    return kept, suppressed
+
+
+def apply_orchestration_ranking_cap(item: dict) -> dict:
+    """
+    Cap priority for any remaining workflow-tool recommendations so diagnostic
+    gaps rank above mandatory workflow components.
+    """
+    tool = extract_tool_from_recommendation_id(str(item.get("id") or ""))
+    if tool is None or not is_workflow_measured_tool(tool):
+        return item
+    score = float(item.get("priority_score") or 0)
+    if score >= 50:
+        capped = {**item, "priority_score": min(score, 14.0), "priority": "medium"}
+        return capped
+    return item
+
+
 def rank_backlog(items: list[dict]) -> list[dict]:
     """Sort recommendations by priority score descending, stable on title."""
+    adjusted = [apply_orchestration_ranking_cap(item) for item in items]
     return sorted(
-        items,
+        adjusted,
         key=lambda item: (-float(item.get("priority_score") or 0), str(item.get("title") or "")),
     )
