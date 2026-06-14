@@ -212,6 +212,7 @@ class JarvisInvestigationDetail(BaseModel):
     next_action: str = ""
     proposal_task_id: str | None = None
     proposal_status: str | None = None
+    resolution_status: str | None = None
     created_at: str | None = None
 
 

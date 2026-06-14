@@ -640,8 +640,10 @@ def build_investigation_report(
     failures = list(collector_failure_reasons or [])
 
     classification = classify_open_orders_mismatch(tool_outputs)
-    if classification and not classification.active_mismatch:
-        ranked_causes = _apply_open_orders_resolution(ranked_causes, classification)
+    if classification and not classification.active_mismatch and ranked_causes:
+        top_cause = ranked_causes[0].cause
+        if top_cause != classification.root_cause:
+            ranked_causes = _apply_open_orders_resolution(ranked_causes, classification)
 
     top = ranked_causes[0] if ranked_causes else None
     min_score = 15.0 if category == "portfolio" else 25.0
