@@ -2215,3 +2215,109 @@ export async function proposePatchFromInvestigation(
   );
 }
 
+// --- Phase 4C: Jarvis investigation quality analytics ---
+
+export interface JarvisAnalyticsInvestigationMetrics {
+  total_investigations: number;
+  completed: number;
+  resolved: number;
+  insufficient_evidence: number;
+  partial_failure: number;
+  failed: number;
+  running: number;
+  average_duration_ms: number;
+  median_duration_ms: number;
+  success_rate_pct: number;
+  failure_rate_pct: number;
+  insufficient_evidence_rate_pct: number;
+  false_positives: number;
+  tool_errors_inferred: number;
+}
+
+export interface JarvisAnalyticsQualityScore {
+  overall_score: number;
+  last_7_days: number;
+  last_30_days: number;
+  formula: Record<string, number>;
+}
+
+export interface JarvisAnalyticsOverview {
+  investigations: JarvisAnalyticsInvestigationMetrics;
+  quality_score: JarvisAnalyticsQualityScore;
+  period_rates: Record<string, { completion_rate_pct: number; resolution_rate_pct: number; false_positive_rate_pct: number }>;
+  trends: {
+    last_7_days: Array<Record<string, string | number>>;
+    last_30_days: Array<Record<string, string | number>>;
+    quality_score_daily: Array<{ date: string; quality_score: number }>;
+  };
+  read_only: boolean;
+}
+
+export interface JarvisAnalyticsTemplateRow {
+  template_id: string;
+  investigations: number;
+  completed: number;
+  failed: number;
+  insufficient_evidence: number;
+  completion_rate_pct: number;
+  failure_rate_pct: number;
+  insufficient_evidence_rate_pct: number;
+  average_confidence: number;
+}
+
+export interface JarvisAnalyticsToolRow {
+  tool: string;
+  executions: number;
+  successes: number;
+  failures: number;
+  success_rate_pct: number;
+  failure_rate_pct: number;
+  average_duration_ms: number;
+  common_errors: Array<{ message: string; count: number }>;
+}
+
+export interface JarvisAnalyticsProposals {
+  proposals: {
+    proposals_generated: number;
+    no_fix_required: number;
+    waiting_for_approval: number;
+    approved: number;
+    rejected: number;
+    failed: number;
+    proposing: number;
+    useful_proposals: number;
+    useful_rate_pct: number;
+  };
+  proposal_tasks: number;
+  read_only: boolean;
+}
+
+export interface JarvisAnalyticsRootCauses {
+  most_common_root_causes: Array<{ root_cause: string; occurrences: number; key: string }>;
+  recurring_incidents: Array<{ root_cause: string; occurrences: number; key: string }>;
+  resolved_incidents: Array<{ investigation_id?: string; objective?: string; root_cause: string; status?: string; confidence: number; created_at?: string }>;
+  active_incidents: Array<{ investigation_id?: string; objective?: string; root_cause: string; status?: string; confidence: number; created_at?: string }>;
+  unique_root_causes: number;
+  read_only: boolean;
+}
+
+export async function getJarvisAnalyticsOverview(): Promise<JarvisAnalyticsOverview> {
+  return fetchAPI<JarvisAnalyticsOverview>('/jarvis/analytics/overview');
+}
+
+export async function getJarvisAnalyticsTemplates(): Promise<{ templates: JarvisAnalyticsTemplateRow[]; count: number }> {
+  return fetchAPI<{ templates: JarvisAnalyticsTemplateRow[]; count: number }>('/jarvis/analytics/templates');
+}
+
+export async function getJarvisAnalyticsTools(): Promise<{ tools: JarvisAnalyticsToolRow[]; count: number; noisiest_tools: JarvisAnalyticsToolRow[] }> {
+  return fetchAPI<{ tools: JarvisAnalyticsToolRow[]; count: number; noisiest_tools: JarvisAnalyticsToolRow[] }>('/jarvis/analytics/tools');
+}
+
+export async function getJarvisAnalyticsProposals(): Promise<JarvisAnalyticsProposals> {
+  return fetchAPI<JarvisAnalyticsProposals>('/jarvis/analytics/proposals');
+}
+
+export async function getJarvisAnalyticsRootCauses(): Promise<JarvisAnalyticsRootCauses> {
+  return fetchAPI<JarvisAnalyticsRootCauses>('/jarvis/analytics/root-causes');
+}
+

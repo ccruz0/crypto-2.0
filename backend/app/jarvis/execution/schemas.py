@@ -279,3 +279,143 @@ class JarvisInvestigationPreset(BaseModel):
 class JarvisInvestigationPresetsResponse(BaseModel):
     presets: list[JarvisInvestigationPreset] = Field(default_factory=list)
 
+
+# --- Phase 4C: Investigation quality analytics (read-only) ---
+
+
+class JarvisAnalyticsInvestigationMetrics(BaseModel):
+    total_investigations: int = 0
+    completed: int = 0
+    resolved: int = 0
+    insufficient_evidence: int = 0
+    partial_failure: int = 0
+    failed: int = 0
+    running: int = 0
+    average_duration_ms: float = 0.0
+    median_duration_ms: float = 0.0
+    success_rate_pct: float = 0.0
+    failure_rate_pct: float = 0.0
+    insufficient_evidence_rate_pct: float = 0.0
+    false_positives: int = 0
+    tool_errors_inferred: int = 0
+
+
+class JarvisAnalyticsQualityScore(BaseModel):
+    overall_score: float = 100.0
+    last_7_days: float = 100.0
+    last_30_days: float = 100.0
+    formula: dict[str, Any] = Field(default_factory=dict)
+
+
+class JarvisAnalyticsPeriodRates(BaseModel):
+    completion_rate_pct: float = 0.0
+    resolution_rate_pct: float = 0.0
+    false_positive_rate_pct: float = 0.0
+
+
+class JarvisAnalyticsDailyTrend(BaseModel):
+    date: str
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    insufficient_evidence: int = 0
+    resolved: int = 0
+    false_positives: int = 0
+    success_rate_pct: float = 0.0
+
+
+class JarvisAnalyticsQualityTrend(BaseModel):
+    date: str
+    quality_score: float = 100.0
+
+
+class JarvisAnalyticsOverviewResponse(BaseModel):
+    investigations: JarvisAnalyticsInvestigationMetrics
+    quality_score: JarvisAnalyticsQualityScore
+    period_rates: dict[str, JarvisAnalyticsPeriodRates] = Field(default_factory=dict)
+    trends: dict[str, Any] = Field(default_factory=dict)
+    read_only: bool = True
+
+
+class JarvisAnalyticsTemplateRow(BaseModel):
+    template_id: str
+    investigations: int = 0
+    completed: int = 0
+    failed: int = 0
+    insufficient_evidence: int = 0
+    completion_rate_pct: float = 0.0
+    failure_rate_pct: float = 0.0
+    insufficient_evidence_rate_pct: float = 0.0
+    average_confidence: float = 0.0
+
+
+class JarvisAnalyticsTemplatesResponse(BaseModel):
+    templates: list[JarvisAnalyticsTemplateRow] = Field(default_factory=list)
+    count: int = 0
+    read_only: bool = True
+
+
+class JarvisAnalyticsToolError(BaseModel):
+    message: str
+    count: int = 0
+
+
+class JarvisAnalyticsToolRow(BaseModel):
+    tool: str
+    executions: int = 0
+    successes: int = 0
+    failures: int = 0
+    success_rate_pct: float = 0.0
+    failure_rate_pct: float = 0.0
+    average_duration_ms: float = 0.0
+    common_errors: list[JarvisAnalyticsToolError] = Field(default_factory=list)
+
+
+class JarvisAnalyticsToolsResponse(BaseModel):
+    tools: list[JarvisAnalyticsToolRow] = Field(default_factory=list)
+    count: int = 0
+    noisiest_tools: list[JarvisAnalyticsToolRow] = Field(default_factory=list)
+    read_only: bool = True
+
+
+class JarvisAnalyticsProposalFunnel(BaseModel):
+    proposals_generated: int = 0
+    no_fix_required: int = 0
+    waiting_for_approval: int = 0
+    approved: int = 0
+    rejected: int = 0
+    failed: int = 0
+    proposing: int = 0
+    useful_proposals: int = 0
+    useful_rate_pct: float = 0.0
+
+
+class JarvisAnalyticsProposalsResponse(BaseModel):
+    proposals: JarvisAnalyticsProposalFunnel
+    proposal_tasks: int = 0
+    read_only: bool = True
+
+
+class JarvisAnalyticsRootCauseRow(BaseModel):
+    root_cause: str
+    occurrences: int = 0
+    key: str = ""
+
+
+class JarvisAnalyticsIncidentRow(BaseModel):
+    investigation_id: str | None = None
+    objective: str | None = None
+    root_cause: str
+    status: str | None = None
+    confidence: float = 0.0
+    created_at: str | None = None
+
+
+class JarvisAnalyticsRootCausesResponse(BaseModel):
+    most_common_root_causes: list[JarvisAnalyticsRootCauseRow] = Field(default_factory=list)
+    recurring_incidents: list[JarvisAnalyticsRootCauseRow] = Field(default_factory=list)
+    resolved_incidents: list[JarvisAnalyticsIncidentRow] = Field(default_factory=list)
+    active_incidents: list[JarvisAnalyticsIncidentRow] = Field(default_factory=list)
+    unique_root_causes: int = 0
+    read_only: bool = True
+

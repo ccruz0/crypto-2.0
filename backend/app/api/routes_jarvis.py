@@ -76,6 +76,11 @@ from app.jarvis.mvp.schemas import (
 )
 from app.jarvis.execution.schemas import (
     JarvisApprovalQueueResponse,
+    JarvisAnalyticsOverviewResponse,
+    JarvisAnalyticsProposalsResponse,
+    JarvisAnalyticsRootCausesResponse,
+    JarvisAnalyticsTemplatesResponse,
+    JarvisAnalyticsToolsResponse,
     JarvisChangeTaskDetail,
     JarvisChangeTaskSubmitRequest,
     JarvisExecutionTaskDetail,
@@ -414,6 +419,63 @@ def jarvis_investigation_propose_patch(investigation_id: str) -> dict[str, Any]:
     except Exception as exc:
         logger.exception("jarvis.propose_patch_failed investigation_id=%s err=%s", investigation_id, exc)
         raise HTTPException(status_code=500, detail=f"jarvis_propose_patch_failed: {exc}") from exc
+
+
+# --- Phase 4C: Investigation quality analytics (read-only) ---
+
+
+@router.get("/api/jarvis/analytics/overview", response_model=JarvisAnalyticsOverviewResponse)
+def jarvis_analytics_overview() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.analytics.metrics_service import get_overview_analytics
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_overview_analytics()
+
+
+@router.get("/api/jarvis/analytics/templates", response_model=JarvisAnalyticsTemplatesResponse)
+def jarvis_analytics_templates() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.analytics.metrics_service import get_template_analytics
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_template_analytics()
+
+
+@router.get("/api/jarvis/analytics/tools", response_model=JarvisAnalyticsToolsResponse)
+def jarvis_analytics_tools() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_execution_log_table, ensure_jarvis_investigations_table
+    from app.jarvis.analytics.metrics_service import get_tool_analytics
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_execution_log_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_tool_analytics()
+
+
+@router.get("/api/jarvis/analytics/proposals", response_model=JarvisAnalyticsProposalsResponse)
+def jarvis_analytics_proposals() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table, ensure_jarvis_task_runs_table
+    from app.jarvis.analytics.metrics_service import get_proposal_analytics
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_proposal_analytics()
+
+
+@router.get("/api/jarvis/analytics/root-causes", response_model=JarvisAnalyticsRootCausesResponse)
+def jarvis_analytics_root_causes() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.analytics.metrics_service import get_root_cause_analytics
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_root_cause_analytics()
 
 
 # --- Phase 4: Change workflow (patch generation + review + approval, no application) ---
