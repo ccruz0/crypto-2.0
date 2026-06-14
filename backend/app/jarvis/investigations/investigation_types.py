@@ -76,18 +76,33 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         pattern=re.compile(
             r"dashboard\s+differ.*exchange|exchange.*differ.*dashboard|"
             r"zero\s+orders.*exchange|exchange.*one.*dashboard.*zero|"
-            r"dashboard.*zero.*order.*exchange",
+            r"dashboard.*zero.*order.*exchange|"
+            r"open\s+orders?\s+(?:are\s+)?different|"
+            r"open\s+orders?\s+not\s+match(?:ing)?|"
+            r"(?:open\s+)?orders?\s+missing(?:\s+from)?(?:\s+(?:crypto\.?com|dashboard|exchange))?|"
+            r"crypto\.?com\s+shows?\s+(?:more\s+)?orders?|"
+            r"dashboard\s+(?:missing\s+orders?|not\s+match(?:ing)?\s+exchange)|"
+            r"not\s+all(?:\s+(?:my\s+)?)?open\s+orders?\s+(?:are\s+)?(?:there|showing)|"
+            r"missing\s+trigger\s+orders?|"
+            r"trigger\s+orders?\s+not\s+show(?:ing)?|"
+            r"(?:dashboard|exchange|crypto\.?com).*(?:mismatch|different|discrepanc)",
             re.IGNORECASE,
         ),
         title="Why does dashboard differ from exchange?",
         collectors=(
             EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
             EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
+            EvidenceCollector(
+                "query_database",
+                "count_open_orders",
+                {"preset": "count_open_orders"},
+                mandatory=False,
+            ),
             EvidenceCollector("search_logs", "search_logs", {"keywords": ("trigger", "50001", "open_orders", "sync")}, mandatory=False),
             EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
             EvidenceCollector("inspect_health", "inspect_health", mandatory=False),
         ),
-        keywords=("dashboard", "exchange", "mismatch", "reconcile"),
+        keywords=("dashboard", "exchange", "mismatch", "reconcile", "crypto.com", "trigger"),
     ),
     InvestigationTemplate(
         template_id="portfolio_equity_derived",

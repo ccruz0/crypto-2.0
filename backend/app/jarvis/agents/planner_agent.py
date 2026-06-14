@@ -16,6 +16,12 @@ _PLAN_TEMPLATES: list[tuple[re.Pattern[str], list[tuple[str, str, str]]]] = [
     (
         re.compile(
             r"why\s+are\s+open\s+orders\s+empty|why\s+does\s+dashboard\s+differ|"
+            r"open\s+orders?\s+(?:are\s+)?different|open\s+orders?\s+not\s+match(?:ing)?|"
+            r"(?:open\s+)?orders?\s+missing(?:\s+from)?(?:\s+(?:crypto\.?com|dashboard|exchange))?|"
+            r"crypto\.?com\s+shows?\s+(?:more\s+)?orders?|"
+            r"dashboard\s+(?:missing\s+orders?|not\s+match(?:ing)?\s+exchange)|"
+            r"not\s+all(?:\s+(?:my\s+)?)?open\s+orders?|"
+            r"missing\s+trigger\s+orders?|trigger\s+orders?\s+not\s+show(?:ing)?|"
             r"portfolio\s+value\s+incorrect|websocket\s+prices?\s+stale|"
             r"jarvis\s+task\s+failing|deployment\s+unhealthy|exchange\s+auth\s+fail|"
             r"dashboard\s+showing\s+stale|crypto\.?com\s+auth\s+fail",
