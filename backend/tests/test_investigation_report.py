@@ -7,6 +7,8 @@ from app.jarvis.investigations.investigation_report import (
     InvestigationReport,
     RootCauseCandidate,
     build_investigation_report,
+    classify_open_orders_mismatch,
+    rank_root_causes,
     validate_investigation_report,
     validate_investigation_report_fields,
 )
@@ -116,3 +118,135 @@ class TestInvestigationReport:
             created_at="2026-06-13T00:00:00+00:00",
         )
         assert validate_investigation_report(report) == InvestigationStatus.COMPLETED
+
+
+def _resolved_mismatch_tool_outputs(
+    *,
+    exchange: int = 5,
+    dashboard: int = 5,
+    db: int = 2,
+    cache: int = 5,
+    trigger_code: int | None = 50001,
+) -> list[dict]:
+    return [
+        {
+            "tool": "diagnose_open_orders",
+            "ok": True,
+            "root_cause": "Open order counts differ across exchange, database, and dashboard",
+            "exchange_total_count": exchange,
+            "dashboard_effective_count": dashboard,
+            "db_open_count": db,
+            "cache_raw_count": cache,
+            "exchange_data_verified": True,
+            "trigger_orders_error_code": trigger_code,
+            "trigger_orders_error": "ERR_INTERNAL" if trigger_code else None,
+        },
+        {
+            "tool": "reconcile_crypto_com_open_orders",
+            "ok": True,
+            "counts": {
+                "exchange_live": exchange,
+                "database_open": db,
+                "dashboard_cache": dashboard,
+            },
+            "root_cause": "Reconciliation found 6 discrepancy(ies)",
+            "sources": {
+                "exchange": {
+                    "data_verified": True,
+                    "trigger_orders_error_code": trigger_code,
+                }
+            },
+        },
+    ]
+
+
+class TestOpenOrdersMismatchClassification:
+    def test_exchange_matches_dashboard_with_trigger_50001_is_resolved(self):
+        tool_outputs = _resolved_mismatch_tool_outputs()
+        evidence = [
+            {
+                "source": "exchange",
+                "reference": "reconciliation_counts",
+                "detail": "Exchange=5, DB=2, dashboard=5",
+                "confidence": "high",
+            },
+            {
+                "source": "exchange",
+                "reference": "trigger_orders_api",
+                "detail": "Trigger-order API error_code=50001: ERR_INTERNAL",
+                "confidence": "high",
+            },
+        ]
+        ranked = rank_root_causes(evidence=evidence, category="dashboard", tool_outputs=tool_outputs)
+        assert ranked[0].cause == "No active dashboard/exchange mismatch detected"
+        assert not any("blocks cache" in c.cause.lower() for c in ranked)
+
+        classification = classify_open_orders_mismatch(tool_outputs)
+        assert classification is not None
+        assert classification.resolution == "resolved"
+        assert classification.trigger_warning is not None
+        assert "50001" in classification.trigger_warning
+
+        report = build_investigation_report(
+            investigation_id="inv-resolved",
+            objective="Why are my open orders different from Crypto.com?",
+            category="dashboard",
+            template_id="dashboard_exchange_mismatch",
+            evidence=evidence,
+            ranked_causes=ranked,
+            tool_outputs=tool_outputs,
+            created_at="2026-06-14T00:00:00+00:00",
+        )
+        assert report.status == InvestigationStatus.COMPLETED
+        assert report.root_cause == "No active dashboard/exchange mismatch detected"
+        assert report.resolution_status == "resolved"
+        assert "50001" in report.summary
+        assert "DB stores regular open-status rows" in report.summary
+
+    def test_exchange_dashboard_mismatch_is_active(self):
+        tool_outputs = _resolved_mismatch_tool_outputs(exchange=5, dashboard=0, db=2, cache=0)
+        classification = classify_open_orders_mismatch(tool_outputs)
+        assert classification is not None
+        assert classification.active_mismatch is True
+        assert classification.resolution == "active"
+
+        ranked = rank_root_causes(
+            evidence=[
+                {
+                    "source": "exchange",
+                    "reference": "reconciliation_counts",
+                    "detail": "Exchange=5, DB=2, dashboard=0",
+                    "confidence": "high",
+                }
+            ],
+            category="dashboard",
+            tool_outputs=tool_outputs,
+        )
+        assert ranked[0].cause != "No active dashboard/exchange mismatch detected"
+
+    def test_exchange_dashboard_match_db_diff_is_data_model_note_not_incident(self):
+        tool_outputs = _resolved_mismatch_tool_outputs(exchange=5, dashboard=5, db=2, cache=5)
+        classification = classify_open_orders_mismatch(tool_outputs)
+        assert classification is not None
+        assert classification.active_mismatch is False
+        assert any("DB stores regular open-status rows" in note for note in classification.notes)
+
+    def test_stale_cache_with_dashboard_below_exchange_is_active_mismatch(self):
+        tool_outputs = _resolved_mismatch_tool_outputs(exchange=5, dashboard=2, db=2, cache=2)
+        classification = classify_open_orders_mismatch(tool_outputs)
+        assert classification is not None
+        assert classification.active_mismatch is True
+
+        ranked = rank_root_causes(
+            evidence=[
+                {
+                    "source": "exchange",
+                    "reference": "reconciliation_counts",
+                    "detail": "Exchange=5, DB=2, dashboard=2",
+                    "confidence": "high",
+                }
+            ],
+            category="dashboard",
+            tool_outputs=tool_outputs,
+        )
+        assert ranked[0].cause != "No active dashboard/exchange mismatch detected"

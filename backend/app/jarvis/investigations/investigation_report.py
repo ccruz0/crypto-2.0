@@ -24,6 +24,42 @@ class RootCauseCandidate:
     explanation: str = ""
 
 
+@dataclass(frozen=True)
+class OpenOrdersClassification:
+    """Resolved vs active open-order mismatch state derived from live counts."""
+
+    active_mismatch: bool
+    root_cause: str
+    score: float
+    impact: str
+    recommended_fix: str
+    next_action: str
+    notes: tuple[str, ...] = ()
+    trigger_warning: str | None = None
+    resolution: str = "active"  # "resolved" | "active"
+
+
+_NO_ACTIVE_MISMATCH = "No active dashboard/exchange mismatch detected"
+
+_DB_COVERAGE_NOTE = (
+    "DB stores regular open-status rows (NEW/ACTIVE/PARTIALLY_FILLED); "
+    "dashboard cache includes advanced/trigger orders from unified exchange fetch"
+)
+
+_TRIGGER_50001_WARNING = (
+    "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully)"
+)
+
+_HISTORICAL_CAUSE_MARKERS = (
+    "trigger order api failure blocks cache",
+    "reconciliation found",
+    "open order counts differ",
+    "database has open orders but dashboard cache is empty",
+    "database has pending orders but",
+    "api cache returned 0",
+)
+
+
 @dataclass
 class InvestigationReport:
     investigation_id: str
@@ -43,9 +79,10 @@ class InvestigationReport:
     created_at: str
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     collector_failures: list[str] = field(default_factory=list)
+    resolution_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "investigation_id": self.investigation_id,
             "objective": self.objective,
             "category": self.category,
@@ -74,6 +111,9 @@ class InvestigationReport:
             "collector_failures": self.collector_failures,
             "passed": self.status == InvestigationStatus.COMPLETED,
         }
+        if self.resolution_status:
+            payload["resolution_status"] = self.resolution_status
+        return payload
 
 
 def _is_present(value: Any) -> bool:
@@ -254,6 +294,145 @@ def _diagnose_output(tool_outputs: list[dict[str, Any]] | None) -> dict[str, Any
     return None
 
 
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_open_orders_snapshot(tool_outputs: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Collect authoritative open-order counts from reconcile/diagnose tool outputs."""
+    reconcile = _reconcile_output(tool_outputs)
+    diagnose = _diagnose_output(tool_outputs)
+
+    counts = (reconcile or {}).get("counts") or {}
+    exchange_meta = ((reconcile or {}).get("sources") or {}).get("exchange") or {}
+
+    exchange = _int_or_none(counts.get("exchange_live"))
+    if exchange is None and diagnose:
+        exchange = _int_or_none(diagnose.get("exchange_total_count"))
+
+    dashboard = _int_or_none(counts.get("dashboard_cache"))
+    if dashboard is None and diagnose:
+        dashboard = _int_or_none(diagnose.get("dashboard_effective_count"))
+
+    db_count = _int_or_none(counts.get("database_open"))
+    if db_count is None and diagnose:
+        db_count = _int_or_none(diagnose.get("db_open_count"))
+
+    cache_raw = _int_or_none((diagnose or {}).get("cache_raw_count"))
+    if cache_raw is None and diagnose:
+        cache_raw = _int_or_none(diagnose.get("cache_open_count"))
+
+    data_verified = False
+    if diagnose is not None and diagnose.get("exchange_data_verified") is not None:
+        data_verified = bool(diagnose.get("exchange_data_verified"))
+    elif exchange_meta.get("data_verified") is not None:
+        data_verified = bool(exchange_meta.get("data_verified"))
+
+    trigger_code = None
+    trigger_error = None
+    if diagnose:
+        trigger_code = diagnose.get("trigger_orders_error_code")
+        trigger_error = diagnose.get("trigger_orders_error")
+    if trigger_code is None:
+        trigger_code = exchange_meta.get("trigger_orders_error_code")
+    if trigger_error is None:
+        trigger_error = exchange_meta.get("trigger_orders_error")
+
+    return {
+        "exchange_count": exchange,
+        "dashboard_count": dashboard,
+        "db_count": db_count,
+        "cache_raw_count": cache_raw,
+        "data_verified": data_verified,
+        "trigger_error_code": trigger_code,
+        "trigger_error": trigger_error,
+        "dashboard_source": (diagnose or {}).get("dashboard_source"),
+    }
+
+
+def classify_open_orders_mismatch(
+    tool_outputs: list[dict[str, Any]] | None,
+) -> OpenOrdersClassification | None:
+    """
+    Classify open-order investigations as resolved (counts match) or active mismatch.
+
+    Returns None when live counts are unavailable for classification.
+    """
+    snapshot = _extract_open_orders_snapshot(tool_outputs)
+    exchange = snapshot.get("exchange_count")
+    dashboard = snapshot.get("dashboard_count")
+    db_count = snapshot.get("db_count")
+
+    if exchange is None or dashboard is None or not snapshot.get("data_verified"):
+        return None
+
+    trigger_code = snapshot.get("trigger_error_code")
+    trigger_warning = None
+    if str(trigger_code) == "50001" or trigger_code == 50001:
+        detail = snapshot.get("trigger_error") or "ERR_INTERNAL"
+        trigger_warning = f"{_TRIGGER_50001_WARNING}: {detail}"
+
+    if exchange == dashboard:
+        notes: list[str] = []
+        if db_count is not None and db_count != exchange:
+            notes.append(_DB_COVERAGE_NOTE)
+        return OpenOrdersClassification(
+            active_mismatch=False,
+            root_cause=_NO_ACTIVE_MISMATCH,
+            score=96.0,
+            impact="Low — live dashboard and exchange counts match.",
+            recommended_fix="No dashboard/exchange sync repair needed based on current live counts.",
+            next_action="Monitor trigger-order API 50001 separately if trigger metadata is needed.",
+            notes=tuple(notes),
+            trigger_warning=trigger_warning,
+            resolution="resolved",
+        )
+
+    return OpenOrdersClassification(
+        active_mismatch=True,
+        root_cause="Active dashboard/exchange open-order mismatch detected",
+        score=90.0,
+        impact="Dashboard open-order count differs from live exchange.",
+        recommended_fix="Inspect exchange sync, open_orders_cache, and resolve_open_orders fallback path.",
+        next_action="Run reconcile_crypto_com_open_orders and inspect exchange_sync logs for missing order IDs.",
+        notes=(),
+        trigger_warning=trigger_warning,
+        resolution="active",
+    )
+
+
+def _apply_open_orders_resolution(
+    candidates: list[RootCauseCandidate],
+    classification: OpenOrdersClassification | None,
+) -> list[RootCauseCandidate]:
+    """Suppress historical causes when live exchange and dashboard counts match."""
+    if classification is None or classification.active_mismatch:
+        return candidates
+
+    filtered = [
+        candidate
+        for candidate in candidates
+        if not any(marker in candidate.cause.lower() for marker in _HISTORICAL_CAUSE_MARKERS)
+    ]
+
+    supporting = list(classification.notes)
+    if classification.trigger_warning:
+        supporting.append(classification.trigger_warning)
+
+    resolved = RootCauseCandidate(
+        cause=classification.root_cause,
+        score=classification.score,
+        supporting_evidence=supporting,
+        explanation="Live exchange and dashboard counts match; historical failure modes suppressed.",
+    )
+    return [resolved, *filtered]
+
+
 def _filter_tool_root_causes(
     *,
     candidates: list[RootCauseCandidate],
@@ -288,7 +467,15 @@ def _filter_tool_root_causes(
 
     if reconcile and reconcile.get("root_cause"):
         reconcile_cause = str(reconcile["root_cause"])
-        if not any(c.cause == reconcile_cause for c in filtered):
+        counts = reconcile.get("counts") or {}
+        exchange_live = int(counts.get("exchange_live") or exchange_live)
+        dashboard_cache = int(counts.get("dashboard_cache") or 0)
+        dashboard_effective = int((diagnose or {}).get("dashboard_effective_count") or dashboard_cache)
+        suppress_reconcile_mismatch = (
+            exchange_live == dashboard_effective
+            and bool((reconcile.get("sources") or {}).get("exchange", {}).get("data_verified"))
+        )
+        if not suppress_reconcile_mismatch and not any(c.cause == reconcile_cause for c in filtered):
             filtered.insert(
                 0,
                 RootCauseCandidate(
@@ -406,6 +593,8 @@ def rank_root_causes(
         seen.add(key)
         deduped.append(c)
     deduped = _filter_tool_root_causes(candidates=deduped, tool_outputs=tool_outputs)
+    classification = classify_open_orders_mismatch(tool_outputs)
+    deduped = _apply_open_orders_resolution(deduped, classification)
     return deduped[:8]
 
 
@@ -450,32 +639,58 @@ def build_investigation_report(
     ]
     failures = list(collector_failure_reasons or [])
 
+    classification = classify_open_orders_mismatch(tool_outputs)
+    if classification and not classification.active_mismatch:
+        ranked_causes = _apply_open_orders_resolution(ranked_causes, classification)
+
     top = ranked_causes[0] if ranked_causes else None
     min_score = 15.0 if category == "portfolio" else 25.0
     root_cause = top.cause if top and top.score >= min_score else None
     confidence = top.score if top else 0.0
 
-    if root_cause:
+    if classification and not classification.active_mismatch:
+        root_cause = classification.root_cause
+        confidence = classification.score
+        recommended_fix = classification.recommended_fix
+        impact = classification.impact
+        verification_steps = [
+            "Confirm live exchange count matches dashboard effective count.",
+            "Review DB open-status count separately from unified exchange cache.",
+        ]
+        if classification.trigger_warning:
+            verification_steps.append(
+                "Note trigger_orders_error_code=50001 as non-fatal unless trigger metadata is required."
+            )
+        next_action = classification.next_action
+    elif root_cause:
         recommended_fix, impact, verification_steps = _lookup_fix_for_cause(root_cause)
+        next_action = recommended_fix
     else:
         recommended_fix = "Collect additional evidence from database, logs, and exchange APIs."
         impact = "Unable to determine production impact without sufficient evidence."
         verification_steps = ["Re-run investigation with expanded log access."]
+        next_action = recommended_fix
 
     # Build summary from evidence highlights.
     summary_lines = [objective]
     for item in evidence[:4]:
         summary_lines.append(f"- {item['detail'][:120]}")
-    if root_cause:
+    if classification and not classification.active_mismatch:
+        summary_lines.append(f"Conclusion: {classification.root_cause}")
+        for note in classification.notes:
+            summary_lines.append(f"- {note}")
+        if classification.trigger_warning:
+            summary_lines.append(f"- Warning: {classification.trigger_warning}")
+    elif root_cause:
         summary_lines.append(f"Likely cause: {root_cause}")
     if failures:
         summary_lines.append(f"Collector failures: {'; '.join(failures[:3])}")
 
-    next_action = recommended_fix
-    for output in tool_outputs or []:
-        if _is_present(output.get("next_action")):
-            next_action = str(output["next_action"])
-            break
+    if not (classification and not classification.active_mismatch):
+        for output in tool_outputs or []:
+            if _is_present(output.get("next_action")):
+                next_action = str(output["next_action"])
+                break
 
     status = validate_investigation_report_fields(
         root_cause=root_cause,
@@ -504,6 +719,7 @@ def build_investigation_report(
         created_at=created_at,
         tool_results=tool_results,
         collector_failures=failures,
+        resolution_status=classification.resolution if classification else None,
     )
 
 
