@@ -2321,3 +2321,99 @@ export async function getJarvisAnalyticsRootCauses(): Promise<JarvisAnalyticsRoo
   return fetchAPI<JarvisAnalyticsRootCauses>('/jarvis/analytics/root-causes');
 }
 
+// --- Phase 4D: Jarvis self-improvement recommendation engine ---
+
+export interface JarvisImprovementRecommendation {
+  id: string;
+  category: string;
+  priority: 'high' | 'medium' | 'low';
+  priority_score: number;
+  title: string;
+  recommendation: string;
+  reason: string;
+  evidence: string[];
+  expected_benefit: string;
+  impact: string;
+  frequency: number;
+  confidence: number;
+}
+
+export interface JarvisImprovementRecommendations {
+  recommendations: JarvisImprovementRecommendation[];
+  backlog: JarvisImprovementRecommendation[];
+  by_priority: Record<string, JarvisImprovementRecommendation[]>;
+  counts: Record<string, number>;
+  read_only: boolean;
+}
+
+export interface JarvisImprovementTemplateGap {
+  gap_type: string;
+  template_id?: string;
+  category?: string;
+  investigations: number;
+  severity: string;
+  insufficient_evidence?: number;
+  insufficient_evidence_rate_pct?: number;
+  generic_rate_pct?: number;
+  failure_rate_pct?: number;
+  top_keywords?: string[];
+  templates_used?: Record<string, number>;
+}
+
+export interface JarvisImprovementTemplates {
+  gaps: JarvisImprovementTemplateGap[];
+  recommendations: JarvisImprovementRecommendation[];
+  summary: Record<string, unknown>;
+  template_metrics: JarvisAnalyticsTemplateRow[];
+  read_only: boolean;
+}
+
+export interface JarvisImprovementToolEffectiveness {
+  tool: string;
+  executions: number;
+  successes: number;
+  failures: number;
+  success_rate_pct: number;
+  useful_outcomes: number;
+  investigations_using: number;
+  utility_ratio: number;
+  average_duration_ms: number;
+  assessment: string;
+}
+
+export interface JarvisImprovementTools {
+  tools: JarvisImprovementToolEffectiveness[];
+  low_utility_tools: JarvisImprovementToolEffectiveness[];
+  high_value_tools: JarvisImprovementToolEffectiveness[];
+  recommendations: JarvisImprovementRecommendation[];
+  summary: Record<string, unknown>;
+  read_only: boolean;
+}
+
+export interface JarvisImprovementTrends {
+  quality_scores: Record<string, number | string>;
+  false_positives: Record<string, number>;
+  period_rates: Record<string, Record<string, number>>;
+  recurring_incidents: Array<{ root_cause: string; occurrences: number; key: string }>;
+  open_orders_share_pct: number;
+  quality_score_daily: Array<{ date: string; quality_score: number }>;
+  recommendations: JarvisImprovementRecommendation[];
+  read_only: boolean;
+}
+
+export async function getJarvisImprovementRecommendations(): Promise<JarvisImprovementRecommendations> {
+  return fetchAPI<JarvisImprovementRecommendations>('/jarvis/improvement/recommendations');
+}
+
+export async function getJarvisImprovementTemplates(): Promise<JarvisImprovementTemplates> {
+  return fetchAPI<JarvisImprovementTemplates>('/jarvis/improvement/templates');
+}
+
+export async function getJarvisImprovementTools(): Promise<JarvisImprovementTools> {
+  return fetchAPI<JarvisImprovementTools>('/jarvis/improvement/tools');
+}
+
+export async function getJarvisImprovementTrends(): Promise<JarvisImprovementTrends> {
+  return fetchAPI<JarvisImprovementTrends>('/jarvis/improvement/trends');
+}
+

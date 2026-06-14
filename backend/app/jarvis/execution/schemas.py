@@ -419,3 +419,84 @@ class JarvisAnalyticsRootCausesResponse(BaseModel):
     unique_root_causes: int = 0
     read_only: bool = True
 
+
+# --- Phase 4D: Self-improvement recommendation engine (read-only) ---
+
+
+class JarvisImprovementRecommendation(BaseModel):
+    id: str
+    category: str
+    priority: str
+    priority_score: float = 0.0
+    title: str
+    recommendation: str
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
+    expected_benefit: str = ""
+    impact: str = "medium"
+    frequency: int = 0
+    confidence: float = 50.0
+
+
+class JarvisImprovementRecommendationsResponse(BaseModel):
+    recommendations: list[JarvisImprovementRecommendation] = Field(default_factory=list)
+    backlog: list[JarvisImprovementRecommendation] = Field(default_factory=list)
+    by_priority: dict[str, list[JarvisImprovementRecommendation]] = Field(default_factory=dict)
+    counts: dict[str, int] = Field(default_factory=dict)
+    read_only: bool = True
+
+
+class JarvisImprovementTemplateGap(BaseModel):
+    gap_type: str
+    template_id: str | None = None
+    category: str | None = None
+    investigations: int = 0
+    severity: str = "medium"
+    insufficient_evidence: int | None = None
+    insufficient_evidence_rate_pct: float | None = None
+    generic_rate_pct: float | None = None
+    failure_rate_pct: float | None = None
+    top_keywords: list[str] = Field(default_factory=list)
+    templates_used: dict[str, int] = Field(default_factory=dict)
+
+
+class JarvisImprovementTemplatesResponse(BaseModel):
+    gaps: list[JarvisImprovementTemplateGap] = Field(default_factory=list)
+    recommendations: list[JarvisImprovementRecommendation] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    template_metrics: list[JarvisAnalyticsTemplateRow] = Field(default_factory=list)
+    read_only: bool = True
+
+
+class JarvisImprovementToolEffectiveness(BaseModel):
+    tool: str
+    executions: int = 0
+    successes: int = 0
+    failures: int = 0
+    success_rate_pct: float = 0.0
+    useful_outcomes: int = 0
+    investigations_using: int = 0
+    utility_ratio: float = 0.0
+    average_duration_ms: float = 0.0
+    assessment: str = "moderate"
+
+
+class JarvisImprovementToolsResponse(BaseModel):
+    tools: list[JarvisImprovementToolEffectiveness] = Field(default_factory=list)
+    low_utility_tools: list[JarvisImprovementToolEffectiveness] = Field(default_factory=list)
+    high_value_tools: list[JarvisImprovementToolEffectiveness] = Field(default_factory=list)
+    recommendations: list[JarvisImprovementRecommendation] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    read_only: bool = True
+
+
+class JarvisImprovementTrendsResponse(BaseModel):
+    quality_scores: dict[str, Any] = Field(default_factory=dict)
+    false_positives: dict[str, Any] = Field(default_factory=dict)
+    period_rates: dict[str, Any] = Field(default_factory=dict)
+    recurring_incidents: list[JarvisAnalyticsRootCauseRow] = Field(default_factory=list)
+    open_orders_share_pct: float = 0.0
+    quality_score_daily: list[JarvisAnalyticsQualityTrend] = Field(default_factory=list)
+    recommendations: list[JarvisImprovementRecommendation] = Field(default_factory=list)
+    read_only: bool = True
+

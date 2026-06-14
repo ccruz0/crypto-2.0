@@ -81,6 +81,10 @@ from app.jarvis.execution.schemas import (
     JarvisAnalyticsRootCausesResponse,
     JarvisAnalyticsTemplatesResponse,
     JarvisAnalyticsToolsResponse,
+    JarvisImprovementRecommendationsResponse,
+    JarvisImprovementTemplatesResponse,
+    JarvisImprovementToolsResponse,
+    JarvisImprovementTrendsResponse,
     JarvisChangeTaskDetail,
     JarvisChangeTaskSubmitRequest,
     JarvisExecutionTaskDetail,
@@ -476,6 +480,55 @@ def jarvis_analytics_root_causes() -> dict[str, Any]:
     if engine is None or not ensure_jarvis_investigations_table(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
     return get_root_cause_analytics()
+
+
+# --- Phase 4D: Self-improvement recommendation engine (read-only) ---
+
+
+@router.get("/api/jarvis/improvement/recommendations", response_model=JarvisImprovementRecommendationsResponse)
+def jarvis_improvement_recommendations() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_execution_log_table, ensure_jarvis_investigations_table
+    from app.jarvis.improvement.recommendation_engine import get_improvement_recommendations
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_execution_log_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_improvement_recommendations()
+
+
+@router.get("/api/jarvis/improvement/templates", response_model=JarvisImprovementTemplatesResponse)
+def jarvis_improvement_templates() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.improvement.recommendation_engine import get_improvement_templates
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_improvement_templates()
+
+
+@router.get("/api/jarvis/improvement/tools", response_model=JarvisImprovementToolsResponse)
+def jarvis_improvement_tools() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_execution_log_table, ensure_jarvis_investigations_table
+    from app.jarvis.improvement.recommendation_engine import get_improvement_tools
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_execution_log_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_improvement_tools()
+
+
+@router.get("/api/jarvis/improvement/trends", response_model=JarvisImprovementTrendsResponse)
+def jarvis_improvement_trends() -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_execution_log_table, ensure_jarvis_investigations_table
+    from app.jarvis.improvement.recommendation_engine import get_improvement_trends
+
+    if engine is None or not ensure_jarvis_investigations_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    if not ensure_jarvis_execution_log_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return get_improvement_trends()
 
 
 # --- Phase 4: Change workflow (patch generation + review + approval, no application) ---
