@@ -243,10 +243,14 @@ def fetch_proposal_tasks(*, limit: int = 5000) -> list[dict[str, Any]]:
     for row in rows:
         mapping = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
         plan = _json_load(mapping.get("plan_json"), {})
+        if not isinstance(plan, dict):
+            continue
         workflow = str(plan.get("workflow_type") or "")
         if workflow != "phase4b_patch_proposal":
             continue
         artifacts = _json_load(mapping.get("artifacts_json"), [])
+        if not isinstance(artifacts, list):
+            artifacts = []
         started_at = mapping.get("started_at")
         completed_at = mapping.get("completed_at")
         created_at = mapping.get("created_at")
