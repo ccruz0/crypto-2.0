@@ -279,11 +279,11 @@ FIX_TEMPLATES: tuple[FixTemplate, ...] = (
         risk_level="medium",
         test_paths=("backend/tests/test_crypto_com_sync_status.py",),
         validation_rules=(
-            "sync_order_history runs before sync_open_orders without skipping refresh",
-            "open-order sync executes even when history scan is slow",
+            "open-order sync runs on an independent short-interval loop",
+            "order-history scan runs separately and cannot block open-order refresh",
         ),
         supported_investigations=("orders", "exchange_sync", "scheduler"),
-        noop_reason="Exchange sync already runs open-order refresh after order history with safeguards.",
+        noop_reason="Exchange sync runs open-order refresh on an independent loop before background order-history scans.",
     ),
     FixTemplate(
         fix_template_id="telegram.bot_command_setup_failure",

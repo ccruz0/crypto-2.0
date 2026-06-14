@@ -136,8 +136,13 @@ class ExchangeSyncService:
     
     def __init__(self):
         self.is_running = False
-        self.sync_interval = 5  # seconds
+        self.sync_interval = 5  # seconds between background (balances + order history) cycles
+        self.open_orders_sync_interval = 5  # seconds between open-orders refresh cycles
+        self.startup_open_orders_delay = 2  # seconds before first open-orders refresh on startup
+        self.background_sync_startup_delay = 15  # seconds before first balances/order-history cycle
+        self.order_history_timeout = 120  # max seconds for one order-history scan
         self.last_sync: Optional[datetime] = None
+        self.last_open_orders_sync: Optional[datetime] = None
         self.processed_order_ids: Dict[str, float] = {}  # Track already processed executed orders {order_id: timestamp}
         self.latest_unified_open_orders: List[UnifiedOpenOrder] = []
     
@@ -442,6 +447,8 @@ class ExchangeSyncService:
         )
         from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 
+        started_at = time.monotonic()
+        logger.info("sync_open_orders start")
         try:
             fetch_result = fetch_unified_open_orders(trade_client)
 
@@ -452,7 +459,8 @@ class ExchangeSyncService:
                     error_message=fetch_result.get("error_message"),
                 )
                 logger.warning(
-                    "Open orders sync failed (%s): %s — preserving existing cache",
+                    "sync_open_orders end duration=%.2fs status=failed (%s): %s — preserving existing cache",
+                    time.monotonic() - started_at,
                     fetch_result.get("sync_status"),
                     fetch_result.get("error_message"),
                 )
@@ -512,8 +520,8 @@ class ExchangeSyncService:
                     # Check if order is filled in history (might have been filled between syncs)
                     # For MARKET orders, they may execute immediately and not appear in open orders
                     # Check order history first before marking as cancelled
-                    # NOTE: Since sync_order_history now runs BEFORE sync_open_orders, executed orders
-                    # should already be marked as FILLED in the database
+                    # Order history sync runs on a separate schedule; refresh this row and resolve
+                    # status from exchange history before marking anything cancelled.
                     if order.status == OrderStatusEnum.FILLED:
                         logger.debug(f"Order {order.exchange_order_id} ({order.symbol}) is FILLED, skipping cancellation")
                         continue
@@ -886,10 +894,27 @@ class ExchangeSyncService:
                         signal.last_update_at = datetime.utcnow()
             
             db.commit()
-            logger.info(f"Synced {len(orders)} open orders")
+            regular_count = fetch_result.get("regular_count", 0)
+            trigger_count = fetch_result.get("trigger_count", 0)
+            advanced_count = len(fetch_result.get("advanced_raw") or [])
+            total_count = len(unified_orders)
+            logger.info(
+                "sync_open_orders end duration=%.2fs regular=%d trigger=%d advanced=%d total=%d cache_updated=%d",
+                time.monotonic() - started_at,
+                regular_count,
+                trigger_count,
+                advanced_count,
+                total_count,
+                total_count,
+            )
             
         except Exception as e:
-            logger.error(f"Error syncing open orders: {e}", exc_info=True)
+            logger.error(
+                "sync_open_orders failed duration=%.2fs error=%s",
+                time.monotonic() - started_at,
+                e,
+                exc_info=True,
+            )
             db.rollback()
             try:
                 from app.services.notion_tasks import create_bug_task
@@ -3249,57 +3274,132 @@ class ExchangeSyncService:
                 pass
             return 0
 
-    def _run_sync_sync(self, db: Session):
-        """Run one sync cycle - synchronous worker that runs in thread pool"""
-        self.sync_balances(db)
-        # CRITICAL FIX: Sync order history BEFORE open orders to prevent race condition
-        # This ensures that executed orders are marked as FILLED before we check for missing orders
-        # Otherwise, orders that were just executed might be incorrectly marked as CANCELLED
-        # Sync order history every cycle (every 5 seconds) to catch all new orders
-        # Increased page_size to 200 and max_pages to 10 to get more recent orders
-        # This ensures we catch orders from the last ~2000 orders (10 pages * 200 orders)
-        self.sync_order_history(db, page_size=200, max_pages=10)
-        # Now sync open orders - executed orders will already be FILLED from history sync above
+    def _run_open_orders_sync_sync(self, db: Session):
+        """Refresh open-orders cache and DB rows — fast path, must not wait on order history."""
         self.sync_open_orders(db)
-    
-    async def run_sync(self):
-        """Run one sync cycle - async wrapper that delegates to thread pool"""
+
+    def _run_background_sync_sync(self, db: Session):
+        """Run balances and order-history sync — may be slow; runs independently of open orders."""
+        self.sync_balances(db)
+        history_started = time.monotonic()
+        logger.info("sync_order_history start")
+        try:
+            self.sync_order_history(db, page_size=200, max_pages=10)
+            logger.info(
+                "sync_order_history end duration=%.2fs",
+                time.monotonic() - history_started,
+            )
+        except Exception as e:
+            logger.error(
+                "sync_order_history failed duration=%.2fs error=%s",
+                time.monotonic() - history_started,
+                e,
+                exc_info=True,
+            )
+
+    def _run_sync_sync(self, db: Session):
+        """Legacy combined cycle — kept for tests; production uses split loops."""
+        self._run_background_sync_sync(db)
+        self._run_open_orders_sync_sync(db)
+
+    async def run_open_orders_sync(self):
+        """Run one open-orders refresh cycle."""
         if SessionLocal is None:
-            logger.warning("Database not available (SessionLocal is None), skipping sync")
+            logger.warning("Database not available (SessionLocal is None), skipping open orders sync")
             return
         db = SessionLocal()
         try:
-            await asyncio.to_thread(self._run_sync_sync, db)
+            await asyncio.to_thread(self._run_open_orders_sync_sync, db)
+            self.last_open_orders_sync = datetime.now(timezone.utc)
+        finally:
+            db.close()
+
+    async def run_background_sync(self):
+        """Run one balances + order-history cycle with timeout on history scan."""
+        if SessionLocal is None:
+            logger.warning("Database not available (SessionLocal is None), skipping background sync")
+            return
+        db = SessionLocal()
+        try:
+            await asyncio.to_thread(self.sync_balances, db)
+            history_started = time.monotonic()
+            logger.info("sync_order_history start")
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self.sync_order_history, db, page_size=200, max_pages=10),
+                    timeout=self.order_history_timeout,
+                )
+                logger.info(
+                    "sync_order_history end duration=%.2fs",
+                    time.monotonic() - history_started,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "sync_order_history timed out after %.2fs (limit=%ds) — open orders refresh continues independently",
+                    time.monotonic() - history_started,
+                    self.order_history_timeout,
+                )
+            except Exception as e:
+                logger.error(
+                    "sync_order_history failed duration=%.2fs error=%s",
+                    time.monotonic() - history_started,
+                    e,
+                    exc_info=True,
+                )
             self.last_sync = datetime.now(timezone.utc)
         finally:
             db.close()
-    
+
+    async def run_sync(self):
+        """Run one full sync cycle (background + open orders) — async wrapper."""
+        await self.run_background_sync()
+        await self.run_open_orders_sync()
+
+    async def _open_orders_loop(self):
+        """Independent loop: refresh open-orders cache quickly and often."""
+        await asyncio.sleep(self.startup_open_orders_delay)
+        logger.info(
+            "Open orders sync loop starting (interval=%ds, startup_delay=%ds)",
+            self.open_orders_sync_interval,
+            self.startup_open_orders_delay,
+        )
+        while self.is_running:
+            try:
+                await self.run_open_orders_sync()
+            except Exception as e:
+                logger.error("Error in open orders sync cycle: %s", e, exc_info=True)
+            await asyncio.sleep(self.open_orders_sync_interval)
+
+    async def _background_sync_loop(self):
+        """Independent loop: balances and order history — may run for minutes."""
+        await asyncio.sleep(self.background_sync_startup_delay)
+        logger.info(
+            "Background sync loop starting (interval=%ds, startup_delay=%ds, order_history_timeout=%ds)",
+            self.sync_interval,
+            self.background_sync_startup_delay,
+            self.order_history_timeout,
+        )
+        while self.is_running:
+            try:
+                await self.run_background_sync()
+            except Exception as e:
+                logger.error("Error in background sync cycle: %s", e, exc_info=True)
+            await asyncio.sleep(self.sync_interval)
+
     async def start(self):
-        """Start the sync service - OPTIMIZED: delayed initial sync to avoid blocking startup"""
-        # Prevent multiple instances from starting
+        """Start the sync service with independent open-orders and background loops."""
         if self.is_running:
             logger.warning("⚠️ Exchange sync service is already running, skipping duplicate start")
             return
         self.is_running = True
-        logger.info("🚀 Exchange sync service started")
-        
-        # OPTIMIZATION: Wait before first sync to avoid blocking initial HTTP requests
-        # This allows the server to handle requests quickly on startup
-        await asyncio.sleep(15)  # Wait 15 seconds before first sync
-        
-        # Run first sync after delay to set last_sync
+        logger.info("🚀 Exchange sync service started (open orders + background loops)")
+
+        open_orders_task = asyncio.create_task(self._open_orders_loop())
+        background_task = asyncio.create_task(self._background_sync_loop())
         try:
-            await self.run_sync()
-        except Exception as e:
-            logger.error(f"Error in initial sync cycle: {e}", exc_info=True)
-        
-        while self.is_running:
-            try:
-                await self.run_sync()
-            except Exception as e:
-                logger.error(f"Error in sync cycle: {e}", exc_info=True)
-            
-            await asyncio.sleep(self.sync_interval)
+            await asyncio.gather(open_orders_task, background_task)
+        finally:
+            self.is_running = False
     
     def stop(self):
         """Stop the sync service"""
