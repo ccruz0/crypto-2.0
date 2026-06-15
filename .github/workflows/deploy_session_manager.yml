@@ -86,6 +86,12 @@ jobs:
           --parameters 'commands=[
             "test -d /home/ubuntu/crypto-2.0/.git || { echo \"❌ Cannot find project directory\" && exit 1; }",
             "sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main || { echo \"❌ Git fetch failed\" && exit 1; }",
+            "sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 switch main 2>/dev/null || sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout main || { echo \"❌ Git checkout main failed\" && exit 1; }",
+            "sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 reset --hard origin/main || { echo \"❌ Git reset to origin/main failed\" && exit 1; }",
+            "echo \"GIT_BRANCH=$(sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 branch --show-current)\"",
+            "echo \"GIT_HEAD=$(sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 rev-parse HEAD)\"",
+            "echo \"GIT_ORIGIN_MAIN=$(sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 rev-parse origin/main)\"",
+            "test \"$(sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 branch --show-current)\" = \"main\" || { echo \"❌ EC2 repo is not on main after checkout; aborting deploy\" && exit 1; }",
             "sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 pull --ff-only origin main || { echo \"❌ Git pull failed\" && exit 1; }",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && git rev-parse --short HEAD\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_no_external_frontend_deploy.sh --runtime\" || { echo \"❌ Runtime frontend guard failed\" && exit 1; }",
