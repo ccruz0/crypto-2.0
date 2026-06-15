@@ -276,6 +276,8 @@ services:
       # Option A: tail_logs + host-visible ai_runs
       - AI_ENGINE_COMPOSE_DIR=/app
       - AI_RUNS_DIR=/app/backend/ai_runs
+      # Jarvis repository graph: read-only monorepo index (backend code lives in /app)
+      - JARVIS_REPO_INDEX_ROOTS=/repo
     # SECURITY NOTE:
     # Never publish backend ports on 0.0.0.0 in production.
     # Use 127.0.0.1 binding or internal docker network only.
@@ -288,6 +290,7 @@ services:
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ./.git:/app/.git:ro
+      - .:/repo:ro
       - /home/ubuntu/.cursor-server:/app/.cursor-server:ro
       - ./backend/ai_runs:/app/backend/ai_runs
       - ./docs:/app/docs

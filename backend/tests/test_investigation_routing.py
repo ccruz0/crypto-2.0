@@ -60,3 +60,19 @@ class TestDashboardExchangeMismatchRouting:
         tool_names = {c.tool for c in collectors}
         assert "reconcile_crypto_com_open_orders" not in tool_names
         assert "diagnose_open_orders" not in tool_names
+
+
+class TestPortfolioEquityDerivedRouting:
+    _OBJECTIVE = "Why is portfolio equity derived instead of exchange-reported?"
+
+    def test_selects_portfolio_equity_derived_template(self):
+        template = match_investigation_template(self._OBJECTIVE)
+        assert template is not None
+        assert template.template_id == "portfolio_equity_derived"
+
+    def test_query_database_collector_includes_open_positions_preset(self):
+        _, template_id, collectors = get_collectors_for_objective(self._OBJECTIVE)
+        assert template_id == "portfolio_equity_derived"
+        db_collectors = [c for c in collectors if c.tool == "query_database"]
+        assert len(db_collectors) == 1
+        assert db_collectors[0].params.get("preset") == "open_positions"

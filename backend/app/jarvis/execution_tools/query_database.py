@@ -147,6 +147,7 @@ def query_database(
         action_map = {
             "count_open_orders": "count_open_orders",
             "count_orders": "count_open_orders",
+            "open_positions": "open_positions",
             "query_positions": "open_positions",
         }
         resolved_preset = action_map.get(action)

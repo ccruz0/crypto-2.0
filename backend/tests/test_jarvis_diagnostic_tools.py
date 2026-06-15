@@ -32,6 +32,19 @@ class TestQueryDatabaseSafety:
             _validate_select_only("DELETE FROM exchange_orders")
 
     @patch("app.jarvis.execution_tools.query_database._execute_query")
+    def test_open_positions_action_resolves_preset(self, mock_exec):
+        mock_exec.return_value = {
+            "query_executed": "SELECT symbol ...",
+            "row_count": 0,
+            "rows": [],
+            "read_only": True,
+            "checked_at": "2026-01-01T00:00:00+00:00",
+        }
+        result = query_database(action="open_positions")
+        assert result["ok"] is True
+        assert result["preset"] == "open_positions"
+
+    @patch("app.jarvis.execution_tools.query_database._execute_query")
     def test_count_open_orders_returns_numeric_result(self, mock_exec):
         mock_exec.return_value = {
             "query_executed": "SELECT COUNT(*) ...",

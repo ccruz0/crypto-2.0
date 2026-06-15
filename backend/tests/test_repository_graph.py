@@ -87,6 +87,18 @@ def test_scan_repository_has_deployment_scripts():
     assert isinstance(report["deployment_scripts"], list)
 
 
+def test_scan_repository_has_scripts():
+    report = scan_repository()
+    assert isinstance(report.get("scripts"), list)
+
+
+def test_scan_repository_index_summary():
+    report = scan_repository()
+    summary = report.get("index_summary") or {}
+    assert "backend_modules" in summary
+    assert summary.get("backend_modules", 0) > 0
+
+
 def test_scan_incremental_delta(sample_scan):
     report = scan_repository(incremental=True, previous=sample_scan)
     assert report["incremental"] is True
@@ -113,7 +125,10 @@ def test_refresh_metadata(tmp_path, monkeypatch):
 
 def test_graph_module_nodes(sample_scan):
     graph = build_repository_graph(sample_scan)
-    module_nodes = [k for k, v in graph.nodes.items() if v.get("type") == "module"]
+    module_nodes = [
+        k for k, v in graph.nodes.items()
+        if v.get("type") in ("module", "backend_module", "frontend_module", "test")
+    ]
     assert len(module_nodes) >= 2
 
 
