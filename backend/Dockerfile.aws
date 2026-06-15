@@ -82,7 +82,7 @@ RUN pip install --no-cache-dir pydantic-settings==2.5.2 && \
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 
-# Copiar código de la app (needed before we can check .git)
+# Copiar código de la app
 # CRITICAL: Build context is "." (repo root), so backend/ prefix is required
 COPY backend/ /app/
 
@@ -134,13 +134,9 @@ RUN python3 -c "import app.main; print('OK: app.main imports')" || (echo "ERROR:
 RUN python3 /app/scripts/diag/check_container_dependencies.py || (echo "ERROR: Container dependency check failed" >&2 && exit 1)
 RUN python3 /app/scripts/diag/check_runtime_dependencies.py || (echo "ERROR: Runtime dependency check failed" >&2 && exit 1)
 
-# Auto-detect build fingerprint if not provided via build args
-# After COPY . ., we can check .git directory and get current time
-# Use shell to compute final values and write to files for later use
+# Build fingerprint from compose build args (deploy workflow sets GIT_SHA/BUILD_TIME).
 RUN FINAL_GIT_SHA="$GIT_SHA" && \
-    if [ "$FINAL_GIT_SHA" = "unknown" ] && [ -d .git ] && command -v git >/dev/null 2>&1; then \
-        FINAL_GIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown"); \
-    fi && \
+    if [ -z "$FINAL_GIT_SHA" ]; then FINAL_GIT_SHA="unknown"; fi && \
     FINAL_BUILD_TIME="$BUILD_TIME" && \
     if [ "$FINAL_BUILD_TIME" = "unknown" ]; then \
         FINAL_BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); \
@@ -148,9 +144,7 @@ RUN FINAL_GIT_SHA="$GIT_SHA" && \
     echo "$FINAL_GIT_SHA" > /app/.git_sha && \
     echo "$FINAL_BUILD_TIME" > /app/.build_time
 
-# Set environment variables - use ARG values as defaults
-# If ARG was "unknown", the RUN command above wrote detected values to /app/.git_sha and /app/.build_time
-# An entrypoint script will read those files and override env vars at runtime if needed
+# Baked fingerprint files are authoritative when build args were "unknown"; entrypoint also reads them.
 ENV ATP_GIT_SHA=${GIT_SHA} \
     ATP_BUILD_TIME=${BUILD_TIME}
 

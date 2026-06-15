@@ -222,8 +222,10 @@ def create_app(role: str = "legacy") -> FastAPI:
             response = await call_next(request)
         
             # Add build fingerprint headers
-            git_sha = os.getenv("ATP_GIT_SHA", "unknown")
-            build_time = os.getenv("ATP_BUILD_TIME", "unknown")
+            from app.core.build_fingerprint import resolve_build_time, resolve_git_sha
+
+            git_sha = resolve_git_sha()
+            build_time = resolve_build_time()
             response.headers["X-ATP-Backend-Commit"] = git_sha
             response.headers["X-ATP-Backend-BuildTime"] = build_time
             response.headers["X-ATP-Backend-Buildtime"] = build_time  # Lowercase variant for compatibility
