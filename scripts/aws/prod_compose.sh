@@ -11,7 +11,11 @@ cd "$ROOT_DIR"
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-aws}"
 
 RUNTIME_ENV="$ROOT_DIR/secrets/runtime.env"
+FINGERPRINT_ENV="$ROOT_DIR/.deploy-fingerprint.env"
 COMPOSE=(docker compose --profile aws)
+if [[ -f "$FINGERPRINT_ENV" ]]; then
+  COMPOSE+=(--env-file "$FINGERPRINT_ENV")
+fi
 
 if [[ -f "$RUNTIME_ENV" ]] && ! [[ -r "$RUNTIME_ENV" ]]; then
   if ! sudo -n true 2>/dev/null && ! sudo -v 2>/dev/null; then

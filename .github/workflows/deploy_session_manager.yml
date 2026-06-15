@@ -35,6 +35,12 @@ jobs:
       run: |
         set -e
         bash scripts/verify_frontend_version.sh
+
+    - name: Log deploy fingerprint (GitHub Actions)
+      run: |
+        echo "GITHUB_SHA=${{ github.sha }}"
+        echo "GITHUB_REF=${{ github.ref }}"
+        echo "GITHUB_RUN_ID=${{ github.run_id }}"
       
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -137,16 +143,15 @@ jobs:
             "echo \"🐳 Rebuilding and restarting ALL services with --profile aws...\"",
             "export GIT_SHA=${{ github.sha }}",
             "export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "echo \"📌 Build fingerprint: GIT_SHA=$GIT_SHA BUILD_TIME=$BUILD_TIME\"",
-            "if [ -z \"$GIT_SHA\" ] || [ \"$GIT_SHA\" = \"unknown\" ]; then echo \"❌ GIT_SHA missing or unknown — aborting build\" && exit 1; fi",
-            "docker compose --profile aws down || true",
-            "docker compose --profile aws build --no-cache",
+            "bash scripts/aws/export_build_fingerprint.sh || { echo \"❌ export_build_fingerprint failed\" && exit 1; }",
+            "docker compose --env-file .deploy-fingerprint.env --profile aws down || true",
+            "docker compose --env-file .deploy-fingerprint.env --profile aws build --no-cache",
             "echo \"Cleaning old images and build cache before starting...\"",
             "docker image prune -f 2>/dev/null || true",
             "docker builder prune -af --filter until=24h 2>/dev/null || true",
-            "docker compose --profile aws up -d --build",
+            "docker compose --env-file .deploy-fingerprint.env --profile aws up -d --build",
             "echo \"🔎 Verifying baked fingerprint in backend-aws image...\"",
-            "CID=$(docker compose --profile aws ps -q backend-aws)",
+            "CID=$(docker compose --env-file .deploy-fingerprint.env --profile aws ps -q backend-aws)",
             "docker exec \"$CID\" cat /app/.git_sha",
             "docker exec \"$CID\" cat /app/.build_time",
             "BAKED_SHA=$(docker exec \"$CID\" cat /app/.git_sha | tr -d '\\n')",
@@ -168,7 +173,7 @@ jobs:
             "sudo systemctl restart nginx || echo \"⚠️  nginx restart failed, continuing...\"",
             "sleep 5",
             "echo \"✅ Verifying deployment...\"",
-            "docker compose --profile aws ps",
+            "docker compose --env-file .deploy-fingerprint.env --profile aws ps",
             "echo \"✅ Deployment completed!\""
           ]' \
           --region ap-southeast-1 \

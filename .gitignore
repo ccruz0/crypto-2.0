@@ -34,6 +34,7 @@
 .dockerignore
 .eggs/
 .env
+.deploy-fingerprint.env
 .env.aws
 .env.aws.backup*
 .env.aws.bak*
