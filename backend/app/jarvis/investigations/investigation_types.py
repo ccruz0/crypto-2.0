@@ -113,7 +113,7 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         ),
         title="Why is portfolio equity derived instead of exchange-reported?",
         collectors=(
-            EvidenceCollector("query_database", "open_positions"),
+            EvidenceCollector("query_database", "open_positions", {"preset": "open_positions"}),
             EvidenceCollector("inspect_health", "inspect_health"),
             EvidenceCollector("search_repository", "search_repository", {"topic": "portfolio"}),
             EvidenceCollector("search_logs", "search_logs", {"keywords": ("portfolio", "equity", "derived", "balance")}),
@@ -131,7 +131,7 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         ),
         title="Why is portfolio value incorrect?",
         collectors=(
-            EvidenceCollector("query_database", "open_positions"),
+            EvidenceCollector("query_database", "open_positions", {"preset": "open_positions"}),
             EvidenceCollector("inspect_health", "inspect_health"),
             EvidenceCollector("search_repository", "search_repository", {"topic": "portfolio"}),
             EvidenceCollector("search_logs", "search_logs", {"keywords": ("portfolio", "equity", "balance", "cache")}),

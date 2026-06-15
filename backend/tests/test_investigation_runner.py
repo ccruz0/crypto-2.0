@@ -164,3 +164,39 @@ class TestInvestigationRunner:
         assert report.evidence
         trigger_evidence = [e for e in report.evidence if "50001" in e.get("detail", "")]
         assert trigger_evidence or any("trigger" in (report.root_cause or "").lower() for _ in [1])
+
+    @patch("app.jarvis.investigations.investigation_runner.build_default_registry")
+    def test_portfolio_equity_derived_passes_open_positions_preset(self, mock_registry_factory):
+        """Regression: portfolio template must not fail query_database with missing preset."""
+        registry = MagicMock()
+        captured_kwargs: list[dict] = []
+
+        def _execute(name, **kwargs):
+            captured_kwargs.append({"tool": name, **kwargs})
+            if name == "query_database":
+                assert kwargs.get("preset") == "open_positions", kwargs
+                return MagicMock(
+                    ok=True,
+                    output={
+                        "tool": "query_database",
+                        "ok": True,
+                        "preset": "open_positions",
+                        "rows": [{"symbol": "BTC_USDT", "open_commitments": 1}],
+                        "row_count": 1,
+                    },
+                )
+            return MagicMock(ok=True, output={"tool": name, "ok": True})
+
+        registry.execute.side_effect = _execute
+        mock_registry_factory.return_value = registry
+
+        evidence, outputs, category, template_id, collector_status, collector_reasons = collect_evidence(
+            "Why is portfolio equity derived instead of exchange-reported?"
+        )
+        assert template_id == "portfolio_equity_derived"
+        assert category == "portfolio"
+        assert collector_status is None
+        assert not collector_reasons
+        db_outputs = [o for o in outputs if o.get("tool") == "query_database"]
+        assert db_outputs and db_outputs[0].get("ok") is True
+        assert any(c["tool"] == "query_database" and c.get("preset") == "open_positions" for c in captured_kwargs)
