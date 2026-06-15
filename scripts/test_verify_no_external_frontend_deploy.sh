@@ -58,9 +58,21 @@ for workflow in \
   }
 done
 
-echo "-- deploy_session_manager SSM git pull must run as ubuntu"
+echo "-- deploy_session_manager SSM git pull must run as ubuntu on main"
 grep -q 'sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main' .github/workflows/deploy_session_manager.yml || {
   echo "FAIL: deploy_session_manager.yml must fetch as ubuntu via sudo -u ubuntu git -C" >&2
+  exit 1
+}
+grep -qE 'sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 (switch main|checkout main)' .github/workflows/deploy_session_manager.yml || {
+  echo "FAIL: deploy_session_manager.yml must checkout main before pull" >&2
+  exit 1
+}
+grep -q 'sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 reset --hard origin/main' .github/workflows/deploy_session_manager.yml || {
+  echo "FAIL: deploy_session_manager.yml must reset --hard origin/main before pull" >&2
+  exit 1
+}
+grep -q 'branch --show-current' .github/workflows/deploy_session_manager.yml || {
+  echo "FAIL: deploy_session_manager.yml must verify current branch before pull" >&2
   exit 1
 }
 grep -q 'sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 pull --ff-only origin main' .github/workflows/deploy_session_manager.yml || {
