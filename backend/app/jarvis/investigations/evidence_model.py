@@ -40,6 +40,9 @@ class EvidenceItem(EvidenceItemRequired, total=False):
     file_path: str
     line_number: str | int
     is_direct: bool
+    artifact_id: str
+    content_url: str
+    mime_type: str
 
 
 _WEAK_EVIDENCE_SOURCES = frozenset({"runtime", "unknown"})
@@ -101,6 +104,9 @@ def normalize_evidence(raw: Any) -> EvidenceItem | None:
         "file_path",
         "line_number",
         "is_direct",
+        "artifact_id",
+        "content_url",
+        "mime_type",
     ):
         if key in raw and raw[key] is not None:
             item[key] = raw[key]  # type: ignore[literal-required]

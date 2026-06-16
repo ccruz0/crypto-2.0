@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
+from starlette.responses import FileResponse
 
 from app.jarvis.mvp.action_plan_persistence import get_action_plan, list_action_plans
 from app.jarvis.mvp.action_plan_service import create_action_plan_from_audit
@@ -300,6 +301,8 @@ def jarvis_investigation_presets() -> dict[str, Any]:
 @router.post("/api/jarvis/investigations/run", response_model=JarvisInvestigationDetail)
 def jarvis_investigation_run(body: JarvisInvestigationRunRequest) -> dict[str, Any]:
     from app.database import engine, ensure_jarvis_investigations_table
+    from app.jarvis.artifacts.images import ImageValidationError
+    from app.jarvis.execution.safety import SafetyLevel, classify_text
     from app.jarvis.investigations.investigation_runner import run_investigation
     from app.jarvis.mvp.config import jarvis_enabled
 
@@ -307,14 +310,40 @@ def jarvis_investigation_run(body: JarvisInvestigationRunRequest) -> dict[str, A
         raise HTTPException(status_code=403, detail="Jarvis is disabled (JARVIS_ENABLED=false)")
     if engine is None or not ensure_jarvis_investigations_table(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
+    if classify_text(body.objective) == SafetyLevel.FORBIDDEN:
+        raise HTTPException(
+            status_code=403,
+            detail="Objective blocked by safety policy (forbidden action or trading intent)",
+        )
     try:
-        report = run_investigation(body.objective)
+        attachment_payload = [att.model_dump() for att in body.attachments]
+        report = run_investigation(body.objective, attachments=attachment_payload or None)
         return report.to_dict()
+    except ImageValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("jarvis.investigation.run_failed err=%s", exc)
         raise HTTPException(status_code=500, detail=f"jarvis_investigation_run_failed: {exc}") from exc
+
+
+@router.get("/api/jarvis/investigations/{investigation_id}/attachments/{artifact_id}/content")
+def jarvis_investigation_attachment_content(investigation_id: str, artifact_id: str) -> FileResponse:
+    from app.jarvis.investigations.investigation_attachments import resolve_investigation_attachment_file
+
+    path = resolve_investigation_attachment_file(investigation_id, artifact_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    media_type = "application/octet-stream"
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        media_type = "image/png"
+    elif suffix in {".jpg", ".jpeg"}:
+        media_type = "image/jpeg"
+    elif suffix == ".webp":
+        media_type = "image/webp"
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @router.get("/api/jarvis/investigations", response_model=JarvisInvestigationListResponse)

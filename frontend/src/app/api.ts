@@ -2100,6 +2100,10 @@ export interface JarvisInvestigationEvidence {
   reference: string;
   detail: string;
   confidence: string;
+  evidence_type?: string;
+  artifact_id?: string;
+  content_url?: string;
+  mime_type?: string;
 }
 
 export interface JarvisInvestigationRankedCause {
@@ -2166,16 +2170,29 @@ export interface JarvisProposalTaskDetail extends JarvisExecutionTaskDetail {
   sandbox_summary?: Record<string, unknown>;
 }
 
+export interface JarvisInvestigationImageAttachment {
+  filename: string;
+  content_base64: string;
+  caption?: string;
+  content_type?: string;
+}
+
 export interface JarvisInvestigationPreset {
   id: string;
   label: string;
   objective: string;
 }
 
-export async function runJarvisInvestigation(objective: string): Promise<JarvisInvestigationDetail> {
+export async function runJarvisInvestigation(
+  objective: string,
+  attachments?: JarvisInvestigationImageAttachment[],
+): Promise<JarvisInvestigationDetail> {
   return fetchAPI<JarvisInvestigationDetail>('/jarvis/investigations/run', {
     method: 'POST',
-    body: JSON.stringify({ objective }),
+    body: JSON.stringify({
+      objective,
+      attachments: attachments ?? [],
+    }),
   });
 }
 

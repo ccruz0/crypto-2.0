@@ -164,8 +164,19 @@ class JarvisPhase5StatusResponse(BaseModel):
 # --- Phase 4A: Production diagnostic investigations ---
 
 
+class JarvisInvestigationImageAttachment(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255)
+    content_base64: str = Field(..., min_length=1, description="Base64-encoded image bytes")
+    caption: str = Field(default="", max_length=500)
+    content_type: str | None = Field(default=None, description="Optional MIME type hint")
+
+
 class JarvisInvestigationRunRequest(BaseModel):
     objective: str = Field(..., min_length=1, description="Production diagnostic objective")
+    attachments: list[JarvisInvestigationImageAttachment] = Field(
+        default_factory=list,
+        description="Optional image attachments as investigation evidence (read-only context)",
+    )
 
 
 class JarvisInvestigationRankedCause(BaseModel):
@@ -180,6 +191,10 @@ class JarvisInvestigationEvidence(BaseModel):
     reference: str
     detail: str
     confidence: str = "medium"
+    evidence_type: str | None = None
+    artifact_id: str | None = None
+    content_url: str | None = None
+    mime_type: str | None = None
 
 
 class JarvisInvestigationSummary(BaseModel):
