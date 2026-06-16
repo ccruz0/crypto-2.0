@@ -54,6 +54,9 @@ class _FakeNotion:
     def append_readability_timeline(self, mission_id: str, sentence: str) -> None:
         self.events.append((mission_id, "readability_timeline", sentence[:200]))
 
+    def append_readability_timeline_low(self, mission_id: str, sentence: str) -> None:
+        self.events.append((mission_id, "readability_timeline_low", sentence[:200]))
+
     def append_technical_detail_marker(self, mission_id: str, title: str = "") -> None:
         self.events.append((mission_id, "technical_marker", title))
 

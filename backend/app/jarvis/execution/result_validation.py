@@ -53,6 +53,35 @@ _REMEDIATION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 
 _EMPTY_VALUES = frozenset({"", "none", "null", "n/a", "not determined", "unknown"})
 
+# Output keys that alone do not constitute useful evidence.
+_META_ONLY_KEYS = frozenset(
+    {
+        "ok",
+        "status",
+        "read_only",
+        "checked_at",
+        "duration_ms",
+        "tool",
+        "action",
+        "step_id",
+        "error",
+    }
+)
+
+_GENERIC_ROOT_CAUSE_PHRASES = frozenset(
+    {
+        "unknown",
+        "not determined",
+        "unable to determine",
+        "could not determine",
+        "insufficient data",
+        "needs further investigation",
+        "requires further investigation",
+        "no root cause found",
+        "n/a",
+    }
+)
+
 _NUMERIC_VALUE_RE = re.compile(
     r"(?:\bcount\b|\btotal\b|\bresult\b|\banswer\b)\s*[:=]?\s*(\d+)\b|\b(\d+)\s+(?:open\s+)?(?:orders|positions|users)\b",
     re.IGNORECASE,
@@ -82,6 +111,49 @@ def _is_present(value: Any) -> bool:
     if not text:
         return False
     return text.lower() not in _EMPTY_VALUES
+
+
+def _is_meaningful_root_cause(value: Any) -> bool:
+    if not _is_present(value):
+        return False
+    text = str(value).strip().lower()
+    if text in _GENERIC_ROOT_CAUSE_PHRASES:
+        return False
+    # Require substantive causal explanation (not a bare status label).
+    if len(text) < 12:
+        return False
+    return True
+
+
+def _output_has_useful_data(output: dict[str, Any]) -> bool:
+    if not output:
+        return False
+    if output.get("evidence"):
+        return True
+    if output.get("query_executed") and output.get("row_count", 0) > 0:
+        return True
+    if output.get("matches"):
+        return bool(output["matches"])
+    if output.get("match_count", 0) > 0:
+        return True
+    for key, value in output.items():
+        if key in _META_ONLY_KEYS:
+            continue
+        if _is_present(value):
+            return True
+    return False
+
+
+def _artifact_has_useful_content(art: dict[str, Any]) -> bool:
+    content = art.get("content")
+    if isinstance(content, dict) and _output_has_useful_data(content):
+        return True
+    if art.get("format") == "image" and art.get("size_bytes", 0) > 0:
+        return True
+    preview = art.get("preview") or art.get("name")
+    if _is_present(preview) and str(preview).strip() not in {"plan_preview", "repository_investigation"}:
+        return True
+    return False
 
 
 def _tool_output(tool_results: list[dict[str, Any]], action: str) -> dict[str, Any]:
@@ -182,14 +254,14 @@ def extract_root_cause(
     for action in ("identify_root_cause", "analyze_failure"):
         output = _tool_output(tool_results or [], action)
         for key in ("root_cause", "probable_root_cause", "cause"):
-            if _is_present(output.get(key)):
+            if _is_meaningful_root_cause(output.get(key)):
                 return str(output[key]).strip()
 
     for tool_name in ("diagnose_open_orders",):
         output = _tool_output_by_name(tool_results or [], tool_name)
         if not output:
             output = _tool_output(tool_results or [], tool_name)
-        if _is_present(output.get("root_cause")):
+        if _is_meaningful_root_cause(output.get("root_cause")):
             return str(output["root_cause"]).strip()
 
     repo = repo_investigation or {}
@@ -229,8 +301,12 @@ def extract_evidence(
             continue
         output = entry.get("output")
         if isinstance(output, dict) and output:
+            if not _output_has_useful_data(output):
+                continue
             action = str(entry.get("action") or entry.get("tool") or "step")
-            snippet = ", ".join(f"{k}={v}" for k, v in list(output.items())[:4] if _is_present(v))
+            snippet = ", ".join(
+                f"{k}={v}" for k, v in list(output.items())[:4] if _is_present(v) and k not in _META_ONLY_KEYS
+            )
             if snippet:
                 parts.append(f"{action}: {snippet[:400]}")
         elif _is_present(output):
@@ -454,6 +530,19 @@ def validate_task_result(
         final_status = "failed"
         explanations.append(f"Tool failures: {', '.join(tool_names)}")
 
+    successful_outputs = [
+        r for r in (tool_results or [])
+        if r.get("ok", True) and isinstance(r.get("output"), dict)
+    ]
+    if resolved_type == "investigation" and successful_outputs:
+        all_empty = all(not _output_has_useful_data(r.get("output") or {}) for r in successful_outputs)
+        if all_empty:
+            checks.append(_check("Tool outputs contain useful data", False))
+            passed = False
+            if final_status != "failed":
+                final_status = "insufficient_evidence"
+            explanations.append("All tool outputs were empty or generic.")
+
     report_complete = all(_is_present(completion_report.get(k)) for k in ("summary", "evidence", "conclusion", "next_action"))
     checks.append(_check("Completion report complete", report_complete))
     if not report_complete:
@@ -462,17 +551,19 @@ def validate_task_result(
         explanations.append(f"Completion report missing sections: {', '.join(missing)}")
 
     if resolved_type == "investigation":
-        has_root = _is_present(root_cause)
+        has_root = _is_meaningful_root_cause(root_cause)
         has_evidence = _is_present(evidence)
-        has_conclusion = _is_present(completion_report.get("conclusion")) or has_root
+        has_useful_artifacts = any(_artifact_has_useful_content(a) for a in (artifacts or []))
+        has_conclusion = _is_present(completion_report.get("conclusion")) and has_root
         checks.extend(
             [
                 _check("Root cause present", has_root),
                 _check("Evidence present", has_evidence),
+                _check("Useful artifacts present", has_useful_artifacts or has_evidence),
                 _check("Conclusion present", has_conclusion),
             ]
         )
-        if not (has_root and has_evidence and has_conclusion):
+        if final_status != "failed" and not (has_root and has_evidence and has_conclusion):
             passed = False
             final_status = "insufficient_evidence"
             explanations.append("Investigation requires root cause, evidence, and conclusion.")

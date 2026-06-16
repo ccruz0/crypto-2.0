@@ -177,6 +177,22 @@ def jarvis_task_list(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, 
 # --- Phase 3: Task execution framework (static paths before /tasks/{task_id}) ---
 
 
+def _execution_submit_response(detail: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": detail["task_id"],
+        "status": detail["status"],
+        "objective": detail["objective"],
+        "plan": detail.get("plan") or {},
+        "approval_required": detail.get("approval_required", False),
+        "approval_status": detail.get("approval_status", "not_required"),
+        "estimated_cost_usd": detail.get("estimated_cost_usd", 0.0),
+        "actual_cost_usd": detail.get("actual_cost_usd", 0.0),
+        "current_step": detail.get("current_step"),
+        "artifacts": detail.get("artifacts") or [],
+        "execution_log": detail.get("execution_log") or [],
+    }
+
+
 @router.post("/api/jarvis/tasks/submit", response_model=JarvisTaskSubmitResponse)
 def jarvis_execution_submit(body: JarvisTaskSubmitRequest) -> dict[str, Any]:
     """Submit a structured Jarvis execution task (investigation-only by default)."""
@@ -192,19 +208,9 @@ def jarvis_execution_submit(body: JarvisTaskSubmitRequest) -> dict[str, Any]:
             approval_mode=body.approval_mode,
             dry_run=body.dry_run,
         )
-        return {
-            "task_id": detail["task_id"],
-            "status": detail["status"],
-            "objective": detail["objective"],
-            "plan": detail.get("plan") or {},
-            "approval_required": detail.get("approval_required", False),
-            "approval_status": detail.get("approval_status", "not_required"),
-            "estimated_cost_usd": detail.get("estimated_cost_usd", 0.0),
-            "actual_cost_usd": detail.get("actual_cost_usd", 0.0),
-            "current_step": detail.get("current_step"),
-            "artifacts": detail.get("artifacts") or [],
-            "execution_log": detail.get("execution_log") or [],
-        }
+        return _execution_submit_response(detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except Exception as exc:

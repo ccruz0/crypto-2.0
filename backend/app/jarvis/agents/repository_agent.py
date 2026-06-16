@@ -81,6 +81,10 @@ def investigate_objective(objective: str) -> dict[str, Any]:
         queries.extend(["jarvis", "routes_jarvis"])
     if "open order" in objective_l or "open_orders" in objective_l:
         queries.extend(["getOpenOrders", "/orders/open", "open_orders", "routes_orders"])
+    if "executed" in objective_l or "wallet" in objective_l:
+        queries.extend(["executed_orders", "ExecutedOrders", "order_history", "wallet orders"])
+    if "reconcil" in objective_l or "portfolio" in objective_l:
+        queries.extend(["reconcile", "portfolio", "wallet_reconciliation"])
     if "position" in objective_l:
         queries.extend(["open_positions", "OpenPosition", "count_open_positions"])
     if "trade" in objective_l or "history" in objective_l:

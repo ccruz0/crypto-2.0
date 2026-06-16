@@ -12,10 +12,13 @@ logger = logging.getLogger(__name__)
 
 from app.jarvis.action_policy import (
     DEFAULT_EXECUTION_MODE,
+    classify_objective_safety,
     compute_priority_score,
     get_action_policy,
+    is_autonomous_mission_blocked,
     resolve_action_type,
 )
+from app.jarvis.execution.safety import SafetyLevel, classify_text, is_forbidden
 from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
 from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
@@ -95,6 +98,16 @@ class PlannerAgent:
     name = "planner"
 
     def run(self, prompt: str) -> dict[str, Any]:
+        prompt_text = (prompt or "").strip()
+        if is_autonomous_mission_blocked(prompt_text):
+            return {
+                "objective": prompt_text[:300],
+                "steps": [],
+                "requires_research": False,
+                "requires_input": False,
+                "source": "safety_blocked",
+                "overall_safety": SafetyLevel.FORBIDDEN.value,
+            }
         ask = (
             "Create a concise execution plan for an autonomous software operator.\n"
             "Return only JSON with keys: objective (string), steps (array of strings), "
@@ -232,6 +245,8 @@ class StrategyAgent:
                     confidence = 0.6
                 confidence = _adjust_confidence_with_history(confidence, success_rate)
                 title = str(item.get("title") or "").strip()[:200]
+                if is_forbidden(classify_text(f"{prompt} {title}")):
+                    continue
                 hinted_type = str(item.get("action_type") or "").strip().lower()
                 action_type = resolve_action_type(title, hinted_type)
                 policy = get_action_policy(action_type)
@@ -471,6 +486,17 @@ class ExecutionAgent:
         strategy: dict[str, Any] | None,
         mission_prompt: str = "",
     ) -> dict[str, Any]:
+        if is_autonomous_mission_blocked(mission_prompt):
+            return {
+                "executed": [],
+                "waiting_for_approval": [],
+                "waiting_for_input": [],
+                "needs_approval": False,
+                "approval_summary": "",
+                "blocked": True,
+                "safety_level": SafetyLevel.FORBIDDEN.value,
+                "error": "Mission prompt classified as FORBIDDEN",
+            }
         strategy_actions = [
             a
             for a in ((strategy or {}).get("actions") or [])
@@ -490,6 +516,19 @@ class ExecutionAgent:
                 "execution_mode": mode,
                 "priority_score": int(action.get("priority_score", 0) or 0),
             }
+            if is_forbidden(classify_text(f"{mission_prompt} {row['title']}")):
+                executed.append(
+                    {
+                        **row,
+                        "status": "blocked",
+                        "result": {
+                            "ok": False,
+                            "error": "forbidden_action",
+                            "message": "Action title classified as FORBIDDEN by safety policy.",
+                        },
+                    }
+                )
+                continue
             if _skipped_vague_perico_placeholder(action, mission_prompt=mission_prompt):
                 executed.append(
                     {
