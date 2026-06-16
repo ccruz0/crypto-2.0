@@ -97,6 +97,10 @@ from app.jarvis.execution.schemas import (
     JarvisInvestigationRunRequest,
     JarvisScheduledInvestigationReportResponse,
     JarvisScheduledInvestigationsResponse,
+    JarvisAlertDetail,
+    JarvisAlertsListResponse,
+    JarvisDailyReportSummary,
+    JarvisDailyReportsListResponse,
     JarvisFixTemplateDetailResponse,
     JarvisFixTemplateListResponse,
     JarvisProposalEligibilityResponse,
@@ -359,6 +363,136 @@ def jarvis_scheduled_investigations_report(
     if engine is None or not ensure_jarvis_scheduled_investigations_tables(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
     return build_daily_health_summary(hours=hours)
+
+
+def _alert_to_summary(alert) -> dict[str, Any]:
+    return {
+        "alert_id": alert.alert_id,
+        "created_at": alert.created_at,
+        "updated_at": alert.updated_at,
+        "severity": alert.severity,
+        "source": alert.source,
+        "investigation_id": alert.investigation_id,
+        "title": alert.title,
+        "summary": alert.summary,
+        "evidence_count": len(alert.evidence or []),
+        "status": alert.status,
+        "fingerprint": alert.fingerprint,
+        "occurrence_count": alert.occurrence_count,
+        "first_seen": alert.first_seen,
+        "last_seen": alert.last_seen,
+    }
+
+
+def _alert_to_detail(alert) -> dict[str, Any]:
+    payload = _alert_to_summary(alert)
+    payload["evidence"] = alert.evidence or []
+    return payload
+
+
+@router.get("/api/jarvis/alerts", response_model=JarvisAlertsListResponse)
+def jarvis_list_alerts(
+    limit: int = Query(default=100, ge=1, le=500),
+    status: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_alerting_tables
+    from app.jarvis.investigations.alerting.config import alerting_status
+    from app.jarvis.investigations.alerting.persistence import list_alerts
+
+    if engine is None or not ensure_jarvis_alerting_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    alerts = list_alerts(limit=limit, status=status, severity=severity)
+    return {
+        "alerts": [_alert_to_summary(a) for a in alerts],
+        "alerting": alerting_status(),
+    }
+
+
+@router.get("/api/jarvis/alerts/{alert_id}", response_model=JarvisAlertDetail)
+def jarvis_get_alert(alert_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_alerting_tables
+    from app.jarvis.investigations.alerting.persistence import get_alert
+
+    if engine is None or not ensure_jarvis_alerting_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    alert = get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+    return _alert_to_detail(alert)
+
+
+@router.post("/api/jarvis/alerts/{alert_id}/acknowledge", response_model=JarvisAlertDetail)
+def jarvis_acknowledge_alert(alert_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_alerting_tables
+    from app.jarvis.investigations.alerting.persistence import update_alert_status
+    from app.jarvis.investigations.alerting.types import AlertStatus
+
+    if engine is None or not ensure_jarvis_alerting_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    alert = update_alert_status(alert_id, AlertStatus.ACKNOWLEDGED)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+    return _alert_to_detail(alert)
+
+
+@router.post("/api/jarvis/alerts/{alert_id}/resolve", response_model=JarvisAlertDetail)
+def jarvis_resolve_alert(alert_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_alerting_tables
+    from app.jarvis.investigations.alerting.persistence import update_alert_status
+    from app.jarvis.investigations.alerting.types import AlertStatus
+
+    if engine is None or not ensure_jarvis_alerting_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    alert = update_alert_status(alert_id, AlertStatus.RESOLVED)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+    return _alert_to_detail(alert)
+
+
+@router.get("/api/jarvis/reports", response_model=JarvisDailyReportsListResponse)
+def jarvis_list_daily_reports(
+    limit: int = Query(default=30, ge=1, le=200),
+) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_alerting_tables
+    from app.jarvis.investigations.alerting.config import alerting_status
+    from app.jarvis.investigations.alerting.persistence import list_daily_reports
+
+    if engine is None or not ensure_jarvis_alerting_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    reports = list_daily_reports(limit=limit)
+    return {
+        "reports": [
+            {
+                "id": r["id"],
+                "report_id": r["report_id"],
+                "report_date": r["report_date"],
+                "generated_at": r["generated_at"],
+                "summary": r.get("summary") or {},
+            }
+            for r in reports
+        ],
+        "alerting": alerting_status(),
+    }
+
+
+@router.get("/api/jarvis/reports/{report_id}", response_model=JarvisDailyReportSummary)
+def jarvis_get_daily_report(report_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_alerting_tables
+    from app.jarvis.investigations.alerting.persistence import get_daily_report
+
+    if engine is None or not ensure_jarvis_alerting_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    report = get_daily_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="report not found")
+    return {
+        "id": report["id"],
+        "report_id": report["report_id"],
+        "report_date": report["report_date"],
+        "generated_at": report["generated_at"],
+        "summary": report.get("summary") or {},
+    }
 
 
 @router.get("/api/jarvis/investigations/{investigation_id}/attachments/{artifact_id}/content")

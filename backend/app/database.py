@@ -728,6 +728,63 @@ def ensure_jarvis_investigations_table(engine_to_use) -> bool:
         return False
 
 
+def ensure_jarvis_alerting_tables(engine_to_use) -> bool:
+    """Persist Phase 6B Jarvis alerts and daily health reports."""
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_alerting_tables: engine is None")
+        return False
+    try:
+        is_sqlite = engine_to_use.dialect.name == "sqlite"
+        ts_type = "TIMESTAMP" if is_sqlite else "TIMESTAMPTZ"
+        date_type = "TEXT" if is_sqlite else "DATE"
+        tables = [
+            (
+                "jarvis_alerts",
+                f"""
+                CREATE TABLE IF NOT EXISTS jarvis_alerts (
+                    id {'INTEGER PRIMARY KEY AUTOINCREMENT' if is_sqlite else 'SERIAL PRIMARY KEY'},
+                    alert_id TEXT NOT NULL UNIQUE,
+                    created_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
+                    updated_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
+                    severity TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    evidence TEXT NOT NULL DEFAULT '[]',
+                    investigation_id TEXT,
+                    occurrence_count INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    first_seen {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
+                    last_seen {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'}
+                )
+                """,
+            ),
+            (
+                "jarvis_daily_reports",
+                f"""
+                CREATE TABLE IF NOT EXISTS jarvis_daily_reports (
+                    id {'INTEGER PRIMARY KEY AUTOINCREMENT' if is_sqlite else 'SERIAL PRIMARY KEY'},
+                    report_id TEXT NOT NULL UNIQUE,
+                    report_date {date_type} NOT NULL UNIQUE,
+                    generated_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
+                    summary_json TEXT NOT NULL DEFAULT '{{}}'
+                )
+                """,
+            ),
+        ]
+        for tname, ddl in tables:
+            if not table_exists(engine_to_use, tname):
+                logger.warning("Table %s does not exist - creating (Jarvis alerting)", tname)
+                with engine_to_use.begin() as conn:
+                    conn.execute(text(ddl))
+                logger.info("[BOOT] Created table %s", tname)
+        return all(table_exists(engine_to_use, tname) for tname, _ in tables)
+    except Exception as e:
+        logger.error("ensure_jarvis_alerting_tables failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_jarvis_scheduled_investigations_tables(engine_to_use) -> bool:
     """Persist Phase 6A scheduled investigation schedules, task queue, and leader lock."""
     if engine_to_use is None:

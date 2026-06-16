@@ -18,6 +18,8 @@ import ExecutedOrdersTab from '@/app/components/tabs/ExecutedOrdersTab';
 import JarvisControlTab from '@/app/components/tabs/JarvisControlTab';
 import ProductionDiagnosticsTab from '@/app/components/tabs/ProductionDiagnosticsTab';
 import ScheduledInvestigationsTab from '@/app/components/tabs/ScheduledInvestigationsTab';
+import JarvisAlertsTab from '@/app/components/tabs/JarvisAlertsTab';
+import JarvisDailyReportsTab from '@/app/components/tabs/JarvisDailyReportsTab';
 import JarvisAnalyticsTab from '@/app/components/tabs/JarvisAnalyticsTab';
 import JarvisImprovementTab from '@/app/components/tabs/JarvisImprovementTab';
 import SystemHealthPanel from '@/components/SystemHealth';
@@ -328,7 +330,7 @@ const SkeletonBlock = ({ className = '' }: { className?: string }) => (
   <div className={`animate-pulse bg-gray-200 dark:bg-slate-700 rounded ${className}`} />
 );
 
-type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring' | 'jarvis' | 'production-diagnostics' | 'scheduled-investigations' | 'jarvis-analytics' | 'jarvis-improvement';
+type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring' | 'jarvis' | 'production-diagnostics' | 'scheduled-investigations' | 'jarvis-alerts' | 'jarvis-daily-reports' | 'jarvis-analytics' | 'jarvis-improvement';
 
 // Helper function to add thousand separators
 function addThousandSeparators(numStr: string): string {
@@ -4628,6 +4630,8 @@ function resolveDecisionIndexColor(value: number): string {
     { id: 'jarvis', label: 'Jarvis' },
     { id: 'production-diagnostics', label: 'Production Diagnostics' },
     { id: 'scheduled-investigations', label: 'Scheduled Investigations' },
+    { id: 'jarvis-alerts', label: 'Alerts' },
+    { id: 'jarvis-daily-reports', label: 'Daily Reports' },
     { id: 'jarvis-analytics', label: 'Jarvis Analytics' },
     { id: 'jarvis-improvement', label: 'Jarvis Improvement' },
   ];
@@ -5168,6 +5172,8 @@ function resolveDecisionIndexColor(value: number): string {
           {activeTab === 'jarvis' && <JarvisControlTab />}
           {activeTab === 'production-diagnostics' && <ProductionDiagnosticsTab />}
           {activeTab === 'scheduled-investigations' && <ScheduledInvestigationsTab />}
+          {activeTab === 'jarvis-alerts' && <JarvisAlertsTab />}
+          {activeTab === 'jarvis-daily-reports' && <JarvisDailyReportsTab />}
           {activeTab === 'jarvis-analytics' && <JarvisAnalyticsTab />}
           {activeTab === 'jarvis-improvement' && <JarvisImprovementTab />}
         </ErrorBoundary>
