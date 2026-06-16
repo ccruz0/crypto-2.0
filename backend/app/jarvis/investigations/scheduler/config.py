@@ -21,6 +21,17 @@ def investigation_scheduler_enabled() -> bool:
     return _bool_env("JARVIS_INVESTIGATION_SCHEDULER_ENABLED", default=True)
 
 
+def investigation_scheduler_should_autostart() -> bool:
+    """True when this primary process should start the read-only scheduler loop."""
+    run_poller = (os.environ.get("RUN_TELEGRAM_POLLER") or "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    return run_poller and investigation_scheduler_enabled()
+
+
 def investigation_scheduler_interval_seconds() -> int:
     raw = (os.environ.get("JARVIS_INVESTIGATION_SCHEDULER_INTERVAL_SECONDS") or "").strip()
     if raw:
