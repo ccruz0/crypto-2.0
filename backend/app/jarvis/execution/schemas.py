@@ -352,6 +352,48 @@ class JarvisScheduledInvestigationReportResponse(BaseModel):
     recent_tasks: list[JarvisScheduledInvestigationTask] = Field(default_factory=list)
 
 
+# --- Phase 6B: Autonomous alerting (read-only) ---
+
+
+class JarvisAlertSummary(BaseModel):
+    alert_id: str
+    created_at: str = ""
+    updated_at: str = ""
+    severity: str
+    source: str
+    investigation_id: str | None = None
+    title: str
+    summary: str = ""
+    evidence_count: int = 0
+    status: str
+    fingerprint: str = ""
+    occurrence_count: int = 1
+    first_seen: str = ""
+    last_seen: str = ""
+
+
+class JarvisAlertDetail(JarvisAlertSummary):
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class JarvisAlertsListResponse(BaseModel):
+    alerts: list[JarvisAlertSummary] = Field(default_factory=list)
+    alerting: dict[str, Any] = Field(default_factory=dict)
+
+
+class JarvisDailyReportSummary(BaseModel):
+    id: int = 0
+    report_id: str
+    report_date: str
+    generated_at: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class JarvisDailyReportsListResponse(BaseModel):
+    reports: list[JarvisDailyReportSummary] = Field(default_factory=list)
+    alerting: dict[str, Any] = Field(default_factory=dict)
+
+
 # --- Phase 4C: Investigation quality analytics (read-only) ---
 
 

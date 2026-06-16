@@ -656,6 +656,22 @@ def create_app(role: str = "legacy") -> FastAPI:
                     logger.info(
                         "Investigation scheduler loop skipped (JARVIS_INVESTIGATION_SCHEDULER_ENABLED=false)"
                     )
+
+                # Phase 6B: daily health report loop (read-only alerting; Telegram only).
+                from app.jarvis.investigations.alerting.config import jarvis_alerting_should_autostart
+
+                if jarvis_alerting_should_autostart():
+                    try:
+                        from app.jarvis.investigations.alerting.loop import start_daily_report_loop
+
+                        asyncio.create_task(start_daily_report_loop())
+                        logger.info("Jarvis daily report loop started (Phase 6B read-only)")
+                    except Exception as e:
+                        logger.error("Failed to start daily report loop: %s", e, exc_info=True)
+                elif not _run_poller:
+                    logger.info(
+                        "Daily report loop skipped (RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate work)"
+                    )
             except Exception as e:
                 logger.error(f"Background init error: {e}", exc_info=True)
     

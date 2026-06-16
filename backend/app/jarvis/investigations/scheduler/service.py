@@ -108,6 +108,7 @@ def execute_task(task: dict[str, Any]) -> dict[str, Any]:
             result_summary=summary,
             duration_ms=duration_ms,
         )
+        _maybe_emit_investigation_alert(report, task)
         return {
             "ok": True,
             "task_id": task_id,
@@ -124,6 +125,7 @@ def execute_task(task: dict[str, Any]) -> dict[str, Any]:
             error_message=str(exc),
             duration_ms=duration_ms,
         )
+        _maybe_emit_task_failure_alert(task, str(exc))
         return {"ok": False, "task_id": task_id, "error": str(exc), "task": updated}
     except Exception as exc:
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -134,7 +136,39 @@ def execute_task(task: dict[str, Any]) -> dict[str, Any]:
             error_message=str(exc),
             duration_ms=duration_ms,
         )
+        _maybe_emit_task_failure_alert(task, str(exc))
         return {"ok": False, "task_id": task_id, "error": str(exc), "task": updated}
+
+
+def _maybe_emit_investigation_alert(report: Any, task: dict[str, Any]) -> None:
+    """Phase 6B: read-only alert emission after scheduled investigation."""
+    try:
+        from app.jarvis.investigations.alerting.engine import process_investigation_alert
+
+        source = str(task.get("schedule_id") or task.get("template_id") or "scheduler")
+        process_investigation_alert(
+            report,
+            source=source,
+            investigation_type=str(task.get("template_id") or source),
+        )
+    except Exception as exc:
+        logger.warning("scheduler: alert emission skipped: %s", exc)
+
+
+def _maybe_emit_task_failure_alert(task: dict[str, Any], error_message: str) -> None:
+    """Phase 6B: CRITICAL alert when scheduled task fails."""
+    try:
+        from app.jarvis.investigations.alerting.engine import process_task_failure_alert
+
+        source = str(task.get("schedule_id") or task.get("template_id") or "scheduler")
+        process_task_failure_alert(
+            source=source,
+            objective=str(task.get("objective") or ""),
+            error_message=error_message,
+            investigation_type=str(task.get("template_id") or source),
+        )
+    except Exception as exc:
+        logger.warning("scheduler: failure alert emission skipped: %s", exc)
 
 
 def recover_stale_running_tasks(*, lease_seconds: int) -> int:

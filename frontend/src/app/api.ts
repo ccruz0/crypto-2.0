@@ -2281,6 +2281,67 @@ export async function getJarvisScheduledInvestigationReport(
   );
 }
 
+// --- Phase 6B: Jarvis autonomous alerting ---
+
+export interface JarvisAlertSummary {
+  alert_id: string;
+  created_at: string;
+  updated_at: string;
+  severity: string;
+  source: string;
+  investigation_id: string | null;
+  title: string;
+  summary: string;
+  evidence_count: number;
+  status: string;
+  fingerprint: string;
+  occurrence_count: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface JarvisAlertsResponse {
+  alerts: JarvisAlertSummary[];
+  alerting: Record<string, unknown>;
+}
+
+export interface JarvisDailyReportSummary {
+  id: number;
+  report_id: string;
+  report_date: string;
+  generated_at: string;
+  summary: Record<string, unknown>;
+}
+
+export interface JarvisDailyReportsResponse {
+  reports: JarvisDailyReportSummary[];
+  alerting: Record<string, unknown>;
+}
+
+export async function getJarvisAlerts(limit = 100): Promise<JarvisAlertsResponse> {
+  return fetchAPI<JarvisAlertsResponse>(`/jarvis/alerts?limit=${limit}`);
+}
+
+export async function getJarvisAlert(alertId: string): Promise<JarvisAlertSummary & { evidence: unknown[] }> {
+  return fetchAPI(`/jarvis/alerts/${alertId}`);
+}
+
+export async function acknowledgeJarvisAlert(alertId: string): Promise<JarvisAlertSummary & { evidence: unknown[] }> {
+  return fetchAPI(`/jarvis/alerts/${alertId}/acknowledge`, { method: 'POST' });
+}
+
+export async function resolveJarvisAlert(alertId: string): Promise<JarvisAlertSummary & { evidence: unknown[] }> {
+  return fetchAPI(`/jarvis/alerts/${alertId}/resolve`, { method: 'POST' });
+}
+
+export async function getJarvisDailyReports(limit = 30): Promise<JarvisDailyReportsResponse> {
+  return fetchAPI<JarvisDailyReportsResponse>(`/jarvis/reports?limit=${limit}`);
+}
+
+export async function getJarvisDailyReport(reportId: string): Promise<JarvisDailyReportSummary> {
+  return fetchAPI<JarvisDailyReportSummary>(`/jarvis/reports/${reportId}`);
+}
+
 export async function getProposalEligibility(
   investigationId: string,
 ): Promise<JarvisProposalEligibility> {
