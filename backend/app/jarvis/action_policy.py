@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.jarvis.execution.safety import (
+    SafetyLevel,
+    classify_text,
+    classify_text_with_reason,
+    has_destructive_intent,
+    is_forbidden,
+)
+
 # Single source of truth: update this map to change behavior globally.
 ACTION_POLICY: dict[str, dict[str, Any]] = {
     "analysis": {
@@ -107,6 +115,44 @@ DEFAULT_ACTION_TYPE = "analysis"
 DEFAULT_EXECUTION_MODE = "auto_execute"
 
 _IMPACT_WEIGHT: dict[str, int] = {"low": 0, "medium": 8, "high": 16}
+
+
+def classify_objective_safety(text: str) -> SafetyLevel:
+    """Classify mission/task objective safety (delegates to execution.safety)."""
+    return classify_text(text)
+
+
+def classify_objective_safety_with_reason(text: str) -> dict[str, Any]:
+    """Classify objective safety with rule metadata (delegates to execution.safety)."""
+    return classify_text_with_reason(text)
+
+
+def is_objective_forbidden(text: str) -> bool:
+    """True when objective must not run on any autonomous or Phase 3 path."""
+    return is_forbidden(classify_objective_safety(text))
+
+
+def is_autonomous_mission_blocked(text: str) -> bool:
+    """
+    Block trading/destructive objectives on autonomous paths.
+
+    Standalone deploy missions may still flow to requires_approval via action_policy.
+    """
+    from app.jarvis.execution.safety import is_investigation_intent
+
+    normalized = (text or "").strip()
+    if not normalized or not is_objective_forbidden(normalized):
+        return False
+    reason = classify_objective_safety_with_reason(normalized)
+    rule = str(reason.get("rule") or "")
+    if rule == r"\bdeploy\b" and not is_investigation_intent(normalized):
+        return False
+    return True
+
+
+def objective_has_destructive_intent(text: str) -> bool:
+    """True when objective contains trading/write/destructive actions."""
+    return has_destructive_intent(text)
 
 
 def get_action_policy(action_type: str) -> dict[str, Any]:

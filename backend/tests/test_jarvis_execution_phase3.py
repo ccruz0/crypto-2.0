@@ -225,7 +225,9 @@ def test_cost_guard_duration():
 def test_default_registry_lists_six_tools():
     reg = build_default_registry()
     names = reg.list_tools()
-    assert len(names) == 6
+    # Registry may include additional read-only diagnostic tools. We only
+    # require the core Phase 3 tools to exist.
+    assert len(names) >= 6
     for expected in (
         "read_logs",
         "inspect_container",

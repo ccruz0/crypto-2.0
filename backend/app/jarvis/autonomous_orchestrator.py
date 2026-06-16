@@ -10,6 +10,7 @@ from typing import Any
 
 from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
+from app.jarvis.action_policy import classify_objective_safety_with_reason, is_autonomous_mission_blocked
 from app.jarvis.autonomous_agents import (
     ExecutionAgent,
     OutcomeEvaluatorAgent,
@@ -679,6 +680,26 @@ class JarvisAutonomousOrchestrator:
         specialist_agent: str | None = None,
         applied_guided_env_keys: list[str] | None = None,
     ) -> dict[str, Any]:
+        if is_autonomous_mission_blocked(prompt):
+            reason = classify_objective_safety_with_reason(prompt)
+            note = f"forbidden objective category={reason.get('category')} rule={reason.get('rule')}"
+            self.notion.transition_state(mission_id, to_state=MISSION_STATUS_FAILED, note=note)
+            self.notion.append_readability_timeline(
+                mission_id,
+                "Objetivo bloqueado por política de seguridad (sin trading ni acciones destructivas).",
+            )
+            self.notion.append_event(mission_id, event="safety_blocked", detail=note)
+            return {
+                "ok": False,
+                "mission_id": mission_id,
+                "status": MISSION_STATUS_FAILED,
+                "dialog_message": (
+                    "No puedo ejecutar esta misión: el objetivo incluye trading, escritura "
+                    "o acciones destructivas prohibidas."
+                ),
+                "safety": reason,
+            }
+
         self.notion.transition_state(mission_id, to_state=MISSION_STATUS_PLANNING, note="planner started")
         self.notion.append_readability_timeline_low(mission_id, "Planificador iniciado.")
         active_perico = (
@@ -695,6 +716,24 @@ class JarvisAutonomousOrchestrator:
         plan = self.planner.run(prompt)
         self.notion.append_technical_detail_marker(mission_id, "Salida en bruto del planificador y agentes")
         self.notion.append_agent_output(mission_id, agent_name="planner", content=_dump(plan))
+
+        if str(plan.get("overall_safety") or "") == "forbidden" or plan.get("source") == "safety_blocked":
+            reason = classify_objective_safety_with_reason(prompt)
+            self.notion.transition_state(
+                mission_id,
+                to_state=MISSION_STATUS_FAILED,
+                note="planner safety blocked",
+            )
+            return {
+                "ok": False,
+                "mission_id": mission_id,
+                "status": MISSION_STATUS_FAILED,
+                "dialog_message": (
+                    "No puedo ejecutar esta misión: el objetivo incluye trading, escritura "
+                    "o acciones destructivas prohibidas."
+                ),
+                "safety": reason,
+            }
 
         if plan.get("requires_input") and not external_input:
             clarify = format_natural_clarification_request(mission_prompt=prompt, plan=plan)

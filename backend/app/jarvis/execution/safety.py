@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from typing import Any
 
 
 class SafetyLevel(str, Enum):
@@ -12,18 +13,62 @@ class SafetyLevel(str, Enum):
     FORBIDDEN = "forbidden"
 
 
+# Read-only investigation objectives must not be blocked by trading vocabulary alone.
+_INVESTIGATION_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\b(investigate|diagnose|explain|why|compare|reconcile|audit|check|review|analyze|analyse|find\s+out|look\s+into)\b",
+        r"\b(missing|not\s+(?:visible|showing|matching)|mismatch|discrepancy|different|incorrect|wrong)\b",
+        r"\b(open|executed|wallet|portfolio)\s+orders?\b",
+        r"\borders?\b.*\b(missing|not\s+(?:visible|showing)|mismatch|discrepancy|different)\b",
+        r"\bportfolio\s+reconciliation\b",
+        r"\bcrypto\.?com\b.*\b(dashboard|differ|compare|reconcile|missing)\b",
+        r"\bdashboard\b.*\b(missing|not\s+(?:visible|showing)|differ|mismatch)\b",
+    )
+)
+
+# Explicit read-only investigation guards — checked before destructive patterns.
+_READ_ONLY_INVESTIGATION_GUARDS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bwithout\s+placing\s+trades?\b",
+        r"\bread[\s-]only\b",
+        r"\bno\s+trading\b",
+        r"\bdo\s+not\s+(trade|place|execute)\b",
+        r"\bdon'?t\s+(trade|place|execute)\b",
+    )
+)
+
+# Trading/write/destructive intent — forbidden even when mixed with investigation wording.
+_DESTRUCTIVE_INVESTIGATION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\b(execute|place|submit)\b.*\b(trade|order|market\s+order)\b",
+        r"\b(place|submit)\b.*\b(replacement\s+)?orders?\b",
+        r"\bcancel\b.*\b(?:all\s+)?(?:open\s+)?orders?\b",
+        r"\bmarket\s+order\b",
+        r"\b(buy|sell)\s+(?!orders?\b)(?:BTC|ETH|[A-Z]{2,10}|\w+)\b",
+        r"\band\s+(buy|sell)\b",
+        r"\b(close|open)\b.*\bpositions?\b",
+        r"\bclose\s+all\s+positions?\b",
+        r"\b(delete|terminate|drop|truncate|purge|wipe)\b.*\b(resources?|buckets?|databases?|db|volumes?|orders?)\b",
+        r"\b(modify|change|rotate|update)\b.*\b(secrets?|credentials?|password|api\s+keys?)\b",
+        r"\brm\s+-rf\b",
+        r"\bwrite\b.*\b(file|secret|env|database)\b",
+    )
+)
+
 _FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
-        r"\btrade\b",
-        r"\bexecute\s+order\b",
+        r"\b(execute|place|submit|cancel)\b.*\b(trade|order)\b",
+        r"\btrade\b.*\b(now|immediately|on\s+exchange)\b",
         r"\bdeploy\b",
         r"\bdelete\b",
         r"\bterminate\b",
         r"\bmodify\b.*\bsecret",
         r"\bchange\b.*\bsecret",
         r"\bwrite\b.*\b(file|secret|env|database)\b",
-        r"\bchange\b.*\bsecret",
         r"\bshell\b.*\bexec",
         r"\brm\s+-rf\b",
     )
@@ -72,17 +117,83 @@ _READ_ONLY_TOOL_ACTIONS: frozenset[str] = frozenset(
 )
 
 
-def classify_text(text: str) -> SafetyLevel:
+def is_investigation_intent(text: str) -> bool:
     normalized = (text or "").strip()
     if not normalized:
-        return SafetyLevel.SAFE_AUTO
-    for pattern in _FORBIDDEN_PATTERNS:
-        if pattern.search(normalized):
-            return SafetyLevel.FORBIDDEN
-    for pattern in _NEEDS_APPROVAL_PATTERNS:
-        if pattern.search(normalized):
-            return SafetyLevel.NEEDS_APPROVAL
-    return SafetyLevel.SAFE_AUTO
+        return False
+    return any(pattern.search(normalized) for pattern in _INVESTIGATION_INTENT_PATTERNS)
+
+
+def has_read_only_investigation_guard(text: str) -> bool:
+    """True when objective explicitly constrains to read-only investigation."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _READ_ONLY_INVESTIGATION_GUARDS)
+
+
+def has_destructive_intent(text: str) -> bool:
+    """True when objective contains trading, write, or destructive actions."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    destructive = _matching_patterns(normalized, _DESTRUCTIVE_INVESTIGATION_PATTERNS)
+    if destructive:
+        return True
+    return bool(_matching_patterns(normalized, _FORBIDDEN_PATTERNS))
+
+
+def _matching_patterns(text: str, patterns: tuple[re.Pattern[str], ...]) -> list[str]:
+    return [pattern.pattern for pattern in patterns if pattern.search(text)]
+
+
+def classify_text_with_reason(text: str) -> dict[str, Any]:
+    """Classify objective safety and return which rule fired (for diagnostics)."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return {"level": SafetyLevel.SAFE_AUTO.value, "rule": "empty_objective", "category": "default"}
+
+    if is_investigation_intent(normalized) and has_read_only_investigation_guard(normalized):
+        return {
+            "level": SafetyLevel.SAFE_AUTO.value,
+            "rule": "read_only_investigation_guard",
+            "category": "read_only_investigation",
+        }
+
+    destructive = _matching_patterns(normalized, _DESTRUCTIVE_INVESTIGATION_PATTERNS)
+    if destructive:
+        category = "destructive_investigation" if is_investigation_intent(normalized) else "forbidden_pattern"
+        return {
+            "level": SafetyLevel.FORBIDDEN.value,
+            "rule": destructive[0],
+            "category": category,
+        }
+
+    forbidden = _matching_patterns(normalized, _FORBIDDEN_PATTERNS)
+    if forbidden:
+        return {"level": SafetyLevel.FORBIDDEN.value, "rule": forbidden[0], "category": "forbidden_pattern"}
+
+    if is_investigation_intent(normalized):
+        return {
+            "level": SafetyLevel.SAFE_AUTO.value,
+            "rule": "investigation_intent",
+            "category": "read_only_investigation",
+        }
+
+    needs_approval = _matching_patterns(normalized, _NEEDS_APPROVAL_PATTERNS)
+    if needs_approval:
+        return {
+            "level": SafetyLevel.NEEDS_APPROVAL.value,
+            "rule": needs_approval[0],
+            "category": "needs_approval_pattern",
+        }
+
+    return {"level": SafetyLevel.SAFE_AUTO.value, "rule": "default_safe", "category": "default"}
+
+
+def classify_text(text: str) -> SafetyLevel:
+    result = classify_text_with_reason(text)
+    return SafetyLevel(result["level"])
 
 
 def classify_action(action: str) -> SafetyLevel:
@@ -149,8 +260,7 @@ def classify_change_objective(text: str) -> SafetyLevel:
     if not normalized:
         return SafetyLevel.SAFE_AUTO
     change_forbidden = (
-        r"\btrade\b",
-        r"\bexecute\s+order\b",
+        r"\b(execute|place|submit|cancel)\b.*\b(trade|order)\b",
         r"\bmerge\b",
         r"\bdelete\b",
         r"\bterminate\b",

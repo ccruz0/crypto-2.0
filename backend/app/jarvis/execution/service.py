@@ -215,7 +215,12 @@ def _finalize_execution(
     )
 
 
-def _run_execution(task_id: str, plan: JarvisExecutionPlan, *, already_executing: bool = False) -> dict[str, Any]:
+def _run_execution(
+    task_id: str,
+    plan: JarvisExecutionPlan,
+    *,
+    already_executing: bool = False,
+) -> dict[str, Any]:
     if not already_executing:
         transition_task_status(task_id, TaskLifecycleState.EXECUTING)
 
