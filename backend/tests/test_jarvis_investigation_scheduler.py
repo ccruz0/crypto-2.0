@@ -58,6 +58,48 @@ def sched_db(monkeypatch):
     engine.dispose()
 
 
+def test_autostart_when_trading_only_and_scheduler_enabled(monkeypatch):
+    monkeypatch.setenv("ATP_TRADING_ONLY", "1")
+    monkeypatch.setenv("RUN_TELEGRAM_POLLER", "true")
+    monkeypatch.setenv("JARVIS_INVESTIGATION_SCHEDULER_ENABLED", "true")
+    assert sched_config.investigation_scheduler_should_autostart() is True
+
+
+def test_autostart_disabled_when_scheduler_flag_off(monkeypatch):
+    monkeypatch.setenv("ATP_TRADING_ONLY", "1")
+    monkeypatch.setenv("RUN_TELEGRAM_POLLER", "true")
+    monkeypatch.setenv("JARVIS_INVESTIGATION_SCHEDULER_ENABLED", "false")
+    assert sched_config.investigation_scheduler_should_autostart() is False
+
+
+def test_autostart_disabled_on_standby_process(monkeypatch):
+    monkeypatch.setenv("ATP_TRADING_ONLY", "1")
+    monkeypatch.setenv("RUN_TELEGRAM_POLLER", "false")
+    monkeypatch.setenv("JARVIS_INVESTIGATION_SCHEDULER_ENABLED", "true")
+    assert sched_config.investigation_scheduler_should_autostart() is False
+
+
+def test_factory_decouples_investigation_scheduler_from_trading_only():
+    from pathlib import Path
+
+    factory_py = Path(__file__).resolve().parents[1] / "app" / "factory.py"
+    content = factory_py.read_text()
+    inv_block_start = content.index("# Phase 6A: autonomous investigation scheduler")
+    inv_block_end = content.index("# Ensure watchlist is never empty", inv_block_start)
+    inv_block = content[inv_block_start:inv_block_end]
+    assert "investigation_scheduler_should_autostart" in inv_block
+    assert "is_atp_trading_only" not in inv_block
+
+
+def test_agent_scheduler_still_blocked_under_trading_only(monkeypatch):
+    monkeypatch.setenv("ATP_TRADING_ONLY", "1")
+    monkeypatch.setenv("RUN_TELEGRAM_POLLER", "true")
+    from app.core.environment import is_atp_trading_only
+
+    run_poller = True
+    assert run_poller and not is_atp_trading_only() is False
+
+
 def test_scheduler_default_interval_is_15_minutes(monkeypatch):
     monkeypatch.delenv("JARVIS_INVESTIGATION_SCHEDULER_INTERVAL_SECONDS", raising=False)
     assert sched_config.investigation_scheduler_interval_seconds() == 900

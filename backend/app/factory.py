@@ -637,8 +637,10 @@ def create_app(role: str = "legacy") -> FastAPI:
                         )
 
                 # Phase 6A: autonomous investigation scheduler (read-only; single-leader).
-                _run_inv_scheduler = _run_poller and not is_atp_trading_only()
-                if _run_inv_scheduler:
+                # Safe under ATP_TRADING_ONLY: no patch apply, PR creation, GitHub writes, or trade execution.
+                from app.jarvis.investigations.scheduler.config import investigation_scheduler_should_autostart
+
+                if investigation_scheduler_should_autostart():
                     try:
                         from app.jarvis.investigations.scheduler.loop import start_investigation_scheduler_loop
 
@@ -646,8 +648,14 @@ def create_app(role: str = "legacy") -> FastAPI:
                         logger.info("Investigation scheduler loop started (Phase 6A read-only)")
                     except Exception as e:
                         logger.error("Failed to start investigation scheduler loop: %s", e, exc_info=True)
+                elif not _run_poller:
+                    logger.info(
+                        "Investigation scheduler loop skipped (RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate work)"
+                    )
                 else:
-                    logger.info("Investigation scheduler loop skipped (standby/trading-only)")
+                    logger.info(
+                        "Investigation scheduler loop skipped (JARVIS_INVESTIGATION_SCHEDULER_ENABLED=false)"
+                    )
             except Exception as e:
                 logger.error(f"Background init error: {e}", exc_info=True)
     
