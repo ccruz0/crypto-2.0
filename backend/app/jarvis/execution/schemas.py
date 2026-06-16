@@ -214,6 +214,12 @@ class JarvisInvestigationDetail(BaseModel):
     proposal_status: str | None = None
     resolution_status: str | None = None
     created_at: str | None = None
+    synthesis: dict[str, Any] = Field(default_factory=dict)
+    missing_evidence: list[str] = Field(default_factory=list)
+    evidence_sources: list[str] = Field(default_factory=list)
+    tool_results: list[dict[str, Any]] = Field(default_factory=list)
+    collector_failures: list[str] = Field(default_factory=list)
+    passed: bool = False
 
 
 class JarvisProposalEligibilityResponse(BaseModel):

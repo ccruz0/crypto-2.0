@@ -8,12 +8,33 @@ from typing import Any
 
 from app.jarvis.investigations.evidence_model import (
     EvidenceItem,
+    count_independent_sources,
     evidence_weight,
+    has_direct_evidence,
+    identify_missing_evidence,
+    is_substantive_evidence,
     merge_evidence,
 )
 from app.jarvis.investigations.investigation_types import InvestigationStatus
 
 _EMPTY_VALUES = frozenset({"", "none", "null", "n/a", "not determined", "unknown"})
+
+_GENERIC_ROOT_CAUSE_PHRASES = frozenset(
+    {
+        "unknown",
+        "not determined",
+        "unable to determine",
+        "could not determine",
+        "insufficient data",
+        "needs further investigation",
+        "requires further investigation",
+        "no root cause found",
+        "collect additional evidence",
+        "n/a",
+    }
+)
+
+_RESOLVED_MISMATCH_CAUSE = "No active dashboard/exchange mismatch detected"
 
 
 @dataclass
@@ -80,6 +101,8 @@ class InvestigationReport:
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     collector_failures: list[str] = field(default_factory=list)
     resolution_status: str | None = None
+    synthesis: dict[str, Any] = field(default_factory=dict)
+    missing_evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -110,6 +133,9 @@ class InvestigationReport:
             "tool_results": self.tool_results,
             "collector_failures": self.collector_failures,
             "passed": self.status == InvestigationStatus.COMPLETED,
+            "synthesis": self.synthesis,
+            "missing_evidence": self.missing_evidence,
+            "evidence_sources": sorted({e["source"] for e in self.evidence if is_substantive_evidence(e)}),
         }
         if self.resolution_status:
             payload["resolution_status"] = self.resolution_status
@@ -123,8 +149,91 @@ def _is_present(value: Any) -> bool:
     return bool(text) and text.lower() not in _EMPTY_VALUES
 
 
+def _is_meaningful_root_cause(value: Any) -> bool:
+    if not _is_present(value):
+        return False
+    text = str(value).strip().lower()
+    if text in _GENERIC_ROOT_CAUSE_PHRASES:
+        return False
+    if len(text) < 12:
+        return False
+    return True
+
+
+def _confidence_level(score: float) -> str:
+    if score >= 70:
+        return "high"
+    if score >= 40:
+        return "medium"
+    return "low"
+
+
+def _format_evidence_for_synthesis(evidence: list[EvidenceItem]) -> list[str]:
+    lines: list[str] = []
+    for item in evidence:
+        if not is_substantive_evidence(item):
+            continue
+        parts = [f"[{item['source']}|{item['confidence']}] {item['detail'][:200]}"]
+        if item.get("table"):
+            parts.append(f"table={item['table']}")
+        if item.get("row_count") is not None:
+            parts.append(f"rows={item['row_count']}")
+        if item.get("order_ids"):
+            parts.append(f"order_ids={item['order_ids'][:5]}")
+        if item.get("exchange_response_code"):
+            parts.append(f"exchange_code={item['exchange_response_code']}")
+        if item.get("file_path"):
+            parts.append(f"path={item['file_path']}:{item.get('line_number', '')}")
+        lines.append("; ".join(parts))
+    return lines[:12]
+
+
+def build_synthesis(
+    *,
+    objective: str,
+    evidence: list[EvidenceItem],
+    root_cause: str | None,
+    impact: str,
+    next_action: str,
+    confidence: float,
+    missing_evidence: list[str],
+) -> dict[str, Any]:
+    """Build structured final synthesis sections for an investigation."""
+    evidence_found = _format_evidence_for_synthesis(evidence)
+    summary = objective
+    if root_cause:
+        summary = f"{objective}\n\nConclusion: {root_cause}"
+    return {
+        "summary": summary,
+        "evidence_found": evidence_found,
+        "root_cause": root_cause or "",
+        "impact": impact,
+        "safe_recommended_next_action": next_action,
+        "missing_evidence": missing_evidence,
+        "confidence_level": _confidence_level(confidence),
+        "confidence_score": confidence,
+        "independent_source_count": count_independent_sources(evidence),
+    }
+
+
 # Known production root-cause patterns with matchers.
 _KNOWN_CAUSE_PATTERNS: list[dict[str, Any]] = [
+    {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+        "impact": "Executed trades visible in DB or Crypto.com may be absent from dashboard trade history.",
+        "verification": [
+            "Run count_orders_by_status preset and confirm FILLED count.",
+            "Inspect recent_trade_events rows for expected BTC order IDs.",
+            "Check routes_orders trade-history handler and frontend trade tab filters.",
+        ],
+        "matchers": [
+            re.compile(r"FILLED\s*=\s*[1-9]|status_counts.*FILLED", re.I),
+            re.compile(r"executed\s+orders?\s+missing|filled\s+orders?\s+missing", re.I),
+            re.compile(r"recent_trade_events|trade.?history", re.I),
+        ],
+        "category": "orders",
+    },
     {
         "cause": "Trigger order API failure blocks cache updates",
         "fix": "Allow regular open orders to update cache independently when trigger-order sync fails.",
@@ -141,6 +250,22 @@ _KNOWN_CAUSE_PATTERNS: list[dict[str, Any]] = [
             re.compile(r"cache update.*abort|trigger.*sync.*fail", re.I),
         ],
         "category": "orders",
+    },
+    {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+        "impact": "Private exchange API calls fail; sync and dashboard data may be empty or stale.",
+        "verification": [
+            "Confirm credential_diagnostics shows expected used_pair.",
+            "Verify reconcile reports missing_credentials or 40101 in logs.",
+            "Re-test private API after credential cleanup.",
+        ],
+        "matchers": [
+            re.compile(r"missing_credentials|credentials not configured", re.I),
+            re.compile(r"40101|authentication\s+fail", re.I),
+            re.compile(r"api\s+credentials?\s+not\s+configured", re.I),
+        ],
+        "category": "authentication",
     },
     {
         "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
@@ -449,7 +574,7 @@ def _filter_tool_root_causes(
         exchange_live = int(diagnose.get("exchange_total_count") or 0)
 
     dashboard_effective = int((diagnose or {}).get("dashboard_effective_count") or 0)
-    cache_raw = int((diagnose or {}).get("cache_raw_count") or diagnose.get("cache_open_count") or 0)
+    cache_raw = int((diagnose or {}).get("cache_raw_count") or (diagnose or {}).get("cache_open_count") or 0)
 
     stale_diagnose_markers = (
         "api cache returned 0",
@@ -523,6 +648,8 @@ def rank_root_causes(
             category_bonus = 0.0
         else:
             category_bonus = 5.0
+        if pat_category == category:
+            category_bonus += 15.0
 
         total_score = category_bonus
         all_supporting: list[str] = []
@@ -594,8 +721,46 @@ def rank_root_causes(
         deduped.append(c)
     deduped = _filter_tool_root_causes(candidates=deduped, tool_outputs=tool_outputs)
     classification = classify_open_orders_mismatch(tool_outputs)
-    deduped = _apply_open_orders_resolution(deduped, classification)
+    if classification and category in ("orders", "dashboard", "exchange"):
+        deduped = _apply_open_orders_resolution(deduped, classification)
     return deduped[:8]
+
+
+def _auth_failure_signals(
+    evidence: list[EvidenceItem],
+    tool_outputs: list[dict[str, Any]] | None,
+) -> bool:
+    """Return True when evidence shows an active authentication/credential failure."""
+    for item in evidence:
+        if item.get("source") not in ("authentication", "exchange", "logs"):
+            continue
+        detail = item.get("detail", "").lower()
+        if any(
+            kw in detail
+            for kw in (
+                "40101",
+                "missing_credentials",
+                "failed_auth",
+                "duplicate",
+                "multiple credential",
+                "authentication fail",
+                "credentials not configured",
+            )
+        ):
+            return True
+        if item.get("exchange_response_code") in (40101, "40101"):
+            return True
+    for output in tool_outputs or []:
+        sync_status = output.get("sync_status")
+        if sync_status in ("missing_credentials", "failed_auth"):
+            return True
+        exchange_meta = ((output.get("sources") or {}).get("exchange") or {})
+        if exchange_meta.get("sync_status") in ("missing_credentials", "failed_auth"):
+            return True
+        err = str(output.get("error") or exchange_meta.get("error") or "").lower()
+        if "40101" in err or ("credential" in err and "not configured" in err):
+            return True
+    return False
 
 
 def _lookup_fix_for_cause(cause: str) -> tuple[str, str, list[str]]:
@@ -640,17 +805,59 @@ def build_investigation_report(
     failures = list(collector_failure_reasons or [])
 
     classification = classify_open_orders_mismatch(tool_outputs)
-    if classification and not classification.active_mismatch and ranked_causes:
-        top_cause = ranked_causes[0].cause
-        if top_cause != classification.root_cause:
-            ranked_causes = _apply_open_orders_resolution(ranked_causes, classification)
+    if classification and category not in ("authentication", "portfolio"):
+        if not classification.active_mismatch and ranked_causes:
+            top_cause = ranked_causes[0].cause
+            if top_cause != classification.root_cause:
+                ranked_causes = _apply_open_orders_resolution(ranked_causes, classification)
 
     top = ranked_causes[0] if ranked_causes else None
     min_score = 15.0 if category == "portfolio" else 25.0
-    root_cause = top.cause if top and top.score >= min_score else None
-    confidence = top.score if top else 0.0
+    root_cause: str | None = None
+    confidence = 0.0
+    recommended_fix = ""
+    impact = ""
+    verification_steps: list[str] = []
+    next_action = ""
 
-    if classification and not classification.active_mismatch:
+    if category == "authentication":
+        auth_causes = [
+            c
+            for c in ranked_causes
+            if any(
+                kw in c.cause.lower()
+                for kw in ("auth", "credential", "40101", "secret", "missing")
+            )
+        ]
+        auth_top: RootCauseCandidate | None = None
+        for item in evidence:
+            if item.get("source") != "authentication":
+                continue
+            detail_lower = item.get("detail", "").lower()
+            if "missing_credentials" in detail_lower or "credentials not configured" in detail_lower:
+                auth_top = RootCauseCandidate(
+                    cause="Crypto.com API credentials missing or misconfigured in runtime.env",
+                    score=92.0,
+                    supporting_evidence=[item["detail"][:120]],
+                    explanation="Direct credential diagnostic from exchange fetch.",
+                )
+                break
+        if auth_top is None and _auth_failure_signals(evidence, tool_outputs) and auth_causes:
+            auth_top = auth_causes[0]
+        if auth_top and auth_top.score >= min_score:
+            root_cause = auth_top.cause
+            confidence = auth_top.score
+            recommended_fix, impact, verification_steps = _lookup_fix_for_cause(root_cause)
+            next_action = recommended_fix
+        else:
+            recommended_fix = "Search exchange_sync logs for 40101 and inspect runtime.env credential pairs."
+            impact = "No active authentication failure confirmed; prior errors may be historical."
+            verification_steps = [
+                "Search logs for 40101 or Authentication failed.",
+                "Confirm credential_diagnostics used_pair matches canonical runtime.env entry.",
+            ]
+            next_action = "If failures persist, rotate API key and verify IP allowlist on Crypto.com."
+    elif classification and not classification.active_mismatch:
         root_cause = classification.root_cause
         confidence = classification.score
         recommended_fix = classification.recommended_fix
@@ -664,7 +871,9 @@ def build_investigation_report(
                 "Note trigger_orders_error_code=50001 as non-fatal unless trigger metadata is required."
             )
         next_action = classification.next_action
-    elif root_cause:
+    elif top and top.score >= min_score:
+        root_cause = top.cause
+        confidence = top.score
         recommended_fix, impact, verification_steps = _lookup_fix_for_cause(root_cause)
         next_action = recommended_fix
     else:
@@ -677,7 +886,7 @@ def build_investigation_report(
     summary_lines = [objective]
     for item in evidence[:4]:
         summary_lines.append(f"- {item['detail'][:120]}")
-    if classification and not classification.active_mismatch:
+    if classification and not classification.active_mismatch and category not in ("authentication", "portfolio"):
         summary_lines.append(f"Conclusion: {classification.root_cause}")
         for note in classification.notes:
             summary_lines.append(f"- {note}")
@@ -688,11 +897,30 @@ def build_investigation_report(
     if failures:
         summary_lines.append(f"Collector failures: {'; '.join(failures[:3])}")
 
-    if not (classification and not classification.active_mismatch):
+    if not (classification and not classification.active_mismatch and category not in ("authentication", "portfolio")):
         for output in tool_outputs or []:
             if _is_present(output.get("next_action")):
                 next_action = str(output["next_action"])
                 break
+
+    missing_evidence = identify_missing_evidence(evidence, tool_outputs, category=category)
+    if category == "authentication" and not _auth_failure_signals(evidence, tool_outputs):
+        missing_evidence = list(
+            dict.fromkeys(
+                missing_evidence
+                + ["No active 40101, missing_credentials, or credential misconfiguration found in current evidence"]
+            )
+        )
+    independent_sources = count_independent_sources(evidence)
+    if independent_sources < 2 and not has_direct_evidence(evidence, tool_outputs):
+        missing_evidence = list(
+            dict.fromkeys(
+                missing_evidence
+                + [
+                    "Need at least 2 independent evidence sources or 1 direct high-confidence observation"
+                ]
+            )
+        )
 
     status = validate_investigation_report_fields(
         root_cause=root_cause,
@@ -701,6 +929,19 @@ def build_investigation_report(
         recommended_fix=recommended_fix,
         collector_status=collector_status,
         collector_failure_reasons=failures,
+        tool_outputs=tool_outputs,
+        category=category,
+        template_id=template_id,
+    )
+
+    synthesis = build_synthesis(
+        objective=objective,
+        evidence=evidence,
+        root_cause=root_cause,
+        impact=impact,
+        next_action=next_action,
+        confidence=confidence,
+        missing_evidence=missing_evidence if status != InvestigationStatus.COMPLETED else [],
     )
 
     return InvestigationReport(
@@ -722,6 +963,8 @@ def build_investigation_report(
         tool_results=tool_results,
         collector_failures=failures,
         resolution_status=classification.resolution if classification else None,
+        synthesis=synthesis,
+        missing_evidence=missing_evidence if status != InvestigationStatus.COMPLETED else [],
     )
 
 
@@ -733,22 +976,40 @@ def validate_investigation_report_fields(
     recommended_fix: str,
     collector_status: InvestigationStatus | None = None,
     collector_failure_reasons: list[str] | None = None,
+    tool_outputs: list[dict[str, Any]] | None = None,
+    category: str = "",
+    template_id: str = "",
 ) -> InvestigationStatus:
-    """Return COMPLETED only when mandatory collectors succeeded and fields are present."""
+    """Return COMPLETED only when evidence is sufficient and conclusion is specific."""
     if collector_status in (InvestigationStatus.FAILED, InvestigationStatus.PARTIAL_FAILURE):
         return collector_status
 
     if collector_failure_reasons:
         return InvestigationStatus.PARTIAL_FAILURE
 
+    substantive = [item for item in evidence if is_substantive_evidence(item)]
+    if not substantive:
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    if not _is_meaningful_root_cause(root_cause):
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    if not _is_present(recommended_fix) or confidence <= 0:
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    # Reject mismatch-resolution cause when investigation is not dashboard/mismatch scoped.
     if (
-        _is_present(root_cause)
-        and evidence
-        and confidence > 0
-        and _is_present(recommended_fix)
+        root_cause == _RESOLVED_MISMATCH_CAUSE
+        and template_id not in ("dashboard_exchange_mismatch", "open_orders_zero_dashboard", "open_orders_empty")
     ):
-        return InvestigationStatus.COMPLETED
-    return InvestigationStatus.INSUFFICIENT_EVIDENCE
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    independent_sources = count_independent_sources(evidence)
+    direct = has_direct_evidence(evidence, tool_outputs)
+    if independent_sources < 2 and not direct:
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    return InvestigationStatus.COMPLETED
 
 
 def validate_investigation_report(report: InvestigationReport) -> InvestigationStatus:

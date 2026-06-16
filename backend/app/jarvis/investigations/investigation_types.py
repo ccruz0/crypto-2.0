@@ -54,6 +54,59 @@ class InvestigationTemplate:
 # Ordered — first match wins.
 INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
     InvestigationTemplate(
+        template_id="executed_orders_missing",
+        category="orders",
+        pattern=re.compile(
+            r"executed\s+orders?\s+missing|"
+            r"missing\s+executed\s+orders?|"
+            r"filled\s+orders?\s+missing|"
+            r"missing\s+filled\s+orders?|"
+            r"investigate\s+btc\s+orders?(?:\s|$)",
+            re.IGNORECASE,
+        ),
+        title="Why are executed orders missing?",
+        collectors=(
+            EvidenceCollector(
+                "query_database",
+                "count_orders_by_status",
+                {"preset": "count_orders_by_status"},
+            ),
+            EvidenceCollector(
+                "query_database",
+                "recent_trade_events",
+                {"preset": "recent_trade_events"},
+            ),
+            EvidenceCollector(
+                "search_logs",
+                "search_logs",
+                {"keywords": ("FILLED", "executed", "BTC", "order", "trade")},
+            ),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "trade_history"}),
+            EvidenceCollector("inspect_health", "inspect_health", mandatory=False),
+        ),
+        keywords=("executed", "filled", "btc", "missing", "trade history"),
+    ),
+    InvestigationTemplate(
+        template_id="open_orders_zero_dashboard",
+        category="dashboard",
+        pattern=re.compile(
+            r"open\s+orders?\s+show(?:ing)?\s+0|"
+            r"open\s+orders?\s+(?:show|display)(?:ing)?\s+(?:as\s+)?zero|"
+            r"zero\s+open\s+orders?\s+(?:in|on)\s+(?:the\s+)?dashboard|"
+            r"dashboard.*(?:shows?|display(?:s|ing)?)\s+0\s+open\s+orders?",
+            re.IGNORECASE,
+        ),
+        title="Why do open orders show 0 on the dashboard?",
+        collectors=(
+            EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
+            EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
+            EvidenceCollector("query_database", "count_open_orders", {"preset": "count_open_orders"}),
+            EvidenceCollector("search_logs", "search_logs", {"keywords": ("open orders", "sync", "cache", "50001")}),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
+        ),
+        keywords=("open orders", "zero", "dashboard", "0"),
+    ),
+    InvestigationTemplate(
         template_id="open_orders_empty",
         category="orders",
         pattern=re.compile(
@@ -79,7 +132,8 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
             r"dashboard.*zero.*order.*exchange|"
             r"open\s+orders?\s+(?:are\s+)?different|"
             r"open\s+orders?\s+not\s+match(?:ing)?|"
-            r"(?:open\s+)?orders?\s+missing(?:\s+from)?(?:\s+(?:crypto\.?com|dashboard|exchange))?|"
+            r"(?:open\s+)?orders?\s+missing(?:\s+from)?(?:\s+(?:the\s+)?(?:crypto\.?com|dashboard|exchange))?|"
+            r"btc\s+orders?\s+missing.*(?:dashboard|crypto\.?com)|"
             r"crypto\.?com\s+shows?\s+(?:more\s+)?orders?|"
             r"dashboard\s+(?:missing\s+orders?|not\s+match(?:ing)?\s+exchange)|"
             r"not\s+all(?:\s+(?:my\s+)?)?open\s+orders?\s+(?:are\s+)?(?:there|showing)|"
@@ -103,6 +157,28 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
             EvidenceCollector("inspect_health", "inspect_health", mandatory=False),
         ),
         keywords=("dashboard", "exchange", "mismatch", "reconcile", "crypto.com", "trigger"),
+    ),
+    InvestigationTemplate(
+        template_id="portfolio_reconciliation_mismatch",
+        category="portfolio",
+        pattern=re.compile(
+            r"portfolio\s+reconciliation|reconciliation\s+mismatch|"
+            r"wallet\s+reconciliation\s+mismatch",
+            re.IGNORECASE,
+        ),
+        title="Why is portfolio reconciliation mismatched?",
+        collectors=(
+            EvidenceCollector("query_database", "open_positions", {"preset": "open_positions"}),
+            EvidenceCollector("inspect_health", "inspect_health"),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "portfolio"}),
+            EvidenceCollector(
+                "search_logs",
+                "search_logs",
+                {"keywords": ("portfolio", "equity", "reconciliation", "balance", "derived")},
+            ),
+            EvidenceCollector("inspect_runtime", "inspect_runtime"),
+        ),
+        keywords=("portfolio", "reconciliation", "mismatch"),
     ),
     InvestigationTemplate(
         template_id="portfolio_equity_derived",
@@ -192,8 +268,8 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         template_id="exchange_auth_failing",
         category="authentication",
         pattern=re.compile(
-            r"exchange\s+auth\s+fail|crypto\.?com\s+auth\s+fail|authentication\s+fail|"
-            r"40101|api\s+credential|auth\s+error",
+            r"exchange\s+auth\s+fail|crypto\.?com\s+auth(?:entication)?\s+fail|"
+            r"authentication\s+fail|40101|api\s+credential|auth\s+error",
             re.IGNORECASE,
         ),
         title="Why is exchange auth failing?",
