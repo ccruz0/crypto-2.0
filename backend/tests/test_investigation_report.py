@@ -108,7 +108,7 @@ class TestInvestigationReport:
             status=InvestigationStatus.COMPLETED,
             summary="s",
             evidence=_sample_evidence(),
-            root_cause="cause",
+            root_cause="Database has open orders but dashboard cache is empty",
             confidence=90.0,
             ranked_causes=[],
             impact="impact",
