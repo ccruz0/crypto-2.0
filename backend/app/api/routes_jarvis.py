@@ -95,6 +95,8 @@ from app.jarvis.execution.schemas import (
     JarvisInvestigationListResponse,
     JarvisInvestigationPresetsResponse,
     JarvisInvestigationRunRequest,
+    JarvisScheduledInvestigationReportResponse,
+    JarvisScheduledInvestigationsResponse,
     JarvisFixTemplateDetailResponse,
     JarvisFixTemplateListResponse,
     JarvisProposalEligibilityResponse,
@@ -302,23 +304,22 @@ def jarvis_investigation_presets() -> dict[str, Any]:
 def jarvis_investigation_run(body: JarvisInvestigationRunRequest) -> dict[str, Any]:
     from app.database import engine, ensure_jarvis_investigations_table
     from app.jarvis.artifacts.images import ImageValidationError
-    from app.jarvis.execution.safety import SafetyLevel, classify_text
-    from app.jarvis.investigations.investigation_runner import run_investigation
+    from app.jarvis.investigations.submit import InvestigationBlockedError, submit_investigation_readonly
     from app.jarvis.mvp.config import jarvis_enabled
 
     if not jarvis_enabled():
         raise HTTPException(status_code=403, detail="Jarvis is disabled (JARVIS_ENABLED=false)")
     if engine is None or not ensure_jarvis_investigations_table(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
-    if classify_text(body.objective) == SafetyLevel.FORBIDDEN:
-        raise HTTPException(
-            status_code=403,
-            detail="Objective blocked by safety policy (forbidden action or trading intent)",
-        )
     try:
         attachment_payload = [att.model_dump() for att in body.attachments]
-        report = run_investigation(body.objective, attachments=attachment_payload or None)
+        report = submit_investigation_readonly(body.objective, attachments=attachment_payload or None)
         return report.to_dict()
+    except InvestigationBlockedError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=str(exc),
+        ) from exc
     except ImageValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
@@ -326,6 +327,38 @@ def jarvis_investigation_run(body: JarvisInvestigationRunRequest) -> dict[str, A
     except Exception as exc:
         logger.exception("jarvis.investigation.run_failed err=%s", exc)
         raise HTTPException(status_code=500, detail=f"jarvis_investigation_run_failed: {exc}") from exc
+
+
+@router.get("/api/jarvis/investigations/scheduled", response_model=JarvisScheduledInvestigationsResponse)
+def jarvis_scheduled_investigations(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_scheduled_investigations_tables
+    from app.jarvis.investigations.scheduler.config import investigation_scheduler_status
+    from app.jarvis.investigations.scheduler.persistence import list_schedules, list_tasks
+
+    if engine is None or not ensure_jarvis_scheduled_investigations_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {
+        "scheduler": investigation_scheduler_status(),
+        "schedules": list_schedules(),
+        "tasks": list_tasks(limit=limit),
+    }
+
+
+@router.get(
+    "/api/jarvis/investigations/scheduled/report",
+    response_model=JarvisScheduledInvestigationReportResponse,
+)
+def jarvis_scheduled_investigations_report(
+    hours: int = Query(default=24, ge=1, le=168),
+) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_scheduled_investigations_tables
+    from app.jarvis.investigations.scheduler.reporting import build_daily_health_summary
+
+    if engine is None or not ensure_jarvis_scheduled_investigations_tables(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return build_daily_health_summary(hours=hours)
 
 
 @router.get("/api/jarvis/investigations/{investigation_id}/attachments/{artifact_id}/content")

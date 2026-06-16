@@ -728,6 +728,81 @@ def ensure_jarvis_investigations_table(engine_to_use) -> bool:
         return False
 
 
+def ensure_jarvis_scheduled_investigations_tables(engine_to_use) -> bool:
+    """Persist Phase 6A scheduled investigation schedules, task queue, and leader lock."""
+    if engine_to_use is None:
+        logger.warning("ensure_jarvis_scheduled_investigations_tables: engine is None")
+        return False
+    try:
+        is_sqlite = engine_to_use.dialect.name == "sqlite"
+        bool_type = "INTEGER" if is_sqlite else "BOOLEAN"
+        ts_type = "TIMESTAMP" if is_sqlite else "TIMESTAMPTZ"
+        tables = [
+            (
+                "jarvis_investigation_schedules",
+                f"""
+                CREATE TABLE IF NOT EXISTS jarvis_investigation_schedules (
+                    id {'INTEGER PRIMARY KEY AUTOINCREMENT' if is_sqlite else 'SERIAL PRIMARY KEY'},
+                    schedule_id TEXT NOT NULL UNIQUE,
+                    template_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'api',
+                    enabled {bool_type} NOT NULL DEFAULT {'1' if is_sqlite else 'TRUE'},
+                    next_run_at {ts_type},
+                    last_run_at {ts_type},
+                    created_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
+                    updated_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'}
+                )
+                """,
+            ),
+            (
+                "jarvis_scheduled_investigation_tasks",
+                f"""
+                CREATE TABLE IF NOT EXISTS jarvis_scheduled_investigation_tasks (
+                    id {'INTEGER PRIMARY KEY AUTOINCREMENT' if is_sqlite else 'SERIAL PRIMARY KEY'},
+                    task_id TEXT NOT NULL UNIQUE,
+                    schedule_id TEXT NOT NULL,
+                    template_id TEXT NOT NULL DEFAULT 'generic',
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    investigation_id TEXT,
+                    result_summary TEXT,
+                    error_message TEXT,
+                    scheduled_at {ts_type},
+                    started_at {ts_type},
+                    completed_at {ts_type},
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
+                    created_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
+                    updated_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'}
+                )
+                """,
+            ),
+            (
+                "jarvis_investigation_scheduler_leader",
+                f"""
+                CREATE TABLE IF NOT EXISTS jarvis_investigation_scheduler_leader (
+                    lock_key TEXT NOT NULL PRIMARY KEY,
+                    holder_id TEXT NOT NULL,
+                    acquired_at {ts_type},
+                    lease_expires_at {ts_type},
+                    updated_at {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'}
+                )
+                """,
+            ),
+        ]
+        for tname, ddl in tables:
+            if not table_exists(engine_to_use, tname):
+                logger.warning("Table %s does not exist - creating (Jarvis scheduled investigations)", tname)
+                with engine_to_use.begin() as conn:
+                    conn.execute(text(ddl))
+                logger.info("[BOOT] Created table %s", tname)
+        return all(table_exists(engine_to_use, tname) for tname, _ in tables)
+    except Exception as e:
+        logger.error("ensure_jarvis_scheduled_investigations_tables failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_jarvis_control_center_tables(engine_to_use) -> bool:
     """
     Persist Jarvis Control Center sessions, tasks, approvals, and audit events.
