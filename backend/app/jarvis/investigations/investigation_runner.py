@@ -341,20 +341,29 @@ def run_investigation(
     *,
     investigation_id: str | None = None,
     persist: bool = True,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> InvestigationReport:
     """
     Run a full production diagnostic investigation end-to-end.
 
     Read-only: no writes, patches, orders, or GitHub actions.
+    Image attachments are stored as user evidence only; they never trigger execution.
     """
     inv_id = investigation_id or str(uuid.uuid4())
     objective_text = (objective or "").strip()
     if not objective_text:
         raise ValueError("investigation objective is required")
 
-    evidence, tool_outputs, category, template_id, collector_status, collector_reasons = collect_evidence(
+    user_evidence: list[EvidenceItem] = []
+    if attachments:
+        from app.jarvis.investigations.investigation_attachments import attachments_to_evidence
+
+        user_evidence = attachments_to_evidence(inv_id, attachments)
+
+    collected, tool_outputs, category, template_id, collector_status, collector_reasons = collect_evidence(
         objective_text
     )
+    evidence = merge_evidence(user_evidence, collected)
     recent_failures = _count_recent_failures(tool_outputs)
     ranked = rank_root_causes(
         evidence=evidence,

@@ -1,16 +1,41 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { getApiUrl } from '@/lib/environment';
 import {
   getJarvisInvestigation,
   listJarvisInvestigations,
   listJarvisInvestigationPresets,
   runJarvisInvestigation,
   type JarvisInvestigationDetail,
+  type JarvisInvestigationImageAttachment,
   type JarvisInvestigationPreset,
   type JarvisInvestigationSummary,
 } from '@/app/api';
 import ProposalEligibilityPanel from '@/app/components/tabs/ProposalEligibilityPanel';
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGES = 5;
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+type PendingImage = {
+  id: string;
+  file: File;
+  previewUrl: string;
+};
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
 
 function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
@@ -49,6 +74,8 @@ export default function ProductionDiagnosticsTab() {
   const [searchQuery, setSearchQuery] = useState('');
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refreshList = useCallback(async (q = '') => {
     try {
@@ -86,25 +113,78 @@ export default function ProductionDiagnosticsTab() {
     }
   }, [selectedId]);
 
+  const handleSearch = async () => {
+    await refreshList(searchQuery.trim());
+  };
+
+  const handleAttachImages = (files: FileList | null) => {
+    if (!files?.length) return;
+    const next: PendingImage[] = [];
+    for (const file of Array.from(files)) {
+      if (pendingImages.length + next.length >= MAX_IMAGES) {
+        setError(`Maximum ${MAX_IMAGES} images allowed`);
+        break;
+      }
+      if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+        setError('Only PNG, JPG/JPEG, and WEBP images are supported');
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        setError('Each image must be 5MB or smaller');
+        continue;
+      }
+      next.push({
+        id: `${file.name}-${file.size}-${file.lastModified}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      });
+    }
+    if (next.length) {
+      setError(null);
+      setPendingImages((prev) => [...prev, ...next]);
+    }
+  };
+
+  const removePendingImage = (id: string) => {
+    setPendingImages((prev) => {
+      const target = prev.find((img) => img.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((img) => img.id !== id);
+    });
+  };
+
+  const buildAttachments = async (): Promise<JarvisInvestigationImageAttachment[]> => {
+    const attachments: JarvisInvestigationImageAttachment[] = [];
+    for (const img of pendingImages) {
+      attachments.push({
+        filename: img.file.name,
+        content_base64: await fileToBase64(img.file),
+        content_type: img.file.type,
+      });
+    }
+    return attachments;
+  };
+
   const handleRun = async () => {
     const text = objective.trim();
     if (!text) return;
     setRunning(true);
     setError(null);
     try {
-      const result = await runJarvisInvestigation(text);
+      const attachments = await buildAttachments();
+      const result = await runJarvisInvestigation(text, attachments);
       setDetail(result);
       setSelectedId(result.investigation_id);
+      setPendingImages((prev) => {
+        prev.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+        return [];
+      });
       await refreshList();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Investigation failed');
     } finally {
       setRunning(false);
     }
-  };
-
-  const handleSearch = async () => {
-    await refreshList(searchQuery.trim());
   };
 
   return (
@@ -139,6 +219,28 @@ export default function ProductionDiagnosticsTab() {
             placeholder="e.g. Why are open orders empty?"
             className="flex-1 px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-900 text-sm"
           />
+          <input
+            ref={fileInputRef}
+            data-testid="diagnostics-image-input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              handleAttachImages(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          <button
+            data-testid="diagnostics-attach-button"
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={running || pendingImages.length >= MAX_IMAGES}
+            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded text-sm disabled:opacity-50"
+            title="Attach screenshots as evidence (read-only context)"
+          >
+            Attach
+          </button>
           <button
             data-testid="diagnostics-run-button"
             type="button"
@@ -149,6 +251,27 @@ export default function ProductionDiagnosticsTab() {
             {running ? 'Investigating…' : 'Run Investigation'}
           </button>
         </div>
+
+        {pendingImages.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2" data-testid="diagnostics-pending-images">
+            {pendingImages.map((img) => (
+              <div
+                key={img.id}
+                className="relative w-16 h-16 rounded border border-gray-300 dark:border-gray-600 overflow-hidden"
+              >
+                <img src={img.previewUrl} alt={img.file.name} className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => removePendingImage(img.id)}
+                  className="absolute top-0 right-0 bg-black/60 text-white text-xs px-1"
+                  aria-label={`Remove ${img.file.name}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
       </div>
@@ -233,6 +356,15 @@ export default function ProductionDiagnosticsTab() {
                         [{ev.source}|{ev.reference}|{ev.confidence}]
                       </span>{' '}
                       {ev.detail}
+                      {ev.evidence_type === 'image' && ev.content_url && (
+                        <div className="mt-1">
+                          <img
+                            src={`${getApiUrl()}${ev.content_url}`}
+                            alt={ev.detail}
+                            className="max-h-32 rounded border border-gray-200 dark:border-gray-700"
+                          />
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
