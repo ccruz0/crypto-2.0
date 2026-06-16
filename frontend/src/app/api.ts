@@ -2217,6 +2217,70 @@ export async function listJarvisInvestigationPresets(): Promise<{ presets: Jarvi
   return fetchAPI<{ presets: JarvisInvestigationPreset[] }>('/jarvis/investigations/presets');
 }
 
+export interface JarvisScheduledInvestigationSchedule {
+  schedule_id: string;
+  template_id: string;
+  title: string;
+  objective: string;
+  category: string;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface JarvisScheduledInvestigationTask {
+  task_id: string;
+  schedule_id: string;
+  template_id: string;
+  objective: string;
+  status: string;
+  investigation_id: string | null;
+  result_summary: string | null;
+  error_message: string | null;
+  scheduled_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface JarvisScheduledInvestigationsResponse {
+  scheduler: Record<string, unknown>;
+  schedules: JarvisScheduledInvestigationSchedule[];
+  tasks: JarvisScheduledInvestigationTask[];
+}
+
+export interface JarvisScheduledInvestigationReport {
+  period_hours: number;
+  since: string;
+  generated_at: string;
+  task_counts: Record<string, number>;
+  success_rate_pct: number;
+  failure_rate_pct: number;
+  average_runtime_ms: number;
+  schedules: JarvisScheduledInvestigationSchedule[];
+  recent_tasks: JarvisScheduledInvestigationTask[];
+}
+
+export async function getJarvisScheduledInvestigations(
+  limit = 50,
+): Promise<JarvisScheduledInvestigationsResponse> {
+  return fetchAPI<JarvisScheduledInvestigationsResponse>(
+    `/jarvis/investigations/scheduled?limit=${limit}`,
+  );
+}
+
+export async function getJarvisScheduledInvestigationReport(
+  hours = 24,
+): Promise<JarvisScheduledInvestigationReport> {
+  return fetchAPI<JarvisScheduledInvestigationReport>(
+    `/jarvis/investigations/scheduled/report?hours=${hours}`,
+  );
+}
+
 export async function getProposalEligibility(
   investigationId: string,
 ): Promise<JarvisProposalEligibility> {

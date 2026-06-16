@@ -635,6 +635,19 @@ def create_app(role: str = "legacy") -> FastAPI:
                         logger.info(
                             "Agent scheduler loop skipped (RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate work)"
                         )
+
+                # Phase 6A: autonomous investigation scheduler (read-only; single-leader).
+                _run_inv_scheduler = _run_poller and not is_atp_trading_only()
+                if _run_inv_scheduler:
+                    try:
+                        from app.jarvis.investigations.scheduler.loop import start_investigation_scheduler_loop
+
+                        asyncio.create_task(start_investigation_scheduler_loop())
+                        logger.info("Investigation scheduler loop started (Phase 6A read-only)")
+                    except Exception as e:
+                        logger.error("Failed to start investigation scheduler loop: %s", e, exc_info=True)
+                else:
+                    logger.info("Investigation scheduler loop skipped (standby/trading-only)")
             except Exception as e:
                 logger.error(f"Background init error: {e}", exc_info=True)
     

@@ -301,6 +301,57 @@ class JarvisInvestigationPresetsResponse(BaseModel):
     presets: list[JarvisInvestigationPreset] = Field(default_factory=list)
 
 
+# --- Phase 6A: Scheduled investigations (read-only autonomous scheduler) ---
+
+
+class JarvisScheduledInvestigationSchedule(BaseModel):
+    schedule_id: str
+    template_id: str
+    title: str
+    objective: str
+    category: str = "api"
+    enabled: bool = True
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class JarvisScheduledInvestigationTask(BaseModel):
+    task_id: str
+    schedule_id: str
+    template_id: str = "generic"
+    objective: str
+    status: str
+    investigation_id: str | None = None
+    result_summary: str | None = None
+    error_message: str | None = None
+    scheduled_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    duration_ms: int = 0
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class JarvisScheduledInvestigationsResponse(BaseModel):
+    scheduler: dict[str, Any] = Field(default_factory=dict)
+    schedules: list[JarvisScheduledInvestigationSchedule] = Field(default_factory=list)
+    tasks: list[JarvisScheduledInvestigationTask] = Field(default_factory=list)
+
+
+class JarvisScheduledInvestigationReportResponse(BaseModel):
+    period_hours: int = 24
+    since: str = ""
+    generated_at: str = ""
+    task_counts: dict[str, int] = Field(default_factory=dict)
+    success_rate_pct: float = 0.0
+    failure_rate_pct: float = 0.0
+    average_runtime_ms: float = 0.0
+    schedules: list[JarvisScheduledInvestigationSchedule] = Field(default_factory=list)
+    recent_tasks: list[JarvisScheduledInvestigationTask] = Field(default_factory=list)
+
+
 # --- Phase 4C: Investigation quality analytics (read-only) ---
 
 
