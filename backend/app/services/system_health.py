@@ -255,45 +255,94 @@ def _check_market_data_health_fallback(
         }
 
 def _check_signal_monitor_health(stale_threshold_minutes: float) -> Dict:
-    """Check signal monitor health"""
+    """Check signal monitor health based on last successful cycle completion."""
     try:
         _rsm = (os.getenv("RUN_SIGNAL_MONITOR") or "true").strip().lower()
         if _rsm in ("0", "false", "no", "off"):
             return {
                 "status": "PASS",
                 "is_running": False,
+                "last_successful_cycle_age_minutes": None,
                 "last_cycle_age_minutes": None,
+                "successful_cycle_count": None,
+                "lock_acquisition_failures": None,
+                "skipped_cycles": None,
+                "timeout_count": None,
+                "overlap_skip_count": None,
                 "message": "signal_monitor_role=passive (RUN_SIGNAL_MONITOR=false; health N/A on this instance)",
             }
 
         is_running = signal_monitor_service.is_running
+        last_successful_cycle_age_minutes = None
         last_cycle_age_minutes = None
-        
+
+        if signal_monitor_service.last_successful_cycle_at:
+            age = datetime.now(timezone.utc) - signal_monitor_service.last_successful_cycle_at
+            last_successful_cycle_age_minutes = age.total_seconds() / 60
+
         if signal_monitor_service.last_run_at:
-            age = datetime.now(timezone.utc) - signal_monitor_service.last_run_at
-            last_cycle_age_minutes = age.total_seconds() / 60
-        
-        # FAIL if not running OR last cycle age > threshold
+            cycle_age = datetime.now(timezone.utc) - signal_monitor_service.last_run_at
+            last_cycle_age_minutes = cycle_age.total_seconds() / 60
+
+        lock_failures = signal_monitor_service.lock_acquisition_failures
+        skipped_cycles = signal_monitor_service.skipped_cycles
+        timeout_count = signal_monitor_service.timeout_count
+        overlap_skip_count = signal_monitor_service.overlap_skip_count
+        successful_cycle_count = signal_monitor_service.successful_cycle_count
+
         status = "PASS"
         if not is_running:
             status = "FAIL"
-        elif last_cycle_age_minutes is not None and last_cycle_age_minutes > stale_threshold_minutes:
+        elif last_successful_cycle_age_minutes is not None and last_successful_cycle_age_minutes > stale_threshold_minutes:
             status = "FAIL"
-        elif last_cycle_age_minutes is None:
-            # No recorded cycles yet
+        elif last_successful_cycle_age_minutes is None:
             status = "WARN"
-        
+
+        total_attempts = successful_cycle_count + skipped_cycles + timeout_count
+        if total_attempts >= 10 and lock_failures > 0:
+            lock_failure_rate = lock_failures / total_attempts
+            if lock_failure_rate >= 0.5:
+                status = "FAIL"
+            elif lock_failure_rate >= 0.25 and status == "PASS":
+                status = "WARN"
+
+        if signal_monitor_service.last_timeout_at:
+            timeout_age = datetime.now(timezone.utc) - signal_monitor_service.last_timeout_at
+            timeout_age_minutes = timeout_age.total_seconds() / 60
+            if timeout_age_minutes <= stale_threshold_minutes and status == "PASS":
+                status = "WARN"
+            if timeout_count >= 2 and timeout_age_minutes <= stale_threshold_minutes and status != "FAIL":
+                status = "WARN"
+
         return {
             "status": status,
             "is_running": is_running,
-            "last_cycle_age_minutes": round(last_cycle_age_minutes, 2) if last_cycle_age_minutes is not None else None,
+            "last_successful_cycle_age_minutes": (
+                round(last_successful_cycle_age_minutes, 2)
+                if last_successful_cycle_age_minutes is not None
+                else None
+            ),
+            "last_cycle_age_minutes": (
+                round(last_cycle_age_minutes, 2) if last_cycle_age_minutes is not None else None
+            ),
+            "successful_cycle_count": successful_cycle_count,
+            "lock_acquisition_failures": lock_failures,
+            "skipped_cycles": skipped_cycles,
+            "timeout_count": timeout_count,
+            "overlap_skip_count": overlap_skip_count,
         }
     except Exception as e:
         logger.error(f"Error checking signal monitor health: {e}", exc_info=True)
         return {
             "status": "FAIL",
             "is_running": False,
+            "last_successful_cycle_age_minutes": None,
             "last_cycle_age_minutes": None,
+            "successful_cycle_count": None,
+            "lock_acquisition_failures": None,
+            "skipped_cycles": None,
+            "timeout_count": None,
+            "overlap_skip_count": None,
         }
 
 def _check_telegram_health() -> Dict:
