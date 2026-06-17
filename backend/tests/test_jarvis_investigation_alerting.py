@@ -94,7 +94,7 @@ def test_classify_info_on_clean_completion():
     assert result.alert_type == "investigation_completed"
 
 
-def test_classify_critical_exchange_unreachable():
+def test_classify_warning_exchange_unreachable():
     report = _fake_report(
         category="exchange",
         summary="Exchange unreachable — cannot reach exchange API",
@@ -102,7 +102,8 @@ def test_classify_critical_exchange_unreachable():
     )
     result = classify_investigation_report(report, source="exchange_connectivity")
     assert result is not None
-    assert result.severity == AlertSeverity.CRITICAL
+    assert result.severity == AlertSeverity.WARNING
+    assert result.alert_type == "exchange_unreachable"
 
 
 def test_classify_warning_reconciliation_mismatch():

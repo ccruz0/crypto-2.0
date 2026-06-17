@@ -131,6 +131,44 @@ def should_notify_executed_fill(
     return (True, "recent fill")
 
 
+# Crypto.com open-order statuses mapped to internal OrderStatusEnum.
+# PENDING/UNTRIGGERED are trigger-order states that must count as open (not UNKNOWN).
+_EXCHANGE_OPEN_STATUS_MAP: dict[str, OrderStatusEnum] = {
+    "NEW": OrderStatusEnum.NEW,
+    "ACTIVE": OrderStatusEnum.ACTIVE,
+    "PENDING": OrderStatusEnum.ACTIVE,
+    "UNTRIGGERED": OrderStatusEnum.ACTIVE,
+    "OPEN": OrderStatusEnum.ACTIVE,
+    "PARTIALLY_FILLED": OrderStatusEnum.PARTIALLY_FILLED,
+    "FILLED": OrderStatusEnum.FILLED,
+    "CANCELLED": OrderStatusEnum.CANCELLED,
+    "CANCELED": OrderStatusEnum.CANCELLED,
+    "REJECTED": OrderStatusEnum.REJECTED,
+    "EXPIRED": OrderStatusEnum.EXPIRED,
+    "EXECUTED": OrderStatusEnum.FILLED,
+    "COMPLETE": OrderStatusEnum.FILLED,
+    "CLOSED": OrderStatusEnum.FILLED,
+}
+
+
+def map_exchange_order_status(
+    status_str: str | None,
+    *,
+    cumulative_quantity: float | int = 0,
+    quantity: float | int = 0,
+) -> OrderStatusEnum:
+    """Map a Crypto.com order status string to OrderStatusEnum."""
+    status_str_upper = (status_str or "").strip().upper()
+    mapped = _EXCHANGE_OPEN_STATUS_MAP.get(status_str_upper, OrderStatusEnum.UNKNOWN)
+
+    if status_str_upper in {"CANCELLED", "CANCELED"} and cumulative_quantity > 0:
+        if cumulative_quantity >= quantity:
+            return OrderStatusEnum.FILLED
+        return OrderStatusEnum.PARTIALLY_FILLED
+
+    return mapped
+
+
 class ExchangeSyncService:
     """Service to sync exchange data with database"""
     
@@ -708,39 +746,11 @@ class ExchangeSyncService:
                     except:
                         pass
                 
-                # Map status with proper handling for unknown statuses
-                status_map = {
-                    'NEW': OrderStatusEnum.NEW,
-                    'ACTIVE': OrderStatusEnum.ACTIVE,
-                    'PARTIALLY_FILLED': OrderStatusEnum.PARTIALLY_FILLED,
-                    'FILLED': OrderStatusEnum.FILLED,
-                    'CANCELLED': OrderStatusEnum.CANCELLED,
-                    'CANCELED': OrderStatusEnum.CANCELLED,  # Handle both spellings
-                    'REJECTED': OrderStatusEnum.REJECTED,
-                    'EXPIRED': OrderStatusEnum.EXPIRED,
-                    # Add common variations
-                    'EXECUTED': OrderStatusEnum.FILLED,
-                    'COMPLETE': OrderStatusEnum.FILLED,
-                    'CLOSED': OrderStatusEnum.FILLED,
-                }
-
-                # Get mapped status, default to UNKNOWN for unrecognized
-                status_str_upper = status_str.upper() if status_str else ''
-                mapped_status = status_map.get(status_str_upper, OrderStatusEnum.UNKNOWN)
-
-                # Special case: if status is CANCELLED/CANCELED (check raw status_str, not mapped_status)
-                # and we have cumulative_quantity > 0, it means partial fill occurred before cancellation
-                # CRITICAL: Use raw status_str_upper to detect cancel states, not mapped_status
-                # This ensures we catch both "CANCELLED" and "CANCELED" even if mapping fails
-                if status_str_upper in {"CANCELLED", "CANCELED"} and order_data.get('cumulative_quantity', 0) > 0:
-                    total_qty = order_data.get('quantity', 0)
-                    filled_qty = order_data.get('cumulative_quantity', 0)
-                    if filled_qty >= total_qty:
-                        mapped_status = OrderStatusEnum.FILLED
-                    else:
-                        mapped_status = OrderStatusEnum.PARTIALLY_FILLED
-
-                status = mapped_status
+                status = map_exchange_order_status(
+                    status_str,
+                    cumulative_quantity=order_data.get("cumulative_quantity", 0) or 0,
+                    quantity=order_data.get("quantity", 0) or 0,
+                )
                 
                 # Get price from limit_price (primary) or price (fallback)
                 # Crypto.com API uses 'limit_price' for limit orders
