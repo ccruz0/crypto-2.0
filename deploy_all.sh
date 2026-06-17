@@ -98,6 +98,9 @@ BUILD_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
     "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+    "MARKER=/tmp/atp-deploy-in-progress",
+    "trap \"rm -f $MARKER\" EXIT INT TERM",
+    "echo \"$(date -Is) deploy pid=$$\" > \"$MARKER\"",
     "mkdir -p docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state && sudo chown -R 10001:10001 docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state || true",
     "bash scripts/aws/render_runtime_env.sh || true",
     "docker compose --profile aws down || true",

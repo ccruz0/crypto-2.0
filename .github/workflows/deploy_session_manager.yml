@@ -139,6 +139,9 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+            "MARKER=/tmp/atp-deploy-in-progress",
+            "trap \"rm -f $MARKER\" EXIT INT TERM",
+            "echo \"$(date -Is) deploy pid=$$\" > \"$MARKER\"",
             "echo \"📁 Current directory: $(pwd)\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_no_external_frontend_deploy.sh --runtime\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_frontend_version.sh\" || { echo \"❌ Frontend version check failed\" && exit 1; }",
