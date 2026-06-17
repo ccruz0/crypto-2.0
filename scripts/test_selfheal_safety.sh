@@ -95,7 +95,37 @@ test_deploy_marker_skip_heal() {
   pass "deploy marker causes heal.sh skip"
 }
 
+test_cooldown_skip_heal() {
+  setup_fake_bin
+  local cooldown
+  cooldown="$(mktemp)"
+  date +%s >"$cooldown"
+
+  local out exit_code=0
+  out="$(ATP_SELFHEAL_COOLDOWN_FILE="$cooldown" REPO_DIR="$ROOT_DIR" \
+    "$ROOT_DIR/scripts/selfheal/heal.sh" "FAIL:API_HEALTH:down" 2>&1)" || exit_code=$?
+
+  if [ ! -f "$cooldown" ]; then
+    fail "cooldown file missing after skip (expected to remain)"
+    rm -f "$cooldown"
+    teardown_fake_bin
+    return
+  fi
+  rm -f "$cooldown"
+
+  if [ "$exit_code" -ne 0 ]; then
+    fail "cooldown heal.sh exited $exit_code (expected 0)"
+    teardown_fake_bin
+    return
+  fi
+  echo "$out" | grep -q "COOLDOWN:" || fail "cooldown missing skip message"
+  echo "$out" | grep -qv "UNEXPECTED:" || fail "cooldown invoked docker/systemctl"
+  pass "cooldown causes heal.sh skip without destructive commands"
+  teardown_fake_bin
+}
+
 test_deploy_marker_skip_run() {
+  setup_fake_bin
   local marker tmpdir
   marker="$(mktemp)"
   tmpdir="$(mktemp -d)"
@@ -103,37 +133,69 @@ test_deploy_marker_skip_run() {
 
   cat >"$tmpdir/verify.sh" <<'EOF'
 #!/usr/bin/env bash
-echo '{}'
-echo "FAIL:API_HEALTH:down"
-exit 4
+echo "UNEXPECTED: verify.sh invoked: $*" >&2
+exit 99
 EOF
   chmod +x "$tmpdir/verify.sh"
 
+  cat >"$tmpdir/heal.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "UNEXPECTED: heal.sh invoked: $*" >&2
+exit 99
+EOF
+  chmod +x "$tmpdir/heal.sh"
+
   local out exit_code=0
-  out="$(ATP_DEPLOY_MARKER="$marker" VERIFY="$tmpdir/verify.sh" \
-    bash -c '
-      export ATP_DEPLOY_MARKER="'"$marker"'"
-      SCRIPT_DIR="'"$ROOT_DIR"'/scripts/selfheal"
-      REPO_ROOT="'"$ROOT_DIR"'"
-      VERIFY="'"$tmpdir"'/verify.sh"
-      HEAL="'"$ROOT_DIR"'/scripts/selfheal/heal.sh"
-      DEPLOY_MARKER="$ATP_DEPLOY_MARKER"
-      source /dev/null
-      # inline run.sh deploy check only
-      if [ -f "$DEPLOY_MARKER" ]; then
-        echo "DEPLOY_IN_PROGRESS: skipping self-heal"
-        exit 0
-      fi
-    ' 2>&1)" || exit_code=$?
+  out="$(ATP_DEPLOY_MARKER="$marker" \
+    ATP_SELFHEAL_VERIFY="$tmpdir/verify.sh" \
+    ATP_SELFHEAL_HEAL="$tmpdir/heal.sh" \
+    "$ROOT_DIR/scripts/selfheal/run.sh" 2>&1)" || exit_code=$?
   rm -f "$marker"
   rm -rf "$tmpdir"
 
   if [ "$exit_code" -ne 0 ]; then
-    fail "deploy marker run check exited $exit_code"
+    fail "deploy marker run.sh exited $exit_code (expected 0)"
+    teardown_fake_bin
     return
   fi
-  echo "$out" | grep -q "DEPLOY_IN_PROGRESS" || fail "run deploy marker skip message missing"
-  pass "deploy marker causes run.sh skip"
+  echo "$out" | grep -q "DEPLOY_IN_PROGRESS: skipping self-heal" || fail "run.sh deploy marker skip message missing"
+  echo "$out" | grep -qv "UNEXPECTED:" || fail "run.sh with deploy marker invoked verify/heal/docker/systemctl"
+  pass "deploy marker causes run.sh skip without verify/heal/docker/systemctl"
+  teardown_fake_bin
+}
+
+test_with_deploy_marker_cleanup() {
+  local marker success_marker failure_marker
+  marker="$(mktemp)"
+
+  ATP_DEPLOY_MARKER="$marker" "$ROOT_DIR/scripts/aws/with_deploy_marker.sh" true
+  if [ -f "$marker" ]; then
+    fail "with_deploy_marker.sh left marker after success"
+    rm -f "$marker"
+    return
+  fi
+
+  success_marker="$(mktemp)"
+  ATP_DEPLOY_MARKER="$success_marker" "$ROOT_DIR/scripts/aws/with_deploy_marker.sh" true
+  if [ -f "$success_marker" ]; then
+    fail "with_deploy_marker.sh left marker after success (custom path)"
+    rm -f "$success_marker"
+    return
+  fi
+
+  failure_marker="$(mktemp)"
+  if ATP_DEPLOY_MARKER="$failure_marker" "$ROOT_DIR/scripts/aws/with_deploy_marker.sh" false 2>/dev/null; then
+    fail "with_deploy_marker.sh false command should exit non-zero"
+    rm -f "$failure_marker"
+    return
+  fi
+  if [ -f "$failure_marker" ]; then
+    fail "with_deploy_marker.sh left marker after failure"
+    rm -f "$failure_marker"
+    return
+  fi
+
+  pass "with_deploy_marker.sh removes marker on success and failure"
 }
 
 test_unknown_verify_no_docker() {
@@ -248,7 +310,9 @@ test_executable_permissions() {
 test_heal_dry_run_flag
 test_heal_dry_run_env
 test_deploy_marker_skip_heal
+test_cooldown_skip_heal
 test_deploy_marker_skip_run
+test_with_deploy_marker_cleanup
 test_unknown_verify_no_docker
 test_destructive_gate
 test_executable_permissions

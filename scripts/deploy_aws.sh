@@ -17,12 +17,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT"
 
-DEPLOY_MARKER="${ATP_DEPLOY_MARKER:-/tmp/atp-deploy-in-progress}"
-cleanup_deploy_marker() {
-  rm -f "$DEPLOY_MARKER"
-}
-trap cleanup_deploy_marker EXIT INT TERM
-echo "deploy started $(date -Is) pid=$$" >"$DEPLOY_MARKER"
+if [ "${ATP_WITH_DEPLOY_MARKER:-}" != "1" ]; then
+  export ATP_WITH_DEPLOY_MARKER=1
+  "$SCRIPT_DIR/aws/with_deploy_marker.sh" bash "$0" "$@"
+  exit $?
+fi
 
 echo "=========================================="
 echo "AWS Deploy-by-Commit"

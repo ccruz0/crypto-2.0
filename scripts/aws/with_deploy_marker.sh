@@ -16,4 +16,5 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 echo "deploy started $(date -Is) pid=$$" >"$MARKER"
-exec "$@"
+"$@"
+exit $?

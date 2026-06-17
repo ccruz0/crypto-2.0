@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-VERIFY="$REPO_ROOT/scripts/selfheal/verify.sh"
-HEAL="$REPO_ROOT/scripts/selfheal/heal.sh"
+VERIFY="${ATP_SELFHEAL_VERIFY:-$REPO_ROOT/scripts/selfheal/verify.sh}"
+HEAL="${ATP_SELFHEAL_HEAL:-$REPO_ROOT/scripts/selfheal/heal.sh}"
 DEPLOY_MARKER="${ATP_DEPLOY_MARKER:-/tmp/atp-deploy-in-progress}"
 COOLDOWN_FILE="${ATP_SELFHEAL_COOLDOWN_FILE:-/tmp/atp-selfheal-last-action}"
 COOLDOWN_SECS="${ATP_SELFHEAL_COOLDOWN_SECS:-900}"
