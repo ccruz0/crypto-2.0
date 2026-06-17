@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
 LOCK="/var/lock/atp-selfheal.lock"
 BASE="http://127.0.0.1:8002"
-REPO_DIR="${REPO_DIR:-$HOME/automated-trading-platform}"
 
 with_lock() {
   exec 9>"$LOCK"

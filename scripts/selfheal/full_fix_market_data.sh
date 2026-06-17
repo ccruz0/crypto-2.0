@@ -8,7 +8,8 @@
 # Env: REPO_DIR, ATP_HEALTH_BASE (default http://127.0.0.1:8002), ATP_FULL_FIX_SKIP_VERIFY_RESTORE=1 to skip restoring verify.sh.
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$HOME/automated-trading-platform}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 BASE="${ATP_HEALTH_BASE:-http://127.0.0.1:8002}"
 SKIP_VERIFY_RESTORE="${ATP_FULL_FIX_SKIP_VERIFY_RESTORE:-0}"
 
