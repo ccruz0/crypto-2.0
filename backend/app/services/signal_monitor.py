@@ -336,13 +336,6 @@ EXEC_ALERT_SENT = "EXEC_ALERT_SENT"
 EXEC_ORDER_PLACED = "EXEC_ORDER_PLACED"
 EXEC_ORDER_BLOCKED_BY_THROTTLE = "EXEC_ORDER_BLOCKED_BY_THROTTLE"
 
-# PostgreSQL advisory lock ID for signal monitor singleton (arbitrary but consistent)
-SIGNAL_MONITOR_LOCK_ID = 123456
-
-
-def _monitor_cycle_timeout_seconds() -> float:
-    return float(os.getenv("MONITOR_CYCLE_TIMEOUT", "120"))
-
 
 class SignalMonitorService:
     """Service to monitor trading signals and create orders automatically
@@ -383,15 +376,6 @@ class SignalMonitorService:
         self.PROTECTION_NOTIFICATION_COOLDOWN_MINUTES = 30  # 30 minutes cooldown between protection notifications
         self._task: Optional[asyncio.Task] = None
         self.last_run_at: Optional[datetime] = None
-        self.last_successful_cycle_at: Optional[datetime] = None
-        self.successful_cycle_count: int = 0
-        self.lock_acquisition_failures: int = 0
-        self.skipped_cycles: int = 0
-        self.timeout_count: int = 0
-        self.overlap_skip_count: int = 0
-        self.last_timeout_at: Optional[datetime] = None
-        self.monitor_cycle_timeout: float = _monitor_cycle_timeout_seconds()
-        self._cycle_active: bool = False
         self.status_file_path = Path(os.getenv("SIGNAL_MONITOR_STATUS_FILE", "/tmp/signal_monitor_status.json"))
         self._latest_status_snapshot: Dict[str, str] = {}
         self._load_persisted_status()
@@ -437,23 +421,6 @@ class SignalMonitorService:
                     self.last_run_at = datetime.fromisoformat(last_run_at)
                 except ValueError:
                     pass
-            last_successful_cycle_at = data.get("last_successful_cycle_at")
-            if last_successful_cycle_at:
-                try:
-                    self.last_successful_cycle_at = datetime.fromisoformat(last_successful_cycle_at)
-                except ValueError:
-                    pass
-            self.successful_cycle_count = int(data.get("successful_cycle_count") or 0)
-            self.lock_acquisition_failures = int(data.get("lock_acquisition_failures") or 0)
-            self.skipped_cycles = int(data.get("skipped_cycles") or 0)
-            self.timeout_count = int(data.get("timeout_count") or 0)
-            self.overlap_skip_count = int(data.get("overlap_skip_count") or 0)
-            last_timeout_at = data.get("last_timeout_at")
-            if last_timeout_at:
-                try:
-                    self.last_timeout_at = datetime.fromisoformat(last_timeout_at)
-                except ValueError:
-                    pass
             is_running = bool(data.get("is_running"))
             updated_at = data.get("updated_at")
             if is_running and updated_at:
@@ -475,15 +442,6 @@ class SignalMonitorService:
             "state": state,
             "is_running": self.is_running,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
-            "last_successful_cycle_at": (
-                self.last_successful_cycle_at.isoformat() if self.last_successful_cycle_at else None
-            ),
-            "successful_cycle_count": self.successful_cycle_count,
-            "lock_acquisition_failures": self.lock_acquisition_failures,
-            "skipped_cycles": self.skipped_cycles,
-            "timeout_count": self.timeout_count,
-            "overlap_skip_count": self.overlap_skip_count,
-            "last_timeout_at": self.last_timeout_at.isoformat() if self.last_timeout_at else None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "pid": os.getpid(),
         }
@@ -492,66 +450,6 @@ class SignalMonitorService:
             self._latest_status_snapshot = payload
         except Exception:
             logger.debug("Failed to persist signal monitor status", exc_info=True)
-
-    def _create_lock_session(self) -> Optional[Session]:
-        """Dedicated session for advisory lock acquire/release only (not monitor work)."""
-        if SessionLocal is None:
-            return None
-        return SessionLocal()
-
-    def _acquire_monitor_lock(self, lock_db: Session) -> bool:
-        """Acquire advisory lock on dedicated connection; rollback ends txn, session lock persists."""
-        if not lock_db:
-            return False
-        try:
-            from sqlalchemy import text
-            result = lock_db.execute(
-                text("SELECT pg_try_advisory_lock(:lock_id)"),
-                {"lock_id": SIGNAL_MONITOR_LOCK_ID},
-            ).scalar()
-            acquired = bool(result)
-            if acquired:
-                lock_db.rollback()
-            return acquired
-        except Exception as e:
-            logger.error(f"Error acquiring signal monitor advisory lock: {e}", exc_info=True)
-            return False
-
-    def _release_monitor_lock(self, lock_db: Session, lock_acquired: bool, cycle_id: str) -> None:
-        """Release session-level lock on dedicated connection: unlock_all, rollback, close."""
-        if not lock_db:
-            return
-        released_ok = False
-        try:
-            from sqlalchemy import text
-            bind = lock_db.get_bind()
-            if bind is not None and bind.dialect.name == "postgresql":
-                lock_db.execute(text("SELECT pg_advisory_unlock_all()"))
-            elif lock_acquired:
-                lock_db.execute(
-                    text("SELECT pg_advisory_unlock(:lock_id)"),
-                    {"lock_id": SIGNAL_MONITOR_LOCK_ID},
-                )
-            lock_db.rollback()
-            released_ok = True
-        except Exception as e:
-            logger.error(
-                "lock_released cycle_id=%s success=false error=%s",
-                cycle_id,
-                e,
-                exc_info=True,
-            )
-        finally:
-            try:
-                lock_db.close()
-            except Exception as close_err:
-                logger.error(f"Error closing lock session: {close_err}", exc_info=True)
-        logger.info(
-            "lock_released cycle_id=%s success=%s lock_acquired=%s",
-            cycle_id,
-            released_ok,
-            lock_acquired,
-        )
 
     def _schedule_missing_intent_check(self, signal_id: Optional[int], symbol: str, side: str) -> None:
         """Schedule a delayed check to ensure a sent signal has an order_intent."""
@@ -9676,13 +9574,11 @@ class SignalMonitorService:
             logger.warning("⚠️ Signal monitor is already running, skipping duplicate start")
             return
         self.is_running = True
-        self.monitor_cycle_timeout = _monitor_cycle_timeout_seconds()
         self._persist_status("starting")
         logger.info("=" * 60)
         logger.info("🚀 SIGNAL MONITORING SERVICE STARTED (interval=%ss)", self.monitor_interval)
         logger.info(f"   - Max orders per symbol: {self.MAX_OPEN_ORDERS_PER_SYMBOL}")
         logger.info(f"   - Min price change: {self.MIN_PRICE_CHANGE_PCT}%")
-        logger.info(f"   - Monitor cycle timeout: {self.monitor_cycle_timeout}s")
         logger.info("=" * 60)
 
         cycle_count = 0
@@ -9692,34 +9588,28 @@ class SignalMonitorService:
                 logger.debug("SignalMonitorService loop iteration, is_running=%s", self.is_running)
                 try:
                     cycle_count += 1
-                    cycle_id = f"{os.getpid()}_{cycle_count}_{int(time.time())}"
                     self.last_run_at = datetime.now(timezone.utc)
                     self._persist_status("cycle_started")
-                    logger.info(
-                        "SignalMonitorService cycle #%s started cycle_id=%s (is_running=%s)",
-                        cycle_count,
-                        cycle_id,
-                        self.is_running,
-                    )
-
+                    logger.info("SignalMonitorService cycle #%s started (is_running=%s)", cycle_count, self.is_running)
+                    
                     # Heartbeat log every 10 cycles (every ~5 minutes with 30s interval)
                     if cycle_count % 10 == 0:
                         logger.info(
                             "[HEARTBEAT] SignalMonitorService alive - cycle=%d last_run=%s",
                             cycle_count,
-                            self.last_run_at.isoformat() if self.last_run_at else "None",
+                            self.last_run_at.isoformat() if self.last_run_at else "None"
                         )
-
-                        # Watchdog: Check if successful cycles are advancing
-                        if self.last_successful_cycle_at:
-                            time_since_last = datetime.now(timezone.utc) - self.last_successful_cycle_at
+                        
+                        # Watchdog: Check if cycles are advancing (if last_run_at is old, alert)
+                        if self.last_run_at:
+                            time_since_last = datetime.now(timezone.utc) - self.last_run_at
+                            # If no cycle in > 2 intervals (60s with 30s interval), log warning
                             if time_since_last > timedelta(seconds=self.monitor_interval * 2):
                                 logger.error(
-                                    "[SIGNAL_MONITOR_WATCHDOG] ⚠️ No successful cycle in %ss "
-                                    "(threshold: %ss). Scheduler may be stalled or RUN_LOCKED.",
-                                    f"{time_since_last.total_seconds():.0f}",
-                                    self.monitor_interval * 2,
+                                    f"[SIGNAL_MONITOR_WATCHDOG] ⚠️ No cycle recorded in {time_since_last.total_seconds():.0f}s "
+                                    f"(threshold: {self.monitor_interval * 2}s). Scheduler may be stalled."
                                 )
+                                # Send system alert using health-based evaluation (throttled to once per 24h)
                                 try:
                                     from app.services.system_alerts import evaluate_and_maybe_send_system_alert
                                     if SessionLocal is not None:
@@ -9729,197 +9619,79 @@ class SignalMonitorService:
                                         finally:
                                             _watchdog_db.close()
                                 except Exception:
-                                    pass
+                                    pass  # Don't fail monitor if alert fails
 
-                    if self._cycle_active:
-                        self.overlap_skip_count += 1
-                        logger.warning(
-                            "RUN_OVERLAP_SKIPPED cycle_id=%s cycle=%d overlap_skip_count=%d",
-                            cycle_id,
-                            cycle_count,
-                            self.overlap_skip_count,
-                        )
-                        self._persist_status("overlap_skipped")
-                        await asyncio.sleep(self.monitor_interval)
-                        continue
-
+                    # CRITICAL: Use Postgres advisory lock to prevent duplicate runners
+                    # Lock ID: 123456 (arbitrary but unique for signal monitor)
                     if SessionLocal is None:
                         logger.warning("SessionLocal is None - database not available, skipping signal monitor cycle")
                         await asyncio.sleep(self.monitor_interval)
                         continue
-
+                    db = SessionLocal()
+                    run_id = f"{os.getpid()}_{int(time.time())}"
                     host = os.getenv("HOSTNAME", "unknown")
-                    lock_db: Optional[Session] = None
-                    work_db: Optional[Session] = None
-                    lock_acquired = False
-                    cycle_success = False
-                    lock_acquire_time: Optional[float] = None
-                    self._cycle_active = True
-
+                    
                     try:
-                        lock_db = self._create_lock_session()
-                        lock_acquired = self._acquire_monitor_lock(lock_db) if lock_db else False
-
-                        if not lock_acquired:
-                            self.lock_acquisition_failures += 1
-                            self.skipped_cycles += 1
+                        # Try to acquire advisory lock (non-blocking)
+                        from sqlalchemy import text
+                        lock_result = db.execute(text("SELECT pg_try_advisory_lock(123456)")).scalar()
+                        
+                        if not lock_result:
+                            # Lock is held by another process
                             if DEBUG_TRADING:
-                                logger.warning(
-                                    "[DEBUG_TRADING] RUN_LOCKED cycle_id=%s pid=%s host=%s",
-                                    cycle_id,
-                                    os.getpid(),
-                                    host,
-                                )
-                            logger.warning(
-                                "RUN_LOCKED cycle_id=%s cycle=%d pid=%s host=%s "
-                                "lock_failures=%d skipped=%d",
-                                cycle_id,
-                                cycle_count,
-                                os.getpid(),
-                                host,
-                                self.lock_acquisition_failures,
-                                self.skipped_cycles,
-                            )
-                        else:
-                            lock_acquire_time = time.monotonic()
-                            logger.info(
-                                "lock_acquired cycle_id=%s lock_id=%d pid=%s",
-                                cycle_id,
-                                SIGNAL_MONITOR_LOCK_ID,
-                                os.getpid(),
-                            )
-                            if DEBUG_TRADING:
-                                logger.info(
-                                    "[DEBUG_TRADING] RUN_START cycle_id=%s pid=%s host=%s cycle=%d",
-                                    cycle_id,
-                                    os.getpid(),
-                                    host,
-                                    cycle_count,
-                                )
-                            logger.info(
-                                "RUN_START cycle_id=%s pid=%s host=%s cycle=%d",
-                                cycle_id,
-                                os.getpid(),
-                                host,
-                                cycle_count,
-                            )
-
-                            work_db = SessionLocal()
-                            monitor_start = time.monotonic()
+                                logger.warning(f"[DEBUG_TRADING] RUN_LOCKED run_id={run_id} pid={os.getpid()} host={host}")
+                            logger.warning(f"RUN_LOCKED: Signal monitor lock held by another process. Skipping cycle #{cycle_count}")
+                            db.close()
+                            await asyncio.sleep(self.monitor_interval)
+                            continue
+                        
+                        # Lock acquired - log RUN_START
+                        if DEBUG_TRADING:
+                            logger.info(f"[DEBUG_TRADING] RUN_START run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                        logger.info(f"RUN_START run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                        
+                        try:
+                            await self.monitor_signals(db)
+                            # Commit changes if monitor_signals made any database modifications
                             try:
-                                await asyncio.wait_for(
-                                    self.monitor_signals(work_db),
-                                    timeout=self.monitor_cycle_timeout,
-                                )
-                                cycle_success = True
-                            except asyncio.TimeoutError:
-                                self.timeout_count += 1
-                                self.last_timeout_at = datetime.now(timezone.utc)
-                                logger.error(
-                                    "RUN_TIMEOUT cycle_id=%s cycle=%d timeout_seconds=%.1f timeout_count=%d",
-                                    cycle_id,
-                                    cycle_count,
-                                    self.monitor_cycle_timeout,
-                                    self.timeout_count,
-                                )
-                                self._persist_status("cycle_timeout")
-                            except Exception as monitor_err:
-                                logger.error(
-                                    "SignalMonitorService: Error in monitor_signals cycle_id=%s: %s",
-                                    cycle_id,
-                                    monitor_err,
-                                    exc_info=True,
-                                )
-                                raise
-                            finally:
-                                monitor_duration = time.monotonic() - monitor_start
-                                logger.info(
-                                    "monitor_duration cycle_id=%s duration_seconds=%.3f",
-                                    cycle_id,
-                                    monitor_duration,
-                                )
-                                if work_db is not None:
-                                    try:
-                                        if cycle_success:
-                                            work_db.commit()
-                                            logger.debug("SignalMonitorService: Committed database changes")
-                                        else:
-                                            work_db.rollback()
-                                    except Exception as commit_err:
-                                        logger.error(
-                                            "SignalMonitorService: Error committing changes cycle_id=%s: %s",
-                                            cycle_id,
-                                            commit_err,
-                                            exc_info=True,
-                                        )
-                                        try:
-                                            work_db.rollback()
-                                        except Exception:
-                                            pass
-                                    try:
-                                        work_db.close()
-                                    except Exception as close_err:
-                                        logger.error(
-                                            "Error closing monitor work session cycle_id=%s: %s",
-                                            cycle_id,
-                                            close_err,
-                                            exc_info=True,
-                                        )
-                                    work_db = None
-
-                            if cycle_success:
-                                self.last_successful_cycle_at = datetime.now(timezone.utc)
-                                self.successful_cycle_count += 1
+                                db.commit()
+                                logger.debug("SignalMonitorService: Committed database changes")
+                            except Exception as commit_err:
+                                logger.error(f"SignalMonitorService: Error committing changes: {commit_err}", exc_info=True)
+                                db.rollback()
+                        except Exception as monitor_err:
+                            logger.error(f"SignalMonitorService: Error in monitor_signals: {monitor_err}", exc_info=True)
+                            db.rollback()
+                            raise
+                        finally:
+                            # Release lock and log RUN_END
+                            try:
+                                db.execute(text("SELECT pg_advisory_unlock(123456)"))
                                 if DEBUG_TRADING:
-                                    logger.info(
-                                        "[DEBUG_TRADING] RUN_END cycle_id=%s pid=%s host=%s cycle=%d",
-                                        cycle_id,
-                                        os.getpid(),
-                                        host,
-                                        cycle_count,
-                                    )
-                                logger.info(
-                                    "RUN_END cycle_id=%s pid=%s host=%s cycle=%d",
-                                    cycle_id,
-                                    os.getpid(),
-                                    host,
-                                    cycle_count,
-                                )
-                                logger.info(
-                                    "SignalMonitorService cycle #%s completed cycle_id=%s. Next check in %ss",
-                                    cycle_count,
-                                    cycle_id,
-                                    self.monitor_interval,
-                                )
-                                self._persist_status("cycle_completed")
+                                    logger.info(f"[DEBUG_TRADING] RUN_END run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                                logger.info(f"RUN_END run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                            except Exception as unlock_err:
+                                logger.error(f"Error releasing advisory lock: {unlock_err}", exc_info=True)
+                            db.close()
                     except Exception as lock_err:
-                        logger.error(
-                            "Error in signal monitor lock cycle cycle_id=%s: %s",
-                            cycle_id,
-                            lock_err,
-                            exc_info=True,
-                        )
-                        self._persist_status("cycle_error")
-                    finally:
-                        if lock_acquire_time is not None:
-                            hold_duration = time.monotonic() - lock_acquire_time
-                            logger.info(
-                                "lock_hold_duration cycle_id=%s duration_seconds=%.3f",
-                                cycle_id,
-                                hold_duration,
-                            )
-                        if lock_db is not None:
-                            self._release_monitor_lock(lock_db, lock_acquired, cycle_id)
-                            lock_db = None
-                        self._cycle_active = False
-
-                    if not lock_acquired:
+                        logger.error(f"Error acquiring advisory lock: {lock_err}", exc_info=True)
+                        db.close()
+                        # Continue to next cycle even if lock fails
                         await asyncio.sleep(self.monitor_interval)
                         continue
+
+                    logger.info(
+                        "SignalMonitorService cycle #%s completed. Next check in %ss",
+                        cycle_count,
+                        self.monitor_interval,
+                    )
+                    self._persist_status("cycle_completed")
                 except Exception as e:
                     logger.error(f"❌ Error in signal monitoring cycle #{cycle_count}: {e}", exc_info=True)
                     self._persist_status("cycle_error")
-
+                    # Continue to next cycle even if this one failed
+                
+                # Sleep before next cycle, with error handling
                 try:
                     await asyncio.sleep(self.monitor_interval)
                 except asyncio.CancelledError:
@@ -9927,13 +9699,12 @@ class SignalMonitorService:
                     raise
                 except Exception as e:
                     logger.error(f"❌ Error during sleep in signal monitoring cycle #{cycle_count}: {e}", exc_info=True)
-                    await asyncio.sleep(1)
-
+                    # Continue anyway - don't let sleep errors stop the monitor
+                    await asyncio.sleep(1)  # Short sleep before retrying
+                
+                # Verify we should continue
                 if not self.is_running:
-                    logger.warning(
-                        "SignalMonitorService is_running set to False, exiting loop after %s cycles",
-                        cycle_count,
-                    )
+                    logger.warning("SignalMonitorService is_running set to False, exiting loop after %s cycles", cycle_count)
                     break
         except asyncio.CancelledError:
             logger.info("SignalMonitorService loop cancelled after %s cycles", cycle_count)
@@ -9945,7 +9716,6 @@ class SignalMonitorService:
             raise
         finally:
             self.is_running = False
-            self._cycle_active = False
             logger.info("SignalMonitorService loop exited after %s cycles (is_running=%s)", cycle_count, self.is_running)
             self._persist_status("stopped")
     
