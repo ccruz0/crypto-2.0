@@ -189,7 +189,7 @@ class TestFalsePositiveAlertRegression:
         assert result is not None
         assert result.severity == AlertSeverity.INFO
 
-    def test_case4_exchange_unreachable_warning(self):
+    def test_case4_exchange_unreachable_critical(self):
         report = _fake_report(
             category="exchange",
             summary="Exchange unreachable — cannot reach exchange API",
@@ -198,7 +198,7 @@ class TestFalsePositiveAlertRegression:
         )
         result = classify_investigation_report(report, source="exchange_connectivity")
         assert result is not None
-        assert result.severity == AlertSeverity.WARNING
+        assert result.severity == AlertSeverity.CRITICAL
         assert result.alert_type == "exchange_unreachable"
 
     def test_case5_investigation_incomplete_warning(self):

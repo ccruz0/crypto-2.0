@@ -45,27 +45,33 @@ _TRUE_MISMATCH_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
-_WARNING_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+_CRITICAL_INFRA_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
-            r"exchange.*unreachable|cannot reach exchange|exchange connectivity failed|exchange.*not reachable",
+            r"exchange.*unreachable|exchange.*unavailable|cannot reach exchange"
+            r"|exchange connectivity failed|exchange.*not reachable"
+            r"|exchange authentication fail",
             re.I,
         ),
         "exchange_unreachable",
     ),
+    (
+        re.compile(
+            r"database.*unavailable|database.*down|db.*unavailable"
+            r"|cannot connect.*database|database connection failed",
+            re.I,
+        ),
+        "database_unavailable",
+    ),
+)
+
+_WARNING_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"reconciliation.*mismatch|portfolio.*mismatch|wallet.*mismatch", re.I), "reconciliation_mismatch"),
     (re.compile(r"api.*degrad|degraded.*api|high.*latency|slow.*response", re.I), "api_degradation"),
     (re.compile(r"transient.*fail|intermittent.*fail|retry.*exhausted|temporary.*error", re.I), "transient_failures"),
     (re.compile(r"websocket.*unstable|websocket.*stale|websocket.*disconnect|prices.*stale", re.I), "websocket_instability"),
     (re.compile(r"trigger.*50001|partial.*fail|collector.*fail|insufficient evidence", re.I), "partial_investigation_failure"),
     (re.compile(r"deployment.*unhealthy|health check.*fail", re.I), "deployment_degraded"),
-    (
-        re.compile(
-            r"database.*unavailable|database.*down|db.*unavailable|cannot connect.*database|database connection failed",
-            re.I,
-        ),
-        "database_unavailable",
-    ),
     (
         re.compile(r"missing production data|no production data|production data.*missing|missing.*production.*records", re.I),
         "missing_production_data",
@@ -165,9 +171,9 @@ def _status_severity(report: Any) -> tuple[AlertSeverity, str] | None:
 def _category_boost(text: str, category: str) -> tuple[AlertSeverity, str] | None:
     cat = (category or "").lower()
     if cat == "exchange" and re.search(r"unreachable|unavailable|cannot|failed|error", text):
-        return AlertSeverity.WARNING, "exchange_unreachable"
+        return AlertSeverity.CRITICAL, "exchange_unreachable"
     if cat == "database" and re.search(r"unavailable|error|failed|cannot|down", text):
-        return AlertSeverity.WARNING, "database_unavailable"
+        return AlertSeverity.CRITICAL, "database_unavailable"
     if cat == "orders" and _match_rules(text, _TRUE_MISMATCH_RULES):
         return AlertSeverity.CRITICAL, "open_order_inconsistency"
     if cat == "websocket" and re.search(r"stale|disconnect|unstable|error", text):
@@ -213,9 +219,10 @@ def classify_investigation_report(
     3. Resolved healthy (resolution_status=resolved or authoritative conclusion) → INFO
     4. Active open-order mismatch (resolution_status=active or authoritative mismatch) → CRITICAL
     5. Category boost on authoritative text → severity per category rules
-    6. Other WARNING patterns on authoritative text → WARNING
-    7. COMPLETED with root_cause/impact findings → WARNING
-    8. Otherwise → None (suppressed)
+    6. Infrastructure outage patterns on authoritative text → CRITICAL
+    7. Other WARNING patterns on authoritative text → WARNING
+    8. COMPLETED with root_cause/impact findings → WARNING
+    9. Otherwise → None (suppressed)
 
     Intermediate diagnostic/evidence text never overrides steps 3–4.
     """
@@ -271,6 +278,19 @@ def classify_investigation_report(
             title=title,
             summary=str(summary),
             severity=severity,
+            report=report,
+        )
+
+    critical_infra_type = _match_rules(authoritative, _CRITICAL_INFRA_RULES)
+    if critical_infra_type:
+        title = critical_infra_type.replace("_", " ").title()
+        summary = getattr(report, "summary", None) or getattr(report, "root_cause", None) or title
+        return _build_alert_input(
+            alert_type=critical_infra_type,
+            source=source,
+            title=title,
+            summary=str(summary),
+            severity=AlertSeverity.CRITICAL,
             report=report,
         )
 
