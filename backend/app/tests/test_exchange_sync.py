@@ -372,6 +372,76 @@ def test_order_status_mapping_unknown_with_zero_quantity(db_session, monkeypatch
     assert updated_order.status == OrderStatusEnum.UNKNOWN
 
 
+def test_order_status_mapping_pending_maps_to_active(db_session, monkeypatch):
+    """PENDING trigger orders from Crypto.com must map to ACTIVE, not UNKNOWN."""
+    from app.models.exchange_order import OrderStatusEnum
+
+    mock_order_data = {
+        "order_id": "test-pending",
+        "status": "PENDING",
+        "quantity": 1.0,
+        "cumulative_quantity": 0,
+        "instrument_name": "BTC_USDT",
+        "side": "SELL",
+        "limit_price": 50000.0,
+    }
+
+    from app.services import exchange_sync
+
+    def mock_fetch_unified(_client):
+        return {
+            "data_verified": True,
+            "orders": [],
+            "all_raw_orders": [mock_order_data],
+            "regular_raw": [],
+            "trigger_raw": [mock_order_data],
+            "advanced_raw": [],
+            "sync_status": "ok",
+        }
+
+    monkeypatch.setattr(
+        "app.services.unified_open_orders_fetch.fetch_unified_open_orders",
+        mock_fetch_unified,
+    )
+    monkeypatch.setattr(
+        exchange_sync,
+        "update_open_orders_cache",
+        lambda *_args, **_kwargs: None,
+    )
+
+    from app.models.exchange_order import ExchangeOrder, OrderSideEnum
+
+    existing_order = ExchangeOrder(
+        exchange_order_id="test-pending",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        status=OrderStatusEnum.NEW,
+        price=50000.0,
+        quantity=1.0,
+    )
+    db_session.add(existing_order)
+    db_session.commit()
+
+    service = exchange_sync.ExchangeSyncService()
+    service.sync_open_orders(db_session)
+
+    updated_order = db_session.query(ExchangeOrder).filter_by(exchange_order_id="test-pending").first()
+    assert updated_order.status == OrderStatusEnum.ACTIVE
+
+
+def test_map_exchange_order_status_pending_and_untriggered():
+    from app.models.exchange_order import OrderStatusEnum
+    from app.services.exchange_sync import map_exchange_order_status
+
+    assert map_exchange_order_status("PENDING") == OrderStatusEnum.ACTIVE
+    assert map_exchange_order_status("UNTRIGGERED") == OrderStatusEnum.ACTIVE
+    assert map_exchange_order_status("NEW") == OrderStatusEnum.NEW
+    assert map_exchange_order_status("FILLED") == OrderStatusEnum.FILLED
+    assert map_exchange_order_status("CANCELLED") == OrderStatusEnum.CANCELLED
+    assert map_exchange_order_status("REJECTED") == OrderStatusEnum.REJECTED
+
+
 def test_stop_limit_payload_construction():
     """Test that STOP_LIMIT order payloads are constructed correctly with proper fields."""
     from backend.app.services.brokers.crypto_com_trade import CryptoComTradeClient
