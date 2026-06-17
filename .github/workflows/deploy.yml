@@ -199,6 +199,9 @@ jobs:
            ([ -d frontend ] && find frontend -type d -exec chmod 755 {} \; 2>/dev/null || true) && \
            ([ -d frontend ] && find frontend -type f -exec chmod 644 {} \; 2>/dev/null || true) && \
            find . -type f \\( -name '*.sh' -o -name '*.bash' \\) -exec chmod +x {} \\; 2>/dev/null || true && \
+           test -x scripts/selfheal/run.sh && \
+           test -x scripts/selfheal/heal.sh && \
+           test -x scripts/selfheal/verify.sh && \
            echo '✅ Permissions fixed for Docker compatibility'"
         
         echo "🚀 Running standardized deploy script..."

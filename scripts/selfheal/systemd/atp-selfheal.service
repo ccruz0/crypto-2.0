@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=ubuntu
-WorkingDirectory=/home/ubuntu/automated-trading-platform
-ExecStart=/home/ubuntu/automated-trading-platform/scripts/selfheal/run.sh
+WorkingDirectory=/home/ubuntu/crypto-2.0
+ExecStart=/home/ubuntu/crypto-2.0/scripts/selfheal/run.sh
 
 [Install]
 WantedBy=multi-user.target
