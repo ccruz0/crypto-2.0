@@ -98,6 +98,7 @@ BUILD_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
     "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+    "bash scripts/aws/with_deploy_marker.sh bash -s <<'\''DEPLOY_EOF'\''",
     "mkdir -p docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state && sudo chown -R 10001:10001 docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state || true",
     "bash scripts/aws/render_runtime_env.sh || true",
     "docker compose --profile aws down || true",
@@ -109,7 +110,8 @@ BUILD_ID=$(aws ssm send-command \
     "sudo systemctl restart nginx || true",
     "sleep 5",
     "docker compose --profile aws ps",
-    "echo \"✅ Deployment completed\""
+    "echo \"✅ Deployment completed\"",
+    "DEPLOY_EOF"
   ]' \
   --region "$REGION" \
   --output text \

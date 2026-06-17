@@ -2,11 +2,34 @@
 
 Scripts para verificación y auto-recuperación en EC2: disk, containers, backend health, nginx. **Sin secrets, sin endpoints protegidos.**
 
+## Safety gates (PR #59+)
+
+Self-heal is **safe-by-default** until operators explicitly opt into destructive recovery.
+
+| Gate | Behavior |
+|------|----------|
+| Default | Collect diagnostics, log `RECOMMENDED_MANUAL_ACTION`, exit degraded (no docker/systemctl) |
+| `ATP_SELFHEAL_ALLOW_DESTRUCTIVE=1` | Allows docker restart, prune, `systemctl restart docker`, compose down/up |
+| `--dry-run` / `ATP_SELFHEAL_DRY_RUN=1` | Print `REPO_DIR`, health hints, planned actions; never run docker/systemctl |
+| `/tmp/atp-deploy-in-progress` | Deploy marker — self-heal skips recovery while present |
+| `/tmp/atp-selfheal-last-action` | 15-minute cooldown between recovery attempts |
+| Unknown verify | `run.sh` parses `FAIL:*` from verify **stdout**; empty/unparseable → `VERIFY_DEGRADED`, no heal |
+
+**Production:** keep `atp-selfheal.timer` **disabled** until this behavior is deployed and validated. Use `./scripts/selfheal/heal.sh --dry-run` only after deploy approval.
+
+### secrets/runtime.env ownership
+
+Host-side `docker compose` (deploy, self-heal) must read `./secrets/runtime.env` as the invoking user (usually `ubuntu`):
+
+- **Expected after render:** `ubuntu:ubuntu`, mode `600` (`scripts/aws/render_runtime_env.sh` uses `umask 077`)
+- **Container-only hardening:** `scripts/aws/render_and_recreate_backend_safe.sh` may `chown 10001:10001` for in-container use; host compose then fails with permission denied
+- **Self-heal fix:** before destructive compose, call `render_runtime_env.sh` (same as deploy) via `ensure_runtime_env_for_compose` in `heal.sh` — do not weaken global secret permissions
+
 ## Qué hace
 
 - **verify.sh:** Comprueba disco &lt;90%, ningún container unhealthy, `/api/health` ok, y **PASS operativo**: `db_status` up, `market_data.status` PASS, `market_updater.status` PASS, `signal_monitor.status` PASS. **No exige** que telegram ni trade_system estén PASS (pueden estar deshabilitados por diseño). Sale con código 2–8 según fallo.
-- **heal.sh:** Con lock, si disco ≥90% trunca logs Docker y hace prune; reinicia docker; reinicia stack con `docker compose --profile aws` **solo si existe .env** (si falta, imprime mensaje y omite compose); llama a **POST** `/api/health/fix` (sin x-api-key); recarga nginx solo si `nginx -t` pasa.
-- **run.sh:** Ejecuta verify → si falla ejecuta heal → vuelve a verify. Útil para timer/cron.
+- **heal.sh:** Safe-by-default: collects diagnostics and logs recommended manual actions. Destructive recovery (docker restart, prune, stack restart) requires `ATP_SELFHEAL_ALLOW_DESTRUCTIVE=1`. Supports `--dry-run` / `ATP_SELFHEAL_DRY_RUN=1`. Skips when deploy marker or cooldown active.
+- **run.sh:** Executes verify → if parseable `FAIL:*` on stdout, runs heal → re-verify. Skips on deploy marker, cooldown, or unknown verify result.
 
 ## Endpoint /api/health/fix
 

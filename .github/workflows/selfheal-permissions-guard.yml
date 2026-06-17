@@ -18,3 +18,6 @@ jobs:
 
       - name: Verify self-heal scripts are executable in git
         run: bash scripts/test_selfheal_executable_permissions.sh
+
+      - name: Verify self-heal safety gates
+        run: bash scripts/test_selfheal_safety.sh

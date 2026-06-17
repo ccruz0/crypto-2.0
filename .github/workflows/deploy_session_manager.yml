@@ -139,6 +139,7 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+            "bash scripts/aws/with_deploy_marker.sh bash -s <<'\''DEPLOY_EOF'\''",
             "echo \"📁 Current directory: $(pwd)\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_no_external_frontend_deploy.sh --runtime\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_frontend_version.sh\" || { echo \"❌ Frontend version check failed\" && exit 1; }",
@@ -180,7 +181,8 @@ jobs:
             "sleep 5",
             "echo \"✅ Verifying deployment...\"",
             "docker compose --env-file .deploy-fingerprint.env --profile aws ps",
-            "echo \"✅ Deployment completed!\""
+            "echo \"✅ Deployment completed!\"",
+            "DEPLOY_EOF"
           ]' \
           --region ap-southeast-1 \
           --output text \
