@@ -4,7 +4,7 @@
 # health/fix restarts in-process backend services and can cause empty reply / interrupt update-cache;
 # default is skip health/fix for this script; set ATP_REMEDIATE_RUN_HEALTH_FIX=1 to run it after cache.
 # Env:
-#   REPO_DIR        repo root (default: ~/automated-trading-platform)
+#   REPO_DIR        repo root (default: derived from script location)
 #   ATP_HEALTH_BASE backend base URL (default: http://127.0.0.1:8002)
 #   ATP_REMEDIATE_DRY_RUN=1           log only
 #   ATP_REMEDIATE_SKIP_HEALTH_FIX=1   default 1 — do not POST /api/health/fix before update-cache
@@ -13,7 +13,8 @@
 #   ATP_REMEDIATE_UPDATE_CACHE_RETRIES      default 1 (one retry after sleep if empty reply / fail)
 set -uo pipefail
 
-REPO_DIR="${REPO_DIR:-${HOME}/automated-trading-platform}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 BASE="${ATP_HEALTH_BASE:-http://127.0.0.1:8002}"
 DRY_RUN="${ATP_REMEDIATE_DRY_RUN:-0}"
 SKIP_HEALTH_FIX="${ATP_REMEDIATE_SKIP_HEALTH_FIX:-1}"

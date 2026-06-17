@@ -4,8 +4,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/ubuntu/automated-trading-platform
-ExecStart=/home/ubuntu/automated-trading-platform/scripts/diag/health_snapshot_log.sh
+WorkingDirectory=/home/ubuntu/crypto-2.0
+ExecStart=/home/ubuntu/crypto-2.0/scripts/diag/health_snapshot_log.sh
 # Root so /var/log/atp can be created and written
 User=root
 
