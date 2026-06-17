@@ -29,10 +29,6 @@ def mock_signal_monitor():
     with patch('app.services.system_health.signal_monitor_service') as mock:
         mock.is_running = True
         mock.last_run_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-        mock.last_successful_cycle_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-        mock.successful_cycle_count = 10
-        mock.lock_acquisition_failures = 0
-        mock.skipped_cycles = 0
         yield mock
 
 
@@ -158,16 +154,14 @@ def test_signal_monitor_health_stalled(mock_signal_monitor):
 
 
 def test_signal_monitor_health_running(mock_signal_monitor):
-    """Test signal monitor health returns PASS when running with recent successful cycle"""
+    """Test signal monitor health returns PASS when running"""
     mock_signal_monitor.is_running = True
     mock_signal_monitor.last_run_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-    mock_signal_monitor.last_successful_cycle_at = datetime.now(timezone.utc) - timedelta(minutes=5)
     
     result = _check_signal_monitor_health(stale_threshold_minutes=30)
     
     assert result["status"] == "PASS"
     assert result["is_running"] is True
-    assert result["last_successful_cycle_age_minutes"] is not None
 
 
 def test_telegram_health_enabled(mock_telegram_notifier):
@@ -272,7 +266,7 @@ def test_get_system_health_db_up_market_stale_returns_warn(mock_db):
     mock_db.execute.return_value = None
     market_ret = {"status": "FAIL", "fresh_symbols": 0, "stale_symbols": 2, "max_age_minutes": 60.0}
     updater_ret = {"status": "FAIL", "is_running": False, "last_heartbeat_age_minutes": 60.0}
-    signal_ret = {"status": "PASS", "is_running": True, "last_successful_cycle_age_minutes": 1.0}
+    signal_ret = {"status": "PASS", "is_running": True, "last_cycle_age_minutes": 1.0}
     telegram_ret = {"status": "PASS", "enabled": True}
     trade_ret = {"status": "PASS", "open_orders": 0, "max_open_orders": 10, "order_intents_table_exists": True, "last_check_ok": True}
     with patch("app.services.system_health._check_market_data_health", return_value=market_ret), \
@@ -290,7 +284,7 @@ def test_get_system_health_all_ok_returns_pass(mock_db):
     mock_db.execute.return_value = None
     market_ret = {"status": "PASS", "fresh_symbols": 1, "stale_symbols": 0, "max_age_minutes": 5.0}
     updater_ret = {"status": "PASS", "is_running": True, "last_heartbeat_age_minutes": 5.0}
-    signal_ret = {"status": "PASS", "is_running": True, "last_successful_cycle_age_minutes": 1.0}
+    signal_ret = {"status": "PASS", "is_running": True, "last_cycle_age_minutes": 1.0}
     telegram_ret = {"status": "PASS", "enabled": True}
     trade_ret = {"status": "PASS", "open_orders": 0, "max_open_orders": 10, "order_intents_table_exists": True, "last_check_ok": True}
     with patch("app.services.system_health._check_market_data_health", return_value=market_ret), \
