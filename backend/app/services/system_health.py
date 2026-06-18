@@ -282,11 +282,35 @@ def _check_signal_monitor_health(stale_threshold_minutes: float) -> Dict:
         elif last_cycle_age_minutes is None:
             # No recorded cycles yet
             status = "WARN"
-        
+
+        # Optional advisory-lock diagnostic fields (PR #62). Read defensively so
+        # mocks/older instances without these attributes never break health.
+        def _diag_int(attr: str):
+            try:
+                val = getattr(signal_monitor_service, attr, None)
+                return int(val) if isinstance(val, (int, float)) else None
+            except Exception:
+                return None
+
+        last_successful = getattr(signal_monitor_service, "last_successful_cycle_at", None)
+        last_successful_age_minutes = None
+        try:
+            if isinstance(last_successful, datetime):
+                last_successful_age_minutes = round(
+                    (datetime.now(timezone.utc) - last_successful).total_seconds() / 60, 2
+                )
+        except Exception:
+            last_successful_age_minutes = None
+
         return {
             "status": status,
             "is_running": is_running,
             "last_cycle_age_minutes": round(last_cycle_age_minutes, 2) if last_cycle_age_minutes is not None else None,
+            "successful_cycle_count": _diag_int("successful_cycle_count"),
+            "timeout_count": _diag_int("timeout_count"),
+            "run_locked_count": _diag_int("lock_acquisition_failures"),
+            "last_successful_cycle_age_minutes": last_successful_age_minutes,
+            "last_lock_backend_pid": _diag_int("last_lock_backend_pid"),
         }
     except Exception as e:
         logger.error(f"Error checking signal monitor health: {e}", exc_info=True)
