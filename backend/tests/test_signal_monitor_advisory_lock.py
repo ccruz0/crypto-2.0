@@ -469,6 +469,72 @@ def test_cycle_run_locked_increments_counter_and_does_not_run_monitor(monkeypatc
     assert work_session.committed is False
 
 
+def _assert_lock_not_orphaned(fake_engine):
+    """Every connection used for acquire must be unlocked and closed."""
+    lock_conns = [c for c in fake_engine.connections if c._pid_calls > 0]
+    assert lock_conns, "expected at least one dedicated lock connection"
+    for conn in lock_conns:
+        assert conn.unlocked is True, "pg_advisory_unlock must be called on cancellation"
+        assert conn.closed is True, "dedicated lock connection must be closed on cancellation"
+        assert conn.transaction is None, "must not hold idle-in-transaction lock connection"
+
+
+# ---------------------------------------------------------------------------
+# Cancellation: advisory lock must still be released
+# ---------------------------------------------------------------------------
+def test_cycle_cancelled_error_in_monitor_signals_releases_lock(monkeypatch):
+    """CancelledError raised inside monitor_signals must not orphan lock 123456."""
+    fake_engine = _FakeEngine(acquire_result=True, backend_pids=(202,))
+    svc = _make_service()
+    svc._lock_engine = fake_engine
+    work_session = _FakeWorkSession()
+    monkeypatch.setattr(sm, "SessionLocal", lambda: work_session)
+
+    async def raise_cancelled(db):
+        raise asyncio.CancelledError()
+
+    svc.monitor_signals = raise_cancelled
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(asyncio.wait_for(svc.start(), timeout=10))
+
+    assert work_session.closed is True
+    _assert_lock_not_orphaned(fake_engine)
+    assert not svc.is_running
+
+
+def test_stop_mid_cycle_releases_lock(monkeypatch):
+    """stop() while monitor_signals is in-flight must unlock and close the lock connection."""
+    fake_engine = _FakeEngine(acquire_result=True, backend_pids=(303,))
+    svc = _make_service()
+    svc._lock_engine = fake_engine
+    work_session = _FakeWorkSession()
+    monkeypatch.setattr(sm, "SessionLocal", lambda: work_session)
+
+    monitor_entered = asyncio.Event()
+
+    async def hang_until_stopped(db):
+        monitor_entered.set()
+        await asyncio.Event().wait()
+
+    svc.monitor_signals = hang_until_stopped
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        svc.start_background(loop)
+        await asyncio.wait_for(monitor_entered.wait(), timeout=10)
+        svc.stop()
+        assert svc._task is not None
+        with pytest.raises(asyncio.CancelledError):
+            await svc._task
+
+    asyncio.run(_run())
+
+    assert work_session.closed is True
+    _assert_lock_not_orphaned(fake_engine)
+    assert not svc.is_running
+
+
 # ---------------------------------------------------------------------------
 # Health counters / API shape
 # ---------------------------------------------------------------------------
