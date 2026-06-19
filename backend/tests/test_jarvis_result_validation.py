@@ -85,7 +85,7 @@ class TestValidationGates:
 
     def test_investigation_with_root_cause_passes(self):
         result = validate_task_result(
-            objective="Why are open orders empty?",
+            objective="Why is websocket reconnect failing?",
             task_type="investigation",
             tool_results=[
                 {
@@ -97,10 +97,10 @@ class TestValidationGates:
                 }
             ],
             repo_investigation={
-                "queries": ["open orders"],
-                "findings": {"routes_orders.py": [{"path": "backend/app/api/routes_orders.py"}]},
+                "queries": ["websocket"],
+                "findings": {"routes_ws.py": [{"path": "backend/app/api/routes_ws.py"}]},
             },
-            final_answer="Root cause identified in routes_orders.py",
+            final_answer="Root cause identified in routes_ws.py",
         )
         assert result["passed"] is True
         assert result["final_status"] == "completed"

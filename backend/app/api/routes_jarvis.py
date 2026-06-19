@@ -786,9 +786,16 @@ def jarvis_change_task_detail(task_id: str) -> dict[str, Any]:
 
 @router.get("/api/jarvis/approval-queue", response_model=JarvisApprovalQueueResponse)
 def jarvis_approval_queue(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
     from app.jarvis.execution.change_service import list_approval_queue
 
-    return {"items": list_approval_queue(limit=limit)}
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        return {"items": []}
+    try:
+        return {"items": list_approval_queue(limit=limit)}
+    except Exception as exc:
+        logger.exception("jarvis.approval_queue_failed err=%s", exc)
+        return {"items": []}
 
 
 @router.post("/api/jarvis/tasks/change/{task_id}/approve", response_model=JarvisChangeTaskDetail)

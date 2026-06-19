@@ -25,6 +25,7 @@ class JarvisExecutionPlan(BaseModel):
     total_estimated_cost_usd: float = 0.0
     overall_safety: str = "safe_auto"
     objective_summary: str = ""
+    investigation_type: str = "generic_investigation"
 
 
 class JarvisTaskSubmitRequest(BaseModel):
