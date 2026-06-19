@@ -48,6 +48,18 @@ def build_tool_kwargs(
 
     if tool == "search_repository" and extra.get("topic"):
         kwargs["topic"] = extra["topic"]
+    elif tool == "search_repository" and action == "inspect_exchange_sync_mapping_readonly":
+        kwargs["topic"] = "exchange_sync"
+
+    if tool == "search_logs" and action == "inspect_relevant_logs_readonly":
+        kwargs["keywords"] = kwargs.get("keywords") or (
+            "open orders",
+            "sync",
+            "exchange_sync",
+            "reconcile",
+            "50001",
+            "trigger",
+        )
 
     if tool == "query_database":
         if extra.get("preset"):

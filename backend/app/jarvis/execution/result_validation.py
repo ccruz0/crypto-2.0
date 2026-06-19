@@ -5,6 +5,12 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
+from app.jarvis.investigations.objective_classification import (
+    InvestigationObjectiveType,
+    assess_order_reconciliation_evidence,
+    classify_investigation_objective,
+)
+
 TaskType = Literal["investigation", "numeric", "patch", "remediation", "operational"]
 
 _INVESTIGATION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
@@ -17,6 +23,9 @@ _INVESTIGATION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bexplain\s+why\b",
         r"\bwhat\s+caused\b",
         r"\bwhat\s+is\s+causing\b",
+        r"\brevis(?:ar|a)\b",
+        r"por\s+qu[eé]",
+        r"\binvestig(?:ar|a)\b",
     )
 )
 
@@ -518,6 +527,7 @@ def validate_task_result(
     explanations: list[str] = []
     passed = True
     final_status = "completed"
+    order_assessment: dict[str, Any] | None = None
 
     failed_tools = [
         r for r in (tool_results or [])
@@ -555,6 +565,32 @@ def validate_task_result(
         has_evidence = _is_present(evidence)
         has_useful_artifacts = any(_artifact_has_useful_content(a) for a in (artifacts or []))
         has_conclusion = _is_present(completion_report.get("conclusion")) and has_root
+
+        investigation_type = classify_investigation_objective(objective)
+        if investigation_type == InvestigationObjectiveType.ORDER_RECONCILIATION:
+            order_assessment = assess_order_reconciliation_evidence(tool_results)
+            order_sufficient = order_assessment.get("sufficient", False)
+            only_generic = order_assessment.get("only_generic_tools", False)
+            checks.extend(
+                [
+                    _check("Order exchange evidence present", order_assessment.get("exchange_evidence", False)),
+                    _check("Order dashboard evidence present", order_assessment.get("dashboard_evidence", False)),
+                    _check("Order comparison evidence present", order_assessment.get("comparison_evidence", False)),
+                    _check("Not only generic health/repo tools", not only_generic),
+                ]
+            )
+            if only_generic or not order_sufficient:
+                passed = False
+                if final_status != "failed":
+                    final_status = "insufficient_evidence"
+                missing = order_assessment.get("missing_evidence") or []
+                explanations.append(
+                    "Order reconciliation requires exchange, dashboard, and comparison evidence. "
+                    f"Missing: {', '.join(missing) if missing else 'order-specific tools not executed'}."
+                )
+                has_root = False
+                has_conclusion = False
+
         checks.extend(
             [
                 _check("Root cause present", has_root),
@@ -566,7 +602,8 @@ def validate_task_result(
         if final_status != "failed" and not (has_root and has_evidence and has_conclusion):
             passed = False
             final_status = "insufficient_evidence"
-            explanations.append("Investigation requires root cause, evidence, and conclusion.")
+            if not explanations:
+                explanations.append("Investigation requires root cause, evidence, and conclusion.")
 
     elif resolved_type == "numeric":
         has_numeric = numeric_result is not None
@@ -634,6 +671,8 @@ def validate_task_result(
         "patch_present": bool(patch_diff),
         "remediation_plan": remediation_plan,
         "structured_evidence": extract_structured_evidence(tool_results=tool_results),
+        "investigation_type": classify_investigation_objective(objective).value,
+        "order_evidence": order_assessment,
     }
 
 
@@ -650,5 +689,7 @@ def apply_validation_to_review(existing_review: dict[str, Any] | None, validatio
         "root_cause": validation.get("root_cause"),
         "numeric_result": validation.get("numeric_result"),
         "structured_evidence": validation.get("structured_evidence") or [],
+        "investigation_type": validation.get("investigation_type"),
+        "order_evidence": validation.get("order_evidence"),
     }
     return review

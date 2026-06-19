@@ -300,9 +300,33 @@ def update_change_patch(task_id: str, *, notes: str = "", objective: str | None 
     return _detail(task_id)
 
 
+def _safe_approval_status(value: Any) -> str:
+    valid = {"not_required", "pending", "approved", "rejected"}
+    text = str(value or "pending").strip()
+    return text if text in valid else "pending"
+
+
+def _safe_risk_score(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_review_findings(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
     """List tasks waiting for approval with patch summary metadata."""
-    tasks = list_execution_tasks(limit=limit)
+    try:
+        tasks = list_execution_tasks(limit=limit)
+    except Exception:
+        return []
     queue: list[dict[str, Any]] = []
     for task in tasks:
         if task.get("status") not in (
@@ -332,10 +356,10 @@ def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
                 "status": detail["status"],
                 "patch_summary": patch_summary,
                 "files_affected": files_affected,
-                "risk_score": review.get("risk_score"),
+                "risk_score": _safe_risk_score(review.get("risk_score")),
                 "test_results": _extract_test_summary(detail),
-                "review_findings": review.get("findings", []),
-                "approval_status": detail.get("approval_status"),
+                "review_findings": _safe_review_findings(review.get("findings", [])),
+                "approval_status": _safe_approval_status(detail.get("approval_status")),
                 "created_at": detail.get("created_at"),
                 "workflow_type": WORKFLOW_TYPE,
                 "phase5_available": True,
