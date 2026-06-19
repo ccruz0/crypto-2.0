@@ -4641,7 +4641,7 @@ function resolveDecisionIndexColor(value: number): string {
       <div className="container mx-auto p-4">
         {/* Header */}
         <div className="mb-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Trading Dashboard</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Crypto Trading Dashboard</h1>
           <button
             onClick={() => setShowSignalConfig(true)}
             className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
