@@ -22,6 +22,9 @@ class FixTemplate:
     root_cause_exact: str | None = None
     strategy: str = "template"
     noop_reason: str = ""
+    # Objective-aware domain tag (see app.jarvis.investigations.domains). Optional;
+    # when empty, the domain is derived centrally from the root cause text.
+    domain: str = ""
 
     def to_dict(self, *, include_full: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -36,6 +39,8 @@ class FixTemplate:
             "supported_investigations": list(self.supported_investigations),
             "strategy": self.strategy,
         }
+        if self.domain:
+            payload["domain"] = self.domain
         if include_full:
             payload["root_cause_exact"] = self.root_cause_exact
             payload["noop_reason"] = self.noop_reason
