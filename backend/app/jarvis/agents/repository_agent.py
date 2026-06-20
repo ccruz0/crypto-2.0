@@ -91,6 +91,26 @@ def investigate_objective(objective: str) -> dict[str, Any]:
         queries.extend(["order_history", "trade_history", "exchange_orders"])
     if "count" in objective_l and "order" in objective_l:
         queries.extend(["exchange_orders", "OrderStatusEnum"])
+    if any(
+        term in objective_l
+        for term in (
+            "insufficient_evidence",
+            "insufficient evidence",
+            "result_validation",
+            "root_cause_present",
+            "conclusion_present",
+            "repository agent",
+            "repository_agent",
+            "search_repository",
+            "_detect_topics",
+            "validation pipeline",
+            "safety classifier",
+            "planner_agent",
+            "objective_classification",
+            "jarvis internals",
+        )
+    ):
+        queries.extend(["result_validation", "repository_agent", "search_repository", "planner_agent"])
     if not queries:
         queries.append(objective.split()[0] if objective.split() else "jarvis")
 
