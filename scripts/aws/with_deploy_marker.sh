@@ -15,6 +15,9 @@ cleanup() {
 }
 
 trap cleanup EXIT INT TERM
-echo "deploy started $(date -Is) pid=$$" >"$MARKER"
+# Include a parseable epoch so self-heal can detect a STALE marker (left behind
+# if this process is SIGKILLed and the trap never fires) and stop being blocked
+# by it forever. See scripts/selfheal/run.sh / heal.sh (ATP_DEPLOY_MARKER_TTL_SECS).
+echo "epoch=$(date +%s) pid=$$ started=$(date -Is)" >"$MARKER"
 "$@"
 exit $?

@@ -6,12 +6,33 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VERIFY="${ATP_SELFHEAL_VERIFY:-$REPO_ROOT/scripts/selfheal/verify.sh}"
 HEAL="${ATP_SELFHEAL_HEAL:-$REPO_ROOT/scripts/selfheal/heal.sh}"
 DEPLOY_MARKER="${ATP_DEPLOY_MARKER:-/tmp/atp-deploy-in-progress}"
+DEPLOY_MARKER_TTL="${ATP_DEPLOY_MARKER_TTL_SECS:-1800}"
 COOLDOWN_FILE="${ATP_SELFHEAL_COOLDOWN_FILE:-/tmp/atp-selfheal-last-action}"
 COOLDOWN_SECS="${ATP_SELFHEAL_COOLDOWN_SECS:-900}"
 
+# Returns 0 if a deploy is genuinely in progress (fresh marker), 1 otherwise.
+# A marker older than the TTL is treated as stale (the deploy process likely
+# died without cleaning up) and is removed so self-heal is not blocked forever.
+deploy_marker_active() {
+  [ -f "$DEPLOY_MARKER" ] || return 1
+  local now epoch age
+  now="$(date +%s)"
+  epoch="$(sed -n 's/.*epoch=\([0-9]\{1,\}\).*/\1/p' "$DEPLOY_MARKER" 2>/dev/null | head -1)"
+  if [ -z "$epoch" ]; then
+    epoch="$(stat -c %Y "$DEPLOY_MARKER" 2>/dev/null || echo 0)"
+  fi
+  age=$((now - epoch))
+  if [ "$age" -lt "$DEPLOY_MARKER_TTL" ]; then
+    return 0
+  fi
+  echo "STALE_DEPLOY_MARKER: age=${age}s >= ttl=${DEPLOY_MARKER_TTL}s; removing and proceeding"
+  rm -f "$DEPLOY_MARKER" 2>/dev/null || true
+  return 1
+}
+
 echo "Self-heal run: $(date -Is)"
 
-if [ -f "$DEPLOY_MARKER" ]; then
+if deploy_marker_active; then
   echo "DEPLOY_IN_PROGRESS: skipping self-heal"
   exit 0
 fi
