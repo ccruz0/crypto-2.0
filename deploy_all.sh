@@ -101,13 +101,13 @@ BUILD_ID=$(aws ssm send-command \
     "bash scripts/aws/with_deploy_marker.sh bash -s <<'\''DEPLOY_EOF'\''",
     "mkdir -p docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state && sudo chown -R 10001:10001 docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state || true",
     "bash scripts/aws/render_runtime_env.sh || true",
-    "docker compose --profile aws down || true",
+    "echo \"🛟 SAFE DEPLOY: no '\''compose down'\'' before build; old stack keeps serving until '\''up -d'\'' swaps it.\"",
     "docker compose --profile aws build --no-cache",
-    "docker image prune -f 2>/dev/null || true",
-    "docker compose --profile aws up -d --build",
+    "docker compose --profile aws up -d --remove-orphans",
     "sleep 30",
     "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do if curl -sf --connect-timeout 5 http://localhost:8002/ping_fast >/dev/null 2>&1; then echo \"✅ Backend healthy\"; break; fi; echo \"⏳ Backend not ready ($i/20)\"; sleep 10; done",
-    "sudo systemctl restart nginx || true",
+    "docker image prune -f 2>/dev/null || true",
+    "sudo systemctl reload nginx || sudo systemctl restart nginx || true",
     "sleep 5",
     "docker compose --profile aws ps",
     "echo \"✅ Deployment completed\"",
@@ -138,6 +138,30 @@ aws ssm get-command-invocation \
   --query "StandardOutputContent" --output text 2>/dev/null || echo "(could not get output)"
 
 FINAL=$(aws ssm get-command-invocation --command-id "$BUILD_ID" --instance-id "$INSTANCE_ID" --region "$REGION" --query "Status" --output text 2>/dev/null || echo "Unknown")
+
+# Always-run recovery net: reconcile the stack to "up" regardless of the
+# deploy result (mirrors deploy_session_manager.yml). ensure_stack_up.sh never
+# runs `compose down`; it only brings the stack up if the backend is down.
+echo ""
+echo "🛟 Running independent recovery/reconcile command (ensure_stack_up.sh)..."
+RECOVERY_ID=$(aws ssm send-command \
+  --instance-ids "$INSTANCE_ID" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=[
+    "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+    "bash scripts/aws/ensure_stack_up.sh"
+  ]' \
+  --region "$REGION" \
+  --output text \
+  --query "Command.CommandId" 2>/dev/null || true)
+if [ -n "$RECOVERY_ID" ]; then
+  aws ssm wait command-executed --command-id "$RECOVERY_ID" --instance-id "$INSTANCE_ID" --region "$REGION" 2>/dev/null || true
+  echo "📄 Recovery output:"
+  aws ssm get-command-invocation --command-id "$RECOVERY_ID" --instance-id "$INSTANCE_ID" --region "$REGION" --query "StandardOutputContent" --output text 2>/dev/null | tail -30 || echo "(no recovery output)"
+else
+  echo "⚠️ Could not send recovery command (SSM may be unreachable). No 'compose down' ran, so the previous stack should still be serving."
+fi
+
 echo ""
 if [ "$FINAL" = "Success" ]; then
   echo "🎉 Deploy all finished successfully."

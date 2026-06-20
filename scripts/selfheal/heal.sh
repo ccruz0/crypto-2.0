@@ -7,6 +7,7 @@ REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 LOCK="/var/lock/atp-selfheal.lock"
 BASE="http://127.0.0.1:8002"
 DEPLOY_MARKER="${ATP_DEPLOY_MARKER:-/tmp/atp-deploy-in-progress}"
+DEPLOY_MARKER_TTL="${ATP_DEPLOY_MARKER_TTL_SECS:-1800}"
 COOLDOWN_FILE="${ATP_SELFHEAL_COOLDOWN_FILE:-/tmp/atp-selfheal-last-action}"
 COOLDOWN_SECS="${ATP_SELFHEAL_COOLDOWN_SECS:-900}"
 
@@ -48,10 +49,22 @@ disk_pct() {
 }
 
 check_deploy_marker() {
-  if [ -f "$DEPLOY_MARKER" ]; then
+  [ -f "$DEPLOY_MARKER" ] || return 0
+  local now epoch age
+  now="$(date +%s)"
+  epoch="$(sed -n 's/.*epoch=\([0-9]\{1,\}\).*/\1/p' "$DEPLOY_MARKER" 2>/dev/null | head -1)"
+  if [ -z "$epoch" ]; then
+    epoch="$(stat -c %Y "$DEPLOY_MARKER" 2>/dev/null || echo 0)"
+  fi
+  age=$((now - epoch))
+  if [ "$age" -lt "$DEPLOY_MARKER_TTL" ]; then
     echo "DEPLOY_IN_PROGRESS: skipping self-heal"
     exit 0
   fi
+  # Stale marker: deploy process likely died without cleanup. Remove it so
+  # recovery is not blocked indefinitely.
+  echo "STALE_DEPLOY_MARKER: age=${age}s >= ttl=${DEPLOY_MARKER_TTL}s; removing and proceeding"
+  rm -f "$DEPLOY_MARKER" 2>/dev/null || true
 }
 
 check_cooldown() {

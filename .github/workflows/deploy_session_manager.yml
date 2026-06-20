@@ -151,12 +151,11 @@ jobs:
             "export GIT_SHA=${{ github.sha }}",
             "export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "bash scripts/aws/export_build_fingerprint.sh || { echo \"❌ export_build_fingerprint failed\" && exit 1; }",
-            "docker compose --env-file .deploy-fingerprint.env --profile aws down || true",
+            "echo \"🛟 SAFE DEPLOY: NO 'compose down' before build. The currently-running stack keeps serving while the new images build. If anything interrupts the deploy before 'up -d', the previous containers remain up (Outcome B).\"",
+            "echo \"🐳 Building new images (old stack still serving)...\"",
             "docker compose --env-file .deploy-fingerprint.env --profile aws build --no-cache",
-            "echo \"Cleaning old images and build cache before starting...\"",
-            "docker image prune -f 2>/dev/null || true",
-            "docker builder prune -af --filter until=24h 2>/dev/null || true",
-            "docker compose --env-file .deploy-fingerprint.env --profile aws up -d --build",
+            "echo \"🚀 Rolling update: 'up -d' recreates only changed containers and leaves the rest running...\"",
+            "docker compose --env-file .deploy-fingerprint.env --profile aws up -d --remove-orphans",
             "echo \"🔎 Verifying baked fingerprint in backend-aws image...\"",
             "CID=$(docker compose --env-file .deploy-fingerprint.env --profile aws ps -q backend-aws)",
             "docker exec \"$CID\" cat /app/.git_sha",
@@ -176,8 +175,11 @@ jobs:
             "  echo \"⏳ Backend not ready yet, waiting... ($i/20)\"",
             "  sleep 10",
             "done",
-            "echo \"🔄 Restarting nginx to reconnect to services...\"",
-            "sudo systemctl restart nginx || echo \"⚠️  nginx restart failed, continuing...\"",
+            "echo \"🧹 Post-up cleanup (only AFTER the stack is up, so we never prune an image we still need)...\"",
+            "docker image prune -f 2>/dev/null || true",
+            "docker builder prune -af --filter until=24h 2>/dev/null || true",
+            "echo \"🔄 Reloading nginx to reconnect to services (reload first; restart only if reload fails)...\"",
+            "sudo systemctl reload nginx || sudo systemctl restart nginx || echo \"⚠️  nginx reload/restart failed, continuing...\"",
             "sleep 5",
             "echo \"✅ Verifying deployment...\"",
             "docker compose --env-file .deploy-fingerprint.env --profile aws ps",
@@ -230,7 +232,7 @@ jobs:
               FINAL_STATUS="$STATUS"
               echo "❌ Docker rebuild SSM command ended with status: $STATUS (~${ELAPSED}s elapsed)"
               print_ssm_output
-              exit 1
+              break
               ;;
             InProgress|Pending|Delayed)
               echo "⏳ Docker rebuild SSM command ${STATUS} — poll ${i}/${MAX_POLLS} (~${ELAPSED}s / ${TIMEOUT_SECONDS}s)"
@@ -261,19 +263,79 @@ jobs:
             InProgress|Pending|Delayed)
               echo "❌ SSM deploy command still InProgress after timeout"
               print_ssm_output
-              exit 1
               ;;
             Failed|TimedOut|Cancelled|Cancelling)
               echo "❌ Docker rebuild SSM command ended with status: $FINAL_STATUS"
               print_ssm_output
-              exit 1
               ;;
             *)
               echo "❌ Docker rebuild SSM command ended with unexpected status: $FINAL_STATUS"
               print_ssm_output
-              exit 1
               ;;
           esac
+        fi
+
+        # --------------------------------------------------------------------
+        # ALWAYS-RUN RECOVERY NET (independent SSM command).
+        #
+        # Whatever happened above — success, failure, timeout, cancellation, or
+        # the main SSM worker crashing ("ipc messaging received timeout signal")
+        # — we now send a SEPARATE SSM command that reconciles the stack to
+        # "up" via scripts/aws/ensure_stack_up.sh. That script never runs
+        # `compose down`; it only brings the stack up if the backend is not
+        # responding, and it clears any stale deploy marker.
+        #
+        # This guarantees that an interruption between build and `up -d` cannot
+        # leave production offline: a fresh SSM invocation restores it. If SSM
+        # itself is unreachable this command can't run — but because we no
+        # longer tear the stack down before building, the previous containers
+        # are still serving in that case (Outcome B).
+        # --------------------------------------------------------------------
+        echo "🛟 Running independent recovery/reconcile command (ensure_stack_up.sh)..."
+        RECOVERY_ID=$(aws ssm send-command \
+          --instance-ids $INSTANCE_ID \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "cd /home/ubuntu/crypto-2.0 || cd ~/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+            "bash scripts/aws/ensure_stack_up.sh"
+          ]' \
+          --region ap-southeast-1 \
+          --output text \
+          --query "Command.CommandId" 2>/dev/null || true)
+
+        RECOVERY_OK="unknown"
+        if [ -n "$RECOVERY_ID" ]; then
+          echo "🛟 Recovery command id: $RECOVERY_ID"
+          aws ssm wait command-executed \
+            --command-id "$RECOVERY_ID" \
+            --instance-id $INSTANCE_ID \
+            --region ap-southeast-1 2>/dev/null || true
+          echo "📄 Recovery output:"
+          aws ssm get-command-invocation \
+            --command-id "$RECOVERY_ID" \
+            --instance-id $INSTANCE_ID \
+            --region ap-southeast-1 \
+            --query "StandardOutputContent" --output text 2>/dev/null || echo "(could not retrieve recovery stdout)"
+          RECOVERY_OK=$(aws ssm get-command-invocation \
+            --command-id "$RECOVERY_ID" \
+            --instance-id $INSTANCE_ID \
+            --region ap-southeast-1 \
+            --query "Status" --output text 2>/dev/null || echo "Unknown")
+          echo "🛟 Recovery status: $RECOVERY_OK"
+        else
+          echo "⚠️ Could not send recovery command (SSM may be unreachable). Because no 'compose down' runs before build, the previous stack should still be serving."
+        fi
+
+        if [ "$FINAL_STATUS" != "Success" ]; then
+          echo "❌ Deploy did not complete successfully (status=$FINAL_STATUS)."
+          echo "   Recovery/reconcile status: $RECOVERY_OK"
+          echo "   Service state: see recovery output above (ensure_stack_up reports HEALTHY/UNHEALTHY)."
+          echo "   Recommended recovery command (run on PROD):"
+          echo "     cd /home/ubuntu/crypto-2.0 && bash scripts/aws/ensure_stack_up.sh"
+          if [ "$RECOVERY_OK" = "Success" ]; then
+            echo "ℹ️ The deploy failed, but the recovery command reports the stack is UP (previous or recovered). Failing the workflow so the deploy is investigated, but production should be serving."
+          fi
+          exit 1
         fi
 
         echo "📄 Deployment output:"
