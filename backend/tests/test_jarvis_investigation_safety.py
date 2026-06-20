@@ -93,10 +93,42 @@ def test_investigation_planner_produces_evidence_steps(objective: str):
         "execute trade order immediately",
         "place order on exchange now",
         "delete s3 bucket resources",
+        "deploy to production",
+        "delete production data",
+        "merge to main",
+        "modify secrets in production",
     ],
 )
 def test_destructive_objectives_remain_forbidden(objective: str):
     assert classify_text(objective) == SafetyLevel.FORBIDDEN
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "Investigate Jarvis validation framework. Do not deploy.",
+        "Inspect recent tasks. Do not create patches. Do not deploy.",
+        "Investigate result_validation.py logic. Do not merge. Report only.",
+        "Audit planner_agent.py code paths. Do not modify secrets.",
+    ],
+)
+def test_negated_safety_constraints_are_safe_auto(objective: str):
+    reason = classify_text_with_reason(objective)
+    assert reason["level"] == SafetyLevel.SAFE_AUTO.value, reason
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "Deploy to production. Do not deploy backups.",
+        "Investigate outage. Do not deploy. Merge to main.",
+        "Inspect logs. Do not deploy. Delete production data.",
+    ],
+)
+def test_mixed_objective_affirmative_dangerous_action_is_forbidden(objective: str):
+    reason = classify_text_with_reason(objective)
+    assert reason["level"] == SafetyLevel.FORBIDDEN.value, reason
+    assert has_destructive_intent(objective) or reason["category"] == "forbidden_pattern"
 
 
 def test_trade_orders_investigation_not_blocked_by_old_trade_pattern():

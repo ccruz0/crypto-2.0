@@ -39,6 +39,26 @@ _READ_ONLY_INVESTIGATION_GUARDS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+# Explicit safety constraints — negated dangerous actions must not trigger FORBIDDEN.
+_READ_ONLY_SAFETY_GUARDS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bdo\s+not\s+(deploy|modify|delete|merge|create|push|write|patch|terminate)\b",
+        r"\bdon'?t\s+(deploy|modify|delete|merge|create|push|write|patch|terminate)\b",
+        r"\bnever\s+(deploy|modify|delete|merge|create|push|write|patch|terminate)\b",
+        r"\bwithout\s+(deploying|modifying|deleting|merging|creating|pushing|writing)\b",
+        r"\bno\s+(deploy(?:ment)?|merges?|patches?|prs?|pull\s+requests?)\b",
+        r"\breport\s+only\b",
+        r"\bdo\s+not\s+create\s+(?:any\s+)?(?:prs?|pull\s+requests?|patches?)\b",
+    )
+)
+
+# Negation immediately before a matched dangerous token (lookback within prefix window).
+_NEGATION_BEFORE_ACTION_RE = re.compile(
+    r"(?:\bdo\s+not\b|\bdon'?t\b|\bnever\b|\bwithout\b|\bnot\b|\bno\b)(?:\s+\w+){0,4}\s*$",
+    re.IGNORECASE,
+)
+
 # Trading/write/destructive intent — forbidden even when mixed with investigation wording.
 _DESTRUCTIVE_INVESTIGATION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
@@ -66,6 +86,7 @@ _FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bdeploy\b",
         r"\bdelete\b",
         r"\bterminate\b",
+        r"\bmerge\b",
         r"\bmodify\b.*\bsecret",
         r"\bchange\b.*\bsecret",
         r"\bwrite\b.*\b(file|secret|env|database)\b",
@@ -132,19 +153,49 @@ def has_read_only_investigation_guard(text: str) -> bool:
     return any(pattern.search(normalized) for pattern in _READ_ONLY_INVESTIGATION_GUARDS)
 
 
+def has_read_only_safety_guard(text: str) -> bool:
+    """True when objective explicitly forbids deploy/write/merge-style actions."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _READ_ONLY_SAFETY_GUARDS)
+
+
 def has_destructive_intent(text: str) -> bool:
     """True when objective contains trading, write, or destructive actions."""
     normalized = (text or "").strip()
     if not normalized:
         return False
-    destructive = _matching_patterns(normalized, _DESTRUCTIVE_INVESTIGATION_PATTERNS)
+    destructive = _matching_patterns(normalized, _DESTRUCTIVE_INVESTIGATION_PATTERNS, skip_negated=True)
     if destructive:
         return True
-    return bool(_matching_patterns(normalized, _FORBIDDEN_PATTERNS))
+    return bool(_matching_patterns(normalized, _FORBIDDEN_PATTERNS, skip_negated=True))
 
 
-def _matching_patterns(text: str, patterns: tuple[re.Pattern[str], ...]) -> list[str]:
-    return [pattern.pattern for pattern in patterns if pattern.search(text)]
+def _is_negated_match(text: str, match: re.Match[str]) -> bool:
+    """True when a dangerous-token match is preceded by negation in the same clause."""
+    prefix = text[: match.start()]
+    window = prefix[-96:] if len(prefix) > 96 else prefix
+    return bool(_NEGATION_BEFORE_ACTION_RE.search(window))
+
+
+def _matching_patterns(
+    text: str,
+    patterns: tuple[re.Pattern[str], ...],
+    *,
+    skip_negated: bool = False,
+) -> list[str]:
+    matched: list[str] = []
+    for pattern in patterns:
+        if not skip_negated:
+            if pattern.search(text):
+                matched.append(pattern.pattern)
+            continue
+        for occurrence in pattern.finditer(text):
+            if not _is_negated_match(text, occurrence):
+                matched.append(pattern.pattern)
+                break
+    return matched
 
 
 def classify_text_with_reason(text: str) -> dict[str, Any]:
@@ -160,7 +211,8 @@ def classify_text_with_reason(text: str) -> dict[str, Any]:
             "category": "read_only_investigation",
         }
 
-    destructive = _matching_patterns(normalized, _DESTRUCTIVE_INVESTIGATION_PATTERNS)
+    # Affirmative dangerous actions must win over negated safety constraints in mixed objectives.
+    destructive = _matching_patterns(normalized, _DESTRUCTIVE_INVESTIGATION_PATTERNS, skip_negated=True)
     if destructive:
         category = "destructive_investigation" if is_investigation_intent(normalized) else "forbidden_pattern"
         return {
@@ -169,9 +221,16 @@ def classify_text_with_reason(text: str) -> dict[str, Any]:
             "category": category,
         }
 
-    forbidden = _matching_patterns(normalized, _FORBIDDEN_PATTERNS)
+    forbidden = _matching_patterns(normalized, _FORBIDDEN_PATTERNS, skip_negated=True)
     if forbidden:
         return {"level": SafetyLevel.FORBIDDEN.value, "rule": forbidden[0], "category": "forbidden_pattern"}
+
+    if has_read_only_safety_guard(normalized):
+        return {
+            "level": SafetyLevel.SAFE_AUTO.value,
+            "rule": "read_only_safety_guard",
+            "category": "read_only_investigation",
+        }
 
     if is_investigation_intent(normalized):
         return {
@@ -180,7 +239,7 @@ def classify_text_with_reason(text: str) -> dict[str, Any]:
             "category": "read_only_investigation",
         }
 
-    needs_approval = _matching_patterns(normalized, _NEEDS_APPROVAL_PATTERNS)
+    needs_approval = _matching_patterns(normalized, _NEEDS_APPROVAL_PATTERNS, skip_negated=True)
     if needs_approval:
         return {
             "level": SafetyLevel.NEEDS_APPROVAL.value,

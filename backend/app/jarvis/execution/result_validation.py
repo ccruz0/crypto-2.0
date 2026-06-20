@@ -91,6 +91,68 @@ _GENERIC_ROOT_CAUSE_PHRASES = frozenset(
     }
 )
 
+_NON_FAULT_INVESTIGATION_TYPES = frozenset(
+    {
+        InvestigationObjectiveType.DEPLOYMENT_HEALTH,
+        InvestigationObjectiveType.REPOSITORY_ANALYSIS,
+    }
+)
+
+# Non-fault monitoring/audit objectives — must be explicit; bare "regression"/"audit" alone do not qualify.
+_NON_FAULT_MONITORING_OBJECTIVE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bsoak\b",
+        r"\bhealth[\s-]check\b",
+        r"\bmonitor(?:ing)?\b.*\b(?:task|run|period|status|health|soak|regression)\b",
+        r"\b(?:soak|regression)\s+(?:test|check|monitor(?:ing)?)\b",
+        r"\bmonitor(?:ing)?\s+(?:for\s+)?regression\b",
+        r"\bcontinue\s+monitoring\b",
+        r"\bframework[\s-]audit\b",
+        r"\b(?:code|framework|jarvis)\s+audit\b",
+        r"\baudit\b.*\b(?:code|framework|planner|validation|jarvis|paths?|modules?)\b",
+        r"\bcode[\s-]analysis\b",
+        r"\bmeta[\s-]investigation\b",
+        r"\bjarvis\b.*\b(?:internals?|validation|framework)\b",
+        r"\bresult_validation\.py\b",
+        r"\broot_cause_present\b",
+        r"\bconclusion_present\b",
+    )
+)
+
+# Incident/problem wording always requires a fault root cause, even when monitoring terms appear.
+_INCIDENT_REQUIRES_ROOT_CAUSE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bwhy\b",
+        r"\bfail(?:ed|ure|ing|s)?\b",
+        r"\boutage\b",
+        r"\bcritical\b.*\balert\b",
+        r"\balert\b.*\b(?:fail|error|regression|critical)\b",
+        r"\bproblem\b",
+        r"\bissue\b",
+        r"\berror\b",
+        r"\bbroken\b",
+        r"\bdid\s+not\b",
+        r"\bduring\s+audit\b",
+        r"\bafter\s+regression\b",
+        r"\bregression\b.*\b(?:fail|alert|critical|issue|problem|outage)\b",
+        r"\binvestigate\b.*\b(?:critical|alert)\b.*\bregression\b",
+    )
+)
+
+_HEALTHY_CONCLUSION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bno\s+issue(?:s)?\s+detected\b",
+        r"\bno\s+regression\b",
+        r"\bsystem\s+healthy\b",
+        r"\bcontinue\s+(?:monitoring|soak)\b",
+        r"\bwithin\s+expected\b",
+        r"\bno\s+anomal",
+    )
+)
+
 _NUMERIC_VALUE_RE = re.compile(
     r"(?:\bcount\b|\btotal\b|\bresult\b|\banswer\b)\s*[:=]?\s*(\d+)\b|\b(\d+)\s+(?:open\s+)?(?:orders|positions|users)\b",
     re.IGNORECASE,
@@ -130,6 +192,43 @@ def _is_meaningful_root_cause(value: Any) -> bool:
         return False
     # Require substantive causal explanation (not a bare status label).
     if len(text) < 12:
+        return False
+    return True
+
+
+def _is_healthy_negative_conclusion(value: Any) -> bool:
+    if not _is_present(value):
+        return False
+    text = str(value).strip()
+    return any(pattern.search(text) for pattern in _HEALTHY_CONCLUSION_PATTERNS)
+
+
+def _is_meaningful_conclusion(value: Any) -> bool:
+    if _is_healthy_negative_conclusion(value):
+        return True
+    if _is_meaningful_root_cause(value):
+        return True
+    if not _is_present(value):
+        return False
+    text = str(value).strip().lower()
+    if text in _GENERIC_ROOT_CAUSE_PHRASES:
+        return False
+    return len(text) >= 12
+
+
+def investigation_requires_fault_root_cause(
+    objective: str,
+    investigation_type: InvestigationObjectiveType,
+) -> bool:
+    """True for incident-style investigations that must identify a fault root cause."""
+    if investigation_type in _NON_FAULT_INVESTIGATION_TYPES:
+        return False
+    text = (objective or "").strip()
+    if not text:
+        return True
+    if any(pattern.search(text) for pattern in _INCIDENT_REQUIRES_ROOT_CAUSE_PATTERNS):
+        return True
+    if any(pattern.search(text) for pattern in _NON_FAULT_MONITORING_OBJECTIVE_PATTERNS):
         return False
     return True
 
@@ -564,9 +663,13 @@ def validate_task_result(
         has_root = _is_meaningful_root_cause(root_cause)
         has_evidence = _is_present(evidence)
         has_useful_artifacts = any(_artifact_has_useful_content(a) for a in (artifacts or []))
-        has_conclusion = _is_present(completion_report.get("conclusion")) and has_root
-
         investigation_type = classify_investigation_objective(objective)
+        requires_fault_root = investigation_requires_fault_root_cause(objective, investigation_type)
+        if requires_fault_root:
+            has_conclusion = _is_present(completion_report.get("conclusion")) and has_root
+        else:
+            has_conclusion = _is_meaningful_conclusion(completion_report.get("conclusion"))
+
         if investigation_type == InvestigationObjectiveType.ORDER_RECONCILIATION:
             order_assessment = assess_order_reconciliation_evidence(tool_results)
             order_sufficient = order_assessment.get("sufficient", False)
@@ -593,17 +696,25 @@ def validate_task_result(
 
         checks.extend(
             [
-                _check("Root cause present", has_root),
+                _check("Root cause present", has_root if requires_fault_root else True),
                 _check("Evidence present", has_evidence),
                 _check("Useful artifacts present", has_useful_artifacts or has_evidence),
                 _check("Conclusion present", has_conclusion),
             ]
         )
-        if final_status != "failed" and not (has_root and has_evidence and has_conclusion):
-            passed = False
-            final_status = "insufficient_evidence"
-            if not explanations:
-                explanations.append("Investigation requires root cause, evidence, and conclusion.")
+        if final_status != "failed":
+            if requires_fault_root:
+                investigation_passed = has_root and has_evidence and has_conclusion
+            else:
+                investigation_passed = has_evidence and has_conclusion
+            if not investigation_passed:
+                passed = False
+                final_status = "insufficient_evidence"
+                if not explanations:
+                    if requires_fault_root:
+                        explanations.append("Investigation requires root cause, evidence, and conclusion.")
+                    else:
+                        explanations.append("Investigation requires evidence and conclusion.")
 
     elif resolved_type == "numeric":
         has_numeric = numeric_result is not None

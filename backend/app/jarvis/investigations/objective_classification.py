@@ -67,8 +67,26 @@ _EXCHANGE_AUTH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_FRAMEWORK_AUDIT_PATTERN = re.compile(
+    r"\bjarvis\b.*\b(?:internals?|validation|framework|classifier|planner|safety|execution)\b|"
+    r"\b(?:validation|result)\s+framework\b|"
+    r"\bsafety\s+classifier\b|"
+    r"\bresult_validation\.py\b|"
+    r"\bplanner_agent\.py\b|"
+    r"\broot_cause_present\b|"
+    r"\bconclusion_present\b|"
+    r"\bcode\s+path(?:s)?\b|"
+    r"\b(?:files?|functions?)\b.*\b(?:jarvis|validation|planner|safety|classifier)\b|"
+    r"\b(?:jarvis|validation|planner|safety|classifier)\b.*\b(?:files?|functions?|modules?)\b|"
+    r"\bframework[\s-]audit\b|"
+    r"\bcode[\s-]analysis\b|"
+    r"\bmeta[\s-]investigation\b",
+    re.IGNORECASE,
+)
+
 _SIGNAL_MONITOR_PATTERN = re.compile(
-    r"\bsignal(?:s)?\b|\bmonitor(?:ing)?\b|trading\s+signal|alert\s+signal",
+    r"\b(?:trading\s+)?signal(?:s)?\b|\bmonitor(?:ing)?\b.*\b(?:signal|alert|trading)\b|"
+    r"\balert\s+signal\b",
     re.IGNORECASE,
 )
 
@@ -194,6 +212,8 @@ def classify_investigation_objective(objective: str) -> InvestigationObjectiveTy
         return InvestigationObjectiveType.ALERT_INVESTIGATION
     if _EXCHANGE_AUTH_PATTERN.search(text):
         return InvestigationObjectiveType.EXCHANGE_AUTH_INVESTIGATION
+    if _FRAMEWORK_AUDIT_PATTERN.search(text) or _FRAMEWORK_AUDIT_PATTERN.search(raw):
+        return InvestigationObjectiveType.REPOSITORY_ANALYSIS
     if _SIGNAL_MONITOR_PATTERN.search(text):
         return InvestigationObjectiveType.SIGNAL_MONITOR_INVESTIGATION
     if _DEPLOYMENT_HEALTH_PATTERN.search(text):
