@@ -151,6 +151,8 @@ jobs:
             "export GIT_SHA=${{ github.sha }}",
             "export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "bash scripts/aws/export_build_fingerprint.sh || { echo \"❌ export_build_fingerprint failed\" && exit 1; }",
+            "echo \"🧮 Pre-build disk guard: reclaim space BEFORE the build (volume-safe; never touches DB/metrics volumes or running-stack images)...\"",
+            "MIN_FREE_GB=${MIN_FREE_GB:-6} bash scripts/aws/predeploy_disk_guard.sh || echo \"⚠️ disk guard reported insufficient space; attempting build anyway (previous stack keeps serving if build fails)\"",
             "echo \"🛟 SAFE DEPLOY: no compose-down before build. The currently-running stack keeps serving while the new images build. If anything interrupts the deploy before up, the previous containers remain up (Outcome B).\"",
             "echo \"🐳 Building new images (old stack still serving)...\"",
             "docker compose --env-file .deploy-fingerprint.env --profile aws build --no-cache",

@@ -117,6 +117,15 @@ bash scripts/verify_clean_worktree.sh --frontend-only || {
   exit 1
 }
 
+# Step 5f: Pre-build disk guard — reclaim space BEFORE building (volume-safe).
+# Prevents "no space left on device" during the build. Never touches named
+# volumes (DB/metrics) or images in use by the running stack.
+echo "🧮 Pre-build disk guard..."
+if [ -x "scripts/aws/predeploy_disk_guard.sh" ]; then
+  MIN_FREE_GB="${MIN_FREE_GB:-6}" bash scripts/aws/predeploy_disk_guard.sh || \
+    echo -e "${YELLOW}⚠️  disk guard reported insufficient space; attempting build anyway${NC}"
+fi
+
 # Step 6: Pull Docker images (if applicable)
 echo "🐳 Pulling Docker images..."
 docker compose --profile aws pull || {
