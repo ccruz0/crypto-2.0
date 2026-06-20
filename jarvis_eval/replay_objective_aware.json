@@ -1,0 +1,1598 @@
+[
+  {
+    "investigation_id": "f79b9ffc-c553-4e58-a41b-3ee63a5bd30c",
+    "objective": "Why was dashboard showing zero orders while exchange had one?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "stored": {
+      "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+      "confidence": 90.0,
+      "status": "completed"
+    },
+    "objective_domain": "order_reconciliation",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+      "cause_domain": "open_orders",
+      "confidence": 90.0,
+      "legacy_confidence": 90.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Stale dashboard cache not refreshed by exchange sync",
+      "cause_domain": "order_reconciliation",
+      "confidence": 60.0,
+      "legacy_confidence": 100.0,
+      "caps_applied": [
+        "generic_recommendation_cap_60"
+      ],
+      "status": "completed",
+      "recommended_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'Stale dashboard cache not refreshed by exchange sync'.",
+      "domain": "order_reconciliation",
+      "confidence_breakdown": {
+        "evidence_strength": 0.6,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.1,
+        "raw": 70.5,
+        "final": 60.0,
+        "caps_applied": [
+          "generic_recommendation_cap_60"
+        ],
+        "legacy_confidence": 100.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'Stale dashboard cache not refreshed by exchange sync'.",
+        "affected_files": [],
+        "commands": [],
+        "validation_steps": [],
+        "risks": [
+          {
+            "description": "No actionable fix could be derived from current evidence.",
+            "severity": "low",
+            "mitigation": "Gather domain evidence (database, logs, exchange, repository) and re-run."
+          }
+        ],
+        "rollback": "",
+        "specificity": 0.1
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "e080e0d0-e746-4fcd-8f2d-22f54733f223",
+    "objective": "Why are my open orders different from Crypto.com?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "stored": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "confidence": 96.0,
+      "status": "completed"
+    },
+    "objective_domain": "order_reconciliation",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 96.0,
+      "legacy_confidence": 96.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 60.0,
+      "legacy_confidence": 96.0,
+      "caps_applied": [
+        "generic_recommendation_cap_60"
+      ],
+      "status": "completed",
+      "recommended_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'No active dashboard/exchange mismatch detected'.",
+      "domain": "order_reconciliation",
+      "confidence_breakdown": {
+        "evidence_strength": 0.6,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.1,
+        "raw": 70.5,
+        "final": 60.0,
+        "caps_applied": [
+          "generic_recommendation_cap_60"
+        ],
+        "legacy_confidence": 96.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'No active dashboard/exchange mismatch detected'.",
+        "affected_files": [],
+        "commands": [],
+        "validation_steps": [],
+        "risks": [
+          {
+            "description": "No actionable fix could be derived from current evidence.",
+            "severity": "low",
+            "mitigation": "Gather domain evidence (database, logs, exchange, repository) and re-run."
+          }
+        ],
+        "rollback": "",
+        "specificity": 0.1
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "confidence_below_threshold",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "ec30b60b-aeaa-492b-a67b-f23c9fccf235",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "stored": {
+      "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+      "confidence": 90.0,
+      "status": "completed"
+    },
+    "objective_domain": "exchange_auth",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 48.0,
+      "legacy_confidence": 48.0,
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    },
+    "on": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 40.0,
+      "legacy_confidence": 48.0,
+      "caps_applied": [
+        "credential_contradiction_cap_40"
+      ],
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "domain": "exchange_auth",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 92.5,
+        "final": 40.0,
+        "caps_applied": [
+          "credential_contradiction_cap_40"
+        ],
+        "legacy_confidence": 48.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+        "affected_files": [
+          "app/api/routes_portfolio.py (candidate)",
+          "app/services/portfolio_snapshot.py (candidate)",
+          "app/services/portfolio_cache.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect app/api/routes_portfolio.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/api/routes_portfolio.py"
+          },
+          {
+            "description": "Inspect app/services/portfolio_snapshot.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/services/portfolio_snapshot.py"
+          },
+          {
+            "description": "Inspect app/services/portfolio_cache.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/services/portfolio_cache.py"
+          }
+        ],
+        "validation_steps": [
+          "Confirm credential_diagnostics shows expected used_pair.",
+          "Verify reconcile reports missing_credentials or 40101 in logs.",
+          "Re-test private API after credential cleanup."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    }
+  },
+  {
+    "investigation_id": "d3fa6e63-9b96-4822-8181-3ff1be2bd85a",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "stored": {
+      "root_cause": "Trigger order API failure blocks cache updates",
+      "confidence": 100.0,
+      "status": "completed"
+    },
+    "objective_domain": "exchange_auth",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 48.0,
+      "legacy_confidence": 48.0,
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    },
+    "on": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 40.0,
+      "legacy_confidence": 48.0,
+      "caps_applied": [
+        "credential_contradiction_cap_40"
+      ],
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "domain": "exchange_auth",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 92.5,
+        "final": 40.0,
+        "caps_applied": [
+          "credential_contradiction_cap_40"
+        ],
+        "legacy_confidence": 48.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+        "affected_files": [
+          "app/api/routes_portfolio.py (candidate)",
+          "app/services/portfolio_snapshot.py (candidate)",
+          "app/services/portfolio_cache.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect app/api/routes_portfolio.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/api/routes_portfolio.py"
+          },
+          {
+            "description": "Inspect app/services/portfolio_snapshot.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/services/portfolio_snapshot.py"
+          },
+          {
+            "description": "Inspect app/services/portfolio_cache.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/services/portfolio_cache.py"
+          }
+        ],
+        "validation_steps": [
+          "Confirm credential_diagnostics shows expected used_pair.",
+          "Verify reconcile reports missing_credentials or 40101 in logs.",
+          "Re-test private API after credential cleanup."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    }
+  },
+  {
+    "investigation_id": "a6cf648c-e91a-463a-91d9-5ed492828cff",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "stored": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "confidence": 48.0,
+      "status": "completed"
+    },
+    "objective_domain": "exchange_auth",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 48.0,
+      "legacy_confidence": 48.0,
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    },
+    "on": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 40.0,
+      "legacy_confidence": 48.0,
+      "caps_applied": [
+        "credential_contradiction_cap_40"
+      ],
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "domain": "exchange_auth",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 92.5,
+        "final": 40.0,
+        "caps_applied": [
+          "credential_contradiction_cap_40"
+        ],
+        "legacy_confidence": 48.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+        "affected_files": [
+          "tests/test_crypto_credential_resolver.py (candidate)",
+          "tests/test_portfolio_snapshot_env.py (candidate)",
+          "docs/architecture/PORTFOLIO_RECONSTRUCTION.md (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect tests/test_crypto_credential_resolver.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' tests/test_crypto_credential_resolver.py"
+          },
+          {
+            "description": "Inspect tests/test_portfolio_snapshot_env.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' tests/test_portfolio_snapshot_env.py"
+          },
+          {
+            "description": "Inspect docs/architecture/PORTFOLIO_RECONSTRUCTION.md for 'Crypto'",
+            "command": "grep -n -i 'Crypto' docs/architecture/PORTFOLIO_RECONSTRUCTION.md"
+          }
+        ],
+        "validation_steps": [
+          "Confirm credential_diagnostics shows expected used_pair.",
+          "Verify reconcile reports missing_credentials or 40101 in logs.",
+          "Re-test private API after credential cleanup."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    }
+  },
+  {
+    "investigation_id": "7652e662-957b-4200-98a2-91bcdc52e9dd",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "stored": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "confidence": 48.0,
+      "status": "completed"
+    },
+    "objective_domain": "exchange_auth",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 48.0,
+      "legacy_confidence": 48.0,
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    },
+    "on": {
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "cause_domain": "exchange_auth",
+      "confidence": 40.0,
+      "legacy_confidence": 48.0,
+      "caps_applied": [
+        "credential_contradiction_cap_40"
+      ],
+      "status": "completed",
+      "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "domain": "exchange_auth",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 92.5,
+        "final": 40.0,
+        "caps_applied": [
+          "credential_contradiction_cap_40"
+        ],
+        "legacy_confidence": 48.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+        "affected_files": [
+          "app/api/routes_portfolio.py (candidate)",
+          "app/services/portfolio_snapshot.py (candidate)",
+          "app/services/portfolio_cache.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect app/api/routes_portfolio.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/api/routes_portfolio.py"
+          },
+          {
+            "description": "Inspect app/services/portfolio_snapshot.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/services/portfolio_snapshot.py"
+          },
+          {
+            "description": "Inspect app/services/portfolio_cache.py for 'Crypto'",
+            "command": "grep -n -i 'Crypto' app/services/portfolio_cache.py"
+          }
+        ],
+        "validation_steps": [
+          "Confirm credential_diagnostics shows expected used_pair.",
+          "Verify reconcile reports missing_credentials or 40101 in logs.",
+          "Re-test private API after credential cleanup."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": false
+    }
+  },
+  {
+    "investigation_id": "4fcd9e28-22b1-43f2-886a-cf21466bc2bb",
+    "objective": "Investigate why open orders show 0 in the dashboard",
+    "category": "dashboard",
+    "template_id": "open_orders_zero_dashboard",
+    "stored": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "confidence": 96.0,
+      "status": "completed"
+    },
+    "objective_domain": "open_orders",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 96.0,
+      "legacy_confidence": 96.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Stale dashboard cache not refreshed by exchange sync",
+      "cause_domain": "order_reconciliation",
+      "confidence": 50.0,
+      "legacy_confidence": 60.0,
+      "caps_applied": [
+        "domain_mismatch_cap_50"
+      ],
+      "status": "completed",
+      "recommended_fix": "Trigger portfolio/open-orders cache refresh via approved sync process.",
+      "domain": "open_orders",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 0.4,
+        "domain_match": 0.6,
+        "specificity": 0.5,
+        "raw": 70.5,
+        "final": 50.0,
+        "caps_applied": [
+          "domain_mismatch_cap_50"
+        ],
+        "legacy_confidence": 60.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Trigger portfolio/open-orders cache refresh via approved sync process.",
+        "affected_files": [
+          "tests/test_jarvis_diagnostic_tools.py (candidate)",
+          "app/jarvis/execution_tools/diagnose_open_orders.py (candidate)",
+          "app/jarvis/execution_tools/search_repository.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect tests/test_jarvis_diagnostic_tools.py for 'Stale'",
+            "command": "grep -n -i 'Stale' tests/test_jarvis_diagnostic_tools.py"
+          },
+          {
+            "description": "Inspect app/jarvis/execution_tools/diagnose_open_orders.py for 'Stale'",
+            "command": "grep -n -i 'Stale' app/jarvis/execution_tools/diagnose_open_orders.py"
+          },
+          {
+            "description": "Inspect app/jarvis/execution_tools/search_repository.py for 'Stale'",
+            "command": "grep -n -i 'Stale' app/jarvis/execution_tools/search_repository.py"
+          }
+        ],
+        "validation_steps": [
+          "Check cache last_updated timestamp vs current time.",
+          "Review exchange_sync scheduler logs."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "2616ea25-b02f-40d1-a8b6-91667e9323c9",
+    "objective": "Why are BTC orders missing from the dashboard but visible in Crypto.com?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "stored": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "confidence": 96.0,
+      "status": "completed"
+    },
+    "objective_domain": "order_reconciliation",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 96.0,
+      "legacy_confidence": 96.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Stale dashboard cache not refreshed by exchange sync",
+      "cause_domain": "order_reconciliation",
+      "confidence": 92.5,
+      "legacy_confidence": 100.0,
+      "caps_applied": [],
+      "status": "completed",
+      "recommended_fix": "Trigger portfolio/open-orders cache refresh via approved sync process.",
+      "domain": "order_reconciliation",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 92.5,
+        "final": 92.5,
+        "caps_applied": [],
+        "legacy_confidence": 100.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Trigger portfolio/open-orders cache refresh via approved sync process.",
+        "affected_files": [
+          "tests/test_jarvis_diagnostic_tools.py (candidate)",
+          "app/jarvis/execution_tools/diagnose_open_orders.py (candidate)",
+          "app/jarvis/execution_tools/search_repository.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect tests/test_jarvis_diagnostic_tools.py for 'Stale'",
+            "command": "grep -n -i 'Stale' tests/test_jarvis_diagnostic_tools.py"
+          },
+          {
+            "description": "Inspect app/jarvis/execution_tools/diagnose_open_orders.py for 'Stale'",
+            "command": "grep -n -i 'Stale' app/jarvis/execution_tools/diagnose_open_orders.py"
+          },
+          {
+            "description": "Inspect app/jarvis/execution_tools/search_repository.py for 'Stale'",
+            "command": "grep -n -i 'Stale' app/jarvis/execution_tools/search_repository.py"
+          }
+        ],
+        "validation_steps": [
+          "Check cache last_updated timestamp vs current time.",
+          "Review exchange_sync scheduler logs."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "a5439a76-d6ce-4b2f-900a-f649ed1c45e1",
+    "objective": "Why are executed orders missing? investigate btc orders",
+    "category": "orders",
+    "template_id": "executed_orders_missing",
+    "stored": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "confidence": 100.0,
+      "status": "completed"
+    },
+    "objective_domain": "order_reconciliation",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "cause_domain": "order_reconciliation",
+      "confidence": 100.0,
+      "legacy_confidence": 100.0,
+      "status": "completed",
+      "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "cause_domain": "order_reconciliation",
+      "confidence": 92.5,
+      "legacy_confidence": 100.0,
+      "caps_applied": [],
+      "status": "completed",
+      "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "domain": "order_reconciliation",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 92.5,
+        "final": 92.5,
+        "caps_applied": [],
+        "legacy_confidence": 100.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+        "affected_files": [
+          "import_orders.py (candidate)",
+          "perf_investigation_log.md (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect import_orders.py for 'FILLED'",
+            "command": "grep -n -i 'FILLED' import_orders.py"
+          },
+          {
+            "description": "Inspect perf_investigation_log.md for 'FILLED'",
+            "command": "grep -n -i 'FILLED' perf_investigation_log.md"
+          }
+        ],
+        "validation_steps": [
+          "Run count_orders_by_status preset and confirm FILLED count.",
+          "Inspect recent_trade_events rows for expected BTC order IDs.",
+          "Check routes_orders trade-history handler and frontend trade tab filters."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "c7eae0f4-2522-41a3-b52a-7d8e0b356892",
+    "objective": "Why are open orders empty?",
+    "category": "orders",
+    "template_id": "open_orders_empty",
+    "stored": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "confidence": 96.0,
+      "status": "completed"
+    },
+    "objective_domain": "open_orders",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 96.0,
+      "legacy_confidence": 96.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 50.0,
+      "legacy_confidence": 57.6,
+      "caps_applied": [
+        "domain_mismatch_cap_50"
+      ],
+      "status": "completed",
+      "recommended_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'No active dashboard/exchange mismatch detected'.",
+      "domain": "open_orders",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 0.4,
+        "domain_match": 0.6,
+        "specificity": 0.1,
+        "raw": 64.5,
+        "final": 50.0,
+        "caps_applied": [
+          "domain_mismatch_cap_50"
+        ],
+        "legacy_confidence": 57.6
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'No active dashboard/exchange mismatch detected'.",
+        "affected_files": [],
+        "commands": [],
+        "validation_steps": [],
+        "risks": [
+          {
+            "description": "No actionable fix could be derived from current evidence.",
+            "severity": "low",
+            "mitigation": "Gather domain evidence (database, logs, exchange, repository) and re-run."
+          }
+        ],
+        "rollback": "",
+        "specificity": 0.1
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "confidence_below_threshold",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "5cb222df-8007-4a0f-91df-b91dee0bac16",
+    "objective": "Why are open orders empty?",
+    "category": "orders",
+    "template_id": "open_orders_empty",
+    "stored": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "confidence": 96.0,
+      "status": "completed"
+    },
+    "objective_domain": "open_orders",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 96.0,
+      "legacy_confidence": 96.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 50.0,
+      "legacy_confidence": 57.6,
+      "caps_applied": [
+        "domain_mismatch_cap_50"
+      ],
+      "status": "completed",
+      "recommended_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'No active dashboard/exchange mismatch detected'.",
+      "domain": "open_orders",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 0.4,
+        "domain_match": 0.6,
+        "specificity": 0.1,
+        "raw": 64.5,
+        "final": 50.0,
+        "caps_applied": [
+          "domain_mismatch_cap_50"
+        ],
+        "legacy_confidence": 57.6
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'No active dashboard/exchange mismatch detected'.",
+        "affected_files": [],
+        "commands": [],
+        "validation_steps": [],
+        "risks": [
+          {
+            "description": "No actionable fix could be derived from current evidence.",
+            "severity": "low",
+            "mitigation": "Gather domain evidence (database, logs, exchange, repository) and re-run."
+          }
+        ],
+        "rollback": "",
+        "specificity": 0.1
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "confidence_below_threshold",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "cd4b339b-6cac-4bc2-aed2-8f7403a35961",
+    "objective": "Analyze recent error logs for production incidents",
+    "category": "api",
+    "template_id": "generic",
+    "stored": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "confidence": 27.0,
+      "status": "completed"
+    },
+    "objective_domain": "generic",
+    "objective_domain_confidence": 0.2,
+    "off": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "cause_domain": "order_reconciliation",
+      "confidence": 27.0,
+      "legacy_confidence": 27.0,
+      "status": "completed",
+      "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "cause_domain": "order_reconciliation",
+      "confidence": 27.0,
+      "legacy_confidence": 27.0,
+      "caps_applied": [
+        "generic_objective_cap_35",
+        "generic_objective_legacy_cap"
+      ],
+      "status": "completed",
+      "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "domain": "generic",
+      "confidence_breakdown": {
+        "evidence_strength": 0.4,
+        "objective_alignment": 0.08,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 50.1,
+        "final": 27.0,
+        "caps_applied": [
+          "generic_objective_cap_35",
+          "generic_objective_legacy_cap"
+        ],
+        "legacy_confidence": 27.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+        "affected_files": [
+          "tests/test_jarvis_diagnostic_tools.py (candidate)",
+          "app/jarvis/execution_tools/diagnose_open_orders.py (candidate)",
+          "app/jarvis/execution_tools/search_repository.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect tests/test_jarvis_diagnostic_tools.py for 'FILLED'",
+            "command": "grep -n -i 'FILLED' tests/test_jarvis_diagnostic_tools.py"
+          },
+          {
+            "description": "Inspect app/jarvis/execution_tools/diagnose_open_orders.py for 'FILLED'",
+            "command": "grep -n -i 'FILLED' app/jarvis/execution_tools/diagnose_open_orders.py"
+          },
+          {
+            "description": "Inspect app/jarvis/execution_tools/search_repository.py for 'FILLED'",
+            "command": "grep -n -i 'FILLED' app/jarvis/execution_tools/search_repository.py"
+          }
+        ],
+        "validation_steps": [
+          "Run count_orders_by_status preset and confirm FILLED count.",
+          "Inspect recent_trade_events rows for expected BTC order IDs.",
+          "Check routes_orders trade-history handler and frontend trade tab filters."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "3f35a4d6-b8c4-4422-94d4-106daa77c904",
+    "objective": "Why are open orders empty?",
+    "category": "orders",
+    "template_id": "open_orders_empty",
+    "stored": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "confidence": 96.0,
+      "status": "completed"
+    },
+    "objective_domain": "open_orders",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 96.0,
+      "legacy_confidence": 96.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Open orders exist in database and cache",
+      "cause_domain": "open_orders",
+      "confidence": 60.0,
+      "legacy_confidence": 75.0,
+      "caps_applied": [
+        "generic_recommendation_cap_60"
+      ],
+      "status": "completed",
+      "recommended_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'Open orders exist in database and cache'.",
+      "domain": "open_orders",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.1,
+        "raw": 86.5,
+        "final": 60.0,
+        "caps_applied": [
+          "generic_recommendation_cap_60"
+        ],
+        "legacy_confidence": 75.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Insufficient evidence to produce a concrete fix; missing: concrete file/command evidence for 'Open orders exist in database and cache'.",
+        "affected_files": [],
+        "commands": [],
+        "validation_steps": [],
+        "risks": [
+          {
+            "description": "No actionable fix could be derived from current evidence.",
+            "severity": "low",
+            "mitigation": "Gather domain evidence (database, logs, exchange, repository) and re-run."
+          }
+        ],
+        "rollback": "",
+        "specificity": 0.1
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "5b76cf57-80e6-45d0-8640-de0263777864",
+    "objective": "Investigate portfolio reconciliation mismatch",
+    "category": "portfolio",
+    "template_id": "portfolio_reconciliation_mismatch",
+    "stored": {
+      "root_cause": "Portfolio equity derived from balances because exchange API omits equity field",
+      "confidence": 90.5,
+      "status": "completed"
+    },
+    "objective_domain": "portfolio_reconciliation",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "Portfolio equity derived from balances because exchange API omits equity field",
+      "cause_domain": "portfolio_reconciliation",
+      "confidence": 90.5,
+      "legacy_confidence": 90.5,
+      "status": "completed",
+      "recommended_fix": "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+      "acw_ready": true,
+      "acw_reasons": [],
+      "affected_files": [
+        "backend/app/services/portfolio_cache.py"
+      ],
+      "estimated_risk": "low",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Portfolio equity derived from balances because exchange API omits equity field",
+      "cause_domain": "portfolio_reconciliation",
+      "confidence": 90.5,
+      "legacy_confidence": 90.5,
+      "caps_applied": [
+        "legacy_confidence_ceiling"
+      ],
+      "status": "completed",
+      "recommended_fix": "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+      "domain": "portfolio_reconciliation",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 1.0,
+        "raw": 100.0,
+        "final": 90.5,
+        "caps_applied": [
+          "legacy_confidence_ceiling"
+        ],
+        "legacy_confidence": 90.5
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+        "affected_files": [
+          "backend/app/services/portfolio_cache.py"
+        ],
+        "commands": [
+          {
+            "description": "Inspect backend/app/services/portfolio_cache.py for 'Portfolio'",
+            "command": "grep -n -i 'Portfolio' backend/app/services/portfolio_cache.py"
+          },
+          {
+            "description": "Run regression test backend/tests/test_portfolio_equity_field_discovery.py",
+            "command": "pytest backend/tests/test_portfolio_equity_field_discovery.py"
+          }
+        ],
+        "validation_steps": [
+          "portfolio_cache prefers exchange-reported equity when present",
+          "derived fallback metadata is exposed when exchange equity missing",
+          "pytest backend/tests/test_portfolio_equity_field_discovery.py"
+        ],
+        "risks": [
+          {
+            "description": "Change touches 1 file(s) (backend/app/services/portfolio_cache.py).",
+            "severity": "low",
+            "mitigation": "Apply behind sandbox + two human approval gates (ACW); no auto-merge/deploy."
+          }
+        ],
+        "rollback": "Revert the patch via the approved rollback path and re-run the investigation.",
+        "specificity": 1.0
+      },
+      "acw_ready": true,
+      "acw_reasons": [],
+      "affected_files": [
+        "backend/app/services/portfolio_cache.py"
+      ],
+      "estimated_risk": "low",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "99e5946a-82f1-42fa-a95a-37e03a68e2f9",
+    "objective": "Why is Jarvis task failing?",
+    "category": "api",
+    "template_id": "jarvis_task_failing",
+    "stored": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "confidence": 27.0,
+      "status": "completed"
+    },
+    "objective_domain": "deployment",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "cause_domain": "order_reconciliation",
+      "confidence": 27.0,
+      "legacy_confidence": 27.0,
+      "status": "completed",
+      "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "",
+      "cause_domain": "",
+      "confidence": 0.0,
+      "legacy_confidence": 27.0,
+      "caps_applied": [],
+      "status": "insufficient_evidence",
+      "recommended_fix": "Collect additional evidence from database, logs, and exchange APIs.",
+      "domain": "deployment",
+      "confidence_breakdown": {},
+      "recommendation_plan": {},
+      "acw_ready": false,
+      "acw_reasons": [
+        "investigation_not_completed",
+        "missing_root_cause",
+        "confidence_below_threshold",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "ada36c20-8323-4160-9d2e-17dbf8cfdca2",
+    "objective": "Why does dashboard differ from exchange?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "stored": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "confidence": 96.0,
+      "status": "completed"
+    },
+    "objective_domain": "order_reconciliation",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "cause_domain": "order_reconciliation",
+      "confidence": 96.0,
+      "legacy_confidence": 96.0,
+      "status": "completed",
+      "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Stale dashboard cache not refreshed by exchange sync",
+      "cause_domain": "order_reconciliation",
+      "confidence": 92.5,
+      "legacy_confidence": 100.0,
+      "caps_applied": [],
+      "status": "completed",
+      "recommended_fix": "Trigger portfolio/open-orders cache refresh via approved sync process.",
+      "domain": "order_reconciliation",
+      "confidence_breakdown": {
+        "evidence_strength": 1.0,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 92.5,
+        "final": 92.5,
+        "caps_applied": [],
+        "legacy_confidence": 100.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Trigger portfolio/open-orders cache refresh via approved sync process.",
+        "affected_files": [
+          "app/jarvis/execution_tools/diagnose_open_orders.py (candidate)",
+          "app/jarvis/execution_tools/search_repository.py (candidate)",
+          "app/jarvis/agents/repository_agent.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect app/jarvis/execution_tools/diagnose_open_orders.py for 'Stale'",
+            "command": "grep -n -i 'Stale' app/jarvis/execution_tools/diagnose_open_orders.py"
+          },
+          {
+            "description": "Inspect app/jarvis/execution_tools/search_repository.py for 'Stale'",
+            "command": "grep -n -i 'Stale' app/jarvis/execution_tools/search_repository.py"
+          },
+          {
+            "description": "Inspect app/jarvis/agents/repository_agent.py for 'Stale'",
+            "command": "grep -n -i 'Stale' app/jarvis/agents/repository_agent.py"
+          }
+        ],
+        "validation_steps": [
+          "Check cache last_updated timestamp vs current time.",
+          "Review exchange_sync scheduler logs."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "9c6c5879-ad3d-4f0b-91e9-0d38b7e5ca80",
+    "objective": "Check database health and recent query errors",
+    "category": "deployment",
+    "template_id": "generic",
+    "stored": {
+      "root_cause": "Deployment health check failing",
+      "confidence": 50.0,
+      "status": "completed"
+    },
+    "objective_domain": "database",
+    "objective_domain_confidence": 0.7,
+    "off": {
+      "root_cause": "Deployment health check failing",
+      "cause_domain": "deployment",
+      "confidence": 50.0,
+      "legacy_confidence": 50.0,
+      "status": "completed",
+      "recommended_fix": "Inspect container logs and restore failing service before traffic resumes.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Deployment health check failing",
+      "cause_domain": "deployment",
+      "confidence": 30.0,
+      "legacy_confidence": 30.0,
+      "caps_applied": [
+        "legacy_confidence_ceiling"
+      ],
+      "status": "completed",
+      "recommended_fix": "Inspect container logs and restore failing service before traffic resumes.",
+      "domain": "database",
+      "confidence_breakdown": {
+        "evidence_strength": 0.4,
+        "objective_alignment": 0.28,
+        "domain_match": 0.6,
+        "specificity": 0.5,
+        "raw": 44.1,
+        "final": 30.0,
+        "caps_applied": [
+          "legacy_confidence_ceiling"
+        ],
+        "legacy_confidence": 30.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Inspect container logs and restore failing service before traffic resumes.",
+        "affected_files": [
+          "app/jarvis/execution_tools/search_repository.py (candidate)",
+          "tests/test_trading_guardrails.py (candidate)",
+          "tests/test_jarvis_diagnostic_tools.py (candidate)"
+        ],
+        "commands": [
+          {
+            "description": "Inspect app/jarvis/execution_tools/search_repository.py for 'Deployment'",
+            "command": "grep -n -i 'Deployment' app/jarvis/execution_tools/search_repository.py"
+          },
+          {
+            "description": "Inspect tests/test_trading_guardrails.py for 'Deployment'",
+            "command": "grep -n -i 'Deployment' tests/test_trading_guardrails.py"
+          },
+          {
+            "description": "Inspect tests/test_jarvis_diagnostic_tools.py for 'Deployment'",
+            "command": "grep -n -i 'Deployment' tests/test_jarvis_diagnostic_tools.py"
+          }
+        ],
+        "validation_steps": [
+          "Run inspect_health on all endpoints.",
+          "Check docker compose service status."
+        ],
+        "risks": [
+          {
+            "description": "Affected files are inferred from collected evidence and must be confirmed.",
+            "severity": "medium",
+            "mitigation": "Treat files as candidates; require human review before any edit."
+          }
+        ],
+        "rollback": "Revert and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "safety_allowed": true
+    }
+  },
+  {
+    "investigation_id": "fe5f566e-00ea-4065-acc6-409fd2e2a162",
+    "objective": "Why are websocket prices stale?",
+    "category": "websocket",
+    "template_id": "websocket_prices_stale",
+    "stored": {
+      "root_cause": "Websocket price feed disconnected or not receiving updates",
+      "confidence": 63.0,
+      "status": "completed"
+    },
+    "objective_domain": "infrastructure",
+    "objective_domain_confidence": 1.0,
+    "off": {
+      "root_cause": "Websocket price feed disconnected or not receiving updates",
+      "cause_domain": "infrastructure",
+      "confidence": 63.0,
+      "legacy_confidence": 63.0,
+      "status": "completed",
+      "recommended_fix": "Restart market-updater service and verify websocket subscription health.",
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold"
+      ],
+      "affected_files": [
+        "frontend/src/lib/priceStreamWsUrl.ts",
+        "frontend/scripts/verify_ws_prices_url.mjs"
+      ],
+      "estimated_risk": "low",
+      "safety_allowed": true
+    },
+    "on": {
+      "root_cause": "Websocket price feed disconnected or not receiving updates",
+      "cause_domain": "infrastructure",
+      "confidence": 63.0,
+      "legacy_confidence": 63.0,
+      "caps_applied": [
+        "legacy_confidence_ceiling"
+      ],
+      "status": "completed",
+      "recommended_fix": "Restart market-updater service and verify websocket subscription health.",
+      "domain": "infrastructure",
+      "confidence_breakdown": {
+        "evidence_strength": 0.4,
+        "objective_alignment": 1.0,
+        "domain_match": 1.0,
+        "specificity": 0.5,
+        "raw": 68.5,
+        "final": 63.0,
+        "caps_applied": [
+          "legacy_confidence_ceiling"
+        ],
+        "legacy_confidence": 63.0
+      },
+      "recommendation_plan": {
+        "proposed_fix": "Restart market-updater service and verify websocket subscription health.",
+        "affected_files": [
+          "frontend/src/lib/priceStreamWsUrl.ts",
+          "frontend/scripts/verify_ws_prices_url.mjs"
+        ],
+        "commands": [
+          {
+            "description": "Inspect frontend/src/lib/priceStreamWsUrl.ts for 'Websocket'",
+            "command": "grep -n -i 'Websocket' frontend/src/lib/priceStreamWsUrl.ts"
+          },
+          {
+            "description": "Inspect frontend/scripts/verify_ws_prices_url.mjs for 'Websocket'",
+            "command": "grep -n -i 'Websocket' frontend/scripts/verify_ws_prices_url.mjs"
+          },
+          {
+            "description": "Run regression test frontend/scripts/verify_ws_prices_url.mjs",
+            "command": "pytest frontend/scripts/verify_ws_prices_url.mjs"
+          }
+        ],
+        "validation_steps": [
+          "priceStreamWsUrl uses window.location.host in browser context",
+          "internal docker hostnames are rejected in production browser context",
+          "pytest frontend/scripts/verify_ws_prices_url.mjs"
+        ],
+        "risks": [
+          {
+            "description": "Change touches 2 file(s) (frontend/src/lib/priceStreamWsUrl.ts, frontend/scripts/verify_ws_prices_url.mjs).",
+            "severity": "low",
+            "mitigation": "Apply behind sandbox + two human approval gates (ACW); no auto-merge/deploy."
+          }
+        ],
+        "rollback": "Revert the patch via the approved rollback path and re-run the investigation.",
+        "specificity": 0.5
+      },
+      "acw_ready": false,
+      "acw_reasons": [
+        "confidence_below_threshold"
+      ],
+      "affected_files": [
+        "frontend/src/lib/priceStreamWsUrl.ts",
+        "frontend/scripts/verify_ws_prices_url.mjs"
+      ],
+      "estimated_risk": "low",
+      "safety_allowed": true
+    }
+  }
+]

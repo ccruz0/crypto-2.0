@@ -552,3 +552,144 @@ class TestAcwInvariance:
         report["confidence"] = 40.0
         rec = build_recommendation(report)
         assert rec["acw_ready"] is False
+
+
+# --------------------------------------------------------------------------- #
+# PR #67 confidence-regression caps (replay-backed weak cases)
+# --------------------------------------------------------------------------- #
+
+
+_REGRESSION_CASE_IDS = (
+    "ec30b60b-aeaa-492b-a67b-f23c9fccf235",
+    "d3fa6e63-9b96-4822-8181-3ff1be2bd85a",
+    "a6cf648c-e91a-463a-91d9-5ed492828cff",
+    "7652e662-957b-4200-98a2-91bcdc52e9dd",
+    "cd4b339b-6cac-4bc2-aed2-8f7403a35961",
+    "fe5f566e-00ea-4065-acc6-409fd2e2a162",
+)
+
+
+def _load_raw_investigations() -> list[dict]:
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "jarvis_eval" / "raw_investigations.json"
+    if not path.exists():
+        pytest.skip(f"missing replay fixture: {path}")
+    return json.loads(path.read_text())
+
+
+def _replay_report(inv: dict, *, flag_on: bool, monkeypatch):
+    if flag_on:
+        monkeypatch.setenv("JARVIS_OBJECTIVE_AWARE_RC", "true")
+    else:
+        monkeypatch.delenv("JARVIS_OBJECTIVE_AWARE_RC", raising=False)
+
+    evidence = list(inv.get("evidence_json") or [])
+    candidates = [
+        RootCauseCandidate(
+            cause=c.get("cause", ""),
+            score=float(c.get("score") or 0.0),
+            supporting_evidence=list(c.get("supporting_evidence") or []),
+            explanation=c.get("explanation", "") or "",
+        )
+        for c in (inv.get("ranked_causes_json") or [])
+    ]
+    if flag_on:
+        dc = classify_domain(
+            inv.get("objective", ""),
+            category=inv.get("category", ""),
+            template_id=inv.get("template_id", "") or "",
+        )
+        candidates = apply_domain_gating(candidates, dc.domain, dc.domain_confidence)
+
+    return build_investigation_report(
+        investigation_id=inv["investigation_id"],
+        objective=inv.get("objective", ""),
+        category=inv.get("category", ""),
+        template_id=inv.get("template_id", "") or "",
+        evidence=evidence,
+        ranked_causes=candidates,
+        tool_outputs=[],
+        created_at=inv.get("created_at", _now()),
+    )
+
+
+class TestPr67ConfidenceRegression:
+    @pytest.fixture()
+    def raw_cases(self):
+        invs = {i["investigation_id"]: i for i in _load_raw_investigations()}
+        missing = [cid for cid in _REGRESSION_CASE_IDS if cid not in invs]
+        if missing:
+            pytest.skip(f"missing replay cases: {missing}")
+        return invs
+
+    @pytest.mark.parametrize("case_id", _REGRESSION_CASE_IDS)
+    def test_on_confidence_not_above_off(self, case_id, raw_cases, monkeypatch):
+        inv = raw_cases[case_id]
+        rep_off = _replay_report(inv, flag_on=False, monkeypatch=monkeypatch)
+        rep_on = _replay_report(inv, flag_on=True, monkeypatch=monkeypatch)
+        assert rep_on.confidence <= rep_off.confidence
+
+    @pytest.mark.parametrize("case_id", _REGRESSION_CASE_IDS)
+    def test_no_acw_false_to_true_flip(self, case_id, raw_cases, monkeypatch):
+        from app.jarvis.self_healing.service import build_recommendation
+
+        monkeypatch.setenv("JARVIS_SELF_HEALING_ENABLED", "true")
+        monkeypatch.setenv("JARVIS_SELF_HEALING_ACW_THRESHOLD", "70")
+        inv = raw_cases[case_id]
+        rep_off = _replay_report(inv, flag_on=False, monkeypatch=monkeypatch)
+        rep_on = _replay_report(inv, flag_on=True, monkeypatch=monkeypatch)
+        rec_off = build_recommendation(rep_off.to_dict())
+        rec_on = build_recommendation(rep_on.to_dict())
+        if not rec_off["acw_ready"]:
+            assert rec_on["acw_ready"] is False
+
+    def test_auth_cases_apply_contradiction_caps(self, raw_cases, monkeypatch):
+        auth_ids = (
+            "ec30b60b-aeaa-492b-a67b-f23c9fccf235",
+            "d3fa6e63-9b96-4822-8181-3ff1be2bd85a",
+            "a6cf648c-e91a-463a-91d9-5ed492828cff",
+            "7652e662-957b-4200-98a2-91bcdc52e9dd",
+        )
+        for case_id in auth_ids:
+            rep_on = _replay_report(raw_cases[case_id], flag_on=True, monkeypatch=monkeypatch)
+            caps = rep_on.confidence_breakdown.get("caps_applied", [])
+            assert "auth_contradiction_cap_48" in caps or "credential_contradiction_cap_40" in caps
+            assert rep_on.confidence <= 48.0
+
+    def test_credential_false_positive_cap_40(self, raw_cases, monkeypatch):
+        for case_id in (
+            "a6cf648c-e91a-463a-91d9-5ed492828cff",
+            "7652e662-957b-4200-98a2-91bcdc52e9dd",
+        ):
+            rep_on = _replay_report(raw_cases[case_id], flag_on=True, monkeypatch=monkeypatch)
+            caps = rep_on.confidence_breakdown.get("caps_applied", [])
+            assert "credential_contradiction_cap_40" in caps
+            assert rep_on.confidence <= 40.0
+
+    def test_generic_case_capped_by_legacy(self, raw_cases, monkeypatch):
+        rep_off = _replay_report(
+            raw_cases["cd4b339b-6cac-4bc2-aed2-8f7403a35961"],
+            flag_on=False,
+            monkeypatch=monkeypatch,
+        )
+        rep_on = _replay_report(
+            raw_cases["cd4b339b-6cac-4bc2-aed2-8f7403a35961"],
+            flag_on=True,
+            monkeypatch=monkeypatch,
+        )
+        caps = rep_on.confidence_breakdown.get("caps_applied", [])
+        assert rep_on.confidence <= rep_off.confidence
+        assert "generic_objective_legacy_cap" in caps or "generic_objective_cap_35" in caps
+
+    def test_websocket_scope_mismatch_reduces_specificity(self, raw_cases, monkeypatch):
+        rep_on = _replay_report(
+            raw_cases["fe5f566e-00ea-4065-acc6-409fd2e2a162"],
+            flag_on=True,
+            monkeypatch=monkeypatch,
+        )
+        assert rep_on.recommendation_plan.get("specificity", 1.0) < 1.0
+        assert rep_on.confidence <= 63.0
+        caps = rep_on.confidence_breakdown.get("caps_applied", [])
+        assert "legacy_confidence_ceiling" in caps or "acw_monotonicity_cap" in caps
