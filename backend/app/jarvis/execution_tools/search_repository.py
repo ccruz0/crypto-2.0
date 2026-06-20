@@ -71,7 +71,50 @@ _TOPIC_QUERIES: dict[str, list[str]] = {
         "investigation_runner",
         "JarvisControlTab",
     ],
+    "result_validation": [
+        "result_validation",
+        "root_cause_present",
+        "conclusion_present",
+        "INSUFFICIENT_EVIDENCE",
+        "validate_task_result",
+    ],
+    "repository_agent": [
+        "repository_agent",
+        "search_repository",
+        "_detect_topics",
+        "investigate_objective",
+    ],
+    "planner": [
+        "planner_agent",
+        "build_plan",
+        "objective_classification",
+    ],
 }
+
+_DEFAULT_FRAMEWORK_TOPICS: list[str] = ["jarvis", "result_validation", "planner", "repository_agent"]
+
+_JARVIS_FRAMEWORK_TERMS: tuple[str, ...] = (
+    "insufficient_evidence",
+    "insufficient evidence",
+    "result_validation",
+    "root_cause_present",
+    "conclusion_present",
+    "validation pipeline",
+    "validation framework",
+    "safety classifier",
+    "planner_agent",
+    "repository_agent",
+    "repository agent",
+    "objective_classification",
+    "jarvis internals",
+    "framework audit",
+    "framework-audit",
+    "meta-investigation",
+    "validate_task_result",
+    "search_repository",
+    "_detect_topics",
+    "investigate_objective",
+)
 
 _TOPIC_EXPLANATIONS: dict[str, str] = {
     "open_orders": "Frontend hooks and backend routes that serve open orders to the dashboard",
@@ -85,7 +128,24 @@ _TOPIC_EXPLANATIONS: dict[str, str] = {
     "credentials": "Exchange API credential resolution and runtime.env loading",
     "cache": "Dashboard cache layers for orders and portfolio data",
     "jarvis": "Jarvis execution framework and control UI",
+    "result_validation": "Jarvis result validation, evidence gates, and completion checks",
+    "repository_agent": "Repository agent and search_repository topic routing",
+    "planner": "Jarvis planner agent and objective classification",
 }
+
+
+def _is_jarvis_framework_objective(text: str) -> bool:
+    if any(term in text for term in _JARVIS_FRAMEWORK_TERMS):
+        return True
+    if "jarvis" in text and any(
+        token in text for token in ("validation", "framework", "internals", "classifier", "planner", "execution")
+    ):
+        return True
+    if "investigation task" in text and "insufficient" in text:
+        return True
+    if "topic generation" in text and "repository" in text:
+        return True
+    return False
 
 
 def _detect_topics(*, topic: str | None = None, objective: str | None = None, action: str | None = None) -> list[str]:
@@ -94,20 +154,31 @@ def _detect_topics(*, topic: str | None = None, objective: str | None = None, ac
 
     text = " ".join(filter(None, [objective, action])).lower()
     topics: list[str] = []
-    if "open order" in text or "open_orders" in text:
+    is_framework = _is_jarvis_framework_objective(text)
+
+    if is_framework:
+        topics.extend(["result_validation", "repository_agent", "planner", "jarvis"])
+
+    has_open_orders = "open order" in text or "open_orders" in text
+    has_orders_context = has_open_orders or "orders" in text or ("order" in text and not is_framework)
+
+    if has_open_orders:
         topics.extend(["open_orders", "api_routes", "dashboard_tabs"])
+    elif has_orders_context and ("api" in text or "route" in text):
+        topics.extend(["open_orders", "api_routes"])
+    elif has_orders_context:
+        topics.append("orders")
+
     if "position" in text:
         topics.append("positions")
-    if "trade" in text or "history" in text:
+    if ("trade" in text or "history" in text) and not is_framework:
         topics.append("trade_history")
-    if "dashboard" in text or "tab" in text:
+    if ("dashboard" in text or "tab" in text) and (has_orders_context or not is_framework):
         topics.append("dashboard_tabs")
-    if "route" in text or "api" in text:
-        topics.append("api_routes")
-    if "order" in text and "open_orders" not in topics:
-        topics.append("orders")
+
     if not topics:
-        topics = ["open_orders", "orders", "api_routes"]
+        topics = list(_DEFAULT_FRAMEWORK_TOPICS)
+
     seen: set[str] = set()
     ordered: list[str] = []
     for t in topics:

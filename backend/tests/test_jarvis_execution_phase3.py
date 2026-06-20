@@ -285,6 +285,16 @@ def test_repository_openclaw_query():
     assert "openclaw" in str(result["queries"]).lower()
 
 
+def test_repository_framework_objective_queries():
+    result = investigate_objective(
+        "Inspect recent investigation tasks that ended with status INSUFFICIENT_EVIDENCE"
+    )
+    joined = " ".join(result["queries"]).lower()
+    assert "open_orders" not in joined and "getopenorders" not in joined
+    assert "result_validation" in joined
+    assert "repository_agent" in joined or "search_repository" in joined
+
+
 # --- persistence + service (8 tests) ---
 
 

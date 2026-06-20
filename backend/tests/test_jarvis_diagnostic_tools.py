@@ -11,7 +11,7 @@ from app.jarvis.execution.service import submit_execution_task
 from app.jarvis.execution.lifecycle import TaskLifecycleState
 from app.jarvis.execution_tools.query_database import _validate_select_only, query_database
 from app.jarvis.execution_tools.diagnose_open_orders import diagnose_open_orders
-from app.jarvis.execution_tools.search_repository import search_repository
+from app.jarvis.execution_tools.search_repository import _detect_topics, search_repository
 from app.jarvis.execution_tools.search_logs import _redact_secrets, search_logs
 
 
@@ -119,6 +119,44 @@ class TestSearchRepository:
         assert match["path"]
         assert match["line"]
         assert match.get("confidence") in {"low", "medium", "high"}
+
+
+class TestDetectTopics:
+    def test_insufficient_evidence_uses_framework_topics_not_open_orders(self):
+        objective = "Inspect recent investigation tasks that ended with status INSUFFICIENT_EVIDENCE"
+        topics = _detect_topics(objective=objective)
+        assert "open_orders" not in topics
+        assert "result_validation" in topics
+        assert "repository_agent" in topics
+
+    def test_root_cause_and_conclusion_use_validation_topics(self):
+        objective = "Audit root_cause_present and conclusion_present in validation pipeline"
+        topics = _detect_topics(objective=objective)
+        assert "open_orders" not in topics
+        assert "result_validation" in topics
+        assert "planner" in topics or "jarvis" in topics
+
+    def test_repository_agent_topic_generation(self):
+        objective = "How does Repository Agent topic generation work in search_repository?"
+        topics = _detect_topics(objective=objective)
+        assert "open_orders" not in topics
+        assert "repository_agent" in topics
+
+    def test_open_orders_objective_keeps_order_topics(self):
+        for objective in (
+            "Why are open orders empty?",
+            "Open orders dashboard mismatch",
+            "orders API route",
+        ):
+            topics = _detect_topics(objective=objective)
+            assert "open_orders" in topics
+            assert "api_routes" in topics
+
+    def test_generic_unknown_does_not_default_to_open_orders(self):
+        topics = _detect_topics(objective="Inspect deployment health and container status")
+        assert "open_orders" not in topics
+        assert "result_validation" in topics
+        assert "repository_agent" in topics
 
 
 class TestSearchLogs:
