@@ -179,7 +179,7 @@ jobs:
             "done",
             "echo \"🧹 Post-up cleanup (only AFTER the stack is up, so we never prune an image we still need)...\"",
             "docker image prune -f 2>/dev/null || true",
-            "docker builder prune -af --filter until=24h 2>/dev/null || true",
+            "docker builder prune -af 2>/dev/null || true",
             "echo \"🔄 Reloading nginx to reconnect to services (reload first; restart only if reload fails)...\"",
             "sudo systemctl reload nginx || sudo systemctl restart nginx || echo \"⚠️  nginx reload/restart failed, continuing...\"",
             "sleep 5",

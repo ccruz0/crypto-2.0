@@ -1,0 +1,55 @@
+# .dockerignore for the repo-root build context (".").
+# Only the backend-aws image builds from context "." (dockerfile: backend/Dockerfile.aws).
+# Other services use their own contexts (./frontend, ./backend, ./docker/postgres, ...),
+# so this file does NOT affect those builds.
+#
+# Goal: keep ever-growing runtime data, VCS history, caches, and unrelated trees
+# OUT of the backend-aws build context and image. This shrinks the image, reduces
+# the build's peak disk usage, and stops image bloat from accumulating each deploy.
+# Only paths NOT referenced by any COPY in backend/Dockerfile.aws are excluded
+# (it copies: backend/requirements.txt, backend/, SYSTEM_CORE.md, backend/scripts/,
+# backend/entrypoint.sh).
+
+# --- Version control ---
+.git/
+.gitignore
+
+# --- Python caches / bytecode ---
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtualenvs ---
+.venv/
+.venv-test/
+**/venv/
+
+# --- Node / frontend tree (not used by the backend-aws build) ---
+**/node_modules/
+frontend/
+docs/openclaw/
+
+# --- Runtime-generated jarvis artifacts (populated at runtime, not needed in image) ---
+backend/app/jarvis/artifacts/data/
+!backend/app/jarvis/artifacts/data/.gitignore
+
+# --- Logs ---
+**/*.log
+backend/logs/
+logs/
+
+# --- Tests (not needed in the production runtime image) ---
+backend/tests/
+
+# --- Top-level markdown/docs clutter (SYSTEM_CORE.md is required, keep it) ---
+*.md
+!SYSTEM_CORE.md
+
+# --- Misc local/dev artifacts ---
+deploy_key.pem
+*.tar.gz
+.DS_Store

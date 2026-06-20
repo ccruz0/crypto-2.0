@@ -53,6 +53,18 @@ echo "Cleaning temp files >5d..."
 sudo find /tmp -type f -atime +5 -delete 2>/dev/null || true
 sudo find /var/tmp -type f -atime +5 -delete 2>/dev/null || true
 
+# 9b. Stale Jarvis coding-workflow sandboxes in /tmp (each can be hundreds of MB
+# of node_modules). These are transient build dirs; nothing else reclaims them.
+# Remove sandboxes whose contents have not been modified recently so an
+# in-progress workflow is never disturbed.
+JARVIS_SANDBOX_DIR="${JARVIS_SANDBOX_DIR:-/tmp/jarvis-sandbox}"
+JARVIS_SANDBOX_KEEP_MIN="${JARVIS_SANDBOX_KEEP_MIN:-720}"  # default: keep last 12h
+if [ -d "$JARVIS_SANDBOX_DIR" ]; then
+  echo "Cleaning stale Jarvis sandboxes in $JARVIS_SANDBOX_DIR (idle >${JARVIS_SANDBOX_KEEP_MIN}m)..."
+  sudo find "$JARVIS_SANDBOX_DIR" -mindepth 1 -maxdepth 1 -type d \
+    -mmin +"$JARVIS_SANDBOX_KEEP_MIN" -exec rm -rf {} + 2>/dev/null || true
+fi
+
 # 10. Old kernels (keep current + one previous)
 OLD_KERNELS=$(dpkg -l 2>/dev/null | grep -E 'linux-image-[0-9]+' | grep -v "$(uname -r)" | awk '{print $2}' | head -n -1 || true)
 if [ -n "$OLD_KERNELS" ]; then
