@@ -59,6 +59,14 @@ repos:
   # Custom script: Run backend tests and frontend lint
   - repo: local
     hooks:
+      - id: no-committed-github-tokens
+        name: Block live-looking GitHub tokens in tracked files
+        entry: python3 scripts/check_no_committed_github_tokens.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
       - id: pre-commit-checks
         name: Run backend tests and frontend lint
         entry: bash scripts/pre_commit_checks.sh
