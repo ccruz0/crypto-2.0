@@ -148,6 +148,7 @@ test_ensure_healthy_is_noop() {
   make_fake_bin "$fakebin" "$upflag"
 
   out="$(PATH="$fakebin:$PATH" FORCE_HEALTHY=1 ATP_DEPLOY_MARKER="$tmp/marker" \
+    ATP_SELFHEAL_LOCK="$tmp/lock" ENSURE_STACK_PROBE_RETRIES=1 \
     ENSURE_STACK_WAIT_ITERS=1 ENSURE_STACK_WAIT_INTERVAL=0 \
     "$repo/scripts/aws/ensure_stack_up.sh" 2>&1)" || rc=$?
 
@@ -170,6 +171,7 @@ test_ensure_unhealthy_recovers_without_down() {
   # upflag absent initially -> first health check fails -> triggers up -> up creates upflag -> healthy
 
   out="$(PATH="$fakebin:$PATH" ATP_DEPLOY_MARKER="$tmp/marker" \
+    ATP_SELFHEAL_LOCK="$tmp/lock" ENSURE_STACK_PROBE_RETRIES=1 \
     ENSURE_STACK_WAIT_ITERS=3 ENSURE_STACK_WAIT_INTERVAL=0 \
     "$repo/scripts/aws/ensure_stack_up.sh" 2>&1)" || rc=$?
 
@@ -208,6 +210,7 @@ EOF
   chmod +x "$repo/scripts/aws/prod_compose.sh"
 
   out="$(PATH="$fakebin:$PATH" ATP_DEPLOY_MARKER="$tmp/marker" \
+    ATP_SELFHEAL_LOCK="$tmp/lock" ENSURE_STACK_PROBE_RETRIES=1 \
     ENSURE_STACK_WAIT_ITERS=2 ENSURE_STACK_WAIT_INTERVAL=0 \
     "$repo/scripts/aws/ensure_stack_up.sh" 2>&1)" || rc=$?
 
