@@ -1,0 +1,384 @@
+{
+  "metrics": {
+    "total_reviewed": 18,
+    "improvement_rate": 0.444,
+    "regression_rate": 0.0,
+    "mixed_rate": 0.111,
+    "neutral_rate": 0.444,
+    "verdict_counts": {
+      "improvement": 8,
+      "regression": 0,
+      "mixed": 2,
+      "neutral": 8
+    },
+    "domain_alignment_improved": 2,
+    "cross_domain_leakage_prevented": 3,
+    "cross_domain_leakage_preservation": 3,
+    "confidence_inflation_reduced": 6,
+    "confidence_inflation_introduced": 0,
+    "false_positive_amplified": 0,
+    "recommendation_made_concrete": 3,
+    "recommendation_generic_to_honest_gap": 5,
+    "recommendation_quality_preservation": 8,
+    "acw_newly_enabled": 0,
+    "acw_newly_blocked": 0,
+    "acw_ready_off": 1,
+    "acw_ready_on": 1
+  },
+  "calibration_impact": {
+    "weak_cases_off_mean_conf": 41.0,
+    "weak_cases_on_mean_conf": 31.2,
+    "strong_cases_off_mean_conf": 94.5,
+    "strong_cases_on_mean_conf": 79.1
+  },
+  "per_investigation": [
+    {
+      "id": "f79b9ffc",
+      "category": "dashboard",
+      "obj_domain": "order_reconciliation",
+      "rc_accuracy": 8,
+      "off_conf": 90.0,
+      "on_conf": 60.0,
+      "legacy_confidence": 100.0,
+      "dconf": -30.0,
+      "caps": [
+        "generic_recommendation_cap_60"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "domain_alignment_improved",
+        "cross_domain_leakage_prevented",
+        "confidence_deflation_questionable",
+        "recommendation_generic_to_honest_gap"
+      ],
+      "verdict": "mixed"
+    },
+    {
+      "id": "e080e0d0",
+      "category": "dashboard",
+      "obj_domain": "order_reconciliation",
+      "rc_accuracy": 6,
+      "off_conf": 96.0,
+      "on_conf": 60.0,
+      "legacy_confidence": 96.0,
+      "dconf": -36.0,
+      "caps": [
+        "generic_recommendation_cap_60"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "confidence_inflation_reduced",
+        "recommendation_generic_to_honest_gap"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "ec30b60b",
+      "category": "authentication",
+      "obj_domain": "exchange_auth",
+      "rc_accuracy": 2,
+      "off_conf": 48.0,
+      "on_conf": 40.0,
+      "legacy_confidence": 48.0,
+      "dconf": -8.0,
+      "caps": [
+        "credential_contradiction_cap_40"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    },
+    {
+      "id": "d3fa6e63",
+      "category": "authentication",
+      "obj_domain": "exchange_auth",
+      "rc_accuracy": 2,
+      "off_conf": 48.0,
+      "on_conf": 40.0,
+      "legacy_confidence": 48.0,
+      "dconf": -8.0,
+      "caps": [
+        "credential_contradiction_cap_40"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    },
+    {
+      "id": "a6cf648c",
+      "category": "authentication",
+      "obj_domain": "exchange_auth",
+      "rc_accuracy": 3,
+      "off_conf": 48.0,
+      "on_conf": 40.0,
+      "legacy_confidence": 48.0,
+      "dconf": -8.0,
+      "caps": [
+        "credential_contradiction_cap_40"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    },
+    {
+      "id": "7652e662",
+      "category": "authentication",
+      "obj_domain": "exchange_auth",
+      "rc_accuracy": 3,
+      "off_conf": 48.0,
+      "on_conf": 40.0,
+      "legacy_confidence": 48.0,
+      "dconf": -8.0,
+      "caps": [
+        "credential_contradiction_cap_40"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    },
+    {
+      "id": "4fcd9e28",
+      "category": "dashboard",
+      "obj_domain": "open_orders",
+      "rc_accuracy": 6,
+      "off_conf": 96.0,
+      "on_conf": 50.0,
+      "legacy_confidence": 60.0,
+      "dconf": -46.0,
+      "caps": [
+        "domain_mismatch_cap_50"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "confidence_inflation_reduced",
+        "recommendation_made_concrete"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "2616ea25",
+      "category": "dashboard",
+      "obj_domain": "order_reconciliation",
+      "rc_accuracy": 6,
+      "off_conf": 96.0,
+      "on_conf": 92.5,
+      "legacy_confidence": 100.0,
+      "dconf": -3.5,
+      "caps": [],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "recommendation_made_concrete"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "a5439a76",
+      "category": "orders",
+      "obj_domain": "order_reconciliation",
+      "rc_accuracy": 7,
+      "off_conf": 100.0,
+      "on_conf": 92.5,
+      "legacy_confidence": 100.0,
+      "dconf": -7.5,
+      "caps": [],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    },
+    {
+      "id": "c7eae0f4",
+      "category": "orders",
+      "obj_domain": "open_orders",
+      "rc_accuracy": 6,
+      "off_conf": 96.0,
+      "on_conf": 50.0,
+      "legacy_confidence": 57.6,
+      "dconf": -46.0,
+      "caps": [
+        "domain_mismatch_cap_50"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "confidence_inflation_reduced",
+        "recommendation_generic_to_honest_gap"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "5cb222df",
+      "category": "orders",
+      "obj_domain": "open_orders",
+      "rc_accuracy": 6,
+      "off_conf": 96.0,
+      "on_conf": 50.0,
+      "legacy_confidence": 57.6,
+      "dconf": -46.0,
+      "caps": [
+        "domain_mismatch_cap_50"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "confidence_inflation_reduced",
+        "recommendation_generic_to_honest_gap"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "cd4b339b",
+      "category": "api",
+      "obj_domain": "generic",
+      "rc_accuracy": 3,
+      "off_conf": 27.0,
+      "on_conf": 27.0,
+      "legacy_confidence": 27.0,
+      "dconf": 0.0,
+      "caps": [
+        "generic_objective_cap_35",
+        "generic_objective_legacy_cap"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    },
+    {
+      "id": "3f35a4d6",
+      "category": "orders",
+      "obj_domain": "open_orders",
+      "rc_accuracy": 7,
+      "off_conf": 96.0,
+      "on_conf": 60.0,
+      "legacy_confidence": 75.0,
+      "dconf": -36.0,
+      "caps": [
+        "generic_recommendation_cap_60"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "domain_alignment_improved",
+        "cross_domain_leakage_prevented",
+        "confidence_deflation_questionable",
+        "recommendation_generic_to_honest_gap"
+      ],
+      "verdict": "mixed"
+    },
+    {
+      "id": "5b76cf57",
+      "category": "portfolio",
+      "obj_domain": "portfolio_reconciliation",
+      "rc_accuracy": 9,
+      "off_conf": 90.5,
+      "on_conf": 90.5,
+      "legacy_confidence": 90.5,
+      "dconf": 0.0,
+      "caps": [
+        "legacy_confidence_ceiling"
+      ],
+      "off_acw": true,
+      "on_acw": true,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    },
+    {
+      "id": "99e5946a",
+      "category": "api",
+      "obj_domain": "deployment",
+      "rc_accuracy": 3,
+      "off_conf": 27.0,
+      "on_conf": 0.0,
+      "legacy_confidence": 27.0,
+      "dconf": -27.0,
+      "caps": [],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->insufficient_evidence",
+      "flags": [
+        "cross_domain_leakage_prevented",
+        "confidence_inflation_reduced"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "ada36c20",
+      "category": "dashboard",
+      "obj_domain": "order_reconciliation",
+      "rc_accuracy": 7,
+      "off_conf": 96.0,
+      "on_conf": 92.5,
+      "legacy_confidence": 100.0,
+      "dconf": -3.5,
+      "caps": [],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "recommendation_made_concrete"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "9c6c5879",
+      "category": "deployment",
+      "obj_domain": "database",
+      "rc_accuracy": 5,
+      "off_conf": 50.0,
+      "on_conf": 30.0,
+      "legacy_confidence": 30.0,
+      "dconf": -20.0,
+      "caps": [
+        "legacy_confidence_ceiling"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [
+        "confidence_inflation_reduced"
+      ],
+      "verdict": "improvement"
+    },
+    {
+      "id": "fe5f566e",
+      "category": "websocket",
+      "obj_domain": "infrastructure",
+      "rc_accuracy": 5,
+      "off_conf": 63.0,
+      "on_conf": 63.0,
+      "legacy_confidence": 63.0,
+      "dconf": 0.0,
+      "caps": [
+        "legacy_confidence_ceiling"
+      ],
+      "off_acw": false,
+      "on_acw": false,
+      "status_change": "completed->completed",
+      "flags": [],
+      "verdict": "neutral"
+    }
+  ]
+}

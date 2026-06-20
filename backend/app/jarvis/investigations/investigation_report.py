@@ -6,7 +6,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.jarvis.investigations.confidence import calibrate_confidence
+from app.jarvis.investigations.confidence import (
+    apply_confidence_regression_caps,
+    calibrate_confidence,
+)
 from app.jarvis.investigations.domains import (
     InvestigationDomain,
     apply_domain_gating,
@@ -965,6 +968,7 @@ def build_investigation_report(
     confidence_breakdown: dict[str, Any] = {}
     recommendation_plan: dict[str, Any] = {}
     objective_mismatch = False
+    legacy_confidence = confidence
     if objective_aware_rc_enabled():
         domain_classification = classify_domain(objective, category=category, template_id=template_id)
         domain_value = domain_classification.domain.value
@@ -996,6 +1000,18 @@ def build_investigation_report(
                 cause_domain=cause_domain,
                 specificity=plan.specificity,
                 has_meaningful_root_cause=_is_meaningful_root_cause(root_cause),
+            )
+            breakdown = apply_confidence_regression_caps(
+                breakdown,
+                legacy_confidence=legacy_confidence,
+                category=category,
+                objective_domain=domain_classification.domain,
+                objective_confidence=domain_classification.domain_confidence,
+                cause_domain=cause_domain,
+                root_cause=root_cause,
+                evidence=evidence,
+                tool_outputs=tool_outputs,
+                auth_failure_signals=_auth_failure_signals(evidence, tool_outputs),
             )
             confidence = breakdown.final
             confidence_breakdown = breakdown.to_dict()

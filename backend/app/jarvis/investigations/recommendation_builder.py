@@ -108,6 +108,80 @@ def _evidence_file_paths(evidence: list[EvidenceItem]) -> list[str]:
     return paths[:5]
 
 
+def _ops_scope_markers(text: str) -> bool:
+    low = (text or "").lower()
+    return any(
+        marker in low
+        for marker in (
+            "restart ",
+            "market-updater",
+            "docker compose",
+            "service and verify",
+            "inspect container",
+        )
+    )
+
+
+def _frontend_scope_files(files: list[str]) -> bool:
+    cleaned = [f.replace(" (candidate)", "") for f in files]
+    return bool(cleaned) and all(f.startswith("frontend/") for f in cleaned)
+
+
+def _fix_scope_mismatch(
+    target_files: list[str],
+    existing_fix: str,
+    template_recommended_fix: str,
+) -> bool:
+    """True when template file scope disagrees with the proposed operational fix text."""
+    if not target_files:
+        return False
+    fix_blob = f"{existing_fix} {template_recommended_fix}".lower()
+    if _frontend_scope_files(target_files) and _ops_scope_markers(fix_blob):
+        return True
+    if _frontend_scope_files(target_files) and "backend/" in fix_blob and "frontend" not in existing_fix.lower():
+        return True
+    return False
+
+
+def _evidence_supports_template_scope(
+    *,
+    target_files: list[str],
+    evidence: list[EvidenceItem],
+    existing_fix: str,
+    template_recommended_fix: str,
+) -> bool:
+    """Catalog files alone cannot justify full specificity without corroborating evidence."""
+    if _fix_scope_mismatch(target_files, existing_fix, template_recommended_fix):
+        return False
+    evidence_paths = _evidence_file_paths(evidence)
+    if evidence_paths and any(
+        any(tp in ep or ep.endswith(tp.split("/")[-1]) for tp in target_files) for ep in evidence_paths
+    ):
+        return True
+    template_keywords = tuple(
+        kw.lower()
+        for kw in (
+            "equity",
+            "websocket",
+            "open_orders",
+            "cache",
+            "portfolio",
+            "runtime.env",
+            "40101",
+        )
+    )
+    for item in evidence:
+        detail = (item.get("detail") or "").lower()
+        if any(kw in detail for kw in template_keywords):
+            if item.get("is_direct") or str(item.get("confidence")) == "high":
+                return True
+    if existing_fix and not is_generic_recommendation(existing_fix):
+        fix_low = existing_fix.lower()
+        if any(kw in fix_low for kw in template_keywords):
+            return True
+    return False
+
+
 def build_recommendation_plan(
     *,
     root_cause: str | None,
@@ -147,7 +221,18 @@ def build_recommendation_plan(
         fix = existing_fix if (existing_fix and not is_generic_recommendation(existing_fix)) else (
             template.recommended_fix or (root_cause or "")
         )
-        specificity = 1.0 if (files and validation_steps) else 0.5
+        scope_supported = _evidence_supports_template_scope(
+            target_files=files,
+            evidence=evidence,
+            existing_fix=fix,
+            template_recommended_fix=template.recommended_fix or "",
+        )
+        if _fix_scope_mismatch(files, fix, template.recommended_fix or ""):
+            specificity = 0.5
+        elif scope_supported and files and validation_steps:
+            specificity = 1.0
+        else:
+            specificity = 0.5
         return RecommendationPlan(
             proposed_fix=fix,
             affected_files=files,
