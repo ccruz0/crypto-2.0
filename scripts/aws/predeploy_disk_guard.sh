@@ -49,6 +49,12 @@ LOG_FILE="${DISK_GUARD_LOG:-/tmp/atp-predeploy-disk.log}"
 # node_exporter textfile collector dir (metrics only written if it exists)
 METRICS_DIR="${DISK_GUARD_METRICS_DIR:-/var/lib/node_exporter/textfile_collector}"
 
+# Pick a writable log file. A prior run (e.g. as root) may have created the
+# default path owned by another user; fall back so logging never errors.
+if ! ( : >> "$LOG_FILE" ) 2>/dev/null; then
+  LOG_FILE="$(mktemp /tmp/atp-predeploy-disk.XXXXXX.log 2>/dev/null || echo /dev/null)"
+fi
+
 log() { echo "[predeploy_disk_guard] $*" | tee -a "$LOG_FILE" 2>/dev/null || echo "[predeploy_disk_guard] $*"; }
 
 # Run a destructive reclaim command, unless DRY_RUN=1 (then just log it).
@@ -89,6 +95,12 @@ tier1_safe_reclaim() {
     run sudo journalctl --vacuum-time=5d 2>/dev/null || true
     run sudo apt-get clean 2>/dev/null || true
   fi
+  # Fully purge build cache. The deploy builds with --no-cache, so cached layers
+  # are never reused; keeping them only wastes space. This also reclaims cache
+  # leaked by a previous interrupted/failed build (which cleanup_disk.sh's
+  # "until=24h" filter misses on the same day).
+  log "Tier 1: purging ALL build cache (docker builder prune -af)"
+  run docker builder prune -af 2>/dev/null || true
 }
 
 # Tier 2: remove ALL images not referenced by any container + full build cache.

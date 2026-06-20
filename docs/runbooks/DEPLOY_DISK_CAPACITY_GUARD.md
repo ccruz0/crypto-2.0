@@ -26,8 +26,25 @@ production-safely.
 
 | Tier | When | What it removes |
 |------|------|-----------------|
-| 1 (always) | every deploy | dangling images, build cache >24h, stopped containers, unused networks, container json logs, journal >5d, apt cache, app logs >5 MB/>5 d (via `infra/cleanup_disk.sh`) |
+| 1 (always) | every deploy | dangling images, **all build cache** (`docker builder prune -af`), stopped containers, unused networks, container json logs, journal >5d, apt cache, app logs, **stale `/tmp/jarvis-sandbox` dirs >12h** (via `infra/cleanup_disk.sh`) |
 | 2 (escalation) | only if free `< MIN_FREE_GB` after Tier 1 | **all** images not referenced by any container + full build cache |
+
+### What actually fills the PROD disk (measured)
+
+On a lean PROD host the standard `docker image prune` reclaims **~0** because
+almost every image is in use. The real, recurring consumers — which the old
+daily cron and post-`up` prune missed — are:
+
+1. **Build cache from `--no-cache` / failed builds.** A failed build leaks its
+   partial layers/cache into `/var/lib/containerd`; the old cleanup only pruned
+   cache `>24h`, so same-day cache (often **2–3 GB**) survived. The guard and the
+   post-`up` step now run `docker builder prune -af` (no age filter).
+2. **`/tmp/jarvis-sandbox`** coding-workflow sandboxes (each hundreds of MB of
+   `node_modules`); nothing reclaimed them. Now cleaned (idle >12h) by Tier 1 and
+   the daily cron.
+3. **Image bloat** from baking `.git`, runtime artifacts, logs, tests, and
+   caches into the backend-aws image. A root `.dockerignore` (affects only the
+   context-`.` backend-aws build) trims this — backend-aws dropped 1.19 GB → 1.07 GB.
 
 ### Safety guarantees
 
@@ -76,6 +93,20 @@ bash scripts/aws/prod_free_disk_via_ssm.sh
 All safe space has been reclaimed and the remainder is named volumes /
 running-stack images / OS. **Do not delete volumes.** Grow the EBS root volume —
 see [`PROD_DISK_RESIZE.md`](./PROD_DISK_RESIZE.md).
+
+### EBS resize requires admin credentials
+
+The PROD instance role (`EC2_SSM_Role`) does **not** have `ec2:ModifyVolume`, so
+the volume cannot be grown from the instance itself. Growing it (the permanent
+fix when the host is genuinely full of legitimate data) must be done with an AWS
+account/role that has `ec2:ModifyVolume`:
+
+```bash
+# 30 GiB -> 50 GiB (vol-07912c5ce394ed1ae is PROD i-087953603011543c5's root)
+aws ec2 modify-volume --volume-id vol-07912c5ce394ed1ae --size 50 --region ap-southeast-1
+# wait for "optimizing"/"completed", then on the instance:
+sudo growpart /dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1 && df -h /
+```
 
 ## Rollback
 
