@@ -100,6 +100,18 @@ class TestObjectiveClassification:
             InvestigationObjectiveType.REPOSITORY_ANALYSIS
         )
 
+    def test_validation_framework_objective_routes_to_repository_analysis_not_signal_monitor(self):
+        objective = (
+            "Investigate Jarvis validation framework monitoring of root_cause_present "
+            "and conclusion_present in result_validation.py and planner_agent.py"
+        )
+        assert classify_investigation_objective(objective) == InvestigationObjectiveType.REPOSITORY_ANALYSIS
+
+    def test_trading_signal_monitor_still_routes_to_signal_monitor_investigation(self):
+        assert classify_investigation_objective("Investigate trading signal monitor failures in production logs") == (
+            InvestigationObjectiveType.SIGNAL_MONITOR_INVESTIGATION
+        )
+
 
 class TestPlanBuilder:
     def test_order_reconciliation_plan_contains_required_steps(self):

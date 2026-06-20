@@ -83,6 +83,121 @@ class TestValidationGates:
         labels = {c["label"]: c["passed"] for c in result["checks"]}
         assert labels["Root cause present"] is False
 
+    def test_monitoring_soak_without_root_cause_can_pass(self):
+        result = validate_task_result(
+            objective="Investigate soak test monitoring for regression after release",
+            task_type="investigation",
+            tool_results=[
+                {
+                    "tool": "inspect_health",
+                    "ok": True,
+                    "output": {
+                        "status": "ok",
+                        "endpoints_checked": 3,
+                        "evidence": [
+                            {
+                                "source": "health",
+                                "reference": "api",
+                                "detail": "All endpoints returned 200 during 6h soak window",
+                                "confidence": "high",
+                            }
+                        ],
+                    },
+                }
+            ],
+            final_answer="No regression detected; continue soak",
+        )
+        assert result["passed"] is True
+        assert result["final_status"] == "completed"
+        labels = {c["label"]: c["passed"] for c in result["checks"]}
+        assert labels["Conclusion present"] is True
+        assert labels["Evidence present"] is True
+
+    def test_framework_audit_without_fault_root_cause_can_pass(self):
+        result = validate_task_result(
+            objective="Investigate Jarvis result_validation root_cause_present and conclusion_present code paths",
+            task_type="investigation",
+            tool_results=[
+                {
+                    "tool": "search_repository",
+                    "ok": True,
+                    "output": {
+                        "match_count": 2,
+                        "matches": [
+                            {"path": "backend/app/jarvis/execution/result_validation.py", "text": "has_conclusion"},
+                            {"path": "backend/app/jarvis/execution/result_validation.py", "text": "has_root"},
+                        ],
+                    },
+                }
+            ],
+            final_answer="Validation gates require root cause only for incident-style investigations",
+        )
+        assert result["passed"] is True
+        assert result["final_status"] == "completed"
+
+    def test_bare_regression_incident_requires_root_cause(self):
+        result = validate_task_result(
+            objective="Why did websocket reconnect fail after regression?",
+            task_type="investigation",
+            tool_results=[
+                {
+                    "tool": "search_logs",
+                    "ok": True,
+                    "output": {
+                        "match_count": 1,
+                        "matches": [{"source": "ws", "message": "reconnect timeout observed"}],
+                    },
+                }
+            ],
+            final_answer="Observed reconnect timeouts during soak window",
+        )
+        assert result["passed"] is False
+        assert result["final_status"] == "insufficient_evidence"
+        labels = {c["label"]: c["passed"] for c in result["checks"]}
+        assert labels["Root cause present"] is False
+
+    def test_bare_audit_incident_requires_root_cause(self):
+        result = validate_task_result(
+            objective="Why did API fail during audit?",
+            task_type="investigation",
+            tool_results=[
+                {
+                    "tool": "search_logs",
+                    "ok": True,
+                    "output": {
+                        "match_count": 1,
+                        "matches": [{"source": "api", "message": "500 during audit probe"}],
+                    },
+                }
+            ],
+            final_answer="API returned 500 during audit run",
+        )
+        assert result["passed"] is False
+        assert result["final_status"] == "insufficient_evidence"
+        labels = {c["label"]: c["passed"] for c in result["checks"]}
+        assert labels["Root cause present"] is False
+
+    def test_critical_alert_regression_incident_requires_root_cause(self):
+        result = validate_task_result(
+            objective="Investigate critical alert regression",
+            task_type="investigation",
+            tool_results=[
+                {
+                    "tool": "search_logs",
+                    "ok": True,
+                    "output": {
+                        "match_count": 1,
+                        "matches": [{"source": "alert", "message": "critical threshold breached"}],
+                    },
+                }
+            ],
+            final_answer="Alert fired during regression window",
+        )
+        assert result["passed"] is False
+        assert result["final_status"] == "insufficient_evidence"
+        labels = {c["label"]: c["passed"] for c in result["checks"]}
+        assert labels["Root cause present"] is False
+
     def test_investigation_with_root_cause_passes(self):
         result = validate_task_result(
             objective="Why is websocket reconnect failing?",
