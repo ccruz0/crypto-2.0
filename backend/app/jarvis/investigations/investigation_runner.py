@@ -370,6 +370,8 @@ def run_investigation(
         category=category,
         tool_outputs=tool_outputs,
         recent_failures=recent_failures,
+        objective=objective_text,
+        template_id=template_id,
     )
 
     report = build_investigation_report(

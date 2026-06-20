@@ -6,6 +6,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.jarvis.investigations.confidence import calibrate_confidence
+from app.jarvis.investigations.domains import (
+    InvestigationDomain,
+    apply_domain_gating,
+    classify_cause_domain,
+    classify_domain,
+    domain_relevance,
+    objective_aware_rc_enabled,
+)
 from app.jarvis.investigations.evidence_model import (
     EvidenceItem,
     count_independent_sources,
@@ -16,6 +25,7 @@ from app.jarvis.investigations.evidence_model import (
     merge_evidence,
 )
 from app.jarvis.investigations.investigation_types import InvestigationStatus
+from app.jarvis.investigations.recommendation_builder import build_recommendation_plan
 
 _EMPTY_VALUES = frozenset({"", "none", "null", "n/a", "not determined", "unknown"})
 
@@ -43,6 +53,7 @@ class RootCauseCandidate:
     score: float
     supporting_evidence: list[str] = field(default_factory=list)
     explanation: str = ""
+    domain: str = ""
 
 
 @dataclass(frozen=True)
@@ -103,6 +114,9 @@ class InvestigationReport:
     resolution_status: str | None = None
     synthesis: dict[str, Any] = field(default_factory=dict)
     missing_evidence: list[str] = field(default_factory=list)
+    domain: str = ""
+    confidence_breakdown: dict[str, Any] = field(default_factory=dict)
+    recommendation_plan: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -139,6 +153,13 @@ class InvestigationReport:
         }
         if self.resolution_status:
             payload["resolution_status"] = self.resolution_status
+        # Objective-aware fields (populated only when the feature flag is on).
+        if self.domain:
+            payload["domain"] = self.domain
+        if self.confidence_breakdown:
+            payload["confidence_breakdown"] = self.confidence_breakdown
+        if self.recommendation_plan:
+            payload["recommendation_plan"] = self.recommendation_plan
         return payload
 
 
@@ -158,6 +179,24 @@ def _is_meaningful_root_cause(value: Any) -> bool:
     if len(text) < 12:
         return False
     return True
+
+
+def _has_explicit_domain_evidence(
+    evidence: list[EvidenceItem],
+    cause_domain: InvestigationDomain,
+) -> bool:
+    """True when a direct, high-confidence evidence item is itself in the cause domain.
+
+    Backs the design's "explicit evidence override": a cross-domain cause may only
+    be promoted when there is direct high-confidence evidence of that domain.
+    """
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        if item.get("is_direct") and str(item.get("confidence")) == "high":
+            if classify_cause_domain(str(item.get("detail", ""))) == cause_domain:
+                return True
+    return False
 
 
 def _confidence_level(score: float) -> str:
@@ -637,8 +676,16 @@ def rank_root_causes(
     category: str,
     tool_outputs: list[dict[str, Any]] | None = None,
     recent_failures: int = 0,
+    objective: str = "",
+    template_id: str = "",
 ) -> list[RootCauseCandidate]:
-    """Score and rank root cause candidates from collected evidence."""
+    """Score and rank root cause candidates from collected evidence.
+
+    When the ``JARVIS_OBJECTIVE_AWARE_RC`` flag is enabled, candidates are
+    additionally re-weighted by domain relevance to the investigation objective
+    (cross-domain causes are heavily penalized). When the flag is off, ranking is
+    unchanged.
+    """
     corpus = _evidence_corpus(evidence, tool_outputs)
     candidates: list[RootCauseCandidate] = []
 
@@ -723,6 +770,16 @@ def rank_root_causes(
     classification = classify_open_orders_mismatch(tool_outputs)
     if classification and category in ("orders", "dashboard", "exchange"):
         deduped = _apply_open_orders_resolution(deduped, classification)
+
+    # Objective-aware domain gating (flagged; no-op when the flag is off).
+    if objective_aware_rc_enabled() and (objective or category):
+        domain_classification = classify_domain(objective, category=category, template_id=template_id)
+        deduped = apply_domain_gating(
+            deduped,
+            domain_classification.domain,
+            domain_classification.domain_confidence,
+        )
+
     return deduped[:8]
 
 
@@ -903,6 +960,58 @@ def build_investigation_report(
                 next_action = str(output["next_action"])
                 break
 
+    # Objective-aware calibration + structured recommendation (flagged; no-op when off).
+    domain_value = ""
+    confidence_breakdown: dict[str, Any] = {}
+    recommendation_plan: dict[str, Any] = {}
+    objective_mismatch = False
+    if objective_aware_rc_enabled():
+        domain_classification = classify_domain(objective, category=category, template_id=template_id)
+        domain_value = domain_classification.domain.value
+        if root_cause:
+            cause_domain = classify_cause_domain(root_cause)
+            relevance = domain_relevance(
+                domain_classification.domain,
+                cause_domain,
+                domain_classification.domain_confidence,
+            )
+            plan = build_recommendation_plan(
+                root_cause=root_cause,
+                category=category,
+                evidence=evidence,
+                existing_fix=recommended_fix,
+                existing_verification=verification_steps,
+            )
+            recommendation_plan = plan.to_dict()
+            if plan.proposed_fix:
+                recommended_fix = plan.proposed_fix
+                next_action = plan.proposed_fix
+            if plan.validation_steps:
+                verification_steps = list(plan.validation_steps)
+            breakdown = calibrate_confidence(
+                evidence=evidence,
+                tool_outputs=tool_outputs,
+                objective_domain=domain_classification.domain,
+                objective_confidence=domain_classification.domain_confidence,
+                cause_domain=cause_domain,
+                specificity=plan.specificity,
+                has_meaningful_root_cause=_is_meaningful_root_cause(root_cause),
+            )
+            confidence = breakdown.final
+            confidence_breakdown = breakdown.to_dict()
+            in_domain_exists = any(
+                classify_cause_domain(c.cause) == domain_classification.domain for c in ranked_causes
+            )
+            override = _has_explicit_domain_evidence(evidence, cause_domain)
+            if (
+                relevance <= 0.2
+                and not override
+                and not in_domain_exists
+                and domain_classification.domain != InvestigationDomain.GENERIC
+                and domain_classification.domain_confidence >= 0.4
+            ):
+                objective_mismatch = True
+
     missing_evidence = identify_missing_evidence(evidence, tool_outputs, category=category)
     if category == "authentication" and not _auth_failure_signals(evidence, tool_outputs):
         missing_evidence = list(
@@ -934,6 +1043,18 @@ def build_investigation_report(
         template_id=template_id,
     )
 
+    if objective_mismatch and status == InvestigationStatus.COMPLETED and root_cause:
+        status = InvestigationStatus.INSUFFICIENT_EVIDENCE
+        missing_evidence = list(
+            dict.fromkeys(
+                missing_evidence
+                + [
+                    f"No in-domain root cause for {domain_value}; "
+                    f"evidence points to {classify_cause_domain(root_cause).value}"
+                ]
+            )
+        )
+
     synthesis = build_synthesis(
         objective=objective,
         evidence=evidence,
@@ -943,6 +1064,12 @@ def build_investigation_report(
         confidence=confidence,
         missing_evidence=missing_evidence if status != InvestigationStatus.COMPLETED else [],
     )
+    if domain_value:
+        synthesis["domain"] = domain_value
+    if confidence_breakdown:
+        synthesis["confidence_breakdown"] = confidence_breakdown
+    if recommendation_plan:
+        synthesis["recommendation_plan"] = recommendation_plan
 
     return InvestigationReport(
         investigation_id=investigation_id,
@@ -965,6 +1092,9 @@ def build_investigation_report(
         resolution_status=classification.resolution if classification else None,
         synthesis=synthesis,
         missing_evidence=missing_evidence if status != InvestigationStatus.COMPLETED else [],
+        domain=domain_value,
+        confidence_breakdown=confidence_breakdown,
+        recommendation_plan=recommendation_plan,
     )
 
 
