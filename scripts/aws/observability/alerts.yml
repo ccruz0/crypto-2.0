@@ -25,6 +25,38 @@ groups:
           summary: "Container restarts detected (cadvisor)"
           description: "One or more containers restarted more than twice in the last 15m."
 
+      - alert: HostMemoryHigh
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.10
+        for: 5m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Host memory low on {{ $labels.instance }} (<10% available)"
+          description: "Available memory has been below 10% for 5m. Host is memory-pressured and may start swapping."
+
+      - alert: HostMemoryCritical
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.05
+        for: 5m
+        labels: { severity: "critical" }
+        annotations:
+          summary: "Host memory critical on {{ $labels.instance }} (<5% available)"
+          description: "Available memory has been below 5% for 5m. OOM-kills and severe swap thrashing are likely."
+
+      - alert: HostSwapHigh
+        expr: ((node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / clamp_min(node_memory_SwapTotal_bytes, 1)) > 0.25
+        for: 10m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Host swap usage high on {{ $labels.instance }} (>25% used)"
+          description: "More than 25% of swap has been in use for 10m, indicating sustained memory pressure / thrashing."
+
+      - alert: HostCPUSaturated
+        expr: (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.85
+        for: 10m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Host CPU saturated on {{ $labels.instance }} (>85% non-idle)"
+          description: "Non-idle CPU has averaged above 85% for 10m, indicating sustained CPU saturation."
+
   - name: backend_api
     rules:
       - alert: BackendHigh5xxRate
@@ -55,13 +87,3 @@ groups:
         annotations:
           summary: "Market updater heartbeat age > 15m"
           description: "Market updater has not sent a heartbeat in over 15 minutes."
-
-  - name: test
-    rules:
-      - alert: TestTelegramAlert
-        expr: vector(1)
-        for: 10s
-        labels: { severity: "warning" }
-        annotations:
-          summary: "Test alert"
-          description: "If you see this, Alertmanager -> Telegram is wired."

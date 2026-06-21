@@ -20,10 +20,31 @@
 | InstanceDown | `up == 0` for 2m | critical |
 | HostDiskFillingUp | disk &lt; 15% for 10m | warning |
 | ContainerRestartsHigh | cadvisor restarts in 15m | warning |
+| HostMemoryHigh | available memory &lt; 10% for 5m | warning |
+| HostMemoryCritical | available memory &lt; 5% for 5m | critical |
+| HostSwapHigh | swap used &gt; 25% for 10m | warning |
+| HostCPUSaturated | non-idle CPU &gt; 85% for 10m | warning |
 | BackendHigh5xxRate | 5xx rate &gt; 2% for 5m | critical |
 | BackendP95LatencyHigh | p95 &gt; 800 ms for 10m | warning |
 | MarketUpdaterStalled | heartbeat age &gt; 15m for 5m | warning |
-| TestTelegramAlert | `vector(1)` for 10s (e2e test) | warning |
+
+> **Note:** The permanent `TestTelegramAlert` (`vector(1)`) rule was removed — it fired continuously and created alert noise. To validate the Alertmanager → Telegram path manually, use the existing scripts (e.g. `backend/scripts/trigger_manual_alert.py`, `scripts/trigger_manual_alert_simple.sh`) instead of a permanently-firing rule.
+
+### Validating alert rules
+
+The rules in `alerts.yml` are covered by promtool unit tests in `alerts.test.yml`. No native `promtool` is required — use the pinned Prometheus image:
+
+```bash
+# Lint rule syntax
+docker run --rm --network none \
+  -v "$PWD/scripts/aws/observability/alerts.yml:/tmp/alerts.yml:ro" \
+  --entrypoint promtool prom/prometheus:v2.51.2 check rules /tmp/alerts.yml
+
+# Run unit tests (host saturation alerts)
+docker run --rm --network none \
+  -v "$PWD/scripts/aws/observability:/work:ro" \
+  --entrypoint promtool prom/prometheus:v2.51.2 test rules /work/alerts.test.yml
+```
 
 ---
 
@@ -46,13 +67,17 @@ docker compose --profile aws up -d prometheus grafana alertmanager telegram-aler
 docker compose --profile aws up -d db backend-aws market-updater-aws frontend-aws
 ```
 
-**One end-to-end test:** After ~30–60s you should receive a Telegram message for `TestTelegramAlert`. Confirm with:
+**One end-to-end test:** The permanent `TestTelegramAlert` rule has been removed (it fired continuously and produced alert noise). To verify the Alertmanager → Telegram path on demand, trigger a manual alert with the existing tooling, e.g.:
 
 ```bash
-curl -fsS http://127.0.0.1:9090/api/v1/alerts | jq '.data.alerts[] | select(.labels.alertname=="TestTelegramAlert") | .state'
+python backend/scripts/trigger_manual_alert.py   # or: scripts/trigger_manual_alert_simple.sh
 ```
 
-Once verified, you can remove or disable the `TestTelegramAlert` rule in `alerts.yml` if you do not want it to repeat every 2h.
+Then confirm the alert appears in Prometheus:
+
+```bash
+curl -fsS http://127.0.0.1:9090/api/v1/alerts | jq '.data.alerts[] | {alertname: .labels.alertname, state: .state}'
+```
 
 ---
 
