@@ -1,0 +1,96 @@
+# promtool unit tests for host resource saturation alerts.
+# Run locally (no native promtool needed) with the pinned Prometheus image:
+#   docker run --rm --network none \
+#     -v "$PWD/scripts/aws/observability:/work:ro" \
+#     --entrypoint promtool prom/prometheus:v2.51.2 \
+#     test rules /work/alerts.test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Memory between 5% and 10% available: HostMemoryHigh (warning) only.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{instance="host:9100"}'
+        values: "80x15"
+      - series: 'node_memory_MemTotal_bytes{instance="host:9100"}'
+        values: "1000x15"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HostMemoryHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "host:9100"
+            exp_annotations:
+              summary: "Host memory low on host:9100 (<10% available)"
+              description: "Available memory has been below 10% for 5m. Host is memory-pressured and may start swapping."
+      - eval_time: 10m
+        alertname: HostMemoryCritical
+        exp_alerts: []
+
+  # Memory below 5% available: both HostMemoryHigh and HostMemoryCritical fire.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{instance="host:9100"}'
+        values: "40x15"
+      - series: 'node_memory_MemTotal_bytes{instance="host:9100"}'
+        values: "1000x15"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HostMemoryCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: "host:9100"
+            exp_annotations:
+              summary: "Host memory critical on host:9100 (<5% available)"
+              description: "Available memory has been below 5% for 5m. OOM-kills and severe swap thrashing are likely."
+
+  # Swap usage above 25%: HostSwapHigh (warning).
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_SwapTotal_bytes{instance="host:9100"}'
+        values: "2000x15"
+      - series: 'node_memory_SwapFree_bytes{instance="host:9100"}'
+        values: "1000x15"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HostSwapHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "host:9100"
+            exp_annotations:
+              summary: "Host swap usage high on host:9100 (>25% used)"
+              description: "More than 25% of swap has been in use for 10m, indicating sustained memory pressure / thrashing."
+
+  # No swap configured (SwapTotal == 0): HostSwapHigh must NOT fire (no divide-by-zero).
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_SwapTotal_bytes{instance="host:9100"}'
+        values: "0x15"
+      - series: 'node_memory_SwapFree_bytes{instance="host:9100"}'
+        values: "0x15"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HostSwapHigh
+        exp_alerts: []
+
+  # Sustained low idle (~10%) => non-idle ~90% > 85%: HostCPUSaturated (warning).
+  - interval: 1m
+    input_series:
+      - series: 'node_cpu_seconds_total{instance="host:9100",cpu="0",mode="idle"}'
+        values: "0+6x30"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HostCPUSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "host:9100"
+            exp_annotations:
+              summary: "Host CPU saturated on host:9100 (>85% non-idle)"
+              description: "Non-idle CPU has averaged above 85% for 10m, indicating sustained CPU saturation."
