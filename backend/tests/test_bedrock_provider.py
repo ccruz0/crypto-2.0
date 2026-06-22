@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 
 import pytest
 
@@ -38,7 +39,7 @@ def test_provider_is_subclass_of_interface():
 
 def test_complete_parses_anthropic_text():
     client = _FakeClient({"content": [{"type": "text", "text": "disk is 92% full"}]})
-    provider = BedrockProvider(model_id="m-test", client=client)
+    provider = BedrockProvider(model_id="m-test", region="ap-southeast-1", client=client)
     resp = provider.complete("why is disk full?", system="be brief", max_tokens=100)
     assert isinstance(resp, LLMResponse)
     assert resp.text == "disk is 92% full"
@@ -51,7 +52,7 @@ def test_complete_parses_anthropic_text():
 
 def test_complete_wraps_vendor_error():
     client = _FakeClient(error=RuntimeError("throttled"))
-    provider = BedrockProvider(client=client)
+    provider = BedrockProvider(region="ap-southeast-1", client=client)
     with pytest.raises(LLMProviderError):
         provider.complete("x")
 
@@ -64,5 +65,45 @@ def test_factory_fail_closed_when_flag_off(monkeypatch):
 
 def test_factory_returns_provider_when_flag_on(monkeypatch):
     monkeypatch.setenv("JARVIS_BEDROCK_ENABLED", "true")
+    monkeypatch.setenv("JARVIS_BEDROCK_REGION", "ap-southeast-1")
     provider = get_bedrock_provider()
     assert isinstance(provider, BedrockProvider)
+
+
+def test_region_from_env_is_used(monkeypatch):
+    # With JARVIS_BEDROCK_REGION set, that region must reach boto3.client(...).
+    monkeypatch.setenv("JARVIS_BEDROCK_REGION", "ap-southeast-1")
+    captured: dict = {}
+
+    class _FakeBoto3:
+        def client(self, name, **kwargs):
+            captured["name"] = name
+            captured["region_name"] = kwargs.get("region_name")
+            return _FakeClient()
+
+    monkeypatch.setitem(sys.modules, "boto3", _FakeBoto3())
+    provider = BedrockProvider()
+    provider.complete("why is disk full?")
+
+    assert captured["name"] == "bedrock-runtime"
+    assert captured["region_name"] == "ap-southeast-1"
+
+
+def test_constructor_region_arg_takes_precedence(monkeypatch):
+    monkeypatch.delenv("JARVIS_BEDROCK_REGION", raising=False)
+    provider = BedrockProvider(region="ap-southeast-1", client=_FakeClient())
+    assert provider._region == "ap-southeast-1"
+
+
+def test_construction_fails_closed_when_region_unset(monkeypatch):
+    monkeypatch.delenv("JARVIS_BEDROCK_REGION", raising=False)
+    with pytest.raises(LLMProviderError, match="JARVIS_BEDROCK_REGION"):
+        BedrockProvider()
+
+
+def test_factory_fails_closed_when_region_unset(monkeypatch):
+    # Flag on, but region unset: must fail closed, not silently pick a region.
+    monkeypatch.setenv("JARVIS_BEDROCK_ENABLED", "true")
+    monkeypatch.delenv("JARVIS_BEDROCK_REGION", raising=False)
+    with pytest.raises(LLMProviderError, match="JARVIS_BEDROCK_REGION"):
+        get_bedrock_provider()

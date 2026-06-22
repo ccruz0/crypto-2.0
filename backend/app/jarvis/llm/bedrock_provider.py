@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Bedrock-first preferred model (Anthropic Claude). Overridable via env.
 _DEFAULT_MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
-_DEFAULT_REGION = "ap-southeast-1"
 
 
 class BedrockProvider(LLMProvider):
@@ -33,7 +32,14 @@ class BedrockProvider(LLMProvider):
         client: Any | None = None,
     ) -> None:
         self._model_id = model_id or os.environ.get("JARVIS_BEDROCK_MODEL_ID") or _DEFAULT_MODEL_ID
-        self._region = region or os.environ.get("JARVIS_BEDROCK_REGION") or _DEFAULT_REGION
+        # Region must be a deliberate config, never a silent default: fail closed
+        # when neither an explicit arg nor JARVIS_BEDROCK_REGION is provided.
+        resolved_region = (region or os.environ.get("JARVIS_BEDROCK_REGION") or "").strip()
+        if not resolved_region:
+            raise LLMProviderError(
+                "JARVIS_BEDROCK_REGION not configured: set the env var or pass region= explicitly"
+            )
+        self._region = resolved_region
         self._client = client
 
     def _get_client(self) -> Any:
