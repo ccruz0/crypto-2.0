@@ -186,9 +186,11 @@ repo evidence — so it is cited here at the same standard, with the exact comma
 outputs observed.
 
 - **Binary:** `/home/ubuntu/.local/bin/cursor-agent` → `…/versions/2026.06.16-20-30-07-a07d3ac/cursor-agent`.
-  (Note: the `cursor` on `PATH` is the **editor remote-cli** — `--diff`/`--merge`/
-  `--install-extension`, no `agent`/`status` — and is *not* the agent CLI. The bridge's
-  `_cursor_cli_path()` must resolve to `cursor-agent`.)
+  (Note: the bridge's `_cursor_cli_path()` must resolve to `cursor-agent`. **Correction (verified
+  in LAB):** the host path `/home/ubuntu/.local/bin/cursor` is **not** the editor remote-cli — it is
+  an **empty, root-owned directory** that Docker auto-created as a missing bind-mount source, so the
+  container's `/usr/local/bin/cursor` is an empty dir and the probe fails with `FileNotFoundError`.
+  The mechanism is *missing binary*, not *wrong binary*. See `PHASE_6_1_CLI_PATH_TASK.md` §2.)
 - **`cursor-agent --help`** (verbatim, relevant lines):
   - `-p, --print` → *"Print responses to console … Has access to all tools, including write and shell."*
   - `--trust` → *"Trust the current workspace without prompting (only works with --print/headless mode)."*

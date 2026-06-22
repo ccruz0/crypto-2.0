@@ -40,22 +40,29 @@ The resolution chain, traced verbatim, with **defaults as they stand today**:
 2. **The LAB compose does not set `CURSOR_CLI_PATH`** (`docker-compose.lab.yml:39-43` sets
    `JARVIS_*`, `CURSOR_BRIDGE_*`, `ATP_STAGING_ROOT` — not `CURSOR_CLI_PATH`). So in-container,
    `_cursor_cli_path()` returns the bare default `"cursor"`.
-3. **Bare `"cursor"` resolves via PATH to `/usr/local/bin/cursor`**, which is the bind-mount
-   target:
+3. **Bare `"cursor"` resolves to nothing executable — because the mount source is an empty
+   directory, not a binary.** The bind-mount:
    ```yaml
    # docker-compose.lab.yml:59
    - ${CURSOR_CLI_HOST_PATH:-/home/ubuntu/.local/bin/cursor}:/usr/local/bin/cursor:ro
    ```
-   The default host source `/home/ubuntu/.local/bin/cursor` is the **editor remote-cli**
-   (`--diff`/`--merge`/`--install-extension`, no `agent`/`status`) — *not* the agent CLI, which
-   lives at `/home/ubuntu/.local/bin/cursor-agent` (per symbol-contract §3).
+   The default host source `/home/ubuntu/.local/bin/cursor` is **an empty, root-owned directory**
+   (`drwxr-xr-x root root`, created `Jun 18 22:31` — the signature of Docker auto-creating a
+   bind-mount source that did not exist on the host). There is **no `cursor` binary there at all**;
+   the host has only `agent` and `cursor-agent` symlinks → the real agent CLI
+   (`…/versions/2026.06.16-20-30-07-a07d3ac/cursor-agent`). So inside the container
+   `/usr/local/bin/cursor` is an empty directory; `command -v cursor` finds nothing.
 
 **Two decoupled variables.** The function reads `CURSOR_CLI_PATH` (in-container); the compose
 only defines `CURSOR_CLI_HOST_PATH` (host side of the mount). Fixing one does not touch the other.
 This is why the fix is **config + (maybe) function**, not "one function."
 
-**Net:** with current defaults, the LAB container wires the *editor* binary to the path the bridge
-calls. The probe fails 100% of the time. The symbol contract is blind to this by design.
+**Net (verified live in LAB container `automated-trading-platform-backend-lab`):**
+`CURSOR_CLI_PATH` is unset → `_cursor_cli_path()` returns `'cursor'` → `shutil.which('cursor')` is
+`None` (`/usr/local/bin/cursor` `isdir=True, isfile=False`) → the §2.4 probe
+`subprocess.run(["cursor","status",...])` raises `FileNotFoundError` → fail-closed `False` → every
+ACW aborted. **The mechanism is *missing binary*, not *wrong binary*; a fix premised on "replace
+the editor" would target a binary that isn't there.** The symbol contract is blind to this by design.
 
 ---
 
@@ -85,17 +92,30 @@ assume." Same discipline that caught this binary mismatch in the first place.
 
 Both make the agent CLI the one the bridge calls; they differ in clarity. Listed, not chosen.
 
-- **(A) Config-only.** Set `CURSOR_CLI_HOST_PATH=/home/ubuntu/.local/bin/cursor-agent` so the mount
-  carries the *agent* binary into the container at `/usr/local/bin/cursor`; bare `"cursor"` then
-  resolves to the agent CLI. Smallest diff, but semantically misleading (a binary named `cursor`
-  that is actually `cursor-agent`).
-- **(B) Explicit and self-documenting.** Mount to `/usr/local/bin/cursor-agent` (target rename) and
-  set `CURSOR_CLI_PATH=cursor-agent` in the LAB compose (and/or change `_DEFAULT_CURSOR_CLI` to
-  `"cursor-agent"`). Touches compose env + mount + optionally the Python default; the resulting
-  config says what it means.
+- **(A) Config-only — now insufficient on its own.** Setting `CURSOR_CLI_HOST_PATH` to an agent path
+  fixes the mount source, but `CURSOR_CLI_PATH` stays unset so code still calls bare `cursor`, and it
+  does **not** touch the third wiring site below. Smallest diff, but leaves the trap decoupled.
+- **(B, decided sub-variant) Explicit and self-documenting.** Mount the real `cursor-agent` to
+  `/usr/local/bin/cursor-agent` (target rename) **and** set `CURSOR_CLI_PATH=/usr/local/bin/cursor-agent`
+  in the LAB compose. Canonical variable confirmed by grep: **`CURSOR_CLI_PATH` is the only variable
+  the running code reads** (`cursor_execution_bridge.py:143` + the diag scripts); `CURSOR_CLI_HOST_PATH`
+  feeds **only** the bind-mount source (`docker-compose.lab.yml:59`). Naming the agent explicitly in the
+  canonical variable means the empty-dir trap cannot silently recur.
 
-Recommendation to put to the human: **(B)** — the extra lines buy a config that cannot be silently
-misread as the editor again. But this is a config change on LAB enablement and is the human's call.
+**Recommendation to put to the human: (B), the explicit sub-variant above** — not merely flipping
+`_DEFAULT_CURSOR_CLI`. The extra lines buy a config that says what it is. This is a config change on
+LAB enablement and remains the human's call.
+
+**Third wiring site to clean up (same fix):** `backend/scripts/diag/run_acw_v2_bugfix_validation.py:47`
+does `os.environ.setdefault("CURSOR_CLI_PATH", ".../remote-cli/cursor")` — a third place pinning an
+**editor** remote-cli path into the canonical variable. Residue of the same reverted experiment;
+flag for removal/correction so it cannot override a fixed LAB config.
+
+**Caveat — binary self-containment (verify, don't assume):** `cursor-agent` lives under
+`…/versions/<build>/cursor-agent`. Bind-mounting the single file may break it if it depends on sibling
+files in its install tree. Before landing the fix, confirm whether to mount the binary alone or the
+`versions/<build>/` (or `~/.local/share/cursor-agent`) tree, and point `CURSOR_CLI_PATH` at the binary
+within it. Re-confirm on the actual LAB execution host — the build/layout may differ by version.
 
 ---
 
@@ -124,11 +144,28 @@ misread as the editor again. But this is a config change on LAB enablement and i
 
 ---
 
-## 7. Relationship to the symbol contract
+## 7. Phase 6 blockers — in upstream order
 
-This task and `PHASE_6_1_CURSOR_AUTH_CONTRACT.md` are the **two prerequisites of 6.1**: the symbol
-merge (that contract) and correct CLI path resolution (this file). Neither alone makes 6.1
-end-to-end functional. The symbol contract's §6 already reclassifies CLI path resolution as the
-"second blocking prerequisite of 6.1 (alongside the merge)"; this file is that blocker specified.
-(A cross-reference by filename can be added to §6 in a later pass — deliberately omitted now to keep
-the contract at its sealed 261-line `--stat`.)
+Three blockers are stacked for the ACW path to run end-to-end in LAB. **The symbol contract is
+structurally blind to two of them** (it only specifies blocker 3). Ordered most-upstream first,
+because an upstream one kills the path before a downstream one is even reached:
+
+1. **`ENVIRONMENT=lab` rejected at import-time — most upstream.** A *cold* Python subprocess that
+   imports `app.services` under `ENVIRONMENT=lab` crashes before any cursor-auth code runs:
+   `EnvironmentSettings` is a strict `Literal["local","aws"]` (`environment.py:13,233`) and rejects
+   `'lab'`, whereas the functional detector `getRuntimeEnv()` (`environment.py:41`) tolerates it
+   (non-`aws` → `local`). See `PHASE_6_ENVIRONMENT_LAB_BLOCKER.md`.
+   - **Scope caveat (source-corrected, do not overstate):** the **live server** and any **in-process**
+     ACW code are *insulated*, because `entrypoint.sh:14-18` sources `secrets/runtime.env` (which
+     defines `ENVIRONMENT=`) and overrides the compose `ENVIRONMENT=lab` for PID 1 (server returns
+     HTTP 200). The crash reproduces only in **cold subprocesses that skip the entrypoint and do not
+     pre-set `ENVIRONMENT=local`**. Whether this actually blocks an ACW-critical path (e.g. a staging
+     pytest phase) is the open scope question in the new doc — verify, don't assume.
+2. **CLI-path — this document.** Empty-directory mount → `_cursor_cli_path()` → `FileNotFoundError`
+   → probe always `False` → ACW aborted (§2).
+3. **The 7 cursor-auth symbols — `PHASE_6_1_CURSOR_AUTH_CONTRACT.md`.** Undefined symbols → module
+   `ImportError` → ACW path dead.
+
+All three must be resolved for ACW end-to-end. The symbol contract's §6 already reclassifies CLI path
+resolution as a blocking prerequisite "alongside the merge"; this file specifies it. (Cross-references
+by filename can be added in a later pass.)

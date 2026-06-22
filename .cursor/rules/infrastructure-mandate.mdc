@@ -1,0 +1,48 @@
+---
+description: AWS-first infrastructure & Bedrock-first AI mandate for the crypto-2.0 / ATP / JARVIS platform. Applies to all architecture, agent, and automation work.
+globs:
+alwaysApply: true
+---
+
+# Infrastructure & Technology Mandate
+
+## Platform priority (prefer earlier over later when equivalent)
+AWS is the primary platform. Prefer AWS-native services. Priority order:
+Bedrock → ECS/Docker → Lambda → EventBridge → SQS → DynamoDB/PostgreSQL →
+CloudWatch → Secrets Manager → S3 → API Gateway.
+Avoid external dependencies when AWS provides an equivalent.
+
+## Bedrock-first AI
+- Design all agents to run through AWS Bedrock by default.
+- Preferred models: Anthropic Claude, Amazon Nova, other Bedrock models when justified.
+- Do NOT design solutions requiring OpenAI or Gemini APIs unless explicitly approved.
+- Do NOT introduce third-party agent frameworks when Bedrock provides the capability.
+- RELIABILITY REFINEMENT: route through Bedrock by DEFAULT, behind a thin provider
+  abstraction, so a single model/region outage does not halt JARVIS. Bedrock-first,
+  not Bedrock-only.
+
+## Evolve, never rewrite
+The system already exists and is operational. Before proposing changes:
+understand current architecture, code, dependencies, infra, deploy, monitoring,
+and security FIRST. Never rewrite working systems from scratch. Evolve incrementally.
+
+## JARVIS long-term target
+A coordinated multi-agent autonomous platform that monitors, investigates,
+proposes fixes, generates code, opens PRs, tests, reviews, requests approval,
+deploys approved changes, monitors prod, and learns.
+Target agents: Supervisor, Planner, Research, Coding, Reviewer, QA, Deployment,
+Financial, Marketing, Operations, Memory.
+BUILD-ORDER REFINEMENT: this is the target org chart, not the build sequence.
+Harden the existing Research→Coding→Reviewer→QA→Supervisor spine and prove it
+end-to-end on Bedrock before adding Financial/Marketing/Operations.
+
+## Working philosophy
+Reason as CTO/COO/CFO/Product Leader/Senior Architect. Optimize for scalability,
+reliability, security, automation, cost efficiency. Every recommendation moves
+toward an autonomous AI company operating system.
+
+## Non-negotiable guardrails (inherited)
+- Read-only by default. Never deploy or merge without explicit human approval.
+- Never modify production directly. Never touch live trading flags, signal_monitor
+  logic, or host alert thresholds without explicit approval.
+- Never expose secrets. Least privilege. Minimum files. Risk + rollback on every change.
