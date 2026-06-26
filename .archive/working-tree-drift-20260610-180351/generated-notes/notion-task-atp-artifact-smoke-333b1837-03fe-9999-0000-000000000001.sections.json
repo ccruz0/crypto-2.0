@@ -1,0 +1,8 @@
+{
+  "sections": {
+    "Task Summary": "Smoke test artifact persistence for ATP validation gate.",
+    "Root Cause": "Previously missing artifact_paths module in container image.",
+    "Recommended Fix": "Restore artifact_paths.py and rebuild backend-aws Docker image.",
+    "Affected Files": "backend/app/services/artifact_paths.py, backend/Dockerfile.aws"
+  }
+}

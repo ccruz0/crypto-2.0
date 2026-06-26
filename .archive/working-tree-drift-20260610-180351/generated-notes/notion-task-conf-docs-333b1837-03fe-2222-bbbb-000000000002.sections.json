@@ -1,0 +1,8 @@
+{
+  "sections": {
+    "Task Summary": "Documentation and architecture confidence check with sufficient narrative length.",
+    "Root Cause": "Prior gap was missing artifact_paths in the container image build.",
+    "Recommended Fix": "Keep artifact_paths in the repo and Dockerfile build checks.",
+    "Affected Files": "backend/app/services/artifact_paths.py"
+  }
+}

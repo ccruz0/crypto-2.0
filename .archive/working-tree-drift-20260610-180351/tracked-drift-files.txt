@@ -1,0 +1,7 @@
+M	frontend/src/app/api.ts
+M	frontend/src/app/components/tabs/AgentOpsTab.tsx
+D	frontend/src/app/components/tabs/JarvisTab.tsx
+M	frontend/src/app/page.tsx
+M	frontend/src/lib/environment.ts
+D	frontend/src/lib/governanceAuth.ts
+D	frontend/tests/e2e/jarvis-tab.spec.ts

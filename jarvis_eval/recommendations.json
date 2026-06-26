@@ -1,0 +1,2151 @@
+[
+  {
+    "investigation_id": "f79b9ffc-c553-4e58-a41b-3ee63a5bd30c",
+    "objective": "Why was dashboard showing zero orders while exchange had one?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "status": "completed",
+    "confidence_stored": 90.0,
+    "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+    "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+    "impact": "Incident may affect dashboard accuracy or exchange sync reliability.",
+    "evidence_count": 15,
+    "ranked_causes": [
+      {
+        "cause": "Open orders cache empty but dashboard API serves database fallback",
+        "score": 90.0,
+        "explanation": "resolve_open_orders DB fallback active; raw cache empty is not dashboard-empty.",
+        "supporting_evidence": [
+          "exchange_live=1",
+          "dashboard_effective=1",
+          "cache_raw=0"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 100.0,
+        "explanation": "Supported by 3 evidence signal(s). Evidence spans 7 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 0 open orders; last_updated=None",
+          "[diagnostic] Open orders cache stale; dashboard serving DB fallback while exchange has live orders"
+        ]
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 88.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 7 sources.",
+        "supporting_evidence": [
+          "Pattern match: exchange=\\d+.*dashboard=0|exchange.*1.*dashboard.*0",
+          "[exchange] Exchange=1, DB=1, dashboard=0"
+        ]
+      },
+      {
+        "cause": "Reconciliation found 2 discrepancy(ies)",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool reconcile_crypto_com_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "Open orders cache stale; dashboard serving DB fallback while exchange has live orders",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool diagnose_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 73.0,
+        "explanation": "Supported by 1 evidence signal(s). Evidence spans 7 sources.",
+        "supporting_evidence": [
+          "Pattern match: database.*cache.*empty|db.*\\d+.*cache.*0"
+        ]
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 90.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "code_change",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Review collected evidence and implement targeted fix behind approval gate.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "e080e0d0-e746-4fcd-8f2d-22f54733f223",
+    "objective": "Why are my open orders different from Crypto.com?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "status": "completed",
+    "confidence_stored": 96.0,
+    "root_cause": "No active dashboard/exchange mismatch detected",
+    "recommended_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "impact": "Low \u2014 live dashboard and exchange counts match.",
+    "evidence_count": 15,
+    "ranked_causes": [
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "DB stores regular open-status rows (NEW/ACTIVE/PARTIALLY_FILLED); dashboard cache includes advanced/trigger orders from unified exchange fetch",
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "DB stores regular open-status rows (NEW/ACTIVE/PARTIALLY_FILLED); dashboard cache includes advanced/trigger orders from unified exchange fetch",
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 88.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 7 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 5 open orders; last_updated=2026-06-14 08:55:38.525610+00:00"
+        ]
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Websocket price feed disconnected or not receiving updates",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Deployment health check failing",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 96.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "not_fixable",
+      "has_meaningful_root_cause": false
+    },
+    "recommendation": {
+      "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "No dashboard/exchange sync repair needed based on current live counts.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "ec30b60b-aeaa-492b-a67b-f23c9fccf235",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "status": "completed",
+    "confidence_stored": 90.0,
+    "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+    "recommended_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+    "impact": "Incident may affect dashboard accuracy or exchange sync reliability.",
+    "evidence_count": 14,
+    "ranked_causes": [
+      {
+        "cause": "Open orders cache empty but dashboard API serves database fallback",
+        "score": 90.0,
+        "explanation": "resolve_open_orders DB fallback active; raw cache empty is not dashboard-empty.",
+        "supporting_evidence": [
+          "exchange_live=5",
+          "dashboard_effective=5",
+          "cache_raw=0"
+        ]
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 83.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 5 sources.",
+        "supporting_evidence": [
+          "Pattern match: trigger.?order.*50001|50001.*trigger",
+          "[exchange] Trigger-order API error_code=50001: ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Reconciliation found 6 discrepancy(ies)",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool reconcile_crypto_com_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 90.0,
+      "severity": "critical",
+      "blast_radius": "system",
+      "fixability": "manual",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Review collected evidence and implement targeted fix behind approval gate.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": false,
+      "blocked_domains": [
+        "secrets"
+      ],
+      "reasons": [
+        "forbidden_domain:secrets"
+      ]
+    },
+    "proposed_fix": "Review collected evidence and implement targeted fix behind approval gate.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "d3fa6e63-9b96-4822-8181-3ff1be2bd85a",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "status": "completed",
+    "confidence_stored": 100.0,
+    "root_cause": "Trigger order API failure blocks cache updates",
+    "recommended_fix": "Allow regular open orders to update cache independently when trigger-order sync fails.",
+    "impact": "Dashboard shows zero open orders while exchange has active regular orders.",
+    "evidence_count": 14,
+    "ranked_causes": [
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 100.0,
+        "explanation": "Supported by 4 evidence signal(s). Evidence spans 5 sources.",
+        "supporting_evidence": [
+          "Pattern match: trigger.?order.*50001|50001.*trigger",
+          "[exchange] Trigger-order API error_code=50001: ERR_INTERNAL",
+          "Pattern match: exchange=\\d+.*dashboard=0|exchange.*1.*dashboard.*0",
+          "[exchange] Exchange=5, DB=2, dashboard=0; checked_at=2026-06-16T14:24:10.753455+00:00"
+        ]
+      },
+      {
+        "cause": "Reconciliation found 10 discrepancy(ies)",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool reconcile_crypto_com_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 68.0,
+        "explanation": "Supported by 1 evidence signal(s). Evidence spans 5 sources.",
+        "supporting_evidence": [
+          "Pattern match: database.*cache.*empty|db.*\\d+.*cache.*0"
+        ]
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 100.0,
+      "severity": "critical",
+      "blast_radius": "system",
+      "fixability": "manual",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Allow regular open orders to update cache independently when trigger-order sync fails.",
+      "affected_files": [
+        "backend/app/services/exchange_sync.py",
+        "backend/app/services/unified_open_orders_fetch.py",
+        "backend/tests/test_crypto_com_sync_status.py"
+      ],
+      "estimated_risk": "medium",
+      "estimated_effort": "medium",
+      "fix_template_id": "orders.trigger_50001_cache_independent",
+      "test_paths": [
+        "backend/tests/test_crypto_com_sync_status.py"
+      ],
+      "validation_rules": [
+        "fetch_unified_open_orders handles trigger 50001 as non-fatal",
+        "regular open orders still populate cache when trigger sync fails"
+      ],
+      "has_template": true
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "safety_blocked",
+        "not_fixable"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Update backend/app/services/exchange_sync.py, backend/app/services/unified_open_orders_fetch.py, backend/tests/test_crypto_com_sync_status.py to apply the fix.",
+        "Allow regular open orders to update cache independently when trigger-order sync fails.",
+        "Verify: fetch_unified_open_orders handles trigger 50001 as non-fatal",
+        "Verify: regular open orders still populate cache when trigger sync fails",
+        "Run tests: backend/tests/test_crypto_com_sync_status.py.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [
+        "backend/app/services/exchange_sync.py",
+        "backend/app/services/unified_open_orders_fetch.py",
+        "backend/tests/test_crypto_com_sync_status.py"
+      ],
+      "expected_tests": [
+        "backend/tests/test_crypto_com_sync_status.py"
+      ]
+    },
+    "safety": {
+      "allowed": false,
+      "blocked_domains": [
+        "secrets"
+      ],
+      "reasons": [
+        "forbidden_domain:secrets"
+      ]
+    },
+    "proposed_fix": "Allow regular open orders to update cache independently when trigger-order sync fails.",
+    "affected_files": [
+      "backend/app/services/exchange_sync.py",
+      "backend/app/services/unified_open_orders_fetch.py",
+      "backend/tests/test_crypto_com_sync_status.py"
+    ],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "a6cf648c-e91a-463a-91d9-5ed492828cff",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "status": "completed",
+    "confidence_stored": 48.0,
+    "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+    "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+    "impact": "Private exchange API calls fail; sync and dashboard data may be empty or stale.",
+    "evidence_count": 15,
+    "ranked_causes": [
+      {
+        "cause": "Open orders cache empty but dashboard API serves database fallback",
+        "score": 90.0,
+        "explanation": "resolve_open_orders DB fallback active; raw cache empty is not dashboard-empty.",
+        "supporting_evidence": [
+          "exchange_live=5",
+          "dashboard_effective=5",
+          "cache_raw=0"
+        ]
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 83.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 5 sources.",
+        "supporting_evidence": [
+          "Pattern match: trigger.?order.*50001|50001.*trigger",
+          "[exchange] Trigger-order API error_code=50001: ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Reconciliation found 6 discrepancy(ies)",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool reconcile_crypto_com_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 48.0,
+      "severity": "critical",
+      "blast_radius": "system",
+      "fixability": "manual",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": false,
+      "blocked_domains": [
+        "secrets"
+      ],
+      "reasons": [
+        "forbidden_domain:secrets"
+      ]
+    },
+    "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "7652e662-957b-4200-98a2-91bcdc52e9dd",
+    "objective": "Investigate Crypto.com authentication failures",
+    "category": "authentication",
+    "template_id": "exchange_auth_failing",
+    "status": "completed",
+    "confidence_stored": 48.0,
+    "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+    "recommended_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+    "impact": "Private exchange API calls fail; sync and dashboard data may be empty or stale.",
+    "evidence_count": 14,
+    "ranked_causes": [
+      {
+        "cause": "Open orders cache empty but dashboard API serves database fallback",
+        "score": 90.0,
+        "explanation": "resolve_open_orders DB fallback active; raw cache empty is not dashboard-empty.",
+        "supporting_evidence": [
+          "exchange_live=5",
+          "dashboard_effective=5",
+          "cache_raw=0"
+        ]
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 83.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 5 sources.",
+        "supporting_evidence": [
+          "Pattern match: trigger.?order.*50001|50001.*trigger",
+          "[exchange] Trigger-order API error_code=50001: ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Reconciliation found 6 discrepancy(ies)",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool reconcile_crypto_com_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 48.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 28.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 48.0,
+      "severity": "critical",
+      "blast_radius": "system",
+      "fixability": "manual",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": false,
+      "blocked_domains": [
+        "secrets"
+      ],
+      "reasons": [
+        "forbidden_domain:secrets"
+      ]
+    },
+    "proposed_fix": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "4fcd9e28-22b1-43f2-886a-cf21466bc2bb",
+    "objective": "Investigate why open orders show 0 in the dashboard",
+    "category": "dashboard",
+    "template_id": "open_orders_zero_dashboard",
+    "status": "completed",
+    "confidence_stored": 96.0,
+    "root_cause": "No active dashboard/exchange mismatch detected",
+    "recommended_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "impact": "Low \u2014 live dashboard and exchange counts match.",
+    "evidence_count": 21,
+    "ranked_causes": [
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "DB stores regular open-status rows (NEW/ACTIVE/PARTIALLY_FILLED); dashboard cache includes advanced/trigger orders from unified exchange fetch",
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 100.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 7 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 5 open orders; last_updated=2026-06-16 15:02:59.829466+00:00"
+        ]
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Websocket price feed disconnected or not receiving updates",
+        "score": 33.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 96.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "not_fixable",
+      "has_meaningful_root_cause": false
+    },
+    "recommendation": {
+      "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "No dashboard/exchange sync repair needed based on current live counts.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "2616ea25-b02f-40d1-a8b6-91667e9323c9",
+    "objective": "Why are BTC orders missing from the dashboard but visible in Crypto.com?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "status": "completed",
+    "confidence_stored": 96.0,
+    "root_cause": "No active dashboard/exchange mismatch detected",
+    "recommended_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "impact": "Low \u2014 live dashboard and exchange counts match.",
+    "evidence_count": 24,
+    "ranked_causes": [
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "DB stores regular open-status rows (NEW/ACTIVE/PARTIALLY_FILLED); dashboard cache includes advanced/trigger orders from unified exchange fetch",
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 100.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 8 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 5 open orders; last_updated=2026-06-16 15:03:28.004628+00:00"
+        ]
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Websocket price feed disconnected or not receiving updates",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 96.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "not_fixable",
+      "has_meaningful_root_cause": false
+    },
+    "recommendation": {
+      "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "No dashboard/exchange sync repair needed based on current live counts.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "a5439a76-d6ce-4b2f-900a-f649ed1c45e1",
+    "objective": "Why are executed orders missing? investigate btc orders",
+    "category": "orders",
+    "template_id": "executed_orders_missing",
+    "status": "completed",
+    "confidence_stored": 100.0,
+    "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+    "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+    "impact": "Executed trades visible in DB or Crypto.com may be absent from dashboard trade history.",
+    "evidence_count": 10,
+    "ranked_causes": [
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 100.0,
+        "explanation": "Supported by 4 evidence signal(s). Evidence spans 4 sources.",
+        "supporting_evidence": [
+          "Pattern match: FILLED\\s*=\\s*[1-9]|status_counts.*FILLED",
+          "[database] table=exchange_orders; status_counts: FILLED=149, UNKNOWN=3, ACTIVE=2",
+          "Pattern match: recent_trade_events|trade.?history",
+          "[database] table=exchange_orders; row_count=50; order_ids=['5755600488945374736', '5755600483209949691', '57556"
+        ]
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 48.0,
+        "explanation": "Evidence spans 4 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 48.0,
+        "explanation": "Evidence spans 4 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 48.0,
+        "explanation": "Evidence spans 4 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 28.0,
+        "explanation": "Evidence spans 4 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 28.0,
+        "explanation": "Evidence spans 4 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 4 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 28.0,
+        "explanation": "Evidence spans 4 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 100.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "code_change",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "c7eae0f4-2522-41a3-b52a-7d8e0b356892",
+    "objective": "Why are open orders empty?",
+    "category": "orders",
+    "template_id": "open_orders_empty",
+    "status": "completed",
+    "confidence_stored": 96.0,
+    "root_cause": "No active dashboard/exchange mismatch detected",
+    "recommended_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "impact": "Low \u2014 live dashboard and exchange counts match.",
+    "evidence_count": 22,
+    "ranked_causes": [
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "DB stores regular open-status rows (NEW/ACTIVE/PARTIALLY_FILLED); dashboard cache includes advanced/trigger orders from unified exchange fetch",
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 83.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 8 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 5 open orders; last_updated=2026-06-16 15:41:47.057521+00:00"
+        ]
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 48.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 48.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Websocket price feed disconnected or not receiving updates",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 96.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "not_fixable",
+      "has_meaningful_root_cause": false
+    },
+    "recommendation": {
+      "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "No dashboard/exchange sync repair needed based on current live counts.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "5cb222df-8007-4a0f-91df-b91dee0bac16",
+    "objective": "Why are open orders empty?",
+    "category": "orders",
+    "template_id": "open_orders_empty",
+    "status": "completed",
+    "confidence_stored": 96.0,
+    "root_cause": "No active dashboard/exchange mismatch detected",
+    "recommended_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "impact": "Low \u2014 live dashboard and exchange counts match.",
+    "evidence_count": 22,
+    "ranked_causes": [
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "DB stores regular open-status rows (NEW/ACTIVE/PARTIALLY_FILLED); dashboard cache includes advanced/trigger orders from unified exchange fetch",
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 83.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 8 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 5 open orders; last_updated=2026-06-16 15:42:26.642066+00:00"
+        ]
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 48.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 48.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Websocket price feed disconnected or not receiving updates",
+        "score": 28.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 96.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "not_fixable",
+      "has_meaningful_root_cause": false
+    },
+    "recommendation": {
+      "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "No dashboard/exchange sync repair needed based on current live counts.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "cd4b339b-6cac-4bc2-aed2-8f7403a35961",
+    "objective": "Analyze recent error logs for production incidents",
+    "category": "api",
+    "template_id": "generic",
+    "status": "completed",
+    "confidence_stored": 27.0,
+    "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+    "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+    "impact": "Executed trades visible in DB or Crypto.com may be absent from dashboard trade history.",
+    "evidence_count": 7,
+    "ranked_causes": [
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 27.0,
+      "severity": "medium",
+      "blast_radius": "unknown",
+      "fixability": "code_change",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "3f35a4d6-b8c4-4422-94d4-106daa77c904",
+    "objective": "Why are open orders empty?",
+    "category": "orders",
+    "template_id": "open_orders_empty",
+    "status": "completed",
+    "confidence_stored": 96.0,
+    "root_cause": "No active dashboard/exchange mismatch detected",
+    "recommended_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "impact": "Low \u2014 live dashboard and exchange counts match.",
+    "evidence_count": 21,
+    "ranked_causes": [
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 83.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 7 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 5 open orders; last_updated=2026-06-19 19:31:36.222731+00:00"
+        ]
+      },
+      {
+        "cause": "Open orders exist in database and cache",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool diagnose_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 48.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 48.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 28.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 28.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 28.0,
+        "explanation": "Evidence spans 7 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 96.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "not_fixable",
+      "has_meaningful_root_cause": false
+    },
+    "recommendation": {
+      "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "No dashboard/exchange sync repair needed based on current live counts.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "5b76cf57-80e6-45d0-8640-de0263777864",
+    "objective": "Investigate portfolio reconciliation mismatch",
+    "category": "portfolio",
+    "template_id": "portfolio_reconciliation_mismatch",
+    "status": "completed",
+    "confidence_stored": 90.5,
+    "root_cause": "Portfolio equity derived from balances because exchange API omits equity field",
+    "recommended_fix": "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+    "impact": "Dashboard portfolio total may differ from exchange-reported net equity.",
+    "evidence_count": 9,
+    "ranked_causes": [
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 90.5,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 5 sources.",
+        "supporting_evidence": [
+          "Pattern match: equity.*derived|derived.*equity",
+          "[logs] No log matches for keywords=('portfolio', 'equity', 'reconciliation', 'balance', 'derived') in servi"
+        ]
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 26.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 26.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 26.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 26.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 26.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 26.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 26.0,
+        "explanation": "Evidence spans 5 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 90.5,
+      "severity": "high",
+      "blast_radius": "service",
+      "fixability": "template",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+      "affected_files": [
+        "backend/app/services/portfolio_cache.py"
+      ],
+      "estimated_risk": "low",
+      "estimated_effort": "small",
+      "fix_template_id": "portfolio.equity_derived_fallback",
+      "test_paths": [
+        "backend/tests/test_portfolio_equity_field_discovery.py"
+      ],
+      "validation_rules": [
+        "portfolio_cache prefers exchange-reported equity when present",
+        "derived fallback metadata is exposed when exchange equity missing"
+      ],
+      "has_template": true
+    },
+    "acw": {
+      "acw_ready": true,
+      "threshold": 70.0,
+      "reasons": [],
+      "proposed_objective": "Apply safe fix for investigation 5b76cf57: Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+      "implementation_plan": [
+        "Update backend/app/services/portfolio_cache.py to apply the fix.",
+        "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+        "Verify: portfolio_cache prefers exchange-reported equity when present",
+        "Verify: derived fallback metadata is exposed when exchange equity missing",
+        "Run tests: backend/tests/test_portfolio_equity_field_discovery.py.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [
+        "backend/app/services/portfolio_cache.py"
+      ],
+      "expected_tests": [
+        "backend/tests/test_portfolio_equity_field_discovery.py"
+      ]
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+    "affected_files": [
+      "backend/app/services/portfolio_cache.py"
+    ],
+    "estimated_risk": "low",
+    "acw_ready": true,
+    "available_actions": [
+      "create_acw_task",
+      "create_fix_pr",
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "99e5946a-82f1-42fa-a95a-37e03a68e2f9",
+    "objective": "Why is Jarvis task failing?",
+    "category": "api",
+    "template_id": "jarvis_task_failing",
+    "status": "completed",
+    "confidence_stored": 27.0,
+    "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+    "recommended_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+    "impact": "Executed trades visible in DB or Crypto.com may be absent from dashboard trade history.",
+    "evidence_count": 7,
+    "ranked_causes": [
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 27.0,
+        "explanation": "Evidence spans 3 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 27.0,
+      "severity": "medium",
+      "blast_radius": "unknown",
+      "fixability": "code_change",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "ada36c20-8323-4160-9d2e-17dbf8cfdca2",
+    "objective": "Why does dashboard differ from exchange?",
+    "category": "dashboard",
+    "template_id": "dashboard_exchange_mismatch",
+    "status": "completed",
+    "confidence_stored": 96.0,
+    "root_cause": "No active dashboard/exchange mismatch detected",
+    "recommended_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "impact": "Low \u2014 live dashboard and exchange counts match.",
+    "evidence_count": 23,
+    "ranked_causes": [
+      {
+        "cause": "No active dashboard/exchange mismatch detected",
+        "score": 96.0,
+        "explanation": "Live exchange and dashboard counts match; historical failure modes suppressed.",
+        "supporting_evidence": [
+          "Trigger-order API returned error_code=50001 (non-fatal; regular orders synced successfully): ERR_INTERNAL"
+        ]
+      },
+      {
+        "cause": "Stale dashboard cache not refreshed by exchange sync",
+        "score": 100.0,
+        "explanation": "Supported by 2 evidence signal(s). Evidence spans 8 sources.",
+        "supporting_evidence": [
+          "Pattern match: stale\\s+cache|cache.*stale|last_updated",
+          "[api] Raw in-memory cache contains 5 open orders; last_updated=2026-06-19 21:49:33.495060+00:00"
+        ]
+      },
+      {
+        "cause": "Open orders exist in database and cache",
+        "score": 75.0,
+        "explanation": "Directly reported by diagnostic tool.",
+        "supporting_evidence": [
+          "Tool diagnose_open_orders reported root cause"
+        ]
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 33.0,
+        "explanation": "Evidence spans 8 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 96.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "not_fixable",
+      "has_meaningful_root_cause": false
+    },
+    "recommendation": {
+      "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "No dashboard/exchange sync repair needed based on current live counts.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "No dashboard/exchange sync repair needed based on current live counts.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "9c6c5879-ad3d-4f0b-91e9-0d38b7e5ca80",
+    "objective": "Check database health and recent query errors",
+    "category": "deployment",
+    "template_id": "generic",
+    "status": "completed",
+    "confidence_stored": 50.0,
+    "root_cause": "Deployment health check failing",
+    "recommended_fix": "Inspect container logs and restore failing service before traffic resumes.",
+    "impact": "API endpoints may return errors or degraded responses.",
+    "evidence_count": 8,
+    "ranked_causes": [
+      {
+        "cause": "Deployment health check failing",
+        "score": 50.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 30.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 30.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 30.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 30.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 30.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 30.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 30.0,
+        "explanation": "Recent log failures: 2. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 50.0,
+      "severity": "high",
+      "blast_radius": "unknown",
+      "fixability": "code_change",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Inspect container logs and restore failing service before traffic resumes.",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "estimated_effort": "small",
+      "fix_template_id": null,
+      "test_paths": [],
+      "validation_rules": [],
+      "has_template": false
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Locate the affected module(s) and apply the targeted fix.",
+        "Inspect container logs and restore failing service before traffic resumes.",
+        "Add or extend regression tests covering the fixed behavior.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [],
+      "expected_tests": []
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "Inspect container logs and restore failing service before traffic resumes.",
+    "affected_files": [],
+    "estimated_risk": "medium",
+    "acw_ready": false,
+    "available_actions": [
+      "investigate_further",
+      "ignore"
+    ]
+  },
+  {
+    "investigation_id": "fe5f566e-00ea-4065-acc6-409fd2e2a162",
+    "objective": "Why are websocket prices stale?",
+    "category": "websocket",
+    "template_id": "websocket_prices_stale",
+    "status": "completed",
+    "confidence_stored": 63.0,
+    "root_cause": "Websocket price feed disconnected or not receiving updates",
+    "recommended_fix": "Restart market-updater service and verify websocket subscription health.",
+    "impact": "Prices on dashboard lag behind live market.",
+    "evidence_count": 11,
+    "ranked_causes": [
+      {
+        "cause": "Websocket price feed disconnected or not receiving updates",
+        "score": 63.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "score": 43.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Trigger order API failure blocks cache updates",
+        "score": 43.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+        "score": 43.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Duplicated API secret in runtime.env causes Crypto.com auth failure (40101)",
+        "score": 43.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Portfolio equity derived from balances because exchange API omits equity field",
+        "score": 43.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "Database has open orders but dashboard cache is empty",
+        "score": 43.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      },
+      {
+        "cause": "All sources agree: zero open orders on exchange",
+        "score": 43.0,
+        "explanation": "Recent log failures: 6. Evidence spans 3 sources.",
+        "supporting_evidence": []
+      }
+    ],
+    "assessment": {
+      "confidence": 63.0,
+      "severity": "low",
+      "blast_radius": "isolated",
+      "fixability": "template",
+      "has_meaningful_root_cause": true
+    },
+    "recommendation": {
+      "proposed_fix": "Restart market-updater service and verify websocket subscription health.",
+      "affected_files": [
+        "frontend/src/lib/priceStreamWsUrl.ts",
+        "frontend/scripts/verify_ws_prices_url.mjs"
+      ],
+      "estimated_risk": "low",
+      "estimated_effort": "medium",
+      "fix_template_id": "websocket.same_origin_regression",
+      "test_paths": [
+        "frontend/scripts/verify_ws_prices_url.mjs"
+      ],
+      "validation_rules": [
+        "priceStreamWsUrl uses window.location.host in browser context",
+        "internal docker hostnames are rejected in production browser context"
+      ],
+      "has_template": true
+    },
+    "acw": {
+      "acw_ready": false,
+      "threshold": 70.0,
+      "reasons": [
+        "confidence_below_threshold"
+      ],
+      "proposed_objective": "",
+      "implementation_plan": [
+        "Update frontend/src/lib/priceStreamWsUrl.ts, frontend/scripts/verify_ws_prices_url.mjs to apply the fix.",
+        "Restart market-updater service and verify websocket subscription health.",
+        "Verify: priceStreamWsUrl uses window.location.host in browser context",
+        "Verify: internal docker hostnames are rejected in production browser context",
+        "Run tests: frontend/scripts/verify_ws_prices_url.mjs.",
+        "Submit for human approval (Gate 1 sandbox apply, Gate 2 PR). No auto-merge or deploy."
+      ],
+      "expected_files": [
+        "frontend/src/lib/priceStreamWsUrl.ts",
+        "frontend/scripts/verify_ws_prices_url.mjs"
+      ],
+      "expected_tests": [
+        "frontend/scripts/verify_ws_prices_url.mjs"
+      ]
+    },
+    "safety": {
+      "allowed": true,
+      "blocked_domains": [],
+      "reasons": []
+    },
+    "proposed_fix": "Restart market-updater service and verify websocket subscription health.",
+    "affected_files": [
+      "frontend/src/lib/priceStreamWsUrl.ts",
+      "frontend/scripts/verify_ws_prices_url.mjs"
+    ],
+    "estimated_risk": "low",
+    "acw_ready": false,
+    "available_actions": [
+      "create_fix_pr",
+      "investigate_further",
+      "ignore"
+    ]
+  }
+]

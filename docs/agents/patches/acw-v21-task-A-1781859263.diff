@@ -1,0 +1,13 @@
+diff --git a/backend/tests/test_cursor_execution_bridge.py b/backend/tests/test_cursor_execution_bridge.py
+index 6c6c163..9991fcb 100644
+--- a/backend/tests/test_cursor_execution_bridge.py
++++ b/backend/tests/test_cursor_execution_bridge.py
+@@ -11,6 +11,8 @@ Validates:
+ 7. API endpoints return expected structure
+ """
+ 
++# ACW v2.1 bridge readiness test marker
++
+ from __future__ import annotations
+ 
+ from unittest.mock import patch

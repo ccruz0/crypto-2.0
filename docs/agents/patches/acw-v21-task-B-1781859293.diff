@@ -1,0 +1,15 @@
+diff --git a/backend/tests/test_cursor_execution_bridge.py b/backend/tests/test_cursor_execution_bridge.py
+index 6c6c163..4f92fea 100644
+--- a/backend/tests/test_cursor_execution_bridge.py
++++ b/backend/tests/test_cursor_execution_bridge.py
+@@ -93,6 +93,11 @@ class TestCursorBridgeEnabled:
+             assert is_bridge_enabled() is True
+ 
+ 
++def test_acw_v21_bridge_marker():
++    from app.services.cursor_execution_bridge import is_bridge_enabled
++    assert callable(is_bridge_enabled)
++
++
+ class TestRunBridgePhase1:
+     """Verify run_bridge_phase1 error handling."""

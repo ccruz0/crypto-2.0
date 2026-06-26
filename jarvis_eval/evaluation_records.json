@@ -1,0 +1,655 @@
+{
+  "summary": {
+    "n_investigations": 18,
+    "n_acw_ready": 1,
+    "category_averages": {
+      "root_cause_accuracy": 5.22,
+      "recommendation_quality": 4.33,
+      "scope_accuracy": 5.17,
+      "risk_assessment_accuracy": 5.89,
+      "actionability": 3.44
+    },
+    "overall_average": 4.81,
+    "top5_strongest": [
+      {
+        "investigation_id": "5b76cf57-80e6-45d0-8640-de0263777864",
+        "type": "order reconciliation",
+        "objective": "Investigate portfolio reconciliation mismatch",
+        "overall_score": 8.6
+      },
+      {
+        "investigation_id": "ada36c20-8323-4160-9d2e-17dbf8cfdca2",
+        "type": "alert investigation",
+        "objective": "Why does dashboard differ from exchange?",
+        "overall_score": 5.4
+      },
+      {
+        "investigation_id": "3f35a4d6-b8c4-4422-94d4-106daa77c904",
+        "type": "order reconciliation",
+        "objective": "Why are open orders empty?",
+        "overall_score": 5.4
+      },
+      {
+        "investigation_id": "a5439a76-d6ce-4b2f-900a-f649ed1c45e1",
+        "type": "order reconciliation",
+        "objective": "Why are executed orders missing? investigate btc orders",
+        "overall_score": 5.2
+      },
+      {
+        "investigation_id": "f79b9ffc-c553-4e58-a41b-3ee63a5bd30c",
+        "type": "order reconciliation",
+        "objective": "Why was dashboard showing zero orders while exchange had one?",
+        "overall_score": 5.0
+      }
+    ],
+    "top5_weakest": [
+      {
+        "investigation_id": "ec30b60b-aeaa-492b-a67b-f23c9fccf235",
+        "type": "exchange auth",
+        "objective": "Investigate Crypto.com authentication failures",
+        "overall_score": 3.2
+      },
+      {
+        "investigation_id": "99e5946a-82f1-42fa-a95a-37e03a68e2f9",
+        "type": "deployment health",
+        "objective": "Why is Jarvis task failing?",
+        "overall_score": 3.6
+      },
+      {
+        "investigation_id": "cd4b339b-6cac-4bc2-aed2-8f7403a35961",
+        "type": "alert investigation",
+        "objective": "Analyze recent error logs for production incidents",
+        "overall_score": 3.6
+      },
+      {
+        "investigation_id": "d3fa6e63-9b96-4822-8181-3ff1be2bd85a",
+        "type": "exchange auth",
+        "objective": "Investigate Crypto.com authentication failures",
+        "overall_score": 3.8
+      },
+      {
+        "investigation_id": "7652e662-957b-4200-98a2-91bcdc52e9dd",
+        "type": "exchange auth",
+        "objective": "Investigate Crypto.com authentication failures",
+        "overall_score": 4.2
+      }
+    ],
+    "per_type_averages": {
+      "alert investigation": {
+        "n": 2,
+        "overall": 4.5,
+        "root_cause_accuracy": 5,
+        "actionability": 3
+      },
+      "deployment health": {
+        "n": 2,
+        "overall": 4.1,
+        "root_cause_accuracy": 4,
+        "actionability": 3.5
+      },
+      "exchange auth": {
+        "n": 4,
+        "overall": 3.85,
+        "root_cause_accuracy": 2.5,
+        "actionability": 2.75
+      },
+      "image investigation": {
+        "n": 2,
+        "overall": 5.0,
+        "root_cause_accuracy": 6,
+        "actionability": 3
+      },
+      "order reconciliation": {
+        "n": 7,
+        "overall": 5.6,
+        "root_cause_accuracy": 7,
+        "actionability": 3.86
+      },
+      "signal monitor": {
+        "n": 1,
+        "overall": 4.8,
+        "root_cause_accuracy": 5,
+        "actionability": 5
+      }
+    }
+  },
+  "records": [
+    {
+      "investigation_id": "5b76cf57-80e6-45d0-8640-de0263777864",
+      "type_bucket": "order reconciliation",
+      "objective": "Investigate portfolio reconciliation mismatch",
+      "investigation_type": "portfolio / template=portfolio_reconciliation_mismatch",
+      "evidence_collected": "9 evidence items",
+      "root_cause": "Portfolio equity derived from balances because exchange API omits equity field",
+      "recommendation": "Map exchange-reported equity/net_equity from get_account_summary response into portfolio_cache.",
+      "confidence": 90.5,
+      "severity": "high",
+      "affected_files": [
+        "backend/app/services/portfolio_cache.py"
+      ],
+      "estimated_risk": "low",
+      "has_template": true,
+      "acw_ready": true,
+      "acw_block_reasons": [],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 9,
+        "recommendation_quality": 9,
+        "scope_accuracy": 9,
+        "risk_assessment_accuracy": 8,
+        "actionability": 8
+      },
+      "overall_score": 8.6,
+      "rationale": "Evidence 'Exchange equity fields found: accounts[].market_value' directly supports the root cause (exchange omits a top-level equity field, so equity is derived from balances). Top cause 90.5 vs runner-ups 26.0 = clear separation. Template maps to backend/app/services/portfolio_cache.py (correct, single file), low risk, ACW-ready. Recommendation names the concrete change (map get_account_summary equity/net_equity). Minor: exact field path still needs a quick code lookup."
+    },
+    {
+      "investigation_id": "f79b9ffc-c553-4e58-a41b-3ee63a5bd30c",
+      "type_bucket": "order reconciliation",
+      "objective": "Why was dashboard showing zero orders while exchange had one?",
+      "investigation_type": "dashboard / template=dashboard_exchange_mismatch",
+      "evidence_collected": "15 evidence items",
+      "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+      "recommendation": "Review collected evidence and implement targeted fix behind approval gate.",
+      "confidence": 90.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 8,
+        "recommendation_quality": 4,
+        "scope_accuracy": 4,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 5.0,
+      "rationale": "Root cause (cache empty, dashboard serves DB fallback) is well evidenced: cache_raw=0, source=database_fallback, exchange=1/db=1/dashboard=0. But recommended_fix is the placeholder 'Review collected evidence and implement targeted fix behind approval gate' -> no actionable content, no files, despite open_orders_cache/routes_dashboard being known components."
+    },
+    {
+      "investigation_id": "a5439a76-d6ce-4b2f-900a-f649ed1c45e1",
+      "type_bucket": "order reconciliation",
+      "objective": "Why are executed orders missing? investigate btc orders",
+      "investigation_type": "orders / template=executed_orders_missing",
+      "evidence_collected": "10 evidence items",
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "recommendation": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "confidence": 100.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 7,
+        "recommendation_quality": 6,
+        "scope_accuracy": 4,
+        "risk_assessment_accuracy": 5,
+        "actionability": 4
+      },
+      "overall_score": 5.2,
+      "rationale": "DB evidence FILLED=149 supports 'FILLED orders exist but trade history does not display them' and it matches the objective. Direction (verify trade-history API + frontend render) is reasonable but no files are named; confidence 100 is overconfident for a display-layer hypothesis with no UI evidence captured."
+    },
+    {
+      "investigation_id": "9c6c5879-ad3d-4f0b-91e9-0d38b7e5ca80",
+      "type_bucket": "deployment health",
+      "objective": "Check database health and recent query errors",
+      "investigation_type": "deployment / template=generic",
+      "evidence_collected": "8 evidence items",
+      "root_cause": "Deployment health check failing",
+      "recommendation": "Inspect container logs and restore failing service before traffic resumes.",
+      "confidence": 50.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 5,
+        "recommendation_quality": 5,
+        "scope_accuracy": 4,
+        "risk_assessment_accuracy": 5,
+        "actionability": 4
+      },
+      "overall_score": 4.6,
+      "rationale": "Health check evidence says status=pass while a log line shows 'ERROR: No backend container running'. Root cause 'Deployment health check failing' is only partially supported (mixed signals). 'Inspect container logs and restore failing service' is generic but appropriate for a deployment check; no files (acceptable for infra)."
+    },
+    {
+      "investigation_id": "fe5f566e-00ea-4065-acc6-409fd2e2a162",
+      "type_bucket": "signal monitor",
+      "objective": "Why are websocket prices stale?",
+      "investigation_type": "websocket / template=websocket_prices_stale",
+      "evidence_collected": "11 evidence items",
+      "root_cause": "Websocket price feed disconnected or not receiving updates",
+      "recommendation": "Restart market-updater service and verify websocket subscription health.",
+      "confidence": 63.0,
+      "severity": "low",
+      "affected_files": [
+        "frontend/src/lib/priceStreamWsUrl.ts",
+        "frontend/scripts/verify_ws_prices_url.mjs"
+      ],
+      "estimated_risk": "low",
+      "has_template": true,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "confidence_below_threshold"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 5,
+        "recommendation_quality": 5,
+        "scope_accuracy": 3,
+        "risk_assessment_accuracy": 6,
+        "actionability": 5
+      },
+      "overall_score": 4.8,
+      "rationale": "Thin evidence: factory.py websocket code refs + health=fail; no direct staleness metric. Templated root cause 'feed disconnected'. SCOPE MISMATCH: template files are frontend/src/lib/priceStreamWsUrl.ts (same-origin URL regression) yet the recommendation text says 'restart market-updater service' (backend ops). Files and recommended action disagree."
+    },
+    {
+      "investigation_id": "e080e0d0-e746-4fcd-8f2d-22f54733f223",
+      "type_bucket": "order reconciliation",
+      "objective": "Why are my open orders different from Crypto.com?",
+      "investigation_type": "dashboard / template=dashboard_exchange_mismatch",
+      "evidence_collected": "15 evidence items",
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "recommendation": "No dashboard/exchange sync repair needed based on current live counts.",
+      "confidence": 96.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 6,
+        "recommendation_quality": 4,
+        "scope_accuracy": 6,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 5.0,
+      "rationale": "Exchange=5/DB=2/dashboard=5: dashboard matches exchange, so 'no active dashboard/exchange mismatch' is defensible, but it dismisses 6 reconciliation discrepancies, DB lag, and a persistent trigger-order 50001 error. Root cause is non-meaningful (generic) so engine correctly emits no files / not ACW-ready, but confidence 96 is far too high for a 'nothing to fix' verdict."
+    },
+    {
+      "investigation_id": "4fcd9e28-22b1-43f2-886a-cf21466bc2bb",
+      "type_bucket": "order reconciliation",
+      "objective": "Investigate why open orders show 0 in the dashboard",
+      "investigation_type": "dashboard / template=open_orders_zero_dashboard",
+      "evidence_collected": "21 evidence items",
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "recommendation": "No dashboard/exchange sync repair needed based on current live counts.",
+      "confidence": 96.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 6,
+        "recommendation_quality": 4,
+        "scope_accuracy": 6,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 5.0,
+      "rationale": "Objective 'open orders show 0' but evidence shows dashboard_effective=5 via crypto_com_api (ok). 'No active mismatch' is defensible vs live counts, but the objective's symptom isn't reproduced/explained. Generic root cause -> no files, not ACW-ready (correct), yet confidence 96 unjustified."
+    },
+    {
+      "investigation_id": "2616ea25-b02f-40d1-a8b6-91667e9323c9",
+      "type_bucket": "order reconciliation",
+      "objective": "Why are BTC orders missing from the dashboard but visible in Crypto.com?",
+      "investigation_type": "dashboard / template=dashboard_exchange_mismatch",
+      "evidence_collected": "24 evidence items",
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "recommendation": "No dashboard/exchange sync repair needed based on current live counts.",
+      "confidence": 96.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 6,
+        "recommendation_quality": 4,
+        "scope_accuracy": 6,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 5.0,
+      "rationale": "Objective 'BTC orders missing from dashboard' but Exchange=5/dashboard=5 match; 'no active mismatch' defensible against live counts but does not address the reported BTC symptom. Generic root cause -> no files/not ACW-ready (correct); confidence 96 overstated."
+    },
+    {
+      "investigation_id": "ada36c20-8323-4160-9d2e-17dbf8cfdca2",
+      "type_bucket": "alert investigation",
+      "objective": "Why does dashboard differ from exchange?",
+      "investigation_type": "dashboard / template=dashboard_exchange_mismatch",
+      "evidence_collected": "23 evidence items",
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "recommendation": "No dashboard/exchange sync repair needed based on current live counts.",
+      "confidence": 96.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 7,
+        "recommendation_quality": 4,
+        "scope_accuracy": 6,
+        "risk_assessment_accuracy": 7,
+        "actionability": 3
+      },
+      "overall_score": 5.4,
+      "rationale": "Exchange=5/DB=5/dashboard=5 all genuinely match, so 'no active mismatch detected' is accurate and impact 'Low' is correct. But it offers no action (only 'monitor 50001 separately') and ignores the recurring trigger 50001. Confidence 96 acceptable for the match verdict but still attached to a non-meaningful root-cause label."
+    },
+    {
+      "investigation_id": "3f35a4d6-b8c4-4422-94d4-106daa77c904",
+      "type_bucket": "order reconciliation",
+      "objective": "Why are open orders empty?",
+      "investigation_type": "orders / template=open_orders_empty",
+      "evidence_collected": "21 evidence items",
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "recommendation": "No dashboard/exchange sync repair needed based on current live counts.",
+      "confidence": 96.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 7,
+        "recommendation_quality": 4,
+        "scope_accuracy": 6,
+        "risk_assessment_accuracy": 7,
+        "actionability": 3
+      },
+      "overall_score": 5.4,
+      "rationale": "Exchange=5/DB=5/dashboard=5 match and 'Open orders exist in database and cache' is in evidence; 'no active mismatch' accurate, impact correct. No actionable output; trigger 50001 left unaddressed."
+    },
+    {
+      "investigation_id": "c7eae0f4-2522-41a3-b52a-7d8e0b356892",
+      "type_bucket": "image investigation",
+      "objective": "Why are open orders empty?",
+      "investigation_type": "orders / template=open_orders_empty",
+      "evidence_collected": "22 evidence items",
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "recommendation": "No dashboard/exchange sync repair needed based on current live counts.",
+      "confidence": 96.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 6,
+        "recommendation_quality": 4,
+        "scope_accuracy": 6,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 5.0,
+      "rationale": "Image investigation: evidence includes '[image] UI screenshot' but no OCR text or extracted entities feed the analysis; conclusion is identical to the text-only open-orders-empty cases (dashboard=exchange=5). The image adds an evidence row but contributes no incremental diagnostic signal. Generic root cause -> no files/not ACW-ready (correct); confidence 96 overstated."
+    },
+    {
+      "investigation_id": "5cb222df-8007-4a0f-91df-b91dee0bac16",
+      "type_bucket": "image investigation",
+      "objective": "Why are open orders empty?",
+      "investigation_type": "orders / template=open_orders_empty",
+      "evidence_collected": "22 evidence items",
+      "root_cause": "No active dashboard/exchange mismatch detected",
+      "recommendation": "No dashboard/exchange sync repair needed based on current live counts.",
+      "confidence": 96.0,
+      "severity": "high",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "missing_root_cause",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 6,
+        "recommendation_quality": 4,
+        "scope_accuracy": 6,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 5.0,
+      "rationale": "Image investigation run seconds after c7eae0f4 with identical output. Image evidence ('UI screenshot') again carries no OCR/entities and does not change the diagnosis. No dedup of near-identical investigations."
+    },
+    {
+      "investigation_id": "a6cf648c-e91a-463a-91d9-5ed492828cff",
+      "type_bucket": "exchange auth",
+      "objective": "Investigate Crypto.com authentication failures",
+      "investigation_type": "authentication / template=exchange_auth_failing",
+      "evidence_collected": "15 evidence items",
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "recommendation": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "confidence": 48.0,
+      "severity": "critical",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": false,
+      "scores": {
+        "root_cause_accuracy": 3,
+        "recommendation_quality": 4,
+        "scope_accuracy": 5,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 4.2,
+      "rationale": "Root cause 'credentials missing or misconfigured' CONTRADICTS the evidence: EXCHANGE_CREDENTIAL_WARNINGS=NO, KEY_PRESENT/SECRET_PRESENT flags set, and dashboard=5 (private API working). Only weak signal is 'runtime.env contains 2 secret lines'. Confidence 48 is appropriately low. Safety correctly blocks (secrets domain) so not ACW-ready -> good safety, weak diagnosis."
+    },
+    {
+      "investigation_id": "7652e662-957b-4200-98a2-91bcdc52e9dd",
+      "type_bucket": "exchange auth",
+      "objective": "Investigate Crypto.com authentication failures",
+      "investigation_type": "authentication / template=exchange_auth_failing",
+      "evidence_collected": "14 evidence items",
+      "root_cause": "Crypto.com API credentials missing or misconfigured in runtime.env",
+      "recommendation": "Set canonical EXCHANGE_CUSTOM_API_KEY/SECRET in runtime.env; remove duplicate secret lines.",
+      "confidence": 48.0,
+      "severity": "critical",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "confidence_below_threshold",
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": false,
+      "scores": {
+        "root_cause_accuracy": 3,
+        "recommendation_quality": 4,
+        "scope_accuracy": 5,
+        "risk_assessment_accuracy": 6,
+        "actionability": 3
+      },
+      "overall_score": 4.2,
+      "rationale": "Duplicate of a6cf648c (same objective, same evidence shape, same output). Same evidence contradiction (creds present, no warnings). Confidence 48 honest; safety-blocked. Demonstrates lack of dedup and the credential false-positive pattern."
+    },
+    {
+      "investigation_id": "ec30b60b-aeaa-492b-a67b-f23c9fccf235",
+      "type_bucket": "exchange auth",
+      "objective": "Investigate Crypto.com authentication failures",
+      "investigation_type": "authentication / template=exchange_auth_failing",
+      "evidence_collected": "14 evidence items",
+      "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+      "recommendation": "Review collected evidence and implement targeted fix behind approval gate.",
+      "confidence": 90.0,
+      "severity": "critical",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "safety_blocked",
+        "not_fixable",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": false,
+      "scores": {
+        "root_cause_accuracy": 2,
+        "recommendation_quality": 3,
+        "scope_accuracy": 4,
+        "risk_assessment_accuracy": 5,
+        "actionability": 2
+      },
+      "overall_score": 3.2,
+      "rationale": "Objective is authentication, but the selected root cause is 'Open orders cache empty but dashboard API serves DB fallback' (orders domain). The auth-relevant cause is ranked LAST (48) while an unrelated order cause wins (90). Confidence 90 on a wrong-domain answer = strongly overconfident. Recommendation is the generic placeholder. Objective-awareness failure."
+    },
+    {
+      "investigation_id": "d3fa6e63-9b96-4822-8181-3ff1be2bd85a",
+      "type_bucket": "exchange auth",
+      "objective": "Investigate Crypto.com authentication failures",
+      "investigation_type": "authentication / template=exchange_auth_failing",
+      "evidence_collected": "14 evidence items",
+      "root_cause": "Trigger order API failure blocks cache updates",
+      "recommendation": "Allow regular open orders to update cache independently when trigger-order sync fails.",
+      "confidence": 100.0,
+      "severity": "critical",
+      "affected_files": [
+        "backend/app/services/exchange_sync.py",
+        "backend/app/services/unified_open_orders_fetch.py",
+        "backend/tests/test_crypto_com_sync_status.py"
+      ],
+      "estimated_risk": "medium",
+      "has_template": true,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "safety_blocked",
+        "not_fixable"
+      ],
+      "safety_allowed": false,
+      "scores": {
+        "root_cause_accuracy": 2,
+        "recommendation_quality": 4,
+        "scope_accuracy": 5,
+        "risk_assessment_accuracy": 5,
+        "actionability": 3
+      },
+      "overall_score": 3.8,
+      "rationale": "Objective is authentication, but root cause is 'Trigger order API failure blocks cache updates' (orders) at confidence 100. The trigger fix itself is real (template -> 3 correct files for a trigger issue), but it is mis-scoped onto an auth investigation. Confidence 100 wildly overconfident for wrong-domain. Safety correctly blocks -> not ACW-ready."
+    },
+    {
+      "investigation_id": "cd4b339b-6cac-4bc2-aed2-8f7403a35961",
+      "type_bucket": "alert investigation",
+      "objective": "Analyze recent error logs for production incidents",
+      "investigation_type": "api / template=generic",
+      "evidence_collected": "7 evidence items",
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "recommendation": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "confidence": 27.0,
+      "severity": "medium",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 3,
+        "recommendation_quality": 3,
+        "scope_accuracy": 4,
+        "risk_assessment_accuracy": 5,
+        "actionability": 3
+      },
+      "overall_score": 3.6,
+      "rationale": "Objective 'analyze recent error logs' but evidence shows match_count=0 (NO error logs found). Root cause 'FILLED orders not displayed in trade history' is unrelated to the (empty) log search. All ranked causes tied at 27 = no real signal; confidence 27 is honest. Recommendation generic."
+    },
+    {
+      "investigation_id": "99e5946a-82f1-42fa-a95a-37e03a68e2f9",
+      "type_bucket": "deployment health",
+      "objective": "Why is Jarvis task failing?",
+      "investigation_type": "api / template=jarvis_task_failing",
+      "evidence_collected": "7 evidence items",
+      "root_cause": "FILLED orders exist in database but dashboard trade history does not display them",
+      "recommendation": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
+      "confidence": 27.0,
+      "severity": "medium",
+      "affected_files": [],
+      "estimated_risk": "medium",
+      "has_template": false,
+      "acw_ready": false,
+      "acw_block_reasons": [
+        "confidence_below_threshold",
+        "affected_files_unknown"
+      ],
+      "safety_allowed": true,
+      "scores": {
+        "root_cause_accuracy": 3,
+        "recommendation_quality": 3,
+        "scope_accuracy": 4,
+        "risk_assessment_accuracy": 5,
+        "actionability": 3
+      },
+      "overall_score": 3.6,
+      "rationale": "Objective 'Why is Jarvis task failing?' but evidence shows 'No log matches for jarvis/task/failed/error'. Root cause is the canned 'FILLED orders not displayed' (unrelated). No evidence of any task failure was found, yet a root cause is asserted. Confidence 27 honest. Objective-awareness failure on a deployment/ops question."
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+diff --git a/frontend/src/app/page.tsx b/frontend/src/app/page.tsx
+index acc5e7c..6a6198d 100644
+--- a/frontend/src/app/page.tsx
++++ b/frontend/src/app/page.tsx
+@@ -374,13 +374,6 @@ function formatNumber(num: number | null | undefined, symbol?: string): string {
+     return addThousandSeparators(formatted);
+   }
+   
+-  // For values < 0.01, preserve all decimal places (don't remove trailing zeros)
+-  // This ensures precision for very low-value coins like VET, XLM, etc.
+-  if (num < 0.01) {
+-    // Don't remove trailing zeros for very small values - they're significant
+-    return addThousandSeparators(formatted);
+-  }
+-  
+   // For values >= 0.01, remove trailing zeros but preserve minimum decimals based on value range
+   const parts = formatted.split('.');
+   if (parts.length === 2) {

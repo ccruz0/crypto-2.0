@@ -1,0 +1,34 @@
+# VCS
+.git
+.gitignore
+
+# Node / Next.js
+node_modules
+.next/cache
+.next/trace
+npm-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv*/
+pip-wheel-metadata/
+
+# Env & secrets (no meter en la imagen)
+.env
+.env.*
+*.pem
+secrets/
+
+# Tests & tooling
+coverage/
+dist/
+build/
+tests/
+*.log
+
+# OS
+.DS_Store

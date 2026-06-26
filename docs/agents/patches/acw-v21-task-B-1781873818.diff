@@ -1,0 +1,16 @@
+diff --git a/backend/tests/test_cursor_execution_bridge.py b/backend/tests/test_cursor_execution_bridge.py
+index 6c6c163..f1877ec 100644
+--- a/backend/tests/test_cursor_execution_bridge.py
++++ b/backend/tests/test_cursor_execution_bridge.py
+@@ -74,6 +74,11 @@ class TestBridgeApprovalGate:
+             assert scheduler_should_auto_run_cursor_bridge() is False
+ 
+ 
++def test_acw_v21_bridge_marker():
++    from app.services.cursor_execution_bridge import is_bridge_enabled
++    assert callable(is_bridge_enabled)
++
++
+ class TestCursorBridgeEnabled:
+     """Verify is_bridge_enabled respects env."""
+ 

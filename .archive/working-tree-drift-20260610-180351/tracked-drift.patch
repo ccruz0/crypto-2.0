@@ -1,0 +1,998 @@
+diff --git a/frontend/src/app/api.ts b/frontend/src/app/api.ts
+index d49f023..102feb0 100644
+--- a/frontend/src/app/api.ts
++++ b/frontend/src/app/api.ts
+@@ -1,5 +1,4 @@
+ import { getApiUrl } from '@/lib/environment';
+-import { readStoredGovernanceBearer } from '@/lib/governanceAuth';
+ 
+ const DEFAULT_API_URL = getApiUrl();
+ 
+@@ -1946,161 +1945,3 @@ export async function getAgentOpsCursorBridgeDiagnostics(): Promise<AgentOpsCurs
+     return { ok: false, error: String(error) };
+   }
+ }
+-
+-// --- Jarvis Control Center (Advisor mode — read-only via Bedrock MVP) ---
+-
+-export type JarvisRiskLevel = 'low' | 'medium' | 'high';
+-export type JarvisTaskStatus = 'completed' | 'requires_approval' | 'failed';
+-
+-export interface JarvisTaskResponse {
+-  task_id: string;
+-  status: JarvisTaskStatus | string;
+-  risk_level: JarvisRiskLevel;
+-  plan: Array<Record<string, unknown>>;
+-  tool_results: Array<Record<string, unknown>>;
+-  review: Record<string, unknown>;
+-  estimated_cost_usd: number;
+-  final_answer: string;
+-  audit_id?: string | null;
+-  audit_output?: Record<string, unknown> | null;
+-  crypto_audit_id?: string | null;
+-  crypto_audit_output?: Record<string, unknown> | null;
+-}
+-
+-export interface JarvisTaskRunSummary {
+-  task_id: string;
+-  task: string;
+-  status: string;
+-  risk_level: JarvisRiskLevel;
+-  estimated_cost_usd: number;
+-  created_at: string | null;
+-  completed_at: string | null;
+-}
+-
+-export interface JarvisTaskListResponse {
+-  tasks: JarvisTaskRunSummary[];
+-}
+-
+-export interface JarvisTaskRunDetail {
+-  task_id: string;
+-  task: string;
+-  status: string;
+-  risk_level: JarvisRiskLevel;
+-  dry_run: boolean;
+-  plan: Array<Record<string, unknown>>;
+-  tool_results: Array<Record<string, unknown>>;
+-  review: Record<string, unknown>;
+-  estimated_cost_usd: number;
+-  final_answer: string;
+-  error: string | null;
+-  created_at: string | null;
+-  completed_at: string | null;
+-}
+-
+-/** Submit a read-only Advisor question to Jarvis (always dry_run=true). */
+-export async function postJarvisAdvisorTask(task: string): Promise<JarvisTaskResponse> {
+-  return fetchAPI<JarvisTaskResponse>('/jarvis/task', {
+-    method: 'POST',
+-    headers: { 'Content-Type': 'application/json' },
+-    body: JSON.stringify({ task: task.trim(), dry_run: true }),
+-  });
+-}
+-
+-export async function getJarvisTaskList(limit = 20): Promise<JarvisTaskListResponse> {
+-  return fetchAPI<JarvisTaskListResponse>(`/jarvis/tasks?limit=${limit}`);
+-}
+-
+-export async function getJarvisTaskDetail(taskId: string): Promise<JarvisTaskRunDetail> {
+-  return fetchAPI<JarvisTaskRunDetail>(`/jarvis/tasks/${encodeURIComponent(taskId)}`);
+-}
+-
+-// --- Jarvis Control Center (Builder prepare stub — Phase 2A Step 4) ---
+-
+-export interface JarvisControlStatus {
+-  control_enabled: boolean;
+-  builder_allowed: boolean;
+-  trading_only: boolean;
+-  environment: string;
+-  builder_available: boolean;
+-}
+-
+-export interface JarvisBuilderPrepareResponse {
+-  task_id: string;
+-  status: string;
+-  mode: 'builder' | string;
+-  risk_level: JarvisRiskLevel;
+-  stub: boolean;
+-  message: string;
+-}
+-
+-export interface JarvisBuilderTaskDetail {
+-  task_id: string;
+-  session_id: string;
+-  mode: string;
+-  domain: string;
+-  prompt: string;
+-  status: string;
+-  risk_level: JarvisRiskLevel;
+-  dry_run: boolean;
+-  builder_artifact: {
+-    stub?: boolean;
+-    bridge_invoked?: boolean;
+-    governance_created?: boolean;
+-    message?: string;
+-  } | null;
+-  created_at: string | null;
+-  updated_at: string | null;
+-  completed_at: string | null;
+-  error: string | null;
+-}
+-
+-function jarvisControlAuthHeaders(): HeadersInit {
+-  const bearer = readStoredGovernanceBearer();
+-  return bearer ? { Authorization: `Bearer ${bearer}` } : {};
+-}
+-
+-async function fetchJarvisControlAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
+-  return fetchAPI<T>(endpoint, {
+-    ...options,
+-    headers: {
+-      ...jarvisControlAuthHeaders(),
+-      ...(options?.headers ?? {}),
+-    },
+-  });
+-}
+-
+-/** Control Center environment gates (404 when JARVIS_CONTROL_ENABLED is off). */
+-export async function getJarvisControlStatus(): Promise<JarvisControlStatus | null> {
+-  try {
+-    return await fetchJarvisControlAPI<JarvisControlStatus>('/jarvis/control/status');
+-  } catch (error) {
+-    const status = (error as Error & { status?: number }).status;
+-    if (status === 404) {
+-      return null;
+-    }
+-    throw error;
+-  }
+-}
+-
+-/** Create a Builder prepare stub task (no execution). */
+-export async function postJarvisBuilderPrepare(
+-  prompt: string,
+-  options?: { domain?: string; requested_by?: string }
+-): Promise<JarvisBuilderPrepareResponse> {
+-  return fetchJarvisControlAPI<JarvisBuilderPrepareResponse>('/jarvis/control/builder/prepare', {
+-    method: 'POST',
+-    headers: { 'Content-Type': 'application/json' },
+-    body: JSON.stringify({
+-      prompt: prompt.trim(),
+-      domain: options?.domain ?? 'software',
+-      requested_by: options?.requested_by ?? 'dashboard',
+-    }),
+-  });
+-}
+-
+-/** Fetch one Builder control task by id. */
+-export async function getJarvisBuilderTask(taskId: string): Promise<JarvisBuilderTaskDetail> {
+-  return fetchJarvisControlAPI<JarvisBuilderTaskDetail>(
+-    `/jarvis/control/builder/${encodeURIComponent(taskId)}`
+-  );
+-}
+diff --git a/frontend/src/app/components/tabs/AgentOpsTab.tsx b/frontend/src/app/components/tabs/AgentOpsTab.tsx
+index 9c8022b..de7a03b 100644
+--- a/frontend/src/app/components/tabs/AgentOpsTab.tsx
++++ b/frontend/src/app/components/tabs/AgentOpsTab.tsx
+@@ -171,7 +171,7 @@ function TaskTable({
+   );
+ }
+ 
+-export default function AgentOpsTab({ embedded = false }: { embedded?: boolean }) {
++export default function AgentOpsTab() {
+   const [status, setStatus] = useState<AgentStatus | null>(null);
+   const [recovery, setRecovery] = useState<AgentOpsRecovery | null>(null);
+   const [failed, setFailed] = useState<AgentOpsFailedInvestigations | null>(null);
+@@ -252,39 +252,22 @@ export default function AgentOpsTab({ embedded = false }: { embedded?: boolean }
+   }, [recovery, smoke, failed, deploy, bridge]);
+ 
+   return (
+-    <div className={`flex flex-col gap-4 ${embedded ? '' : 'p-4'}`} data-testid={embedded ? 'jarvis-system-status' : 'agent-ops-tab'}>
+-      {!embedded && (
+-        <div className="flex items-center justify-between">
+-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Agent Ops</h2>
+-          <div className="flex items-center gap-3">
+-            <span className="text-xs text-gray-500 dark:text-gray-400">
+-              {lastRefresh ? `Updated ${formatTs(lastRefresh.toISOString())}` : '—'}
+-            </span>
+-            <button
+-              onClick={fetchAll}
+-              disabled={loading}
+-              className="px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+-            >
+-              {loading ? 'Refreshing…' : 'Refresh'}
+-            </button>
+-          </div>
+-        </div>
+-      )}
+-      {embedded && (
+-        <div className="flex items-center justify-end gap-3">
++    <div className="flex flex-col gap-4 p-4">
++      <div className="flex items-center justify-between">
++        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Agent Ops</h2>
++        <div className="flex items-center gap-3">
+           <span className="text-xs text-gray-500 dark:text-gray-400">
+             {lastRefresh ? `Updated ${formatTs(lastRefresh.toISOString())}` : '—'}
+           </span>
+           <button
+             onClick={fetchAll}
+             disabled={loading}
+-            type="button"
+-            className="px-3 py-1.5 text-sm font-medium text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700 rounded hover:bg-indigo-50 dark:hover:bg-indigo-900/30 disabled:opacity-50 transition-colors"
++            className="px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+           >
+-            {loading ? 'Refreshing…' : 'Refresh status'}
++            {loading ? 'Refreshing…' : 'Refresh'}
+           </button>
+         </div>
+-      )}
++      </div>
+ 
+       {/* API errors when ok is false */}
+       {((recovery && !recovery.ok) || (failed && !failed.ok) || (active && !active.ok) || (smoke && !smoke.ok) || (deploy && !deploy.ok) || (bridge && !bridge.ok)) && (
+diff --git a/frontend/src/app/components/tabs/JarvisTab.tsx b/frontend/src/app/components/tabs/JarvisTab.tsx
+deleted file mode 100644
+index c61c450..0000000
+--- a/frontend/src/app/components/tabs/JarvisTab.tsx
++++ /dev/null
+@@ -1,544 +0,0 @@
+-'use client';
+-
+-import React, { useCallback, useEffect, useState } from 'react';
+-import AgentOpsTab from '@/app/components/tabs/AgentOpsTab';
+-import {
+-  getJarvisBuilderTask,
+-  getJarvisControlStatus,
+-  getJarvisTaskDetail,
+-  getJarvisTaskList,
+-  postJarvisAdvisorTask,
+-  postJarvisBuilderPrepare,
+-  type JarvisBuilderPrepareResponse,
+-  type JarvisControlStatus,
+-  type JarvisRiskLevel,
+-  type JarvisTaskResponse,
+-  type JarvisTaskRunDetail,
+-  type JarvisTaskRunSummary,
+-} from '@/app/api';
+-
+-type JarvisMode = 'advisor' | 'builder';
+-
+-function RiskBadge({ level }: { level: JarvisRiskLevel | string }) {
+-  const normalized = (level || 'low').toLowerCase();
+-  const variant =
+-    normalized === 'high'
+-      ? 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/40 dark:text-red-200 dark:border-red-700'
+-      : normalized === 'medium'
+-        ? 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:border-amber-700'
+-        : 'bg-green-100 text-green-800 border-green-200 dark:bg-green-900/40 dark:text-green-200 dark:border-green-700';
+-  return (
+-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${variant}`}>
+-      Risk: {normalized}
+-    </span>
+-  );
+-}
+-
+-function StubBadge() {
+-  return (
+-    <span
+-      className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-700"
+-      data-testid="jarvis-stub-badge"
+-    >
+-      Stub
+-    </span>
+-  );
+-}
+-
+-function formatTs(ts: string | null | undefined): string {
+-  if (!ts) return '—';
+-  try {
+-    const d = new Date(ts);
+-    return isNaN(d.getTime()) ? ts : d.toLocaleString();
+-  } catch {
+-    return ts;
+-  }
+-}
+-
+-function formatBool(value: boolean): string {
+-  return value ? 'Yes' : 'No';
+-}
+-
+-function AuditTrailSection({ detail }: { detail: JarvisTaskResponse | JarvisTaskRunDetail }) {
+-  const plan = detail.plan ?? [];
+-  const toolResults = detail.tool_results ?? [];
+-  const review = detail.review ?? {};
+-
+-  return (
+-    <div className="space-y-3" data-testid="jarvis-audit-trail">
+-      <div className="text-xs text-gray-500 dark:text-gray-400 font-mono">
+-        Task ID: {detail.task_id}
+-        {'status' in detail && detail.status ? ` · Status: ${detail.status}` : ''}
+-        {'estimated_cost_usd' in detail && typeof detail.estimated_cost_usd === 'number'
+-          ? ` · Est. cost: $${detail.estimated_cost_usd.toFixed(4)}`
+-          : ''}
+-      </div>
+-
+-      {plan.length > 0 && (
+-        <details className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+-          <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+-            Plan ({plan.length} step{plan.length === 1 ? '' : 's'})
+-          </summary>
+-          <pre className="px-3 pb-3 text-xs overflow-x-auto text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+-            {JSON.stringify(plan, null, 2)}
+-          </pre>
+-        </details>
+-      )}
+-
+-      {toolResults.length > 0 && (
+-        <details className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+-          <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+-            Tool results ({toolResults.length})
+-          </summary>
+-          <pre className="px-3 pb-3 text-xs overflow-x-auto text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-64 overflow-y-auto">
+-            {JSON.stringify(toolResults, null, 2)}
+-          </pre>
+-        </details>
+-      )}
+-
+-      {Object.keys(review).length > 0 && (
+-        <details className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+-          <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+-            Review
+-          </summary>
+-          <pre className="px-3 pb-3 text-xs overflow-x-auto text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+-            {JSON.stringify(review, null, 2)}
+-          </pre>
+-        </details>
+-      )}
+-
+-      {'error' in detail && detail.error && (
+-        <p className="text-sm text-red-600 dark:text-red-400" data-testid="jarvis-error">
+-          {detail.error}
+-        </p>
+-      )}
+-    </div>
+-  );
+-}
+-
+-function BuilderStatusPanel({ status }: { status: JarvisControlStatus }) {
+-  return (
+-    <div
+-      className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-4 space-y-2"
+-      data-testid="jarvis-builder-status-panel"
+-    >
+-      <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Builder environment</h3>
+-      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+-        <div>
+-          <dt className="text-gray-500 dark:text-gray-400">Environment</dt>
+-          <dd className="font-medium text-gray-900 dark:text-gray-100" data-testid="jarvis-builder-env">
+-            {status.environment}
+-          </dd>
+-        </div>
+-        <div>
+-          <dt className="text-gray-500 dark:text-gray-400">Trading-only</dt>
+-          <dd className="font-medium text-gray-900 dark:text-gray-100" data-testid="jarvis-builder-trading-only">
+-            {formatBool(status.trading_only)}
+-          </dd>
+-        </div>
+-        <div>
+-          <dt className="text-gray-500 dark:text-gray-400">Control enabled</dt>
+-          <dd className="font-medium text-gray-900 dark:text-gray-100">{formatBool(status.control_enabled)}</dd>
+-        </div>
+-        <div>
+-          <dt className="text-gray-500 dark:text-gray-400">Builder allowed</dt>
+-          <dd className="font-medium text-gray-900 dark:text-gray-100">{formatBool(status.builder_allowed)}</dd>
+-        </div>
+-        <div className="sm:col-span-2">
+-          <dt className="text-gray-500 dark:text-gray-400">Builder available</dt>
+-          <dd className="font-medium text-gray-900 dark:text-gray-100" data-testid="jarvis-builder-available">
+-            {formatBool(status.builder_available)}
+-          </dd>
+-        </div>
+-      </dl>
+-    </div>
+-  );
+-}
+-
+-function builderUnavailableReason(status: JarvisControlStatus | null): string | null {
+-  if (!status || status.builder_available) return null;
+-  if (status.trading_only) {
+-    return 'Trading-only mode is enabled on this host (ATP_TRADING_ONLY=1).';
+-  }
+-  if (!status.builder_allowed) {
+-    return 'Builder is not allowed on this host (JARVIS_BUILDER_ALLOWED is off).';
+-  }
+-  if (!status.control_enabled) {
+-    return 'Jarvis Control Center is disabled (JARVIS_CONTROL_ENABLED is off).';
+-  }
+-  return 'Builder gates are not open on this environment.';
+-}
+-
+-export default function JarvisTab() {
+-  const [mode, setMode] = useState<JarvisMode>('advisor');
+-  const [prompt, setPrompt] = useState('');
+-  const [submitting, setSubmitting] = useState(false);
+-  const [submitError, setSubmitError] = useState<string | null>(null);
+-  const [lastResponse, setLastResponse] = useState<JarvisTaskResponse | null>(null);
+-  const [builderResponse, setBuilderResponse] = useState<JarvisBuilderPrepareResponse | null>(null);
+-  const [history, setHistory] = useState<JarvisTaskRunSummary[]>([]);
+-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+-  const [selectedDetail, setSelectedDetail] = useState<JarvisTaskRunDetail | null>(null);
+-  const [historyLoading, setHistoryLoading] = useState(true);
+-  const [systemStatusOpen, setSystemStatusOpen] = useState(false);
+-  const [controlStatus, setControlStatus] = useState<JarvisControlStatus | null>(null);
+-  const [controlStatusLoading, setControlStatusLoading] = useState(true);
+-  const [controlStatusError, setControlStatusError] = useState<string | null>(null);
+-
+-  const controlApiAvailable = controlStatus !== null;
+-  const builderAvailable = controlStatus?.builder_available === true;
+-  const builderUnavailableMessage = builderUnavailableReason(controlStatus);
+-
+-  const loadControlStatus = useCallback(async () => {
+-    setControlStatusLoading(true);
+-    setControlStatusError(null);
+-    try {
+-      const status = await getJarvisControlStatus();
+-      setControlStatus(status);
+-    } catch (e) {
+-      setControlStatus(null);
+-      setControlStatusError(e instanceof Error ? e.message : String(e));
+-    } finally {
+-      setControlStatusLoading(false);
+-    }
+-  }, []);
+-
+-  const loadHistory = useCallback(async () => {
+-    setHistoryLoading(true);
+-    try {
+-      const res = await getJarvisTaskList(15);
+-      setHistory(res.tasks ?? []);
+-    } catch (e) {
+-      console.warn('Jarvis task history fetch failed:', e);
+-    } finally {
+-      setHistoryLoading(false);
+-    }
+-  }, []);
+-
+-  useEffect(() => {
+-    loadHistory();
+-    loadControlStatus();
+-  }, [loadHistory, loadControlStatus]);
+-
+-  const handleAdvisorSubmit = async (e: React.FormEvent) => {
+-    e.preventDefault();
+-    const text = prompt.trim();
+-    if (!text || submitting) return;
+-
+-    setSubmitting(true);
+-    setSubmitError(null);
+-    setSelectedTaskId(null);
+-    setSelectedDetail(null);
+-    setBuilderResponse(null);
+-
+-    try {
+-      const res = await postJarvisAdvisorTask(text);
+-      setLastResponse(res);
+-      await loadHistory();
+-    } catch (err) {
+-      setSubmitError(err instanceof Error ? err.message : String(err));
+-      setLastResponse(null);
+-    } finally {
+-      setSubmitting(false);
+-    }
+-  };
+-
+-  const handleBuilderSubmit = async (e: React.FormEvent) => {
+-    e.preventDefault();
+-    const text = prompt.trim();
+-    if (!text || submitting || !builderAvailable) return;
+-
+-    setSubmitting(true);
+-    setSubmitError(null);
+-    setLastResponse(null);
+-    setSelectedTaskId(null);
+-    setSelectedDetail(null);
+-    setBuilderResponse(null);
+-
+-    try {
+-      const res = await postJarvisBuilderPrepare(text, { requested_by: 'dashboard' });
+-      setBuilderResponse(res);
+-      try {
+-        await getJarvisBuilderTask(res.task_id);
+-      } catch (detailErr) {
+-        console.warn('Jarvis builder task detail fetch failed:', detailErr);
+-      }
+-    } catch (err) {
+-      setSubmitError(err instanceof Error ? err.message : String(err));
+-      setBuilderResponse(null);
+-    } finally {
+-      setSubmitting(false);
+-    }
+-  };
+-
+-  const handleSelectHistory = async (taskId: string) => {
+-    setSelectedTaskId(taskId);
+-    setSelectedDetail(null);
+-    setBuilderResponse(null);
+-    try {
+-      const detail = await getJarvisTaskDetail(taskId);
+-      setSelectedDetail(detail);
+-    } catch (e) {
+-      console.warn('Jarvis task detail fetch failed:', e);
+-    }
+-  };
+-
+-  const displayDetail = selectedDetail ?? lastResponse;
+-
+-  return (
+-    <div className="flex flex-col gap-6 p-4" data-testid="jarvis-tab">
+-      <div className="space-y-3">
+-        <div className="flex flex-wrap items-center gap-3">
+-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Jarvis Control Center</h2>
+-          <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden" data-testid="jarvis-mode-selector">
+-            <button
+-              type="button"
+-              onClick={() => setMode('advisor')}
+-              className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+-                mode === 'advisor'
+-                  ? 'bg-blue-600 text-white'
+-                  : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
+-              }`}
+-              data-testid="jarvis-mode-advisor"
+-            >
+-              Advisor
+-            </button>
+-            {controlApiAvailable && (
+-              <button
+-                type="button"
+-                onClick={() => setMode('builder')}
+-                className={`px-3 py-1.5 text-xs font-semibold transition-colors border-l border-gray-200 dark:border-gray-600 ${
+-                  mode === 'builder'
+-                    ? 'bg-indigo-600 text-white'
+-                    : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
+-                }`}
+-                data-testid="jarvis-mode-builder"
+-              >
+-                Builder
+-              </button>
+-            )}
+-          </div>
+-          {mode === 'advisor' && (
+-            <>
+-              <span
+-                className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-700/40 dark:text-gray-300 dark:border-gray-600"
+-                data-testid="jarvis-mode-readonly"
+-              >
+-                Read-only
+-              </span>
+-              <span
+-                className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:border-amber-700"
+-                data-testid="jarvis-no-prod-changes"
+-              >
+-                No production changes allowed
+-              </span>
+-            </>
+-          )}
+-          {mode === 'builder' && builderAvailable && (
+-            <StubBadge />
+-          )}
+-        </div>
+-        <p className="text-sm text-gray-600 dark:text-gray-400">
+-          {mode === 'advisor'
+-            ? 'Ask Jarvis read-only questions powered by AWS Bedrock. Responses are advisory only — no writes, deploys, or trading actions are available from this tab.'
+-            : 'Prepare Builder tasks in stub mode. Tasks are persisted for review — no Cursor bridge, governance, PR, or execution occurs in this phase.'}
+-        </p>
+-      </div>
+-
+-      {mode === 'builder' && controlStatus && <BuilderStatusPanel status={controlStatus} />}
+-
+-      {mode === 'builder' && controlStatusLoading && (
+-        <p className="text-sm text-gray-500 dark:text-gray-400">Loading Builder status…</p>
+-      )}
+-
+-      {mode === 'builder' && controlStatusError && (
+-        <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-900 dark:text-amber-100">
+-          Control status unavailable: {controlStatusError}
+-        </div>
+-      )}
+-
+-      {mode === 'builder' && !builderAvailable && controlStatus && (
+-        <div
+-          className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-900 dark:text-amber-100"
+-          data-testid="jarvis-builder-unavailable"
+-        >
+-          <p className="font-medium">Builder Mode unavailable in this environment.</p>
+-          {builderUnavailableMessage && <p className="mt-1 text-amber-800 dark:text-amber-200">{builderUnavailableMessage}</p>}
+-        </div>
+-      )}
+-
+-      {mode === 'advisor' ? (
+-        <form onSubmit={handleAdvisorSubmit} className="space-y-3" data-testid="jarvis-advisor-form">
+-          <label htmlFor="jarvis-prompt" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+-            Ask Jarvis
+-          </label>
+-          <textarea
+-            id="jarvis-prompt"
+-            data-testid="jarvis-prompt-input"
+-            rows={4}
+-            value={prompt}
+-            onChange={(e) => setPrompt(e.target.value)}
+-            placeholder="e.g. Summarize AWS cost optimization opportunities, or explain the current trading scheduler health…"
+-            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+-            disabled={submitting}
+-          />
+-          <div className="flex items-center gap-3">
+-            <button
+-              type="submit"
+-              data-testid="jarvis-submit-button"
+-              disabled={submitting || !prompt.trim()}
+-              className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+-            >
+-              {submitting ? 'Thinking…' : 'Ask (read-only)'}
+-            </button>
+-            <span className="text-xs text-gray-500 dark:text-gray-400">Always runs with dry_run=true</span>
+-          </div>
+-        </form>
+-      ) : (
+-        <form onSubmit={handleBuilderSubmit} className="space-y-3" data-testid="jarvis-builder-form">
+-          <label htmlFor="jarvis-builder-prompt" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+-            Builder prompt
+-          </label>
+-          <textarea
+-            id="jarvis-builder-prompt"
+-            data-testid="jarvis-builder-prompt-input"
+-            rows={4}
+-            value={prompt}
+-            onChange={(e) => setPrompt(e.target.value)}
+-            placeholder="e.g. Add structured logging to the backend health endpoint…"
+-            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+-            disabled={submitting || !builderAvailable}
+-          />
+-          <div className="flex items-center gap-3">
+-            <button
+-              type="submit"
+-              data-testid="jarvis-builder-submit-button"
+-              disabled={submitting || !prompt.trim() || !builderAvailable}
+-              className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+-            >
+-              {submitting ? 'Preparing…' : 'Prepare (stub)'}
+-            </button>
+-            <span className="text-xs text-gray-500 dark:text-gray-400">Creates a queued stub task only</span>
+-          </div>
+-        </form>
+-      )}
+-
+-      {submitError && (
+-        <div
+-          className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-800 dark:text-red-200"
+-          data-testid="jarvis-submit-error"
+-        >
+-          {submitError}
+-        </div>
+-      )}
+-
+-      {mode === 'advisor' && displayDetail && (
+-        <div
+-          className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 space-y-4"
+-          data-testid="jarvis-response-panel"
+-        >
+-          <div className="flex flex-wrap items-center gap-2">
+-            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Response</h3>
+-            <RiskBadge level={displayDetail.risk_level} />
+-            {'dry_run' in displayDetail && displayDetail.dry_run !== false && (
+-              <span className="text-xs text-gray-500 dark:text-gray-400">(dry run)</span>
+-            )}
+-          </div>
+-          <div
+-            className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap"
+-            data-testid="jarvis-final-answer"
+-          >
+-            {displayDetail.final_answer || '(No answer text returned)'}
+-          </div>
+-          <AuditTrailSection detail={displayDetail} />
+-        </div>
+-      )}
+-
+-      {mode === 'builder' && builderResponse && (
+-        <div
+-          className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 space-y-3"
+-          data-testid="jarvis-builder-response-panel"
+-        >
+-          <div className="flex flex-wrap items-center gap-2">
+-            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Builder prepare response</h3>
+-            <RiskBadge level={builderResponse.risk_level} />
+-            {builderResponse.stub && <StubBadge />}
+-          </div>
+-          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+-            <div>
+-              <dt className="text-gray-500 dark:text-gray-400">Task ID</dt>
+-              <dd className="font-mono text-gray-900 dark:text-gray-100" data-testid="jarvis-builder-task-id">
+-                {builderResponse.task_id}
+-              </dd>
+-            </div>
+-            <div>
+-              <dt className="text-gray-500 dark:text-gray-400">Status</dt>
+-              <dd className="font-medium text-gray-900 dark:text-gray-100" data-testid="jarvis-builder-task-status">
+-                {builderResponse.status}
+-              </dd>
+-            </div>
+-          </dl>
+-          <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="jarvis-builder-message">
+-            {builderResponse.message}
+-          </p>
+-        </div>
+-      )}
+-
+-      {mode === 'advisor' && (
+-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden">
+-          <h3 className="px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+-            Recent Jarvis tasks
+-          </h3>
+-          <div className="max-h-48 overflow-y-auto">
+-            {historyLoading ? (
+-              <p className="px-4 py-3 text-sm text-gray-500">Loading…</p>
+-            ) : history.length === 0 ? (
+-              <p className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">No prior tasks yet</p>
+-            ) : (
+-              <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+-                {history.map((t) => (
+-                  <li key={t.task_id}>
+-                    <button
+-                      type="button"
+-                      onClick={() => handleSelectHistory(t.task_id)}
+-                      className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors ${
+-                        selectedTaskId === t.task_id ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''
+-                      }`}
+-                    >
+-                      <div className="flex flex-wrap items-center gap-2">
+-                        <span className="text-gray-800 dark:text-gray-200 truncate max-w-xl">{t.task}</span>
+-                        <RiskBadge level={t.risk_level} />
+-                      </div>
+-                      <span className="text-xs text-gray-500">{formatTs(t.created_at)} · {t.status}</span>
+-                    </button>
+-                  </li>
+-                ))}
+-              </ul>
+-            )}
+-          </div>
+-        </div>
+-      )}
+-
+-      <section className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden">
+-        <button
+-          type="button"
+-          onClick={() => setSystemStatusOpen((o) => !o)}
+-          className="w-full flex items-center justify-between px-4 py-3 text-left bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors"
+-          data-testid="jarvis-system-status-toggle"
+-        >
+-          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">System Status</span>
+-          <span className="text-xs text-gray-500 dark:text-gray-400">{systemStatusOpen ? 'Hide' : 'Show'} agent telemetry</span>
+-        </button>
+-        {systemStatusOpen && (
+-          <div className="p-4 border-t border-gray-200 dark:border-gray-700">
+-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+-              Read-only scheduler, deploy, and bridge telemetry (legacy Agent Ops). May be unavailable when
+-              ATP_TRADING_ONLY=1.
+-            </p>
+-            <AgentOpsTab embedded />
+-          </div>
+-        )}
+-      </section>
+-    </div>
+-  );
+-}
+diff --git a/frontend/src/app/page.tsx b/frontend/src/app/page.tsx
+index e2aa1e1..280de65 100644
+--- a/frontend/src/app/page.tsx
++++ b/frontend/src/app/page.tsx
+@@ -15,7 +15,8 @@ import WatchlistTab from '@/app/components/tabs/WatchlistTab';
+ import OrdersTab from '@/app/components/tabs/OrdersTab';
+ import ExpectedTakeProfitTab from '@/app/components/tabs/ExpectedTakeProfitTab';
+ import ExecutedOrdersTab from '@/app/components/tabs/ExecutedOrdersTab';
+-import JarvisTab from '@/app/components/tabs/JarvisTab';
++import OpenClawTab from '@/app/components/tabs/OpenClawTab';
++import AgentOpsTab from '@/app/components/tabs/AgentOpsTab';
+ import SystemHealthPanel from '@/components/SystemHealth';
+ import { palette } from '@/theme/palette';
+ import { logger } from '@/utils/logger';
+@@ -324,7 +325,7 @@ const SkeletonBlock = ({ className = '' }: { className?: string }) => (
+   <div className={`animate-pulse bg-gray-200 dark:bg-slate-700 rounded ${className}`} />
+ );
+ 
+-type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring' | 'jarvis';
++type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring' | 'openclaw' | 'agent-ops';
+ 
+ // Helper function to add thousand separators
+ function addThousandSeparators(numStr: string): string {
+@@ -4621,7 +4622,8 @@ function resolveDecisionIndexColor(value: number): string {
+     { id: 'executed-orders', label: 'Executed Orders' },
+     { id: 'monitoring', label: 'Monitoring' },
+     { id: 'version-history', label: 'Version History' },
+-    { id: 'jarvis', label: 'Jarvis' },
++    { id: 'openclaw', label: 'OpenClaw' },
++    { id: 'agent-ops', label: 'Agent Ops' },
+   ];
+ 
+   return (
+@@ -5157,7 +5159,8 @@ function resolveDecisionIndexColor(value: number): string {
+             </div>
+           )}
+ 
+-          {activeTab === 'jarvis' && <JarvisTab />}
++          {activeTab === 'openclaw' && <OpenClawTab />}
++          {activeTab === 'agent-ops' && <AgentOpsTab />}
+         </ErrorBoundary>
+       </div>
+ 
+diff --git a/frontend/src/lib/environment.ts b/frontend/src/lib/environment.ts
+index 1f92363..647f70c 100644
+--- a/frontend/src/lib/environment.ts
++++ b/frontend/src/lib/environment.ts
+@@ -226,64 +226,12 @@ export function getApiUrl(): string {
+   return getEnvironmentManager().getApiUrl();
+ }
+ 
+-const PRICE_STREAM_WS_PATH = '/api/ws/prices';
+-
+-function isLocalHostname(hostname: string): boolean {
+-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+-}
+-
+-/** Normalize NEXT_PUBLIC_WS_PRICES_URL for the current page (https => wss, http => ws). */
+-function normalizePriceStreamWsUrl(override: string): string {
+-  if (typeof window === 'undefined') {
+-    return override;
+-  }
+-  try {
+-    const u = new URL(override, window.location.href);
+-    const pageSecure = window.location.protocol === 'https:';
+-
+-    if (u.protocol === 'http:' || u.protocol === 'https:') {
+-      if (pageSecure && !isLocalHostname(u.hostname)) {
+-        u.protocol = 'wss:';
+-      } else if (!pageSecure) {
+-        u.protocol = 'ws:';
+-      } else if (pageSecure && isLocalHostname(u.hostname)) {
+-        u.protocol = 'ws:';
+-      } else {
+-        u.protocol = pageSecure ? 'wss:' : 'ws:';
+-      }
+-      return u.toString();
+-    }
+-
+-    if (u.protocol === 'ws:' || u.protocol === 'wss:') {
+-      if (pageSecure && u.protocol === 'ws:' && !isLocalHostname(u.hostname)) {
+-        u.protocol = 'wss:';
+-      }
+-      return u.toString();
+-    }
+-  } catch {
+-    /* use override as-is */
+-  }
+-  return override;
+-}
+-
+-/**
+- * WebSocket URL for real-time price stream (/api/ws/prices).
+- * Browser: same-origin wss on HTTPS, ws on HTTP (never ws://api from relative /api).
+- * Optional NEXT_PUBLIC_WS_PRICES_URL override (full ws(s):// or http(s):// URL).
+- */
++/** WebSocket URL for real-time price stream (/api/ws/prices). Same origin as API. */
+ export function getWebSocketPricesUrl(): string {
+-  const override = process.env.NEXT_PUBLIC_WS_PRICES_URL?.trim();
+-  if (override) {
+-    return typeof window === 'undefined' ? override : normalizePriceStreamWsUrl(override);
+-  }
+-
+-  if (typeof window === 'undefined') {
+-    return `ws://127.0.0.1:8002${PRICE_STREAM_WS_PATH}`;
+-  }
+-
+-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+-  const host = window.location.host;
+-  return `${protocol}//${host}${PRICE_STREAM_WS_PATH}`;
++  const apiUrl = getApiUrl();
++  const wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
++  const rest = apiUrl.replace(/^https?:\/\//, '');
++  return `${wsProtocol}//${rest.replace(/\/+$/, '')}/ws/prices`;
+ }
+ 
+ export function getEnvironmentConfig(): EnvironmentConfig {
+diff --git a/frontend/src/lib/governanceAuth.ts b/frontend/src/lib/governanceAuth.ts
+deleted file mode 100644
+index 1ec76b2..0000000
+--- a/frontend/src/lib/governanceAuth.ts
++++ /dev/null
+@@ -1,12 +0,0 @@
+-/** Session-scoped Bearer for governance / Jarvis control APIs (client-only). */
+-
+-export const GOVERNANCE_TASK_VIEW_TOKEN_KEY = 'atp_governance_task_view_bearer';
+-
+-export function readStoredGovernanceBearer(): string {
+-  if (typeof window === 'undefined') return '';
+-  try {
+-    return (sessionStorage.getItem(GOVERNANCE_TASK_VIEW_TOKEN_KEY) || '').trim();
+-  } catch {
+-    return '';
+-  }
+-}
+diff --git a/frontend/tests/e2e/jarvis-tab.spec.ts b/frontend/tests/e2e/jarvis-tab.spec.ts
+deleted file mode 100644
+index e28b844..0000000
+--- a/frontend/tests/e2e/jarvis-tab.spec.ts
++++ /dev/null
+@@ -1,75 +0,0 @@
+-import { test, expect } from '@playwright/test';
+-
+-/**
+- * Jarvis Control Center tab (Advisor + Builder stub UI).
+- * Verifies navigation labels and that OpenClaw tab was removed.
+- */
+-test.describe('Jarvis Control Center tab', () => {
+-  test('shows Jarvis tab, hides OpenClaw, displays Advisor mode labels', async ({ page }) => {
+-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+-    await page.waitForTimeout(1500);
+-
+-    const jarvisTab = page.getByRole('button', { name: 'Jarvis', exact: true });
+-    await expect(jarvisTab).toBeVisible({ timeout: 15000 });
+-
+-    await expect(page.getByRole('button', { name: 'OpenClaw', exact: true })).toHaveCount(0);
+-    await expect(page.getByRole('button', { name: 'Agent Ops', exact: true })).toHaveCount(0);
+-
+-    await jarvisTab.click();
+-    await page.waitForTimeout(500);
+-
+-    await expect(page.getByTestId('jarvis-tab')).toBeVisible();
+-    await expect(page.getByTestId('jarvis-mode-advisor')).toBeVisible();
+-    await expect(page.getByTestId('jarvis-mode-readonly')).toHaveText('Read-only');
+-    await expect(page.getByTestId('jarvis-no-prod-changes')).toHaveText('No production changes allowed');
+-
+-    await expect(page.getByTestId('jarvis-prompt-input')).toBeVisible();
+-    await expect(page.getByTestId('jarvis-submit-button')).toBeVisible();
+-    await expect(page.getByTestId('jarvis-submit-button')).toHaveText(/Ask \(read-only\)/);
+-
+-    // No write/operator/builder execution buttons exposed
+-    await expect(page.getByRole('button', { name: /approve/i })).toHaveCount(0);
+-    await expect(page.getByRole('button', { name: /deploy/i })).toHaveCount(0);
+-    await expect(page.getByRole('button', { name: /execute/i })).toHaveCount(0);
+-    await expect(page.getByRole('button', { name: /open pr/i })).toHaveCount(0);
+-
+-    await expect(page.getByTestId('jarvis-system-status-toggle')).toBeVisible();
+-  });
+-
+-  test('shows Builder mode selector when control API is available', async ({ page }) => {
+-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+-    await page.waitForTimeout(1500);
+-
+-    await page.getByRole('button', { name: 'Jarvis', exact: true }).click();
+-    await page.waitForTimeout(1000);
+-
+-    const builderMode = page.getByTestId('jarvis-mode-builder');
+-    const builderCount = await builderMode.count();
+-    if (builderCount === 0) {
+-      test.skip(true, 'Control API unavailable in this environment (expected on PROD/trading-only).');
+-    }
+-
+-    await builderMode.click();
+-    await expect(page.getByTestId('jarvis-builder-status-panel')).toBeVisible();
+-    await expect(page.getByTestId('jarvis-builder-form')).toBeVisible();
+-    await expect(page.getByTestId('jarvis-builder-submit-button')).toBeVisible();
+-
+-    const unavailable = page.getByTestId('jarvis-builder-unavailable');
+-    if (await unavailable.count()) {
+-      await expect(unavailable).toContainText('Builder Mode unavailable in this environment.');
+-      await expect(page.getByTestId('jarvis-builder-submit-button')).toBeDisabled();
+-    }
+-  });
+-
+-  test('trading Portfolio tab still loads after Jarvis navigation', async ({ page }) => {
+-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+-    await page.waitForTimeout(1500);
+-
+-    const portfolioTab = page.getByRole('button', { name: 'Portfolio', exact: true });
+-    await expect(portfolioTab).toBeVisible({ timeout: 15000 });
+-    await portfolioTab.click();
+-    await page.waitForTimeout(1000);
+-
+-    await expect(page.locator('body')).not.toBeEmpty();
+-  });
+-});
