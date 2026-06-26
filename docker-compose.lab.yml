@@ -25,6 +25,7 @@ services:
       - .env
       - .env.lab
       - ./secrets/runtime.env
+      - ./secrets/runtime.env.lab
     environment:
       - ENVIRONMENT=lab
       - APP_ENV=lab
@@ -38,6 +39,11 @@ services:
       - JARVIS_ENV=lab
       - JARVIS_ENABLED=true
       - JARVIS_BUILDER_ALLOWED=1
+      # Pin safety flags so runtime.env.lab cannot enable autonomous writes.
+      - JARVIS_PATCH_APPLY_ENABLED=false
+      - JARVIS_PR_CREATION_ENABLED=false
+      - JARVIS_GITHUB_WRITE_ENABLED=false
+      - JARVIS_REQUIRE_DOUBLE_APPROVAL=true
       - CURSOR_BRIDGE_ENABLED=true
       - CURSOR_BRIDGE_REQUIRE_APPROVAL=true
       - ATP_STAGING_ROOT=/var/lib/atp-staging
