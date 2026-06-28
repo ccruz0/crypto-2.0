@@ -142,10 +142,17 @@ def make_execute(
 
 
 def classify_exchange_error(error_msg: str) -> str:
-    """Classify exchange error into canonical reason code"""
+    """Classify exchange or local block error into canonical reason code"""
     if not error_msg:
         return ReasonCode.EXCHANGE_ERROR_UNKNOWN.value
-    
+
+    error_lower = error_msg.lower()
+
+    if error_lower.startswith("system_core") or error_lower.startswith("blocked:"):
+        return ReasonCode.GUARDRAIL_BLOCKED.value
+    if "guardrail" in error_lower or "trade_blocked" in error_lower:
+        return ReasonCode.GUARDRAIL_BLOCKED.value
+
     error_upper = error_msg.upper()
     
     # Authentication errors

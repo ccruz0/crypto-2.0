@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Tuple
 
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ _MAX_OPEN_TRADES = int(os.getenv("SYSTEM_CORE_MAX_OPEN_TRADES", "5"))
 _MAX_DRAWDOWN_PCT = float(os.getenv("SYSTEM_CORE_MAX_DAILY_DRAWDOWN_PCT", "5"))
 _STATE_PATH = os.getenv("SYSTEM_CORE_EQUITY_STATE_PATH", "/tmp/system_core_equity_state.json")
 _GUARDS_ON = (os.getenv("SYSTEM_CORE_GUARDS_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off"))
+# If peak exceeds current equity by this factor, treat peak as stale (e.g. gross double-count) and rebaseline.
+_STALE_PEAK_RATIO = float(os.getenv("SYSTEM_CORE_STALE_PEAK_RATIO", "1.75"))
 
 
 def system_core_guards_enabled() -> bool:
@@ -49,34 +52,76 @@ def _write_state(data: dict[str, Any]) -> None:
         logger.warning("system_core: write equity state failed: %s", e)
 
 
-def _sum_portfolio_usd(db: Session) -> float:
-    try:
-        from app.models.portfolio import PortfolioBalance
+def _net_equity_usd(db: Session) -> float:
+    """Net wallet equity: latest balance per currency minus active borrowed USD."""
+    from app.models.portfolio import PortfolioBalance
 
-        rows = db.query(PortfolioBalance.usd_value).all()
-        total = 0.0
-        for (v,) in rows:
-            if v is not None:
-                try:
-                    total += float(v)
-                except (TypeError, ValueError):
-                    continue
-        return total
+    assets = 0.0
+    try:
+        table = PortfolioBalance.__tablename__
+        result = db.execute(
+            text(
+                f"""
+                SELECT COALESCE(SUM(usd_value), 0)
+                FROM (
+                    SELECT usd_value,
+                           ROW_NUMBER() OVER (PARTITION BY currency ORDER BY id DESC) AS rn
+                    FROM {table}
+                ) ranked
+                WHERE rn = 1 AND usd_value > 0
+                """
+            )
+        ).scalar()
+        assets = float(result or 0)
     except Exception as e:
-        logger.debug("system_core: portfolio sum failed: %s", e)
+        logger.debug("system_core: deduped asset sum failed: %s", e)
         return 0.0
+
+    borrowed = 0.0
+    try:
+        from app.models.portfolio_loan import PortfolioLoan
+
+        borrowed_result = (
+            db.query(func.sum(PortfolioLoan.borrowed_usd_value))
+            .filter(PortfolioLoan.is_active == True)  # noqa: E712
+            .scalar()
+        )
+        borrowed = float(borrowed_result or 0)
+    except Exception as e:
+        logger.debug("system_core: borrowed sum failed: %s", e)
+
+    if assets <= 0:
+        return 0.0
+    return max(assets - borrowed, 0.0)
+
+
+def _maybe_rebaseline_stale_peak(state: dict[str, Any], eq: float) -> dict[str, Any]:
+    """Drop an inflated intraday peak when equity method changed or data was corrected."""
+    peak = float(state.get("peak_usd") or 0)
+    if peak <= 0 or eq <= 0:
+        return state
+    if peak >= eq * _STALE_PEAK_RATIO:
+        logger.warning(
+            "system_core: rebaseline stale peak_usd from %.2f to %.2f (ratio=%.2f threshold=%.2f)",
+            peak,
+            eq,
+            peak / eq,
+            _STALE_PEAK_RATIO,
+        )
+        state["peak_usd"] = eq
+    return state
 
 
 def refresh_daily_equity_peak(db: Session) -> None:
-    """Track intraday peak equity (UTC date) for drawdown guard."""
+    """Track intraday peak net equity (UTC date) for drawdown guard."""
     if not _GUARDS_ON:
         logger.debug("system_core: equity_peak_refresh skipped guards_disabled")
         return
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    eq = _sum_portfolio_usd(db)
+    eq = _net_equity_usd(db)
     if eq <= 0:
         logger.info(
-            "system_core: equity_peak_refresh skipped reason=no_portfolio_usd (sum PortfolioBalance.usd_value<=0) date=%s",
+            "system_core: equity_peak_refresh skipped reason=no_net_equity_usd date=%s",
             today,
         )
         return
@@ -84,6 +129,7 @@ def refresh_daily_equity_peak(db: Session) -> None:
     if state.get("date") != today:
         state = {"date": today, "peak_usd": eq}
     else:
+        state = _maybe_rebaseline_stale_peak(state, eq)
         prev = float(state.get("peak_usd") or eq)
         state["peak_usd"] = max(prev, eq)
     _write_state(state)
@@ -99,14 +145,19 @@ def refresh_daily_equity_peak(db: Session) -> None:
 def _daily_drawdown_violation(db: Session) -> Tuple[bool, str]:
     if not _GUARDS_ON:
         return False, ""
-    eq = _sum_portfolio_usd(db)
+    eq = _net_equity_usd(db)
     if eq <= 0:
         return False, ""
     state = _read_state()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if state.get("date") != today:
         return False, ""
-    peak = float(state.get("peak_usd") or 0)
+    original_peak = float(state.get("peak_usd") or 0)
+    state = _maybe_rebaseline_stale_peak(state, eq)
+    new_peak = float(state.get("peak_usd") or 0)
+    if new_peak != original_peak:
+        _write_state({**state, "date": today})
+    peak = new_peak
     if peak <= 0:
         return False, ""
     dd_pct = 100.0 * (peak - eq) / peak
@@ -122,7 +173,7 @@ def count_distinct_symbols_with_open_positions(db: Session) -> int:
     seen: set[str] = set()
     n = 0
     try:
-        for (sym,) in db.query(WatchlistItem.symbol).filter(WatchlistItem.is_deleted == False).distinct():
+        for (sym,) in db.query(WatchlistItem.symbol).filter(WatchlistItem.is_deleted == False).distinct():  # noqa: E712
             if not sym:
                 continue
             base = sym.split("_")[0].upper() if "_" in sym else sym.upper()
@@ -183,3 +234,8 @@ def check_system_core_buy_allowed(
         return False, f"system_core_ma200 price={price} ma200={ma200}"
 
     return True, ""
+
+
+# Backward-compatible alias for tests/callers that referenced the old gross-sum helper.
+def _sum_portfolio_usd(db: Session) -> float:
+    return _net_equity_usd(db)
