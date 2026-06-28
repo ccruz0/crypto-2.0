@@ -6,9 +6,9 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, not_, text
 from app.database import SessionLocal
@@ -169,6 +169,21 @@ def map_exchange_order_status(
     return mapped
 
 
+# Symbols always synced each background cycle (covers pairs traded outside watchlist, e.g. BTC_USD).
+REQUIRED_ORDER_HISTORY_SYMBOLS: Tuple[str, ...] = ("BTC_USD", "BTC_USDT", "ETH_USDT")
+DEFAULT_ORDER_HISTORY_SYMBOLS: Tuple[str, ...] = (
+    "BTC_USD",
+    "BTC_USDT",
+    "ETH_USDT",
+    "BCH_USDT",
+    "ATOM_USDT",
+)
+ORDER_HISTORY_RECENT_LOOKBACK_DAYS = int(os.environ.get("ORDER_HISTORY_RECENT_LOOKBACK_DAYS", "45"))
+ORDER_HISTORY_DEEP_LOOKBACK_DAYS = int(os.environ.get("ORDER_HISTORY_DEEP_LOOKBACK_DAYS", "180"))
+ORDER_HISTORY_PRIORITY_MAX = int(os.environ.get("ORDER_HISTORY_PRIORITY_MAX", "12"))
+ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN = int(os.environ.get("ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN", "5"))
+
+
 class ExchangeSyncService:
     """Service to sync exchange data with database"""
     
@@ -178,7 +193,7 @@ class ExchangeSyncService:
         self.open_orders_sync_interval = 5  # seconds between open-orders refresh cycles
         self.startup_open_orders_delay = 2  # seconds before first open-orders refresh on startup
         self.background_sync_startup_delay = 15  # seconds before first balances/order-history cycle
-        self.order_history_timeout = 120  # max seconds for one order-history scan
+        self.order_history_timeout = int(os.environ.get("ORDER_HISTORY_SYNC_TIMEOUT_SEC", "300"))
         self.last_sync: Optional[datetime] = None
         self.last_open_orders_sync: Optional[datetime] = None
         self.processed_order_ids: Dict[str, float] = {}  # Track already processed executed orders {order_id: timestamp}
@@ -2170,12 +2185,100 @@ class ExchangeSyncService:
             window_end = window_start
         return all_orders
 
+    def _get_order_history_sync_symbols(self, db: Session) -> Tuple[List[str], List[str]]:
+        """Build symbol lists for order-history sync.
+
+        Returns:
+            (priority_symbols, all_symbols) — priority symbols are synced every cycle;
+            all_symbols includes watchlist + traded + required pairs for cursor rotation.
+        """
+        watchlist_symbols: List[str] = []
+        try:
+            from app.models.watchlist import WatchlistItem
+
+            rows = db.query(WatchlistItem.symbol).filter(
+                WatchlistItem.is_deleted == False  # noqa: E712
+            ).distinct().all()
+            watchlist_symbols = [str(r[0]).upper() for r in rows if r[0]]
+        except Exception as e:
+            logger.debug("Order history sync: watchlist query failed: %s", e)
+
+        recent_traded: List[str] = []
+        open_symbols: List[str] = []
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+            recent_rows = (
+                db.query(ExchangeOrder.symbol)
+                .filter(ExchangeOrder.exchange_update_time >= cutoff)
+                .distinct()
+                .all()
+            )
+            recent_traded = [str(r[0]).upper() for r in recent_rows if r[0]]
+
+            open_rows = (
+                db.query(ExchangeOrder.symbol)
+                .filter(
+                    ExchangeOrder.status.in_(
+                        [
+                            OrderStatusEnum.NEW,
+                            OrderStatusEnum.ACTIVE,
+                            OrderStatusEnum.PARTIALLY_FILLED,
+                        ]
+                    )
+                )
+                .distinct()
+                .all()
+            )
+            open_symbols = [str(r[0]).upper() for r in open_rows if r[0]]
+        except Exception as e:
+            logger.debug("Order history sync: exchange_orders query failed: %s", e)
+
+        if not watchlist_symbols:
+            watchlist_symbols = list(DEFAULT_ORDER_HISTORY_SYMBOLS)
+            logger.info(
+                "Order history sync: no watchlist symbols, using defaults count=%s",
+                len(watchlist_symbols),
+            )
+        else:
+            logger.info("Order history sync: watchlist symbols count=%s", len(watchlist_symbols))
+
+        seen: set[str] = set()
+        all_symbols: List[str] = []
+        for sym in (
+            list(REQUIRED_ORDER_HISTORY_SYMBOLS)
+            + recent_traded
+            + open_symbols
+            + watchlist_symbols
+            + list(DEFAULT_ORDER_HISTORY_SYMBOLS)
+        ):
+            key = sym.upper()
+            if key and key not in seen:
+                seen.add(key)
+                all_symbols.append(key)
+
+        priority_seen: set[str] = set()
+        priority_symbols: List[str] = []
+        for sym in list(REQUIRED_ORDER_HISTORY_SYMBOLS) + recent_traded + open_symbols:
+            key = sym.upper()
+            if key and key not in priority_seen:
+                priority_seen.add(key)
+                priority_symbols.append(key)
+                if len(priority_symbols) >= ORDER_HISTORY_PRIORITY_MAX:
+                    break
+
+        logger.info(
+            "Order history sync: priority=%s all=%s",
+            len(priority_symbols),
+            len(all_symbols),
+        )
+        return priority_symbols, all_symbols
+
     def sync_order_history_for_instrument(
         self,
         db: Session,
         trade_client: CryptoComTradeClient,
         instrument_name: str,
-        lookback_days: int = 180,
+        lookback_days: int = ORDER_HISTORY_DEEP_LOOKBACK_DAYS,
         window_days: int = 7,
         limit: int = 100,
     ) -> int:
@@ -2304,7 +2407,7 @@ class ExchangeSyncService:
                 logger.info("sync_order_history: delegating to sync_order_history_for_instrument instrument=%s", _instrument)
                 return self.sync_order_history_for_instrument(
                     db, trade_client, _instrument,
-                    lookback_days=180, window_days=7, limit=100,
+                    lookback_days=ORDER_HISTORY_DEEP_LOOKBACK_DAYS, window_days=7, limit=100,
                 )
 
             # Purge stale processed order IDs before processing
@@ -2317,39 +2420,51 @@ class ExchangeSyncService:
                 orders = prefetched_orders
                 logger.info("Order history sync: using prefetched_orders count=%s", len(orders))
             else:
-                # Multi-symbol: build symbol list (watchlist or default), cap per run, rotate cursor, sleep between symbols
-                try:
-                    from app.models.watchlist import WatchlistItem
-                    rows = db.query(WatchlistItem.symbol).filter(
-                        WatchlistItem.is_deleted == False  # noqa: E712
-                    ).distinct().all()
-                    symbols = [r[0] for r in rows if r[0]]
-                except Exception:
-                    symbols = []
-                if not symbols:
-                    symbols = ["BTC_USDT", "ETH_USDT", "BCH_USDT", "ATOM_USDT"]
-                    logger.info("Order history sync: no watchlist symbols, using default list count=%s", len(symbols))
-                else:
-                    logger.info("Order history sync: watchlist symbols count=%s", len(symbols))
-                # Cap symbols per run and rotate; cursor in Postgres (survives restart, row lock for multi-worker) or file fallback
-                ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN = 20
+                priority_symbols, all_symbols = self._get_order_history_sync_symbols(db)
                 ORDER_HISTORY_SYNC_SLEEP_BETWEEN_SYMBOLS_SEC = 0.2
-                start_index, next_cursor = self._order_history_cursor_get_and_advance(
-                    db, len(symbols), ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN
-                )
-                n = min(ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN, len(symbols))
-                symbols_this_run = [symbols[(start_index + i) % len(symbols)] for i in range(n)] if symbols else []
                 total_stored = 0
-                for i, sym in enumerate(symbols_this_run):
+
+                # Priority pass: required + recently traded + open-order symbols every cycle (recent window).
+                for i, sym in enumerate(priority_symbols):
                     if i > 0:
                         time.sleep(ORDER_HISTORY_SYNC_SLEEP_BETWEEN_SYMBOLS_SEC)
                     total_stored += self.sync_order_history_for_instrument(
-                        db, trade_client, sym,
-                        lookback_days=180, window_days=7, limit=100,
+                        db,
+                        trade_client,
+                        sym,
+                        lookback_days=ORDER_HISTORY_RECENT_LOOKBACK_DAYS,
+                        window_days=7,
+                        limit=100,
+                    )
+
+                # Rotating pass: remaining watchlist/traded symbols (recent window only; deep scan on manual sync).
+                start_index, next_cursor = self._order_history_cursor_get_and_advance(
+                    db, len(all_symbols), ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN
+                )
+                n = min(ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN, len(all_symbols))
+                symbols_this_run = (
+                    [all_symbols[(start_index + i) % len(all_symbols)] for i in range(n)]
+                    if all_symbols
+                    else []
+                )
+                priority_set = set(priority_symbols)
+                for i, sym in enumerate(symbols_this_run):
+                    if sym in priority_set:
+                        continue
+                    if i > 0:
+                        time.sleep(ORDER_HISTORY_SYNC_SLEEP_BETWEEN_SYMBOLS_SEC)
+                    total_stored += self.sync_order_history_for_instrument(
+                        db,
+                        trade_client,
+                        sym,
+                        lookback_days=ORDER_HISTORY_RECENT_LOOKBACK_DAYS,
+                        window_days=7,
+                        limit=100,
                     )
                 logger.info(
-                    "Order history sync: multi-symbol this_run=%s total_stored=%s next_cursor=%s",
-                    len(symbols_this_run),
+                    "Order history sync: priority=%s rotating=%s total_stored=%s next_cursor=%s",
+                    len(priority_symbols),
+                    len([s for s in symbols_this_run if s not in priority_set]),
                     total_stored,
                     next_cursor,
                 )
