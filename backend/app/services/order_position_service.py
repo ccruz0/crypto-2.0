@@ -23,6 +23,46 @@ from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusE
 logger = logging.getLogger(__name__)
 
 
+def _infer_symbol_price(filled_buy_orders: list[ExchangeOrder]) -> float | None:
+    """Best-effort price for dust USD checks when caller did not pass last_price."""
+    prices: list[float] = []
+    for order in filled_buy_orders:
+        for raw in (order.avg_price, order.price):
+            if raw is None:
+                continue
+            try:
+                val = float(raw)
+            except Exception:
+                continue
+            if val > 0:
+                prices.append(val)
+                break
+    if not prices:
+        return None
+    return sum(prices) / len(prices)
+
+
+def _is_position_dust(
+    net_quantity: float,
+    *,
+    min_position_qty: float = 0.0,
+    min_position_usd: float = 0.0,
+    last_price: float | None = None,
+) -> bool:
+    """True when net filled quantity is below optional dust thresholds."""
+    if net_quantity <= 0:
+        return True
+    if min_position_qty > 0 and net_quantity < min_position_qty:
+        return True
+    if min_position_usd > 0:
+        price = last_price
+        if price is None or price <= 0:
+            return False
+        if net_quantity * price < min_position_usd:
+            return True
+    return False
+
+
 def _normalized_symbol_filter(symbol: str):
     """
     Helper to build a SQLAlchemy filter for a symbol.
@@ -55,7 +95,14 @@ def _order_filled_quantity(order: ExchangeOrder) -> float:
         return float(qty or 0)
 
 
-def count_open_positions_for_symbol(db: Session, symbol: str) -> int:
+def count_open_positions_for_symbol(
+    db: Session,
+    symbol: str,
+    *,
+    min_position_qty: float = 0.0,
+    min_position_usd: float = 0.0,
+    last_price: float | None = None,
+) -> int:
     """
     Returns the number of open BUY commitments for a symbol.
 
@@ -135,6 +182,24 @@ def count_open_positions_for_symbol(db: Session, symbol: str) -> int:
     # Only subtract FILLED SELL orders - pending TP/SL orders don't reduce open position count
     # (they are just protection orders that haven't executed yet)
     net_quantity = max(filled_buy_qty - filled_sell_qty, 0.0)
+
+    dust_price = last_price if last_price is not None else _infer_symbol_price(filled_buy_orders)
+    if _is_position_dust(
+        net_quantity,
+        min_position_qty=min_position_qty,
+        min_position_usd=min_position_usd,
+        last_price=dust_price,
+    ):
+        logger.info(
+            "[OPEN_POSITION_COUNT] symbol=%s net_qty=%.8f treated as dust "
+            "(min_qty=%s min_usd=%s price=%s)",
+            symbol,
+            net_quantity,
+            min_position_qty,
+            min_position_usd,
+            dust_price,
+        )
+        return pending_buy_count
 
     # 5) Determine how many FILLED BUY orders are still open as positions.
     # We use a simple FIFO matching: Only FILLED SELL quantity offsets the earliest BUYs first.
