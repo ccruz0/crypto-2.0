@@ -418,8 +418,9 @@ def create_app(role: str = "legacy") -> FastAPI:
                 logger.warning(
                     "ALLOW_LEGACY_GITHUB_PAT=true — using GITHUB_TOKEN for GitHub API; remove after restoring GitHub App"
                 )
-            # Deploy system: fail fast if GitHub auth missing in AWS
-            if is_aws() and not _gh_ok:
+            # Deploy system: fail fast if GitHub auth missing in AWS (not on dedicated LAB builder)
+            _execution_ctx = (os.getenv("EXECUTION_CONTEXT") or "").strip().upper()
+            if is_aws() and not _gh_ok and _execution_ctx != "LAB":
                 raise RuntimeError(
                     "Deploy system misconfigured: GitHub App credentials missing or unusable. "
                     "Set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_B64 via "
@@ -714,7 +715,7 @@ def create_app(role: str = "legacy") -> FastAPI:
                         logger.warning("Watchlist is empty - initializing with portfolio symbols...")
                     
                         # Default symbols to add if portfolio is also empty
-                        default_symbols = ["BTC_USDT", "ETH_USDT", "SOL_USD", "ALGO", "DOT_USD", 
+                        default_symbols = ["BTC_USD", "BTC_USDT", "ETH_USDT", "SOL_USD", "ALGO", "DOT_USD",
                                          "AAVE_USD", "XRP", "DOGE_USD", "DGB_USD", "BONK_USD"]
                     
                         symbols_to_add = []
@@ -804,6 +805,61 @@ def create_app(role: str = "legacy") -> FastAPI:
                                 logger.info(f"✅ Synced {items_added} missing portfolio coins to watchlist: {', '.join(sorted(processed_symbols))}")
                         else:
                             logger.debug(f"Watchlist already has {count} items and all portfolio coins are present - no sync needed")
+
+                        # Ensure required trade pairs and recently traded symbols are on the watchlist.
+                        required_trade_symbols = {"BTC_USD", "BTC_USDT", "ETH_USDT"}
+                        missing_required = required_trade_symbols - existing_symbols
+                        try:
+                            from app.models.exchange_order import ExchangeOrder
+                            from datetime import datetime, timedelta, timezone
+
+                            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+                            traded_rows = (
+                                db.query(ExchangeOrder.symbol)
+                                .filter(ExchangeOrder.exchange_update_time >= cutoff)
+                                .distinct()
+                                .all()
+                            )
+                            for (sym,) in traded_rows:
+                                if sym:
+                                    sym_upper = str(sym).upper()
+                                    if sym_upper not in existing_symbols:
+                                        missing_required.add(sym_upper)
+                        except Exception as traded_err:
+                            logger.debug("Watchlist traded-symbol sync skipped: %s", traded_err)
+
+                        if missing_required:
+                            added_required = 0
+                            added_symbols: list[str] = []
+                            for symbol in sorted(missing_required):
+                                existing = db.query(WatchlistItem).filter(
+                                    WatchlistItem.symbol == symbol,
+                                    WatchlistItem.exchange == "CRYPTO_COM",
+                                ).first()
+                                if existing:
+                                    if existing.is_deleted:
+                                        existing.is_deleted = False
+                                        added_required += 1
+                                        added_symbols.append(symbol)
+                                else:
+                                    db.add(
+                                        WatchlistItem(
+                                            symbol=symbol,
+                                            exchange="CRYPTO_COM",
+                                            is_deleted=False,
+                                            trade_enabled=False,
+                                            alert_enabled=False,
+                                            sl_tp_mode="conservative",
+                                        )
+                                    )
+                                    added_required += 1
+                                    added_symbols.append(symbol)
+                            if added_required > 0:
+                                db.commit()
+                                logger.info(
+                                    "✅ Added missing trade/watchlist symbols: %s",
+                                    ", ".join(added_symbols),
+                                )
                 except Exception as inner_e:
                     logger.error(f"Error in watchlist sync inner block: {inner_e}", exc_info=True)
                     if db:
