@@ -3270,8 +3270,9 @@ class CryptoComTradeClient:
         page: int = 0,
         instrument_name: Optional[str] = None,
         fetch_margin: bool = True,
+        skip_empty_fallbacks: bool = False,
     ) -> dict:
-        """Get order history (executed orders). Pass instrument_name (e.g. BCH_USDT) to fetch history for a single instrument (required when exchange returns empty for global history). When fetch_margin is True and the default/spot path returns 0, tries private/get-order-history with spot_margin=MARGIN (Cross margin orders)."""
+        """Get order history (executed orders). Pass instrument_name (e.g. BCH_USDT) to fetch history for a single instrument (required when exchange returns empty for global history). When fetch_margin is True and the default/spot path returns 0, tries private/get-order-history with spot_margin=MARGIN (Cross margin orders). Set skip_empty_fallbacks=True for windowed per-instrument background sync to avoid redundant API retries on empty windows."""
         skip = require_aws_or_skip("get_order_history")
         if skip:
             return {"data": [], **skip}
@@ -3436,6 +3437,12 @@ class CryptoComTradeClient:
                 if isinstance(data, list):
                     # First page with limit returned 0: retry with empty params (doc default); preserve instrument_name if provided
                     if page == 0 and len(data) == 0:
+                        if skip_empty_fallbacks:
+                            logger.debug(
+                                "Order history empty with skip_empty_fallbacks=True instrument=%s; skipping fallbacks",
+                                instrument_name,
+                            )
+                            return {"data": []}
                         empty_params: Dict[str, Any] = {}
                         if instrument_name:
                             empty_params["instrument_name"] = instrument_name
