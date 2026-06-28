@@ -178,10 +178,13 @@ DEFAULT_ORDER_HISTORY_SYMBOLS: Tuple[str, ...] = (
     "BCH_USDT",
     "ATOM_USDT",
 )
-ORDER_HISTORY_RECENT_LOOKBACK_DAYS = int(os.environ.get("ORDER_HISTORY_RECENT_LOOKBACK_DAYS", "45"))
+ORDER_HISTORY_RECENT_LOOKBACK_DAYS = int(os.environ.get("ORDER_HISTORY_RECENT_LOOKBACK_DAYS", "30"))
+ORDER_HISTORY_RECENT_WINDOW_DAYS = int(os.environ.get("ORDER_HISTORY_RECENT_WINDOW_DAYS", "14"))
 ORDER_HISTORY_DEEP_LOOKBACK_DAYS = int(os.environ.get("ORDER_HISTORY_DEEP_LOOKBACK_DAYS", "180"))
-ORDER_HISTORY_PRIORITY_MAX = int(os.environ.get("ORDER_HISTORY_PRIORITY_MAX", "12"))
-ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN = int(os.environ.get("ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN", "5"))
+ORDER_HISTORY_DEEP_WINDOW_DAYS = int(os.environ.get("ORDER_HISTORY_DEEP_WINDOW_DAYS", "7"))
+ORDER_HISTORY_EMPTY_WINDOWS_STOP = int(os.environ.get("ORDER_HISTORY_EMPTY_WINDOWS_STOP", "3"))
+ORDER_HISTORY_PRIORITY_MAX = int(os.environ.get("ORDER_HISTORY_PRIORITY_MAX", "8"))
+ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN = int(os.environ.get("ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN", "3"))
 
 
 class ExchangeSyncService:
@@ -2056,11 +2059,12 @@ class ExchangeSyncService:
                     page=0,
                     page_size=limit,
                     instrument_name=instrument_name,
+                    skip_empty_fallbacks=True,
                 )
             except TypeError as e:
-                if "instrument_name" in str(e):
+                if "instrument_name" in str(e) or "skip_empty_fallbacks" in str(e):
                     logger.warning(
-                        "Broker get_order_history does not accept instrument_name (old client?). Calling without it."
+                        "Broker get_order_history missing optional args; calling without them."
                     )
                     response = trade_client.get_order_history(
                         start_time=chunk_start,
@@ -2127,6 +2131,7 @@ class ExchangeSyncService:
         all_orders: List[dict] = []
         seen_ids: set = set()
         window_end = end_ms
+        consecutive_empty = 0
         while window_end > start_ms:
             window_start = max(start_ms, window_end - window_days * self.MS_PER_DAY)
             logger.info(
@@ -2144,11 +2149,12 @@ class ExchangeSyncService:
                     page=0,
                     page_size=limit,
                     instrument_name=instrument_name,
+                    skip_empty_fallbacks=True,
                 )
             except TypeError as e:
-                if "instrument_name" in str(e):
+                if "instrument_name" in str(e) or "skip_empty_fallbacks" in str(e):
                     logger.warning(
-                        "Broker get_order_history does not accept instrument_name (old client?). Calling without it; per-instrument sync may return empty. Update crypto_com_trade.py and rebuild."
+                        "Broker get_order_history missing optional args; calling without them."
                     )
                     response = trade_client.get_order_history(
                         start_time=window_start,
@@ -2171,6 +2177,17 @@ class ExchangeSyncService:
                 fetched,
                 len(all_orders),
             )
+            if fetched == 0:
+                consecutive_empty += 1
+                if consecutive_empty >= ORDER_HISTORY_EMPTY_WINDOWS_STOP:
+                    logger.info(
+                        "Order history early stop: instrument=%s after %s consecutive empty windows",
+                        instrument_name,
+                        consecutive_empty,
+                    )
+                    break
+            else:
+                consecutive_empty = 0
             if fetched == limit:
                 # Subdivide this window: 1d -> 1h -> 5min -> 1min; walk whole parent, log WARNING at 1m if still full
                 self._fetch_range_subdivided(
@@ -2407,7 +2424,9 @@ class ExchangeSyncService:
                 logger.info("sync_order_history: delegating to sync_order_history_for_instrument instrument=%s", _instrument)
                 return self.sync_order_history_for_instrument(
                     db, trade_client, _instrument,
-                    lookback_days=ORDER_HISTORY_DEEP_LOOKBACK_DAYS, window_days=7, limit=100,
+                    lookback_days=ORDER_HISTORY_DEEP_LOOKBACK_DAYS,
+                    window_days=ORDER_HISTORY_DEEP_WINDOW_DAYS,
+                    limit=100,
                 )
 
             # Purge stale processed order IDs before processing
@@ -2433,7 +2452,7 @@ class ExchangeSyncService:
                         trade_client,
                         sym,
                         lookback_days=ORDER_HISTORY_RECENT_LOOKBACK_DAYS,
-                        window_days=7,
+                        window_days=ORDER_HISTORY_RECENT_WINDOW_DAYS,
                         limit=100,
                     )
 
@@ -2458,7 +2477,7 @@ class ExchangeSyncService:
                         trade_client,
                         sym,
                         lookback_days=ORDER_HISTORY_RECENT_LOOKBACK_DAYS,
-                        window_days=7,
+                        window_days=ORDER_HISTORY_RECENT_WINDOW_DAYS,
                         limit=100,
                     )
                 logger.info(
