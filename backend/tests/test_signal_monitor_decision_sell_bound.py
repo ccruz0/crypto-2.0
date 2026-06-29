@@ -107,3 +107,33 @@ def test_sell_trace_throttle_metrics_bound_before_use() -> None:
             f"{name} must be assigned before first use "
             f"(assign@{assign_line}, use@{use_line})"
         )
+
+
+def test_sell_send_block_binds_trace_dedup_origin() -> None:
+    """
+    Regression guard (same class of bug; final SELL-alert blocker):
+
+    The SELL Telegram-send block references trace_id, dedup_key and alert_origin.
+    Previously trace_id/dedup_key were never assigned at all, and alert_origin was
+    bound only on the BUY path -> NameError on a SELL-only signal AFTER emit_alert
+    ran. That NameError was caught and mislogged as a Telegram send failure,
+    skipping the SENT state update and re-firing the SELL signal every cycle.
+
+    These must be bound within the SELL send block, before their first use there.
+    """
+    from app.services.signal_monitor import SignalMonitorService
+
+    src = inspect.getsource(SignalMonitorService._check_signal_for_coin_sync)
+
+    block_start = src.index("if should_emit_telegram_sell:")
+    sell_block = src[block_start:]
+    first_use = sell_block.index("trace_id={trace_id} channel=")
+
+    for binding in ("trace_id = ", "dedup_key = ", "alert_origin = get_runtime_origin()"):
+        assert binding in sell_block, (
+            f"SELL send block must bind {binding!r} so the SELL-only path does not "
+            f"raise NameError after emit_alert()"
+        )
+        assert sell_block.index(binding) < first_use, (
+            f"{binding!r} must be bound before its first use in the SELL send block"
+        )

@@ -5822,6 +5822,18 @@ class SignalMonitorService:
                         # NOTE: Only send telegram if should_emit_telegram_sell is True
                         # If throttled, event was already recorded as BLOCKED above
                         if should_emit_telegram_sell:
+                            # Bind structured-logging vars used throughout this SELL send
+                            # block. These were previously never assigned on the SELL path,
+                            # raising NameError after emit_alert() ran. The NameError was
+                            # caught and mislogged as "Failed to send Telegram SELL alert",
+                            # which skipped the SENT state update and caused the SELL signal
+                            # to re-fire every cycle without a clean dispatch.
+                            # - trace_id: reuse the per-evaluation SELL trace id.
+                            # - alert_origin: only set on the BUY path otherwise (unbound on
+                            #   SELL-only signals); resolve it here too.
+                            trace_id = evaluation_trace_id if 'evaluation_trace_id' in locals() else evaluation_id
+                            dedup_key = f"{normalized_symbol}:SELL:{evaluation_id}"
+                            alert_origin = get_runtime_origin()
                             # FIX: Pass throttle_status based on sell_allowed - if throttled, mark as BLOCKED
                             # This ensures alerts are created/persisted even when throttled (for monitoring)
                             throttle_status_to_send = "SENT" if sell_allowed else "BLOCKED"
