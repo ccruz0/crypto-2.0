@@ -22,6 +22,7 @@ def _make_item(
     is_deleted: bool = False,
     created_offset_minutes: int = 0,
     exchange: str = "CRYPTO_COM",
+    trade_amount_usd=None,
 ):
     """Create a lightweight object that mimics WatchlistItem."""
     created_at = datetime.now() + timedelta(minutes=created_offset_minutes)
@@ -32,6 +33,7 @@ def _make_item(
         is_deleted=is_deleted,
         exchange=exchange,
         created_at=created_at,
+        trade_amount_usd=trade_amount_usd,
     )
 
 
@@ -61,6 +63,26 @@ def test_deduplicate_returns_single_row_per_symbol():
 
     assert sol_item is canonical
     assert btc_item is other_symbol
+
+
+def test_signal_monitor_and_dashboard_pick_same_row():
+    """Regression: signal_monitor must select the same canonical row as the dashboard.
+
+    Models the ETH_USDT incident where an alert_enabled duplicate with a NULL
+    trade_amount_usd shadowed the canonical configured row. Both the dashboard and
+    signal_monitor now rely on select_preferred_watchlist_item, so they must agree.
+    """
+    symbol = "ETH_USDT"
+    configured = _make_item(
+        symbol, id_value=2, alert_enabled=True, created_offset_minutes=0, trade_amount_usd=10.0
+    )
+    stale_dup = _make_item(
+        symbol, id_value=1, alert_enabled=False, created_offset_minutes=-30, trade_amount_usd=None
+    )
+
+    preferred = select_preferred_watchlist_item([stale_dup, configured], symbol)
+    assert preferred is configured
+    assert preferred.trade_amount_usd == 10.0
 
 
 def test_partition_respects_exchange():
