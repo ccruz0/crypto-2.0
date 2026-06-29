@@ -429,6 +429,10 @@ auth_mode: github_app
 CUTOVER_READY=YES
 ```
 
+`backend-aws-canary` is deploy-only (`restart: "no"`) and is often stopped between
+deploys. The monitor skips canary container/HTTP/log checks when the canary is not
+running; production GitHub App auth on `backend-aws` is what matters for PASS/FAIL.
+
 `EXCHANGE_CREDENTIAL_WARNINGS=YES` is acceptable — Crypto.com credential log lines are
 unrelated to GitHub App cutover and do not fail the monitor alone.
 
