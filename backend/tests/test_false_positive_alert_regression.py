@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from app.jarvis.investigations.alerting.severity import classify_investigation_report
-from app.jarvis.investigations.alerting.types import AlertSeverity
+from app.jarvis.investigations.alerting.telegram import should_send_telegram
+from app.jarvis.investigations.alerting.types import AlertRecord, AlertSeverity
 from app.jarvis.investigations.investigation_report import (
     build_investigation_report,
     classify_open_orders_mismatch,
@@ -212,6 +213,18 @@ class TestFalsePositiveAlertRegression:
         assert result.severity == AlertSeverity.WARNING
         assert result.alert_type == "investigation_partial_failure"
 
+    def test_case5b_partial_failure_still_warning_telegram(self):
+        """A genuine partial collector failure must remain WARNING and still page."""
+        report = _fake_report(
+            status=InvestigationStatus.PARTIAL_FAILURE,
+            summary="Collector could not reach all data sources",
+            root_cause="Insufficient evidence from trigger-order API",
+        )
+        result = classify_investigation_report(report, source="dashboard_exchange_mismatch")
+        assert result is not None
+        assert result.severity == AlertSeverity.WARNING
+        assert result.alert_type == "investigation_partial_failure"
+
     def test_intermediate_diagnostic_text_does_not_override_resolved_conclusion(self):
         """Evidence with 'open order counts differ' must not escalate when conclusion is healthy."""
         report = _fake_report(
@@ -231,5 +244,86 @@ class TestFalsePositiveAlertRegression:
             ],
         )
         result = classify_investigation_report(report, source="dashboard_exchange_mismatch")
+        assert result is not None
+        assert result.severity == AlertSeverity.INFO
+
+
+def _alert_record_from(alert_input) -> AlertRecord:
+    """Minimal AlertRecord built from a classifier AlertInput for send-gating checks."""
+    return AlertRecord(
+        alert_id="a",
+        created_at="2026-06-29T00:00:00Z",
+        severity=alert_input.severity.value,
+        source=alert_input.source,
+        investigation_id=alert_input.investigation_id,
+        title=alert_input.title,
+        summary=alert_input.summary,
+        evidence=alert_input.evidence,
+        status="open",
+        fingerprint="f",
+        last_seen="2026-06-29T00:00:00Z",
+    )
+
+
+class TestInsufficientEvidenceNoTelegram:
+    """Recurring scheduled investigations that end INSUFFICIENT_EVIDENCE must not page Telegram.
+
+    These are the false-positive WARNINGs the operator kept receiving
+    (deployment_unhealthy, portfolio_reconciliation_mismatch, jarvis_task_failing)
+    where evidence was PASS but Jarvis fell back to a low-confidence canned cause.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "category", "summary", "root_cause"),
+        [
+            (
+                "deployment_unhealthy",
+                "deployment",
+                "Why is deployment unhealthy?\n- health=pass\n- GITHUB_APP_CUTOVER_HEALTH=PASS",
+                "Deployment health check failing",
+            ),
+            (
+                "portfolio_reconciliation_mismatch",
+                "portfolio",
+                "Investigate portfolio reconciliation mismatch\n- health=pass",
+                "Portfolio equity derived from balances because exchange API omits equity field",
+            ),
+            (
+                "jarvis_task_failing",
+                "api",
+                "Why is Jarvis task failing?\n- health=pass",
+                "FILLED orders exist in database but dashboard trade history does not display them",
+            ),
+        ],
+    )
+    def test_insufficient_evidence_classified_info_and_not_sent(
+        self, source, category, summary, root_cause
+    ):
+        report = _fake_report(
+            category=category,
+            template_id=source,
+            status=InvestigationStatus.INSUFFICIENT_EVIDENCE,
+            summary=summary,
+            root_cause=root_cause,
+        )
+        result = classify_investigation_report(report, source=source)
+        assert result is not None
+        assert result.severity == AlertSeverity.INFO
+        assert result.alert_type == "investigation_insufficient_evidence"
+        # INFO alerts are not pushed to Telegram unless explicitly enabled.
+        record = _alert_record_from(result)
+        assert should_send_telegram(record, info_enabled=False) is False
+        assert should_send_telegram(record, info_enabled=True) is True
+
+    def test_insufficient_evidence_does_not_escalate_via_canned_warning_pattern(self):
+        """Even when the canned cause text matches a WARNING regex, status wins → INFO."""
+        report = _fake_report(
+            category="deployment",
+            template_id="deployment_unhealthy",
+            status=InvestigationStatus.INSUFFICIENT_EVIDENCE,
+            summary="Why is deployment unhealthy? Likely cause: deployment unhealthy / health check failing",
+            root_cause="Deployment health check failing",
+        )
+        result = classify_investigation_report(report, source="deployment_unhealthy")
         assert result is not None
         assert result.severity == AlertSeverity.INFO
