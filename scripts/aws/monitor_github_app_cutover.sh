@@ -2,6 +2,10 @@
 # Monitor GitHub App cutover health on PROD EC2 (run from repo root).
 # Never prints secret values.
 #
+# backend-aws-canary uses restart: "no" in docker-compose (deploy-only). When
+# the canary container is stopped (Created/exited), canary container, HTTP, and
+# log checks are skipped so hourly alerts reflect production GitHub App auth only.
+#
 # Usage:
 #   bash scripts/aws/monitor_github_app_cutover.sh
 
@@ -25,6 +29,19 @@ OVERALL_PASS=yes
 note_fail() {
   FAIL_REASONS+=("$1")
   OVERALL_PASS=no
+}
+
+# True when the compose service has a running container (not merely Created).
+service_container_running() {
+  local service="$1"
+  local cid running
+
+  cid="$(docker compose --profile aws ps -q "$service" 2>/dev/null | head -1 || true)"
+  if [[ -z "$cid" ]]; then
+    return 1
+  fi
+  running="$(docker inspect "$cid" --format='{{.State.Running}}' 2>/dev/null || echo false)"
+  [[ "$running" == "true" ]]
 }
 
 check_service_container() {
@@ -133,14 +150,27 @@ echo "repo: $ROOT_DIR"
 echo "time_utc: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo
 
+CANARY_RUNNING=no
+if service_container_running backend-aws-canary; then
+  CANARY_RUNNING=yes
+fi
+
 echo "== 1. Container status =="
 check_service_container backend-aws || true
-check_service_container backend-aws-canary || true
+if [[ "$CANARY_RUNNING" == "yes" ]]; then
+  check_service_container backend-aws-canary || true
+else
+  echo "  backend-aws-canary: not running (deploy-only; checks skipped)"
+fi
 echo
 
 echo "== 2. HTTP health probes =="
 check_http_health "backend-aws" "$PING_URL" "$READY_URL"
-check_http_health "backend-aws-canary" "$CANARY_PING_URL" "$CANARY_READY_URL"
+if [[ "$CANARY_RUNNING" == "yes" ]]; then
+  check_http_health "backend-aws-canary" "$CANARY_PING_URL" "$CANARY_READY_URL"
+else
+  echo "  backend-aws-canary: skipped (container not running)"
+fi
 echo
 
 echo "== 3. Cutover readiness (verify_github_app_cutover_ready.sh) =="
@@ -173,7 +203,11 @@ echo
 
 echo "== 4. Recent backend logs (GitHub auth patterns) =="
 inspect_backend_logs backend-aws
-inspect_backend_logs backend-aws-canary
+if [[ "$CANARY_RUNNING" == "yes" ]]; then
+  inspect_backend_logs backend-aws-canary
+else
+  echo "  backend-aws-canary: log scan skipped (container not running)"
+fi
 echo
 
 echo "== Summary =="
