@@ -2698,10 +2698,15 @@ class SignalMonitorService:
                 evaluation_id=evaluation_id
             )
 
+        # CRITICAL: Store pre-throttle signal state for instrumentation.
+        # Bind BOTH unconditionally before the buy branch so the SELL-only path
+        # (buy_signal=False, sell_signal=True) and the transition emitter never
+        # hit an UnboundLocalError on decision_sell (which previously aborted the
+        # monitor cycle before the SELL Telegram alert was dispatched).
+        decision_buy = buy_signal  # Pure strategy decision (never mutated)
+        decision_sell = sell_signal  # Pure strategy decision (never mutated)
+
         if buy_signal:
-            # CRITICAL: Store pre-throttle signal state for instrumentation
-            decision_buy = buy_signal  # Pure strategy decision (never mutated)
-            decision_sell = sell_signal  # Pure strategy decision (never mutated)
             
             # Calculate throttle metrics before check
             last_alert_at_utc = None
@@ -3162,7 +3167,7 @@ class SignalMonitorService:
                 "min_price_change_pct=%s evaluation_id=%s",
                 symbol,
                 current_state,
-                decision_buy if 'decision_buy' in locals() else False,
+                decision_buy,
                 decision_sell,
                 sell_allowed,
                 sell_reason,
