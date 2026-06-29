@@ -27,6 +27,10 @@ def _to_float(val: Any) -> float:
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
+from app.services.watchlist_selector import (
+    get_canonical_watchlist_item,
+    partition_watchlist_items,
+)
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.watchlist_signal_state import WatchlistSignalState
 from app.services.brokers.crypto_com_trade import trade_client
@@ -1839,6 +1843,18 @@ class SignalMonitorService:
             if not watchlist_items:
                 logger.warning("⚠️ No watchlist items with alert_enabled = true (or trade_enabled = true as fallback) found in database!")
                 return []
+            
+            # Collapse duplicate rows per (symbol, exchange) using the same canonical
+            # selection the dashboard uses, so monitoring operates on one row per symbol.
+            canonical_items, duplicate_items = partition_watchlist_items(watchlist_items)
+            if duplicate_items:
+                logger.warning(
+                    "⚠️ [WATCHLIST_DEDUP] Collapsed %s duplicate watchlist row(s) during monitoring fetch; "
+                    "monitoring %s canonical symbol(s).",
+                    len(duplicate_items),
+                    len(canonical_items),
+                )
+                watchlist_items = canonical_items
             
             logger.info(f"📊 Monitoring {len(watchlist_items)} coins with {'alert_enabled' if has_alert_enabled else 'trade_enabled'} = true:")
             for item in watchlist_items:
@@ -5154,9 +5170,11 @@ class SignalMonitorService:
                 # This ensures we use the latest values even if they were just changed in the dashboard
                 db.expire_all()  # Force refresh from database
                 try:
-                    fresh_trade_check = db.query(WatchlistItem).filter(
-                        WatchlistItem.symbol == symbol
-                    ).first()
+                    # Use canonical selection (same logic as dashboard) so that when
+                    # duplicate watchlist rows exist for a symbol we read the same row
+                    # the dashboard shows, instead of an arbitrary .first() row that may
+                    # have trade_amount_usd NULL/0.
+                    fresh_trade_check = get_canonical_watchlist_item(db, symbol)
                     if fresh_trade_check:
                         trade_enabled = getattr(fresh_trade_check, 'trade_enabled', False)
                         trade_amount_usd = getattr(fresh_trade_check, 'trade_amount_usd', None)
