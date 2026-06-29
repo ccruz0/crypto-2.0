@@ -163,8 +163,19 @@ def _status_severity(report: Any) -> tuple[AlertSeverity, str] | None:
     status_val = _status_value(report)
     if status_val == InvestigationStatus.FAILED.value:
         return AlertSeverity.CRITICAL, "investigation_failed"
-    if status_val in {InvestigationStatus.PARTIAL_FAILURE.value, InvestigationStatus.INSUFFICIENT_EVIDENCE.value}:
+    if status_val == InvestigationStatus.PARTIAL_FAILURE.value:
         return AlertSeverity.WARNING, "investigation_partial_failure"
+    if status_val == InvestigationStatus.INSUFFICIENT_EVIDENCE.value:
+        # An investigation that ends with INSUFFICIENT_EVIDENCE is a non-finding:
+        # Jarvis could not confirm an actionable root cause (it falls back to a
+        # low-confidence canned cause). Recurring scheduled investigations hit this
+        # constantly, and the previous WARNING mapping paged Telegram on every run
+        # even when all evidence was PASS/healthy. Classify as INFO so the alert is
+        # still stored (dashboard + daily report) but not pushed to Telegram unless
+        # INFO alerts are explicitly enabled. Real problems still surface as
+        # CRITICAL (FAILED / outage / active mismatch) or WARNING (genuine findings
+        # and partial collector failures).
+        return AlertSeverity.INFO, "investigation_insufficient_evidence"
     return None
 
 
@@ -215,7 +226,8 @@ def classify_investigation_report(
 
     Decision tree (first match wins):
     1. FAILED status → CRITICAL
-    2. PARTIAL_FAILURE / INSUFFICIENT_EVIDENCE → WARNING
+    2a. PARTIAL_FAILURE → WARNING
+    2b. INSUFFICIENT_EVIDENCE → INFO (non-finding; not sent to Telegram by default)
     3. Resolved healthy (resolution_status=resolved or authoritative conclusion) → INFO
     4. Active open-order mismatch (resolution_status=active or authoritative mismatch) → CRITICAL
     5. Category boost on authoritative text → severity per category rules
