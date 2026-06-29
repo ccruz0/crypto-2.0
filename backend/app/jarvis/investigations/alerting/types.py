@@ -54,3 +54,7 @@ class AlertRecord:
     updated_at: str = ""
     telegram_sent: bool = False
     deduplicated: bool = False
+    # Severity of the existing row before a dedup update re-applied the freshly
+    # computed severity. None for newly created alerts. Used by the engine to
+    # decide whether a deduplicated alert escalated (and should re-page).
+    previous_severity: str | None = None
