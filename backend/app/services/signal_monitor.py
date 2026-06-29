@@ -3104,9 +3104,10 @@ class SignalMonitorService:
             # PHASE 0: Structured logging for SELL condition detection
             import uuid as uuid_module
             evaluation_trace_id = str(uuid_module.uuid4())
+            rsi_str = f"{rsi:.1f}" if rsi else "N/A"
             logger.info(
                 f"[SELL_CONDITION_TRUE] symbol={symbol} side=SELL strategy={strategy_key} "
-                f"trace_id={evaluation_trace_id} price=${current_price:.4f} rsi={rsi:.1f if rsi else 'N/A'}"
+                f"trace_id={evaluation_trace_id} price=${current_price:.4f} rsi={rsi_str}"
             )
             
             self._log_signal_candidate(
