@@ -3158,6 +3158,22 @@ class SignalMonitorService:
                 f"eval_id={evaluation_id}"
             )
             
+            # Compute SELL throttle metrics BEFORE the instrumentation trace so the
+            # SELL-only path never references unbound names. Previously the trace used
+            # last_alert_at_utc_sell / seconds_since_last_sell (never assigned) and
+            # price_change_pct_sell (assigned only later), raising NameError/
+            # UnboundLocalError and aborting the cycle before the SELL alert was sent.
+            # Mirrors the BUY path throttle-metric computation.
+            last_sell_snapshot_pre = signal_snapshots.get("SELL")
+            last_alert_at_utc_sell = None
+            seconds_since_last_sell = None
+            price_change_pct_sell = None
+            if last_sell_snapshot_pre and last_sell_snapshot_pre.timestamp:
+                last_alert_at_utc_sell = last_sell_snapshot_pre.timestamp
+                seconds_since_last_sell = (now_utc - last_sell_snapshot_pre.timestamp).total_seconds()
+                if last_sell_snapshot_pre.price and last_sell_snapshot_pre.price > 0:
+                    price_change_pct_sell = abs((current_price - last_sell_snapshot_pre.price) / last_sell_snapshot_pre.price * 100)
+
             # CRITICAL: Instrumentation trace - log pipeline state BEFORE any mutations
             alert_config_pre_sell = self._resolve_alert_config(db, symbol)
             logger.info(
