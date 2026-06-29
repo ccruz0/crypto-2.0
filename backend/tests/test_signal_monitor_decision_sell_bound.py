@@ -63,3 +63,47 @@ def test_decision_sell_has_no_unbound_guard() -> None:
     assert "'decision_sell' in locals()" not in src, (
         "decision_sell should be bound unconditionally; no locals() guard needed"
     )
+
+
+def _first_assign_and_use(src: str, name: str) -> tuple[int, int]:
+    """Return (first_assignment_lineno, first_use_lineno) for a bare-name var."""
+    tree = ast.parse(src)
+    assign_lines: list[int] = []
+    use_lines: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == name:
+            if isinstance(node.ctx, ast.Store):
+                assign_lines.append(node.lineno)
+            elif isinstance(node.ctx, ast.Load):
+                use_lines.append(node.lineno)
+    return (min(assign_lines) if assign_lines else -1,
+            min(use_lines) if use_lines else -1)
+
+
+def test_sell_trace_throttle_metrics_bound_before_use() -> None:
+    """
+    Regression guard (same class of bug as decision_sell; also blocks SELL alerts):
+
+    The SELL [ALERT_PIPELINE_TRACE] references throttle-metric variables
+    (last_alert_at_utc_sell, seconds_since_last_sell, price_change_pct_sell).
+    These must be assigned BEFORE their first use. Previously two were never
+    assigned (NameError) and one was assigned only after the trace
+    (UnboundLocalError), aborting the SELL-only cycle before the alert was sent.
+    """
+    from app.services.signal_monitor import SignalMonitorService
+
+    src = inspect.getsource(SignalMonitorService._check_signal_for_coin_sync)
+    src = inspect.cleandoc("\n".join(src.splitlines()[1:]))
+
+    for name in (
+        "last_alert_at_utc_sell",
+        "seconds_since_last_sell",
+        "price_change_pct_sell",
+    ):
+        assign_line, use_line = _first_assign_and_use(src, name)
+        assert assign_line != -1, f"expected {name} to be assigned in the method"
+        assert use_line != -1, f"expected {name} to be used in the method"
+        assert assign_line <= use_line, (
+            f"{name} must be assigned before first use "
+            f"(assign@{assign_line}, use@{use_line})"
+        )
