@@ -21,15 +21,29 @@ logger = logging.getLogger(__name__)
 
 _MAX_PER_TRADE = float(os.getenv("SYSTEM_CORE_MAX_TRADE_USD", "1000"))
 _MAX_OPEN_TRADES = int(os.getenv("SYSTEM_CORE_MAX_OPEN_TRADES", "5"))
-_MAX_DRAWDOWN_PCT = float(os.getenv("SYSTEM_CORE_MAX_DAILY_DRAWDOWN_PCT", "5"))
+_MAX_DRAWDOWN_PCT = float(os.getenv("SYSTEM_CORE_MAX_DRAWDOWN_PCT", "5"))
 _STATE_PATH = os.getenv("SYSTEM_CORE_EQUITY_STATE_PATH", "/tmp/system_core_equity_state.json")
 _GUARDS_ON = (os.getenv("SYSTEM_CORE_GUARDS_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off"))
 # If peak exceeds current equity by this factor, treat peak as stale (e.g. gross double-count) and rebaseline.
 _STALE_PEAK_RATIO = float(os.getenv("SYSTEM_CORE_STALE_PEAK_RATIO", "1.75"))
+# RSI buy gate: block when rsi >= this value. Default 40 (legacy). Aggressive strategy uses buyBelow 50 —
+# set SYSTEM_CORE_RSI_BUY_MAX=50 on prod to align with scalp/aggressive profiles.
+_RSI_BUY_MAX = float(os.getenv("SYSTEM_CORE_RSI_BUY_MAX", "40"))
+# Dust: net filled remnant below these thresholds does not count as an open position for one-per-coin.
+_MIN_POSITION_QTY = float(os.getenv("SYSTEM_CORE_MIN_POSITION_QTY", "0"))
+_MIN_POSITION_USD = float(os.getenv("SYSTEM_CORE_MIN_POSITION_USD", "5"))
 
 
 def system_core_guards_enabled() -> bool:
     return _GUARDS_ON
+
+
+def _position_dust_kwargs(last_price: float | None = None) -> dict[str, float | None]:
+    return {
+        "min_position_qty": _MIN_POSITION_QTY,
+        "min_position_usd": _MIN_POSITION_USD,
+        "last_price": last_price,
+    }
 
 
 def _read_state() -> dict[str, Any]:
@@ -181,7 +195,7 @@ def count_distinct_symbols_with_open_positions(db: Session) -> int:
                 continue
             seen.add(base)
             try:
-                if count_open_positions_for_symbol(db, base) > 0:
+                if count_open_positions_for_symbol(db, base, **_position_dust_kwargs()) > 0:
                     n += 1
             except Exception:
                 continue
@@ -218,7 +232,7 @@ def check_system_core_buy_allowed(
     try:
         from app.services.order_position_service import count_open_positions_for_symbol
 
-        if count_open_positions_for_symbol(db, base) > 0:
+        if count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price)) > 0:
             return False, "system_core_one_active_trade_per_coin"
 
         open_symbols = count_distinct_symbols_with_open_positions(db)
@@ -227,8 +241,8 @@ def check_system_core_buy_allowed(
     except Exception as e:
         logger.warning("system_core: position checks failed (allowing): %s", e)
 
-    if rsi is not None and rsi >= 40:
-        return False, f"system_core_rsi rsi={rsi} need_lt_40"
+    if rsi is not None and rsi >= _RSI_BUY_MAX:
+        return False, f"system_core_rsi rsi={rsi} need_lt_{_RSI_BUY_MAX:g}"
 
     if ma200 is not None and ma200 > 0 and price > 0 and price <= ma200:
         return False, f"system_core_ma200 price={price} ma200={ma200}"
