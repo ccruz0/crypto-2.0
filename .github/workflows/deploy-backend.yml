@@ -1,0 +1,79 @@
+name: Deploy backend (ECR + EC2/SSM)
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push image
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ vars.ECR_BACKEND_REPOSITORY }}
+          SHA: ${{ github.sha }}
+        run: |
+          IMAGE="$REGISTRY/$REPO"
+          docker build -f backend/Dockerfile.aws \
+            --build-arg GIT_SHA="$SHA" \
+            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$IMAGE:$SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$SHA"
+          docker push "$IMAGE:latest"
+          echo "image=$IMAGE:$SHA" >> "$GITHUB_OUTPUT"
+      - name: Deploy on EC2 via SSM (pull + compose up backend-aws + canary + healthcheck + rollback)
+        env:
+          REGION: ${{ vars.AWS_REGION }}
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          COMPOSE_DIR: ${{ vars.COMPOSE_DIR }}
+          IMAGE: ${{ steps.build.outputs.image }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          read -r -d '' REMOTE <<EOF || true
+          set -e
+          aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${REGISTRY}
+          CUR=\$(docker inspect --format='{{.Config.Image}}' \$(docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps -q backend-aws) 2>/dev/null || true)
+          [ -n "\$CUR" ] && docker tag "\$CUR" atp-backend-rollback:predeploy || true
+          docker pull ${IMAGE}
+          BACKEND_IMAGE=${IMAGE} docker compose -f ${COMPOSE_DIR}/docker-compose.yml up -d --no-deps backend-aws backend-aws-canary
+          ok=0
+          for i in \$(seq 1 30); do
+            if curl -fsS http://localhost:8002/api/health/ready >/dev/null; then ok=1; break; fi
+            sleep 5
+          done
+          if [ "\$ok" != "1" ]; then
+            echo "HEALTHCHECK FAILED - rollback"
+            BACKEND_IMAGE=atp-backend-rollback:predeploy docker compose -f ${COMPOSE_DIR}/docker-compose.yml up -d --no-deps backend-aws backend-aws-canary || true
+            exit 1
+          fi
+          echo "DEPLOY OK"
+          EOF
+          CMD_ID=$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" --comment "Deploy backend ${IMAGE}" \
+            --parameters commands="$(printf '%q' "$REMOTE")" --query "Command.CommandId" --output text)
+          echo "SSM CommandId: $CMD_ID"
+          aws ssm wait command-executed --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
+          STATUS=$(aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "Status" --output text)
+          aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "StandardOutputContent" --output text
+          aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "StandardErrorContent" --output text
+          [ "$STATUS" = "Success" ] || { echo "Deploy status: $STATUS"; exit 1; }
