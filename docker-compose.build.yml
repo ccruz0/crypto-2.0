@@ -1,11 +1,13 @@
-# Local build override for frontend-aws.
+# Local build override for ECR-deployed services (frontend-aws, backend-aws).
 #
-# Production pulls frontend-aws from ECR (see docker-compose.yml: image: ${IMAGE:-...}).
-# This file is NOT auto-loaded (it is not named docker-compose.override.yml), so the
-# production on-host deploy never builds the frontend. Use it only for local builds:
+# Production pulls these images from ECR (see docker-compose.yml: image: ${IMAGE:-...}
+# / ${BACKEND_IMAGE:-...}). This file is NOT auto-loaded (it is not named
+# docker-compose.override.yml), so the production on-host deploy never builds them.
+# Use it only for local builds:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile aws build frontend-aws
-#   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile aws up -d frontend-aws
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile aws build backend-aws
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile aws up -d frontend-aws backend-aws
 #
 # Compose tags the built image with the `image:` value from docker-compose.yml, so a
 # locally-built image satisfies the same `image:` reference used in production.
@@ -16,3 +18,11 @@ services:
       dockerfile: Dockerfile
       args:
         BACKEND_URL: http://backend-aws:8002
+
+  backend-aws:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.aws
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}

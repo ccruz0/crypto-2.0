@@ -5,10 +5,13 @@ on:
   push:
     branches:
       - main
-    # frontend-aws is built+deployed independently by deploy-frontend.yml (ECR image).
-    # Frontend-only changes must not trigger the heavy on-host rebuild.
+    # frontend-aws and backend-aws are built+deployed independently from ECR images
+    # (deploy-frontend.yml / deploy-backend.yml). Those changes must not trigger the
+    # heavy, OOM-prone on-host rebuild handled by this workflow.
     paths-ignore:
       - 'frontend/**'
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
 
 concurrency:

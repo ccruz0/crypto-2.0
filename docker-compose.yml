@@ -188,13 +188,10 @@ services:
   # AWS alert/Telegram: ENVIRONMENT=aws, RUNTIME_ORIGIN=AWS, RUN_TELEGRAM=true (injected below).
   # Telegram credentials from .env.aws / secrets/runtime.env (TELEGRAM_BOT_TOKEN_AWS, TELEGRAM_CHAT_ID_AWS).
   backend-aws:
-    image: automated-trading-platform-backend-aws
-    build:
-      context: .
-      dockerfile: backend/Dockerfile.aws
-      args:
-        GIT_SHA: ${GIT_SHA:-unknown}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    # Image is built+pushed to ECR by .github/workflows/deploy-backend.yml and
+    # pulled here. For a LOCAL build of this service, layer the build override:
+    #   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile aws build backend-aws
+    image: ${BACKEND_IMAGE:-634531197711.dkr.ecr.ap-southeast-1.amazonaws.com/atp-backend:latest}
     env_file:
       - .env
       - .env.aws
@@ -333,7 +330,9 @@ services:
   # BACKEND AWS CANARY (same image as backend-aws, port 8003; for weighted deploy)
   # ============================================
   backend-aws-canary:
-    image: automated-trading-platform-backend-aws
+    # Canary shares the SAME ECR image as backend-aws (built+pushed by
+    # .github/workflows/deploy-backend.yml). Build override lives in docker-compose.build.yml.
+    image: ${BACKEND_IMAGE:-634531197711.dkr.ecr.ap-southeast-1.amazonaws.com/atp-backend:latest}
     env_file:
       - .env
       - .env.aws
