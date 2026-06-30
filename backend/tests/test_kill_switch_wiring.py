@@ -7,10 +7,11 @@ immediately stops ALL real order placement:
 2. The pre-trade gate (can_place_real_order) used by BOTH the manual order path
    (routes_orders.place_order) and the automatic signal path (signal_monitor)
    blocks when the kill switch is ON or unreadable.
-3. Broker-level defense-in-depth: require_mutation_allowed_for_broker blocks
-   every order-placement operation when the kill switch is ON / unreadable, so a
-   missed orchestration-layer gate still cannot place a real order. Non-placement
-   mutations (cancel) are not blocked.
+3. Broker-level defense-in-depth: require_mutation_allowed_for_broker blocks NEW
+   entry order placements (place_market_order / place_limit_order) when the kill
+   switch is ON / unreadable, so a missed orchestration-layer gate still cannot
+   open a position. Protective SL/TP placements for EXISTING positions and cancels
+   are NOT blocked, so an emergency stop never strips protection from open positions.
 4. Operator API control: GET/POST /api/trading/kill-switch.
 """
 import pytest
@@ -97,29 +98,92 @@ class TestPreTradeGate:
         assert allowed is True
         assert reason is None
 
+    @patch("app.utils.trading_guardrails.get_live_trading_status", return_value=True)
+    @patch("app.utils.trading_guardrails._get_telegram_kill_switch_status", return_value=True)
+    @patch("app.utils.trading_guardrails.count_total_open_positions", return_value=0)
+    def test_protective_sltp_allowed_when_kill_switch_on(self, _count, _ks, _live, mock_db):
+        """Protective SL/TP for an existing position is NOT blocked by the kill switch."""
+        mock_query = MagicMock()
+        mock_query.filter.return_value.order_by.return_value.first.return_value = None
+        mock_query.filter.return_value.scalar.return_value = 0
+        mock_db.query.return_value = mock_query
+        allowed, reason = can_place_real_order(
+            db=mock_db,
+            symbol="BTC_USDT",
+            order_usd_value=50.0,
+            side="SELL",
+            ignore_trade_yes=True,
+            ignore_daily_limit=True,
+            ignore_usd_limit=True,
+            is_protective_order=True,
+        )
+        assert allowed is True
+        assert reason is None
+
+    @patch("app.utils.trading_guardrails.get_live_trading_status", return_value=True)
+    @patch("app.utils.trading_guardrails.count_total_open_positions", return_value=0)
+    def test_protective_sltp_allowed_even_when_read_errors(self, _count, _live, mock_db):
+        """Protective SL/TP is allowed even if kill switch state is unreadable.
+
+        The kill switch read is never consulted for protective orders, so a DB
+        error must not strip protection from an existing position.
+        """
+        mock_query = MagicMock()
+        mock_query.filter.return_value.order_by.return_value.first.return_value = None
+        mock_query.filter.return_value.scalar.return_value = 0
+        mock_db.query.return_value = mock_query
+        with patch(
+            "app.utils.trading_guardrails._get_telegram_kill_switch_status",
+            side_effect=AssertionError("kill switch must not be read for protective orders"),
+        ):
+            allowed, reason = can_place_real_order(
+                db=mock_db,
+                symbol="BTC_USDT",
+                order_usd_value=50.0,
+                side="SELL",
+                ignore_trade_yes=True,
+                ignore_daily_limit=True,
+                ignore_usd_limit=True,
+                is_protective_order=True,
+            )
+        assert allowed is True
+        assert reason is None
+
 
 class TestBrokerDefenseInDepth:
     """require_mutation_allowed_for_broker is the last-resort broker chokepoint."""
 
-    PLACEMENT_OPS = [
+    # NEW entry placements: blocked when kill switch ON.
+    ENTRY_OPS = [
         "place_market_order",
         "place_limit_order",
+    ]
+
+    # Protective SL/TP for existing positions: NEVER blocked by the kill switch.
+    PROTECTIVE_OPS = [
         "place_stop_loss_order",
         "place_take_profit_order",
         "create_stop_loss_take_profit_with_variations",
     ]
 
     @patch("app.services.live_trading_gate._trading_kill_switch_blocks", return_value=True)
-    def test_all_placement_ops_blocked_when_kill_switch_on(self, _blocks):
-        for op in self.PLACEMENT_OPS:
+    def test_entry_ops_blocked_when_kill_switch_on(self, _blocks):
+        for op in self.ENTRY_OPS:
             with pytest.raises(LiveTradingBlockedError):
                 require_mutation_allowed_for_broker(op, "BTC_USDT")
 
     @patch("app.services.live_trading_gate._trading_kill_switch_blocks", return_value=False)
-    def test_placement_ops_allowed_when_kill_switch_off(self, _blocks):
-        for op in self.PLACEMENT_OPS:
+    def test_entry_ops_allowed_when_kill_switch_off(self, _blocks):
+        for op in self.ENTRY_OPS:
             # Should NOT raise.
             require_mutation_allowed_for_broker(op, "BTC_USDT")
+
+    @patch("app.services.live_trading_gate._trading_kill_switch_blocks", return_value=True)
+    def test_protective_ops_allowed_even_when_kill_switch_on(self, mock_blocks):
+        """SL/TP placements for existing positions are not blocked (and not even consulted)."""
+        for op in self.PROTECTIVE_OPS:
+            require_mutation_allowed_for_broker(op, "BTC_USDT")
+        mock_blocks.assert_not_called()
 
     @patch("app.services.live_trading_gate._trading_kill_switch_blocks", return_value=True)
     def test_cancel_not_blocked_even_when_kill_switch_on(self, mock_blocks):
