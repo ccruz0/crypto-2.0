@@ -94,11 +94,15 @@ jobs:
           RUN_CMD="IMAGE_NEW='${IMAGE_URI}' SERVICE='${COMPOSE_SERVICE}' REGION='${AWS_REGION}' REGISTRY='${REGISTRY}' COMPOSE_DIR='${COMPOSE_DIR}' bash /tmp/deploy-frontend.sh"
 
           echo "Sending deploy command to ${EC2_INSTANCE_ID}..."
+          PARAMS=$(jq -n \
+            --arg c1 "echo $B64 | base64 -d > /tmp/deploy-frontend.sh" \
+            --arg c2 "$RUN_CMD" \
+            '{commands: [$c1, $c2]}')
           CMD_ID="$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "deploy-frontend ${IMAGE_URI}" \
-            --parameters commands="[\"echo $B64 | base64 -d > /tmp/deploy-frontend.sh\",\"$RUN_CMD\"]" \
+            --parameters "$PARAMS" \
             --region "$AWS_REGION" \
             --output text --query "Command.CommandId")"
           echo "Command ID: $CMD_ID"
