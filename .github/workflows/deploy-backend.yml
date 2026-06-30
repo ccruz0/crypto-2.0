@@ -70,7 +70,7 @@ jobs:
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           CMD_ID=$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" --comment "Deploy backend ${IMAGE}" \
+            --document-name "AWS-RunShellScript" --comment "Deploy backend" \
             --parameters "$PARAMS" --query "Command.CommandId" --output text)
           echo "SSM CommandId: $CMD_ID"
           aws ssm wait command-executed --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
