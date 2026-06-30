@@ -101,7 +101,7 @@ jobs:
           CMD_ID="$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "deploy-frontend ${IMAGE_URI}" \
+            --comment "Deploy frontend" \
             --parameters "$PARAMS" \
             --region "$AWS_REGION" \
             --output text --query "Command.CommandId")"
