@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
 from app.jarvis.investigations.alerting.types import AlertInput, AlertSeverity
+from app.jarvis.investigations.confidence import _DEFAULT_ACW_THRESHOLD
 from app.jarvis.investigations.investigation_types import InvestigationStatus
 
 _RESOLVED_MISMATCH_CAUSE = "no active dashboard/exchange mismatch detected"
@@ -80,6 +82,97 @@ _WARNING_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _INFO_ALERT_TYPE = "investigation_completed"
+_LOW_CONFIDENCE_ALL_PASS_TYPE = "investigation_low_confidence_all_pass"
+
+# Evidence-detail markers. Applied to per-item diagnostic `detail` strings only —
+# never to authoritative conclusion text — to decide whether an investigation's
+# collected evidence is positively healthy vs. shows a real failure.
+_HEALTHY_EVIDENCE_RE = re.compile(
+    r"status=(?:pass|healthy|ok)\b"
+    r"|health check status=(?:pass|healthy|ok)"
+    r"|\bhealthy\b"
+    r"|match_count=0"
+    r"|no log matches"
+    r"|no .{0,40}matches",
+    re.I,
+)
+_FAILING_EVIDENCE_RE = re.compile(
+    r"unreachable|unavailable|cannot connect|connection (?:failed|refused)"
+    r"|failed_auth|missing_credentials|\b40101\b|authentication fail"
+    r"|status=(?:fail|failed|error|unhealthy|critical)"
+    r"|sync_status=(?:failed_auth|api_error|missing_credentials)"
+    r"|\bdown\b|\boutage\b",
+    re.I,
+)
+
+
+def _action_confidence_threshold() -> float:
+    """Confidence (0-100) at/above which a finding is actionable.
+
+    Mirrors the ACW action threshold used by the recommendation/self-healing path
+    (``JARVIS_SELF_HEALING_ACW_THRESHOLD`` env, default ``_DEFAULT_ACW_THRESHOLD``)
+    so alert classification and recommendation gating share one threshold.
+    """
+    raw = (os.environ.get("JARVIS_SELF_HEALING_ACW_THRESHOLD") or "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return _DEFAULT_ACW_THRESHOLD
+
+
+def _report_confidence(report: Any) -> float | None:
+    raw = getattr(report, "confidence", None)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _evidence_indicates_healthy(report: Any) -> bool:
+    """True when collected evidence positively shows PASS/healthy and no failures.
+
+    Requires at least one explicit healthy marker and zero failing markers. Empty
+    or purely neutral evidence returns False (cannot assert healthy), preserving
+    CRITICAL classification for outage findings that carry no PASS evidence.
+    """
+    evidence = getattr(report, "evidence", None) or []
+    if not evidence:
+        return False
+    saw_healthy = False
+    for item in evidence:
+        detail = str(item.get("detail") or "") if isinstance(item, dict) else str(item or "")
+        if not detail:
+            continue
+        if _FAILING_EVIDENCE_RE.search(detail):
+            return False
+        if _HEALTHY_EVIDENCE_RE.search(detail):
+            saw_healthy = True
+    return saw_healthy
+
+
+def _is_low_confidence_all_pass(report: Any) -> bool:
+    """COMPLETED investigation with sub-threshold confidence and only healthy evidence.
+
+    Recurring scheduled investigations (e.g. database_health) finish COMPLETED with
+    a canned low-confidence root cause while every evidence item is PASS. These are
+    non-findings: store as INFO (dashboard + daily report) but do not page Telegram.
+
+    Guards preserve genuine alerts: confirmed active mismatches and any report whose
+    evidence shows a real failure are excluded, and a missing/None confidence (older
+    callers) never triggers the downgrade.
+    """
+    if _status_value(report) != InvestigationStatus.COMPLETED.value:
+        return False
+    if (getattr(report, "resolution_status", None) or "").lower() == "active":
+        return False
+    confidence = _report_confidence(report)
+    if confidence is None or confidence >= _action_confidence_threshold():
+        return False
+    return _evidence_indicates_healthy(report)
 
 
 def _normalize_text(*parts: str | None) -> str:
@@ -229,6 +322,9 @@ def classify_investigation_report(
     2a. PARTIAL_FAILURE → WARNING
     2b. INSUFFICIENT_EVIDENCE → INFO (non-finding; not sent to Telegram by default)
     3. Resolved healthy (resolution_status=resolved or authoritative conclusion) → INFO
+    3b. COMPLETED + sub-threshold confidence + only healthy/PASS evidence → INFO
+        (evaluated before category boost so a low-confidence all-PASS finding can
+        never be escalated to CRITICAL/WARNING; non-finding, not paged by default)
     4. Active open-order mismatch (resolution_status=active or authoritative mismatch) → CRITICAL
     5. Category boost on authoritative text → severity per category rules
     6. Infrastructure outage patterns on authoritative text → CRITICAL
@@ -261,6 +357,21 @@ def classify_investigation_report(
             alert_type=_INFO_ALERT_TYPE,
             source=source,
             title="Investigation completed successfully",
+            summary=str(summary),
+            severity=AlertSeverity.INFO,
+            report=report,
+        )
+
+    if _is_low_confidence_all_pass(report):
+        summary = (
+            getattr(report, "summary", None)
+            or getattr(report, "root_cause", None)
+            or "Investigation completed with low confidence and only healthy evidence"
+        )
+        return _build_alert_input(
+            alert_type=_LOW_CONFIDENCE_ALL_PASS_TYPE,
+            source=source,
+            title="Investigation completed (low confidence, all checks passed)",
             summary=str(summary),
             severity=AlertSeverity.INFO,
             report=report,

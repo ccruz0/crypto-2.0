@@ -100,6 +100,11 @@ def upsert_alert(
         ).fetchone()
 
         if existing:
+            previous_severity = str(existing.severity)
+            # Re-apply the freshly computed severity so a later re-classification
+            # (e.g. a WARNING that downgrades to INFO once evidence is healthy, or
+            # an escalation to CRITICAL) takes effect on the existing row instead
+            # of staying frozen at the severity from first occurrence.
             conn.execute(
                 text(
                     """
@@ -107,6 +112,7 @@ def upsert_alert(
                     SET occurrence_count = occurrence_count + 1,
                         last_seen = :last_seen,
                         updated_at = :updated_at,
+                        severity = :severity,
                         summary = :summary,
                         evidence = :evidence,
                         investigation_id = COALESCE(:investigation_id, investigation_id)
@@ -117,6 +123,7 @@ def upsert_alert(
                     "alert_id": existing.alert_id,
                     "last_seen": now,
                     "updated_at": now,
+                    "severity": alert_input.severity.value,
                     "summary": alert_input.summary,
                     "evidence": evidence_json,
                     "investigation_id": alert_input.investigation_id,
@@ -128,6 +135,7 @@ def upsert_alert(
             ).fetchone()
             record = _row_to_alert(updated)
             record.deduplicated = True
+            record.previous_severity = previous_severity
             return record
 
         alert_id = f"alert-{uuid.uuid4().hex[:12]}"
