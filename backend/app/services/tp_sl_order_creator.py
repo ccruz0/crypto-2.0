@@ -172,6 +172,7 @@ def create_take_profit_order(
                 ignore_trade_yes=True,  # SL/TP is for existing positions
                 ignore_daily_limit=True,  # Do not block protective orders by daily limit
                 ignore_usd_limit=True,  # Do not block protective orders by USD limit
+                is_protective_order=True,  # Exempt from kill switch: protect existing positions
             )
             if not allowed:
                 # Emit lifecycle event and send Telegram notification
@@ -401,6 +402,7 @@ def create_stop_loss_order(
                 ignore_trade_yes=True,  # SL/TP is for existing positions
                 ignore_daily_limit=True,  # Do not block protective orders by daily limit
                 ignore_usd_limit=True,  # Do not block protective orders by USD limit
+                is_protective_order=True,  # Exempt from kill switch: protect existing positions
             )
             if not allowed:
                 # Emit lifecycle event and send Telegram notification
