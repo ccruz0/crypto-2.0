@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - main
+    # frontend-aws is built+deployed independently by deploy-frontend.yml (ECR image).
+    # Frontend-only changes must not trigger the heavy on-host rebuild.
+    paths-ignore:
+      - 'frontend/**'
   workflow_dispatch:
 
 concurrency:
@@ -147,17 +151,19 @@ jobs:
             "bash scripts/aws/render_runtime_env.sh || { echo \"⚠️ render_runtime_env failed; continuing with existing secrets/runtime.env\" && true; }",
             "echo \"🔍 Verifying clean frontend working tree before Docker build...\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_clean_worktree.sh --frontend-only\"",
-            "echo \"🐳 Rebuilding and restarting ALL services with --profile aws...\"",
+            "echo \"🐳 Rebuilding and restarting AWS services (EXCLUDING frontend-aws, which is deployed from ECR by deploy-frontend.yml)...\"",
+            "DEPLOY_SERVICES=$(docker compose --profile aws config --services | grep -vx 'frontend-aws' | tr '\\n' ' ')",
+            "echo \"Services managed by this deploy: $DEPLOY_SERVICES\"",
             "export GIT_SHA=${{ github.sha }}",
             "export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "bash scripts/aws/export_build_fingerprint.sh || { echo \"❌ export_build_fingerprint failed\" && exit 1; }",
             "echo \"🧮 Pre-build disk guard: reclaim space BEFORE the build (volume-safe; never touches DB/metrics volumes or running-stack images)...\"",
             "MIN_FREE_GB=${MIN_FREE_GB:-6} bash scripts/aws/predeploy_disk_guard.sh || echo \"⚠️ disk guard reported insufficient space; attempting build anyway (previous stack keeps serving if build fails)\"",
             "echo \"🛟 SAFE DEPLOY: no compose-down before build. The currently-running stack keeps serving while the new images build. If anything interrupts the deploy before up, the previous containers remain up (Outcome B).\"",
-            "echo \"🐳 Building new images (old stack still serving)...\"",
-            "docker compose --env-file .deploy-fingerprint.env --profile aws build --no-cache",
-            "echo \"🚀 Rolling update: up -d recreates only changed containers and leaves the rest running...\"",
-            "docker compose --env-file .deploy-fingerprint.env --profile aws up -d --remove-orphans",
+            "echo \"🐳 Building new images (old stack still serving; frontend-aws excluded)...\"",
+            "docker compose --env-file .deploy-fingerprint.env --profile aws build --no-cache $DEPLOY_SERVICES",
+            "echo \"🚀 Rolling update: up -d recreates only changed containers and leaves the rest (incl. frontend-aws) running...\"",
+            "docker compose --env-file .deploy-fingerprint.env --profile aws up -d --remove-orphans $DEPLOY_SERVICES",
             "echo \"🔎 Verifying baked fingerprint in backend-aws image...\"",
             "CID=$(docker compose --env-file .deploy-fingerprint.env --profile aws ps -q backend-aws)",
             "docker exec \"$CID\" cat /app/.git_sha",

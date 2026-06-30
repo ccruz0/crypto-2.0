@@ -519,11 +519,10 @@ services:
   # FRONTEND - AWS Profile
   # ============================================
   frontend-aws:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        BACKEND_URL: http://backend-aws:8002
+    # Image is built+pushed to ECR by .github/workflows/deploy-frontend.yml and
+    # pulled here. For a LOCAL build of this service, layer the build override:
+    #   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile aws build frontend-aws
+    image: ${IMAGE:-634531197711.dkr.ecr.ap-southeast-1.amazonaws.com/atp-frontend:latest}
     env_file:
       - .env
       - .env.local
