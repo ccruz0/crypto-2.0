@@ -68,9 +68,10 @@ jobs:
           fi
           echo "DEPLOY OK"
           EOF
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           CMD_ID=$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" --comment "Deploy backend ${IMAGE}" \
-            --parameters commands="$(printf '%q' "$REMOTE")" --query "Command.CommandId" --output text)
+            --parameters "$PARAMS" --query "Command.CommandId" --output text)
           echo "SSM CommandId: $CMD_ID"
           aws ssm wait command-executed --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
           STATUS=$(aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "Status" --output text)
