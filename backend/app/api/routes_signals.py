@@ -399,6 +399,110 @@ def get_data_sources_status():
             }
         }
 
+def compute_engine_signals(
+    db,
+    symbol: str,
+    current_price: float,
+    rsi: Optional[float],
+    atr: Optional[float],
+    ma50: Optional[float],
+    ma200: Optional[float],
+    ema10: Optional[float],
+    current_volume: Optional[float],
+    avg_volume: Optional[float],
+    rsi_buy_threshold: int = 40,
+    rsi_sell_threshold: int = 70,
+):
+    """Derive BUY/SELL ONLY from the trading engine's gated decision.
+
+    This calls ``calculate_trading_signals`` (the same canonical, volume-gated logic
+    the signal_monitor uses) so the dashboard reflects what the engine would actually
+    do. The engine gates SELL on ``rsi_sell_met AND trend_reversal AND sell_volume_ok``
+    (volume_ratio >= the strategy's ``volumeMinRatio``) and gates BUY on the full set
+    of strategy-configured ``buy_*`` flags.
+
+    FAIL-CLOSED: if the gated decision cannot be computed for any reason (DB not
+    available, no canonical watchlist item, missing strategy/volume data, or any
+    exception), this returns ``(False, False, None)`` rather than falling back to a
+    laxer ungated rule. This prevents symbols that are overbought-but-low-volume
+    (e.g. DGB) from falsely showing the red SELL state.
+
+    The strategy-configured RSI sell threshold (``sellAbove``) is passed through so the
+    threshold matches the active strategy instead of the generic query-param default.
+
+    Returns:
+        Tuple of ``(buy_signal: bool, sell_signal: bool, strategy_state: Optional[dict])``.
+    """
+    try:
+        if not (DB_AVAILABLE and db is not None):
+            return False, False, None
+
+        from app.services.trading_signals import calculate_trading_signals
+        from app.services.strategy_profiles import resolve_strategy_profile
+        from app.services.config_loader import get_strategy_rules
+        from app.services.watchlist_selector import get_canonical_watchlist_item
+
+        # Resolve the canonical watchlist row (handles duplicates/soft-deletes).
+        watchlist_item = get_canonical_watchlist_item(db, symbol)
+        if not watchlist_item:
+            return False, False, None
+
+        strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+
+        # Pass the strategy-configured RSI sell threshold (sellAbove) so the endpoint
+        # matches the active strategy. If it cannot be read, preserve the caller's
+        # threshold (the engine still applies the volume gate either way).
+        sell_threshold = rsi_sell_threshold
+        try:
+            rules = get_strategy_rules(
+                strategy_type.value.lower(), risk_approach.value.capitalize()
+            )
+            configured_sell_above = (rules or {}).get("rsi", {}).get("sellAbove")
+            if configured_sell_above is not None:
+                sell_threshold = int(configured_sell_above)
+        except Exception as rules_err:
+            logger.debug(
+                f"[SIGNALS] {symbol}: could not read strategy sellAbove, using {sell_threshold}: {rules_err}"
+            )
+
+        signals_result = calculate_trading_signals(
+            symbol=symbol,
+            price=current_price,
+            rsi=rsi,
+            atr14=atr,
+            ma50=ma50,
+            ma200=ma200,
+            ema10=ema10,
+            volume=current_volume if current_volume is not None else None,
+            avg_volume=avg_volume if avg_volume is not None else None,
+            buy_target=watchlist_item.buy_target,
+            last_buy_price=watchlist_item.purchase_price if watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None,
+            position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0,
+            rsi_buy_threshold=rsi_buy_threshold,
+            rsi_sell_threshold=sell_threshold,
+            strategy_type=strategy_type,
+            risk_approach=risk_approach,
+        )
+        if not signals_result:
+            return False, False, None
+
+        buy_signal = bool(signals_result.get("buy_signal", False))
+        sell_signal = bool(signals_result.get("sell_signal", False))
+        strategy_state = signals_result.get("strategy")
+        logger.debug(
+            f"[SIGNALS] {symbol}: gated decision buy={buy_signal} sell={sell_signal} (sell_threshold={sell_threshold})"
+        )
+        return buy_signal, sell_signal, strategy_state
+    except Exception as engine_err:
+        # FAIL-CLOSED: never fall back to the ungated rule on error.
+        logger.warning(
+            f"[SIGNALS] {symbol}: gated signal computation failed, failing closed "
+            f"(buy=sell=False): {engine_err}",
+            exc_info=True,
+        )
+        return False, False, None
+
+
 @router.get("/signals")
 def get_signals(
     request: Request,
@@ -753,71 +857,6 @@ def get_signals(
         # Use volume from database or calculated volume
         current_volume = volume_24h
         
-        # Trading signals calculation with enhanced logic for swing-conservative
-        # For swing-conservative: require additional confirmations for real trend reversal
-        # This prevents buying in extreme oversold conditions during downtrends
-        
-        # Detect if this is swing-conservative strategy (rsi_buy_threshold < 40 typically indicates conservative)
-        is_swing_conservative = (rsi_buy_threshold <= 40 and ma50_period >= 80)
-        
-        # Basic buy signal: RSI < threshold AND MA50 > EMA10 (uptrend)
-        # CRITICAL: MAs are REQUIRED - cannot generate buy signal without them
-        if ma50 is None or ema10 is None:
-            # MAs are missing - cannot validate buy conditions
-            basic_buy = False
-            logger.warning(f"⚠️ [SIGNALS] {symbol}: Cannot calculate buy signal - MAs REQUIRED but missing: MA50={ma50 is not None}, EMA10={ema10 is not None}")
-        else:
-            basic_buy = bool(rsi < rsi_buy_threshold and ma50 > ema10)
-        
-        # Enhanced buy signal for swing-conservative: require trend confirmation
-        if is_swing_conservative:
-            # For swing-conservative, require STRONGER confirmation:
-            # 1. Price > MA50 (above long-term average = uptrend)
-            # 2. MA50 > MA200 (long-term uptrend confirmed)
-            # 3. Volume > average (volume confirmation)
-            # 4. RSI in recovery range (30-45), not extreme oversold (<25)
-            # CRITICAL: Check for None values before comparisons
-            if ma50 is None or ema10 is None:
-                # Cannot calculate enhanced buy signal without MAs
-                buy_signal = False
-                logger.debug(f"Swing-conservative buy signal blocked for {symbol}: MAs missing (MA50={ma50 is not None}, EMA10={ema10 is not None})")
-            else:
-                price_above_ma50 = current_price > ma50
-                ma50_above_ma200 = ma50 > ma200 if ma200 is not None else True  # Allow if ma200 not available
-                volume_confirmation = volume_ratio > 1.0 if volume_ratio else True  # Volume above average
-                rsi_recovery_range = 30 <= rsi <= 45  # RSI in recovery range, not extreme oversold
-                
-                buy_signal = bool(
-                    basic_buy and 
-                    price_above_ma50 and 
-                    ma50_above_ma200 and 
-                    volume_confirmation and 
-                    rsi_recovery_range
-                )
-                
-                # Log why buy signal was/wasn't triggered
-                if not buy_signal:
-                    reasons = []
-                    if not price_above_ma50:
-                        reasons.append(f"Price ${current_price:.2f} <= MA50 ${ma50:.2f}")
-                    if ma200 is not None and not ma50_above_ma200:
-                        reasons.append(f"MA50 ${ma50:.2f} <= MA200 ${ma200:.2f}")
-                    if volume_ratio and not volume_confirmation:
-                        reasons.append(f"Volume {volume_ratio:.2f}x < 1.0x")
-                    if not rsi_recovery_range:
-                        reasons.append(f"RSI {rsi:.1f} not in recovery range (30-45)")
-                    if reasons:
-                        logger.debug(f"Swing-conservative buy signal blocked for {symbol}: {'; '.join(reasons)}")
-        else:
-            # Standard buy signal for other strategies
-            buy_signal = basic_buy
-        
-        # CRITICAL: Check for None values before sell signal calculation
-        if ma50 is None or ema10 is None:
-            sell_signal = False
-        else:
-            sell_signal = bool(rsi > rsi_sell_threshold and ma50 < ema10)
-        
         # Calculate TP/SL levels
         sl_level = float(current_price * 0.98)  # 2% below current price
         tp_level = float(current_price * 1.04)  # 4% above current price
@@ -825,6 +864,31 @@ def get_signals(
         # Calculate buy_target and sell_target (resistance levels)
         buy_target = res_down  # Buy target is resistance down
         sell_target = res_up   # Sell target is resistance up
+        
+        # CANONICAL SIGNAL SOURCE: Derive BUY/SELL ONLY from the trading engine's gated
+        # decision (calculate_trading_signals) — the same logic the signal_monitor uses.
+        # This applies the strategy's volume gate (volumeMinRatio) and trend checks, so
+        # the dashboard only shows the red SELL / green BUY state when the engine would
+        # actually act. There is intentionally NO laxer, ungated second rule here.
+        #
+        # FAIL-CLOSED: if the gated decision cannot be computed (missing DB/strategy/
+        # volume data, or any exception), BUY/SELL default to False instead of falling
+        # back to an ungated rule. This is what stops overbought-but-low-volume symbols
+        # like DGB from falsely showing red.
+        buy_signal, sell_signal, strategy_state = compute_engine_signals(
+            db=db,
+            symbol=symbol,
+            current_price=current_price,
+            rsi=rsi,
+            atr=atr,
+            ma50=ma50,
+            ma200=ma200,
+            ema10=ema10,
+            current_volume=current_volume,
+            avg_volume=avg_volume,
+            rsi_buy_threshold=rsi_buy_threshold,
+            rsi_sell_threshold=rsi_sell_threshold,
+        )
         
         # CRITICAL: Check for signal transition and emit immediately
         # This ensures alerts/orders are sent the moment UI button turns RED/GREEN
@@ -889,58 +953,12 @@ def get_signals(
         res_up_float = float(res_up) if res_up is not None and res_up > 0 else float(current_price * 1.02)
         res_down_float = float(res_down) if res_down is not None and res_down > 0 else float(current_price * 0.98)
         
-        # FIX: Calculate strategy_state with buy_volume_ok when volume data is available
-        # This ensures frontend receives buy_volume_ok status for volume checks
-        strategy_state = None
-        try:
-            if DB_AVAILABLE and db_data_used:
-                from app.services.trading_signals import calculate_trading_signals
-                from app.services.strategy_profiles import resolve_strategy_profile
-                from app.services.watchlist_selector import get_canonical_watchlist_item
-                
-                # Get canonical watchlist item to determine strategy profile
-                # Use get_canonical_watchlist_item to handle duplicates correctly
-                # Priority: not deleted, alert_enabled=true, newest timestamp, highest ID
-                watchlist_item = get_canonical_watchlist_item(db, symbol)
-                
-                if watchlist_item:
-                    strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
-                    
-                    # Calculate trading signals with volume data to get strategy_state
-                    signals_result = calculate_trading_signals(
-                        symbol=symbol,
-                        price=current_price,
-                        rsi=rsi,
-                        atr14=atr,
-                        ma50=ma50,
-                        ma200=ma200,
-                        ema10=ema10,
-                        volume=current_volume if current_volume is not None else None,
-                        avg_volume=avg_volume if avg_volume is not None else None,
-                        buy_target=watchlist_item.buy_target,
-                        last_buy_price=watchlist_item.purchase_price if watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None,
-                        position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0,
-                        rsi_buy_threshold=rsi_buy_threshold,
-                        rsi_sell_threshold=rsi_sell_threshold,
-                        strategy_type=strategy_type,
-                        risk_approach=risk_approach,
-                    )
-                    
-                    # Extract strategy_state and buy_signal from signals result
-                    if signals_result:
-                        if "strategy" in signals_result:
-                            strategy_state = signals_result["strategy"]
-                        # CRITICAL FIX: Use buy_signal from calculate_trading_signals (canonical source)
-                        # This ensures buy_signal matches strategy.decision
-                        if "buy_signal" in signals_result:
-                            buy_signal = signals_result["buy_signal"]
-                            logger.debug(f"✅ Using buy_signal from calculate_trading_signals for {symbol}: {buy_signal}")
-                        if "sell_signal" in signals_result:
-                            sell_signal = signals_result["sell_signal"]
-                            logger.debug(f"✅ Using sell_signal from calculate_trading_signals for {symbol}: {sell_signal}")
-        except Exception as strategy_err:
-            # Don't fail the entire request if strategy_state calculation fails
-            logger.debug(f"Could not calculate strategy_state for {symbol}: {strategy_err}")
+        # NOTE: buy_signal, sell_signal and strategy_state are already derived above from
+        # compute_engine_signals() — the single, volume-gated, fail-closed source aligned
+        # with the trading engine (calculate_trading_signals). We intentionally do NOT
+        # recompute or override them here; the previous block re-introduced a second,
+        # conditional/fail-open path that could diverge from the engine (e.g. showing a
+        # red SELL for an overbought-but-low-volume symbol the engine would not sell).
         
         response = {
             "symbol": symbol,
