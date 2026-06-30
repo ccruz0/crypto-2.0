@@ -1,0 +1,122 @@
+# Build the frontend image in GitHub Actions (NOT on the RAM-constrained host),
+# push it to ECR, and deploy ONLY the `frontend-aws` service on the EC2 host via SSM.
+#
+# Safety:
+#   - Never touches the trading backend or any other container. Deploy uses
+#     `docker compose up -d --no-deps frontend-aws` (no --remove-orphans).
+#   - Least-privilege OIDC role (no long-lived AWS keys).
+#   - Health-checks `/` and `/peluqueria`; rolls back to the previously running
+#     image on failure.
+name: Deploy frontend (ECR + SSM)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-frontend.yml'
+      - 'ci-cd/remote-deploy-frontend.sh'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-frontend
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      COMPOSE_DIR: ${{ vars.COMPOSE_DIR }}
+      COMPOSE_SERVICE: ${{ vars.COMPOSE_SERVICE }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in AWS_REGION ECR_REPOSITORY EC2_INSTANCE_ID COMPOSE_DIR COMPOSE_SERVICE; do
+            if [ -z "${!v:-}" ]; then echo "Missing repository variable: $v"; missing=1; fi
+          done
+          if [ -z "${{ secrets.AWS_DEPLOY_ROLE_ARN }}" ]; then echo "Missing secret: AWS_DEPLOY_ROLE_ARN"; missing=1; fi
+          [ "$missing" = "0" ] || exit 1
+          echo "Configuration present"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="sha-${GITHUB_SHA::12}"
+          IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          LATEST_URI="${REGISTRY}/${ECR_REPOSITORY}:latest"
+          echo "Building ${IMAGE_URI}"
+          docker build \
+            --build-arg BACKEND_URL=http://backend-aws:8002 \
+            -t "${IMAGE_URI}" -t "${LATEST_URI}" \
+            -f frontend/Dockerfile frontend
+          docker push "${IMAGE_URI}"
+          docker push "${LATEST_URI}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "Pushed ${IMAGE_URI} and ${LATEST_URI}"
+
+      - name: Deploy frontend-aws via SSM
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_URI: ${{ steps.build.outputs.image_uri }}
+        run: |
+          set -euo pipefail
+
+          # Ship the committed remote script base64-encoded (avoids SSM JSON quoting issues),
+          # then run it with deploy parameters passed as a leading env assignment.
+          B64="$(base64 -w0 ci-cd/remote-deploy-frontend.sh)"
+          RUN_CMD="IMAGE_NEW='${IMAGE_URI}' SERVICE='${COMPOSE_SERVICE}' REGION='${AWS_REGION}' REGISTRY='${REGISTRY}' COMPOSE_DIR='${COMPOSE_DIR}' bash /tmp/deploy-frontend.sh"
+
+          echo "Sending deploy command to ${EC2_INSTANCE_ID}..."
+          CMD_ID="$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "deploy-frontend ${IMAGE_URI}" \
+            --parameters commands="[\"echo $B64 | base64 -d > /tmp/deploy-frontend.sh\",\"$RUN_CMD\"]" \
+            --region "$AWS_REGION" \
+            --output text --query "Command.CommandId")"
+          echo "Command ID: $CMD_ID"
+
+          STATUS="Pending"
+          for i in $(seq 1 60); do
+            STATUS="$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --region "$AWS_REGION" --query Status --output text 2>/dev/null || echo Pending)"
+            case "$STATUS" in
+              Success) echo "SSM command succeeded"; break ;;
+              Failed|TimedOut|Cancelled) echo "SSM command status: $STATUS"; break ;;
+              *) echo "$STATUS ($i/60)"; sleep 10 ;;
+            esac
+          done
+
+          echo "----- remote stdout -----"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --region "$AWS_REGION" --query StandardOutputContent --output text 2>/dev/null || true
+          echo "----- remote stderr -----"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --region "$AWS_REGION" --query StandardErrorContent --output text 2>/dev/null || true
+
+          [ "$STATUS" = "Success" ] || { echo "Deploy failed (status=$STATUS)"; exit 1; }
+          echo "Frontend deploy complete: ${IMAGE_URI}"
