@@ -3776,15 +3776,7 @@ class CryptoComTradeClient:
         # Risk guard: block unsafe trades before constructing payload
         try:
             from app.services.risk_guard import check_trade_allowed, RiskViolationError
-            summary = self.get_account_summary()
-            account_equity = float(
-                summary.get("margin_equity")
-                or summary.get("account_equity")
-                or summary.get("equity")
-                or 0
-            )
-            total_margin_exposure = float(summary.get("total_margin_exposure") or 0)
-            daily_loss_pct = float(summary.get("daily_loss_pct") or 0)
+            account_equity, total_margin_exposure, daily_loss_pct = self.get_equity_from_user_balance()
             trade_value_usd = float(notional) if side_upper == "BUY" and notional is not None else 0.0
             check_trade_allowed(
                 symbol=symbol,
@@ -4349,12 +4341,7 @@ class CryptoComTradeClient:
 
         try:
             from app.services.risk_guard import check_trade_allowed, RiskViolationError
-            summary = self.get_account_summary()
-            account_equity = float(
-                summary.get("margin_equity") or summary.get("account_equity") or summary.get("equity") or 0
-            )
-            total_margin_exposure = float(summary.get("total_margin_exposure") or 0)
-            daily_loss_pct = float(summary.get("daily_loss_pct") or 0)
+            account_equity, total_margin_exposure, daily_loss_pct = self.get_equity_from_user_balance()
             trade_value_usd = float(qty) * float(price)
             check_trade_allowed(
                 symbol=symbol,
