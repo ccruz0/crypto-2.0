@@ -231,6 +231,20 @@ class CryptoComTradeClient:
                     self.base_url = custom_base or REST_BASE
         except Exception:
             pass
+
+    def _resolve_actual_dry_run(self, dry_run: bool) -> bool:
+        """
+        Resolve whether this order path should run in dry-run mode.
+
+        On AWS, ``dry_run`` from the caller (DB / ``get_live_trading``) is authoritative;
+        ``self.live_trading`` is intentionally pinned False and must not override it.
+        Off AWS, honor ``dry_run or not self.live_trading`` so local env stays safe by default.
+        """
+        from app.core.runtime import is_aws_runtime
+
+        if is_aws_runtime():
+            return dry_run
+        return dry_run or not self.live_trading
     
     def _call_proxy(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Call Crypto.com API through the proxy"""
@@ -3023,7 +3037,7 @@ class CryptoComTradeClient:
         ops/runbooks and future wiring).
 
         **Mutation contract** (same as ``place_stop_loss_order`` / ``place_take_profit_order``):
-        ``actual_dry_run = dry_run or not self.live_trading``. In dry-run, returns immediately with
+        ``actual_dry_run = self._resolve_actual_dry_run(dry_run)``. In dry-run, returns immediately with
         ``dry_run: True`` and **no** HTTP. ``require_mutation_allowed_for_broker`` runs only on the
         real-mutation path, immediately before ``_create_order_try_variants``.
         """
@@ -3032,7 +3046,7 @@ class CryptoComTradeClient:
             raise ValueError("side must be BUY or SELL (entry side)")
 
         self._refresh_runtime_flags()
-        actual_dry_run = dry_run or not self.live_trading
+        actual_dry_run = self._resolve_actual_dry_run(dry_run)
 
         jsonl_path = f"/tmp/sltp_variants_{correlation_id}.jsonl"
         closing_side = "SELL" if entry_side == "BUY" else "BUY"
@@ -3661,7 +3675,7 @@ class CryptoComTradeClient:
         if skip:
             return {"order_id": None, **skip}
         self._refresh_runtime_flags()
-        actual_dry_run = dry_run or not self.live_trading
+        actual_dry_run = self._resolve_actual_dry_run(dry_run)
         
         # Validate parameters based on side
         side_upper = side.upper()
@@ -4315,7 +4329,7 @@ class CryptoComTradeClient:
     ) -> dict:
         """Place limit order"""
         self._refresh_runtime_flags()
-        actual_dry_run = dry_run or not self.live_trading
+        actual_dry_run = self._resolve_actual_dry_run(dry_run)
         
         if actual_dry_run:
             logger.info(f"DRY_RUN: place_limit_order - {symbol} {side} {qty} @ {price}")
@@ -4791,7 +4805,7 @@ class CryptoComTradeClient:
     ) -> dict:
         """Place stop loss order (STOP_LIMIT)"""
         self._refresh_runtime_flags()
-        actual_dry_run = dry_run or not self.live_trading
+        actual_dry_run = self._resolve_actual_dry_run(dry_run)
 
         if actual_dry_run:
             logger.info(f"DRY_RUN: place_stop_loss_order - {symbol} {side} {qty} @ {price} trigger={trigger_price}")
@@ -5570,7 +5584,7 @@ class CryptoComTradeClient:
     ) -> dict:
         """Place take profit order (TAKE_PROFIT_LIMIT)"""
         self._refresh_runtime_flags()
-        actual_dry_run = dry_run or not self.live_trading
+        actual_dry_run = self._resolve_actual_dry_run(dry_run)
 
         if actual_dry_run:
             logger.info(f"DRY_RUN: place_take_profit_order - {symbol} {side} {qty} @ {price}")
