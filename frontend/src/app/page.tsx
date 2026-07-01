@@ -25,6 +25,11 @@ import JarvisImprovementTab from '@/app/components/tabs/JarvisImprovementTab';
 import SystemHealthPanel from '@/components/SystemHealth';
 import { palette } from '@/theme/palette';
 import { logger } from '@/utils/logger';
+import {
+  DEFAULT_TRADING_LIMITS,
+  parseTradingLimits,
+  strategyRulesToPresetConfig,
+} from '@/utils/tradingConfigUtils';
 
 const TELEGRAM_REFRESH_INTERVAL_MS = 20000;
 
@@ -1237,6 +1242,7 @@ function DashboardPageContent() {
   
   // Strategy presets configuration state (editable)
   const [presetsConfig, setPresetsConfig] = useState<PresetConfig>(() => PRESET_CONFIG);
+  const [tradingLimits, setTradingLimits] = useState(() => DEFAULT_TRADING_LIMITS);
   const [selectedConfigPreset, setSelectedConfigPreset] = useState<Preset>('Swing');
   const [selectedConfigRisk, setSelectedConfigRisk] = useState<RiskMode>('Conservative');
   const topCoinsRef = useRef<TopCoin[]>([]); // Keep ref to latest topCoins
@@ -4465,6 +4471,13 @@ function resolveDecisionIndexColor(value: number): string {
         const config = await getTradingConfig();
         if (config) {
           setTradingConfig(config);
+          if (config.strategy_rules) {
+            setPresetsConfig(strategyRulesToPresetConfig(
+              config.strategy_rules as Record<string, unknown>,
+              PRESET_CONFIG
+            ));
+          }
+          setTradingLimits(parseTradingLimits(config.trading_limits));
           // Extract coin presets from trading config
           if (config.coins) {
             const presets: Record<string, string> = {};
@@ -4537,7 +4550,12 @@ function resolveDecisionIndexColor(value: number): string {
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handler for saving strategy configuration
-  const handleSaveStrategyConfig = useCallback(async (preset: Preset, riskMode: RiskMode, updatedRules: StrategyRules) => {
+  const handleSaveStrategyConfig = useCallback(async (
+    preset: Preset,
+    riskMode: RiskMode,
+    updatedRules: StrategyRules,
+    updatedTradingLimits: typeof DEFAULT_TRADING_LIMITS
+  ) => {
     try {
       // Update local state first (optimistic update)
       setPresetsConfig(prev => ({
@@ -4550,6 +4568,7 @@ function resolveDecisionIndexColor(value: number): string {
           }
         }
       }));
+      setTradingLimits(updatedTradingLimits);
       
       logger.info(`Strategy config saved for ${preset} - ${riskMode}`, updatedRules);
       
@@ -4582,7 +4601,11 @@ function resolveDecisionIndexColor(value: number): string {
         // Build the config payload
         const configPayload: TradingConfig = {
           ...currentConfig,
-          strategy_rules: strategyRules
+          strategy_rules: strategyRules,
+          trading_limits: {
+            maxOpenOrdersTotal: updatedTradingLimits.maxOpenOrdersTotal,
+            maxOpenOrdersPerCoin: updatedTradingLimits.maxOpenOrdersPerCoin,
+          },
         };
         
         // Save to backend
@@ -4597,6 +4620,13 @@ function resolveDecisionIndexColor(value: number): string {
             const updatedConfig = await getTradingConfig();
             if (updatedConfig) {
               setTradingConfig(updatedConfig);
+              if (updatedConfig.strategy_rules) {
+                setPresetsConfig(strategyRulesToPresetConfig(
+                  updatedConfig.strategy_rules as Record<string, unknown>,
+                  PRESET_CONFIG
+                ));
+              }
+              setTradingLimits(parseTradingLimits(updatedConfig.trading_limits));
             }
           }
         } else {
@@ -5186,6 +5216,7 @@ function resolveDecisionIndexColor(value: number): string {
         preset={selectedConfigPreset}
         riskMode={selectedConfigRisk}
         rules={currentRules}
+        tradingLimits={tradingLimits}
         onSave={handleSaveStrategyConfig}
       />
 

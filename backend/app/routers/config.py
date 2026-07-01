@@ -140,6 +140,13 @@ def put_config(new_cfg: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         # Update defaults if provided
         if "defaults" in new_cfg:
             existing_cfg["defaults"] = {**existing_cfg.get("defaults", {}), **new_cfg["defaults"]}
+
+        # Global open-order limits (dashboard-configurable guardrails)
+        if "trading_limits" in new_cfg and isinstance(new_cfg["trading_limits"], dict):
+            existing_cfg["trading_limits"] = {
+                **existing_cfg.get("trading_limits", {}),
+                **new_cfg["trading_limits"],
+            }
         
         # Update coins if provided (merge, don't replace)
         if "coins" in new_cfg:

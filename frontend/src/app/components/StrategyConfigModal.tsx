@@ -4,8 +4,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { saveTradingConfig, TradingConfig } from '@/app/api';
-import type { StrategyRules, Preset, RiskMode } from '@/types/dashboard';
+import type { StrategyRules, Preset, RiskMode, TradingLimits } from '@/types/dashboard';
+import { DEFAULT_TRADING_LIMITS } from '@/utils/tradingConfigUtils';
 import { logger } from '@/utils/logger';
 
 interface StrategyConfigModalProps {
@@ -14,7 +14,13 @@ interface StrategyConfigModalProps {
   preset: Preset;
   riskMode: RiskMode;
   rules: StrategyRules;
-  onSave: (preset: Preset, riskMode: RiskMode, updatedRules: StrategyRules) => void;
+  tradingLimits: TradingLimits;
+  onSave: (
+    preset: Preset,
+    riskMode: RiskMode,
+    updatedRules: StrategyRules,
+    updatedTradingLimits: TradingLimits
+  ) => void;
 }
 
 export default function StrategyConfigModal({
@@ -23,9 +29,11 @@ export default function StrategyConfigModal({
   preset,
   riskMode,
   rules,
+  tradingLimits,
   onSave,
 }: StrategyConfigModalProps) {
   const [formData, setFormData] = useState<StrategyRules>(rules);
+  const [limitsData, setLimitsData] = useState<TradingLimits>(tradingLimits);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -33,9 +41,10 @@ export default function StrategyConfigModal({
   // Update form data when props change
   useEffect(() => {
     setFormData(rules);
+    setLimitsData(tradingLimits);
     setSaveError(null);
     setSaveSuccess(false);
-  }, [rules, preset, riskMode]);
+  }, [rules, tradingLimits, preset, riskMode]);
 
   if (!isOpen) return null;
 
@@ -73,6 +82,19 @@ export default function StrategyConfigModal({
     }
   };
 
+  const handleLimitsChange = (field: keyof TradingLimits, value: string) => {
+    const minValue = field === 'maxOpenOrdersPerCoin' ? 1 : 0;
+    const numValue = value === '' ? undefined : parseInt(value, 10);
+    if (value === '' || (numValue !== undefined && !isNaN(numValue) && numValue >= minValue)) {
+      setLimitsData((prev) => ({
+        ...prev,
+        [field]: numValue ?? DEFAULT_TRADING_LIMITS[field],
+      }));
+    }
+    setSaveError(null);
+    setSaveSuccess(false);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
@@ -81,7 +103,7 @@ export default function StrategyConfigModal({
 
     try {
       // Call the onSave callback with updated rules
-      onSave(preset, riskMode, formData);
+      onSave(preset, riskMode, formData, limitsData);
       
       // Optionally save to backend
       // Note: The backend expects TradingConfig format, which might differ
@@ -101,7 +123,8 @@ export default function StrategyConfigModal({
   };
 
   const handleCancel = () => {
-    setFormData(rules); // Reset to original
+    setFormData(rules);
+    setLimitsData(tradingLimits);
     setSaveError(null);
     setSaveSuccess(false);
     onClose();
@@ -213,7 +236,7 @@ export default function StrategyConfigModal({
                     htmlFor="strategy-max-orders-per-symbol-per-day"
                     className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
                   >
-                    Max Orders Per Symbol / Day
+                    Máx. órdenes por moneda al día (throttle)
                   </label>
                   <input
                     id="strategy-max-orders-per-symbol-per-day"
@@ -224,7 +247,61 @@ export default function StrategyConfigModal({
                     onChange={(e) => handleNumberChange('maxOrdersPerSymbolPerDay', e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-white"
                   />
-                  <p className="text-xs text-gray-500 mt-1">Leave empty to use global default</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Límite diario de órdenes nuevas por símbolo. No confundir con el tope de posiciones abiertas.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Open Order Limits Section (global guardrails) */}
+            <div className="mb-6 border-t pt-4">
+              <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-4">
+                Límites de órdenes abiertas
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Guardrails globales del sistema. Aplican a todas las estrategias y presets.
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="strategy-max-open-orders-total"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Máx. posiciones abiertas (total)
+                  </label>
+                  <input
+                    id="strategy-max-open-orders-total"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={limitsData.maxOpenOrdersTotal}
+                    onChange={(e) => handleLimitsChange('maxOpenOrdersTotal', e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Máximo de símbolos/monedas con posición abierta a la vez (default: 5).
+                  </p>
+                </div>
+                <div>
+                  <label
+                    htmlFor="strategy-max-open-orders-per-coin"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Máx. posiciones por moneda
+                  </label>
+                  <input
+                    id="strategy-max-open-orders-per-coin"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={limitsData.maxOpenOrdersPerCoin}
+                    onChange={(e) => handleLimitsChange('maxOpenOrdersPerCoin', e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Cuántas posiciones simultáneas por moneda (default: 1).
+                  </p>
                 </div>
               </div>
             </div>
