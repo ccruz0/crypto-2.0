@@ -100,6 +100,24 @@ def _parse_preset(preset_name: Optional[str]) -> Tuple[Optional[StrategyType], O
     return strategy, approach
 
 
+def _lookup_coin_cfg(coins_cfg: dict[str, Any], symbol_key: str) -> dict[str, Any]:
+    """Resolve per-coin config, trying USDT/USD symbol variants in both directions."""
+    if not symbol_key:
+        return {}
+    direct = coins_cfg.get(symbol_key)
+    if isinstance(direct, dict) and direct:
+        return direct
+    if "_USDT" in symbol_key:
+        alt = coins_cfg.get(symbol_key.replace("_USDT", "_USD"))
+        if isinstance(alt, dict) and alt:
+            return alt
+    if "_USD" in symbol_key:
+        alt = coins_cfg.get(symbol_key.replace("_USD", "_USDT"))
+        if isinstance(alt, dict) and alt:
+            return alt
+    return {}
+
+
 def resolve_strategy_profile(
     symbol: str,
     db: Optional[Session] = None,
@@ -109,40 +127,34 @@ def resolve_strategy_profile(
     Determine the (strategy_type, risk_approach) tuple for the given symbol.
 
     Priority:
-        1. Watchlist overrides for risk approach (sl_tp_mode)
-        2. TradeSignal row (preset + sl_profile) if available via DB
-        3. trading_config.json preset for the symbol (or defaults)
+        1. trading_config.json per-coin preset (strategy + explicit risk suffix in preset name)
+        2. Watchlist sl_tp_mode for approach when preset has no risk suffix
+        3. TradeSignal row (preset + sl_profile) if available via DB
         4. Fallback to (SWING, CONSERVATIVE)
     """
 
-    strategy: Optional[StrategyType] = None
-    approach: Optional[RiskApproach] = None
-
-    # 1) Watchlist overrides - only affect approach
-    if watchlist_item is not None:
-        approach = _normalize_approach(getattr(watchlist_item, "sl_tp_mode", None))
-
     symbol_key = (symbol or "").upper()
 
-    # 2) Use trading_config preset mapping (dashboard is the source of truth)
     cfg = _load_config_cached()
     coins_cfg = cfg.get("coins", {})
-    coin_cfg = coins_cfg.get(symbol_key) or coins_cfg.get(symbol_key.replace("_USDT", "_USD")) or {}
+    coin_cfg = _lookup_coin_cfg(coins_cfg, symbol_key)
     preset_name = coin_cfg.get("preset") or cfg.get("defaults", {}).get("preset")
     preset_strategy, preset_approach = _parse_preset(preset_name)
-    
+
+    strategy: Optional[StrategyType] = preset_strategy
+    approach: Optional[RiskApproach] = preset_approach
+
+    # Watchlist approach only when the per-coin preset did not specify risk suffix.
+    if approach is None and watchlist_item is not None:
+        approach = _normalize_approach(getattr(watchlist_item, "sl_tp_mode", None))
+
     # Log config resolution for debugging
     logger.debug(
         f"Strategy resolution for {symbol_key}: preset_name={preset_name}, "
         f"preset_strategy={preset_strategy}, preset_approach={preset_approach}"
     )
 
-    if strategy is None:
-        strategy = preset_strategy
-    if approach is None:
-        approach = preset_approach
-
-    # 3) Fall back to database trade_signals if still unresolved
+    # Fall back to database trade_signals if still unresolved
     if strategy is None or approach is None:
         logger.warning(
             f"Strategy/approach not resolved from config for {symbol_key}, "
