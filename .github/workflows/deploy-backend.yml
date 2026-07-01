@@ -57,7 +57,7 @@ jobs:
           docker pull ${IMAGE}
           BACKEND_IMAGE=${IMAGE} docker compose -f ${COMPOSE_DIR}/docker-compose.yml up -d --no-deps backend-aws backend-aws-canary
           ok=0
-          for i in \$(seq 1 30); do
+          for i in \$(seq 1 60); do
             if curl -fsS http://localhost:8002/api/health/ready >/dev/null; then ok=1; break; fi
             sleep 5
           done
