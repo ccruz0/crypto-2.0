@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import type { StrategyRules, Preset, RiskMode, TradingLimits } from '@/types/dashboard';
+import type { StrategyRules, Preset, PresetConfig, RiskMode, TradingLimits } from '@/types/dashboard';
 import { DEFAULT_TRADING_LIMITS } from '@/utils/tradingConfigUtils';
 import { logger } from '@/utils/logger';
 
@@ -14,7 +14,10 @@ interface StrategyConfigModalProps {
   preset: Preset;
   riskMode: RiskMode;
   rules: StrategyRules;
+  presetsConfig: PresetConfig;
+  defaultPresetConfig: PresetConfig;
   tradingLimits: TradingLimits;
+  onActiveStrategyChange?: (preset: Preset, riskMode: RiskMode) => void;
   onSave: (
     preset: Preset,
     riskMode: RiskMode,
@@ -29,22 +32,49 @@ export default function StrategyConfigModal({
   preset,
   riskMode,
   rules,
+  presetsConfig,
+  defaultPresetConfig,
   tradingLimits,
+  onActiveStrategyChange,
   onSave,
 }: StrategyConfigModalProps) {
+  const [activePreset, setActivePreset] = useState<Preset>(preset);
+  const [activeRiskMode, setActiveRiskMode] = useState<RiskMode>(riskMode);
   const [formData, setFormData] = useState<StrategyRules>(rules);
   const [limitsData, setLimitsData] = useState<TradingLimits>(tradingLimits);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Update form data when props change
+  const resolveRules = (p: Preset, r: RiskMode): StrategyRules =>
+    presetsConfig[p]?.rules[r] ?? defaultPresetConfig[p].rules[r];
+
+  // Reset when modal opens or parent selection changes
   useEffect(() => {
+    if (!isOpen) return;
+    setActivePreset(preset);
+    setActiveRiskMode(riskMode);
     setFormData(rules);
     setLimitsData(tradingLimits);
     setSaveError(null);
     setSaveSuccess(false);
-  }, [rules, tradingLimits, preset, riskMode]);
+  }, [isOpen, rules, tradingLimits, preset, riskMode]);
+
+  const handlePresetChange = (newPreset: Preset) => {
+    setActivePreset(newPreset);
+    setFormData(resolveRules(newPreset, activeRiskMode));
+    setSaveError(null);
+    setSaveSuccess(false);
+    onActiveStrategyChange?.(newPreset, activeRiskMode);
+  };
+
+  const handleRiskModeChange = (newRiskMode: RiskMode) => {
+    setActiveRiskMode(newRiskMode);
+    setFormData(resolveRules(activePreset, newRiskMode));
+    setSaveError(null);
+    setSaveSuccess(false);
+    onActiveStrategyChange?.(activePreset, newRiskMode);
+  };
 
   if (!isOpen) return null;
 
@@ -103,7 +133,7 @@ export default function StrategyConfigModal({
 
     try {
       // Call the onSave callback with updated rules
-      onSave(preset, riskMode, formData, limitsData);
+      onSave(activePreset, activeRiskMode, formData, limitsData);
       
       // Optionally save to backend
       // Note: The backend expects TradingConfig format, which might differ
@@ -135,13 +165,56 @@ export default function StrategyConfigModal({
       <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto m-4">
         <div className="p-6">
           {/* Header */}
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
-              Strategy Configuration: {preset} - {riskMode}
-            </h2>
+          <div className="flex justify-between items-start mb-6 gap-4">
+            <div className="flex-1">
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+                Strategy Configuration
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
+                <div>
+                  <label
+                    htmlFor="modal-strategy-preset"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Preset
+                  </label>
+                  <select
+                    id="modal-strategy-preset"
+                    value={activePreset}
+                    onChange={(e) => handlePresetChange(e.target.value as Preset)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                  >
+                    <option value="Swing">Swing</option>
+                    <option value="Intraday">Intraday</option>
+                    <option value="Scalp">Scalp</option>
+                  </select>
+                </div>
+                <div>
+                  <label
+                    htmlFor="modal-strategy-risk-mode"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Risk Mode
+                  </label>
+                  <select
+                    id="modal-strategy-risk-mode"
+                    value={activeRiskMode}
+                    onChange={(e) => handleRiskModeChange(e.target.value as RiskMode)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                  >
+                    <option value="Conservative">Conservative</option>
+                    <option value="Aggressive">Aggressive</option>
+                  </select>
+                </div>
+              </div>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+                Editando: <span className="font-medium">{activePreset} — {activeRiskMode}</span>
+              </p>
+            </div>
             <button
+              type="button"
               onClick={handleCancel}
-              className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 shrink-0"
             >
               ✕
             </button>

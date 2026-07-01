@@ -5216,7 +5216,13 @@ function resolveDecisionIndexColor(value: number): string {
         preset={selectedConfigPreset}
         riskMode={selectedConfigRisk}
         rules={currentRules}
+        presetsConfig={presetsConfig}
+        defaultPresetConfig={PRESET_CONFIG}
         tradingLimits={tradingLimits}
+        onActiveStrategyChange={(preset, riskMode) => {
+          setSelectedConfigPreset(preset);
+          setSelectedConfigRisk(riskMode);
+        }}
         onSave={handleSaveStrategyConfig}
       />
 
