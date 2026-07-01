@@ -3,6 +3,7 @@ Execution-level capital protection. All guardrails actively block unsafe trades.
 No soft warnings; violations raise RiskViolationError and emit monitoring event.
 """
 import logging
+import os
 from typing import Optional
 
 from app.services.risk_config import (
@@ -19,6 +20,16 @@ logger = logging.getLogger(__name__)
 
 # Track when daily loss stop has triggered (for health reporting)
 _daily_loss_triggered: bool = False
+
+
+def shorting_enabled() -> bool:
+    """Return True when margin shorting is explicitly enabled (ALLOW_SHORTING env). Default OFF."""
+    raw = (os.getenv("ALLOW_SHORTING") or "").strip().lower()
+    if raw in ("1", "true", "yes"):
+        return True
+    if raw in ("0", "false", "no"):
+        return False
+    return False
 
 
 def _emit_invariant_violation(symbol: Optional[str], reason_code: str, message: str) -> None:
