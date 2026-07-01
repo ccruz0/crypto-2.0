@@ -73,8 +73,22 @@ jobs:
             --document-name "AWS-RunShellScript" --comment "Deploy backend" \
             --parameters "$PARAMS" --query "Command.CommandId" --output text)
           echo "SSM CommandId: $CMD_ID"
-          aws ssm wait command-executed --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
-          STATUS=$(aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "Status" --output text)
-          aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "StandardOutputContent" --output text
-          aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "StandardErrorContent" --output text
+          # Poll until the SSM command reaches a TERMINAL state before judging it.
+          # The remote can run up to ~5 min (300s healthcheck loop past backend
+          # start_period), which is longer than the default `aws ssm wait
+          # command-executed` timeout (~100s). Reading Status right after that
+          # waiter returned marked healthy deploys as failed because the command
+          # was still "InProgress". Poll for up to 15 min and use the final Status.
+          STATUS="Pending"
+          for i in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "Status" --output text 2>/dev/null || echo "Pending")
+            case "$STATUS" in
+              Success|Failed|TimedOut|Cancelled) break ;;
+              *) sleep 10 ;;
+            esac
+          done
+          echo "----- remote stdout -----"
+          aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "StandardOutputContent" --output text || true
+          echo "----- remote stderr -----"
+          aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "StandardErrorContent" --output text || true
           [ "$STATUS" = "Success" ] || { echo "Deploy status: $STATUS"; exit 1; }
