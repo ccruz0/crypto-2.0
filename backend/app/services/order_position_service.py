@@ -104,14 +104,15 @@ def count_open_positions_for_symbol(
     last_price: float | None = None,
 ) -> int:
     """
-    Returns the number of open BUY commitments for a symbol.
+    Returns the number of open BUY commitments for a symbol created by the bot.
 
     Definition:
-        OpenOrders = Pending BUY orders (NEW/ACTIVE/PARTIALLY_FILLED)
-                     + BUY orders FILLED que todavía no han sido cerradas
-                       completamente por órdenes SELL FILLED (SL/TP/manual).
+        OpenOrders = Pending BUY orders (NEW/ACTIVE/PARTIALLY_FILLED) with trade_signal_id
+                     + BUY orders FILLED (trade_signal_id set) not fully closed by bot/protection SELLs.
 
-    This function is intentionally conservative and works at the symbol/base level:
+    Manual or exchange-synced holdings (trade_signal_id IS NULL) are excluded from guardrails.
+
+    This function works at the symbol/base level:
     - If symbol is "ADA_USDT" -> analiza solo ese par.
     - If symbol is "ADA"      -> analiza todos los pares "ADA_*".
     """
@@ -133,12 +134,19 @@ def count_open_positions_for_symbol(
         ExchangeOrder.order_role.is_(None),
         not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
     )
+    bot_buy_filter = ExchangeOrder.trade_signal_id.isnot(None)
+    bot_offset_sell_filter = or_(
+        ExchangeOrder.trade_signal_id.isnot(None),
+        ExchangeOrder.parent_order_id.isnot(None),
+        ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+    )
 
     pending_buy_orders = db.query(ExchangeOrder).filter(
         symbol_filter,
         ExchangeOrder.side == OrderSideEnum.BUY,
         ExchangeOrder.status.in_(pending_statuses),
         main_role_filter,
+        bot_buy_filter,
     ).all()
     pending_buy_count = len(pending_buy_orders)
 
@@ -150,6 +158,7 @@ def count_open_positions_for_symbol(
             ExchangeOrder.side == OrderSideEnum.BUY,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
             main_role_filter,
+            bot_buy_filter,
         )
         .order_by(ExchangeOrder.exchange_create_time.asc(), ExchangeOrder.created_at.asc(), ExchangeOrder.id.asc())
         .all()
@@ -158,19 +167,14 @@ def count_open_positions_for_symbol(
     # Total BUY filled quantity for this symbol/base
     filled_buy_qty = sum(_order_filled_quantity(o) for o in filled_buy_orders)
 
-    # 3) Filled SELL orders that offset these BUYs (SL/TP/manual)
+    # 3) Filled SELL orders that offset bot BUYs (bot SELL, SL/TP, or protection linked via parent)
     filled_sell_orders = (
         db.query(ExchangeOrder)
         .filter(
             symbol_filter,
             ExchangeOrder.side == OrderSideEnum.SELL,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
-            # Any role can offset: STOP_LOSS, TAKE_PROFIT, or manual SELL (order_role is NULL)
-            or_(
-                ExchangeOrder.order_role.is_(None),
-                ExchangeOrder.order_role == "STOP_LOSS",
-                ExchangeOrder.order_role == "TAKE_PROFIT",
-            ),
+            bot_offset_sell_filter,
         )
         .order_by(ExchangeOrder.exchange_create_time.asc(), ExchangeOrder.created_at.asc(), ExchangeOrder.id.asc())
         .all()
