@@ -4081,7 +4081,14 @@ class SignalMonitorService:
                                             
                                             # Classify error for strict reporting (Step 4)
                                             from app.utils.decision_reason import classify_exchange_error
+                                            from app.utils.guardrail_messages import (
+                                                order_failed_store_message,
+                                                order_failed_telegram_error_section,
+                                            )
                                             reason_code = classify_exchange_error(error_msg)
+                                            error_section, display_reason = order_failed_telegram_error_section(
+                                                error_msg, symbol, reason_code
+                                            )
                                             
                                             decision_reason = make_fail(
                                                 reason_code=reason_code,
@@ -4113,7 +4120,7 @@ class SignalMonitorService:
                                                         f"❌ <b>ORDER FAILED</b>\n\n"
                                                         f"📊 Symbol: <b>{symbol}</b>\n"
                                                         f"🔄 Side: BUY\n"
-                                                        f"❌ Error: {error_msg}\n"
+                                                        f"{error_section}\n"
                                                         f"📋 Reason Code: {reason_code}\n\n"
                                                         f"<i>Signal was sent but order creation failed.</i>"
                                                     )
@@ -4124,12 +4131,18 @@ class SignalMonitorService:
                                             try:
                                                 from app.api.routes_monitoring import add_telegram_message
                                                 add_telegram_message(
-                                                    f"❌ ORDER FAILED | {symbol} BUY | {error_msg} | reason_code={reason_code}",
+                                                    order_failed_store_message(
+                                                        symbol,
+                                                        "BUY",
+                                                        error_msg,
+                                                        reason_code,
+                                                        display_reason=display_reason,
+                                                    ),
                                                     symbol=symbol,
                                                     blocked=False,
                                                     decision_type="FAILED",
                                                     reason_code=reason_code,
-                                                    reason_message=error_msg,
+                                                    reason_message=display_reason,
                                                     db=db,
                                                 )
                                             except Exception as store_err:
@@ -4226,7 +4239,14 @@ class SignalMonitorService:
                                         
                                         # Classify error for strict reporting (Step 4)
                                         from app.utils.decision_reason import classify_exchange_error
+                                        from app.utils.guardrail_messages import (
+                                            order_failed_store_message,
+                                            order_failed_telegram_error_section,
+                                        )
                                         reason_code = classify_exchange_error(error_msg)
+                                        error_section, display_reason = order_failed_telegram_error_section(
+                                            error_msg, symbol, reason_code
+                                        )
                                         
                                         decision_reason = make_fail(
                                             reason_code=reason_code,
@@ -4258,7 +4278,7 @@ class SignalMonitorService:
                                                     f"❌ <b>ORDER FAILED</b>\n\n"
                                                     f"📊 Symbol: <b>{symbol}</b>\n"
                                                     f"🔄 Side: BUY\n"
-                                                    f"❌ Error: {error_msg}\n"
+                                                    f"{error_section}\n"
                                                     f"📋 Reason Code: {reason_code}\n\n"
                                                     f"<i>Signal was sent but order creation failed.</i>"
                                                 )
@@ -4269,12 +4289,18 @@ class SignalMonitorService:
                                         try:
                                             from app.api.routes_monitoring import add_telegram_message
                                             add_telegram_message(
-                                                f"❌ ORDER FAILED | {symbol} BUY | {error_msg} | reason_code={reason_code}",
+                                                order_failed_store_message(
+                                                    symbol,
+                                                    "BUY",
+                                                    error_msg,
+                                                    reason_code,
+                                                    display_reason=display_reason,
+                                                ),
                                                 symbol=symbol,
                                                 blocked=False,
                                                 decision_type="FAILED",
                                                 reason_code=reason_code,
-                                                reason_message=error_msg,
+                                                reason_message=display_reason,
                                                 db=db,
                                             )
                                         except Exception as store_err:
@@ -6111,7 +6137,14 @@ class SignalMonitorService:
                                             
                                             # Classify error for strict reporting
                                             from app.utils.decision_reason import classify_exchange_error
+                                            from app.utils.guardrail_messages import (
+                                                order_failed_store_message,
+                                                order_failed_telegram_error_section,
+                                            )
                                             reason_code = classify_exchange_error(error_msg)
+                                            error_section, display_reason = order_failed_telegram_error_section(
+                                                error_msg, symbol, reason_code
+                                            )
                                             
                                             decision_reason = make_fail(
                                                 reason_code=reason_code,
@@ -6139,7 +6172,7 @@ class SignalMonitorService:
                                                         f"❌ <b>ORDER FAILED</b>\n\n"
                                                         f"📊 Symbol: <b>{symbol}</b>\n"
                                                         f"🔄 Side: SELL\n"
-                                                        f"❌ Error: {error_msg}\n\n"
+                                                        f"{error_section}\n\n"
                                                         f"<i>Signal was sent but order creation failed.</i>"
                                                     )
                                                 else:
@@ -6149,12 +6182,18 @@ class SignalMonitorService:
                                             try:
                                                 from app.api.routes_monitoring import add_telegram_message
                                                 add_telegram_message(
-                                                    f"❌ ORDER FAILED | {symbol} SELL | {error_msg}",
+                                                    order_failed_store_message(
+                                                        symbol,
+                                                        "SELL",
+                                                        error_msg,
+                                                        reason_code,
+                                                        display_reason=display_reason,
+                                                    ),
                                                     symbol=symbol,
                                                     blocked=False,
                                                     decision_type="FAILED",
                                                     reason_code=reason_code,
-                                                    reason_message=error_msg,
+                                                    reason_message=display_reason,
                                                     db=db,
                                                 )
                                             except Exception as store_err:
@@ -6229,7 +6268,14 @@ class SignalMonitorService:
                                         
                                         # Classify error for strict reporting
                                         from app.utils.decision_reason import classify_exchange_error
+                                        from app.utils.guardrail_messages import (
+                                            order_failed_store_message,
+                                            order_failed_telegram_error_section,
+                                        )
                                         reason_code = classify_exchange_error(error_msg)
+                                        error_section, display_reason = order_failed_telegram_error_section(
+                                            error_msg, symbol, reason_code
+                                        )
                                         
                                         decision_reason = make_fail(
                                             reason_code=reason_code,
@@ -6257,7 +6303,7 @@ class SignalMonitorService:
                                                     f"❌ <b>ORDER FAILED</b>\n\n"
                                                     f"📊 Symbol: <b>{symbol}</b>\n"
                                                     f"🔄 Side: SELL\n"
-                                                    f"❌ Error: {error_msg}\n\n"
+                                                    f"{error_section}\n\n"
                                                     f"<i>Signal was sent but order creation failed.</i>"
                                                 )
                                             else:
@@ -6267,12 +6313,18 @@ class SignalMonitorService:
                                         try:
                                             from app.api.routes_monitoring import add_telegram_message
                                             add_telegram_message(
-                                                f"❌ ORDER FAILED | {symbol} SELL | {error_msg}",
+                                                order_failed_store_message(
+                                                    symbol,
+                                                    "SELL",
+                                                    error_msg,
+                                                    reason_code,
+                                                    display_reason=display_reason,
+                                                ),
                                                 symbol=symbol,
                                                 blocked=False,
                                                 decision_type="FAILED",
                                                 reason_code=reason_code,
-                                                reason_message=error_msg,
+                                                reason_message=display_reason,
                                                 db=db,
                                             )
                                         except Exception as store_err:
