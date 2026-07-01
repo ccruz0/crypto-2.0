@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 _MAX_PER_TRADE = float(os.getenv("SYSTEM_CORE_MAX_TRADE_USD", "1000"))
-_MAX_OPEN_TRADES = int(os.getenv("SYSTEM_CORE_MAX_OPEN_TRADES", "5"))
 _MAX_DRAWDOWN_PCT = float(os.getenv("SYSTEM_CORE_MAX_DRAWDOWN_PCT", "5"))
 _STATE_PATH = os.getenv("SYSTEM_CORE_EQUITY_STATE_PATH", "/tmp/system_core_equity_state.json")
 _GUARDS_ON = (os.getenv("SYSTEM_CORE_GUARDS_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off"))
@@ -36,6 +35,28 @@ _MIN_POSITION_USD = float(os.getenv("SYSTEM_CORE_MIN_POSITION_USD", "5"))
 
 def system_core_guards_enabled() -> bool:
     return _GUARDS_ON
+
+
+def _resolve_max_open_trades() -> int:
+    """Max distinct symbols with open positions. Config -> SYSTEM_CORE_MAX_OPEN_TRADES -> 5."""
+    try:
+        from app.services.config_loader import get_trading_limits
+
+        return get_trading_limits()["maxOpenOrdersTotal"]
+    except Exception as e:
+        logger.debug("system_core: resolve max open trades from config failed: %s", e)
+        return int(os.getenv("SYSTEM_CORE_MAX_OPEN_TRADES", "5"))
+
+
+def _resolve_max_open_per_coin() -> int:
+    """Max open positions per coin. Config -> SYSTEM_CORE_MAX_OPEN_PER_COIN -> 1."""
+    try:
+        from app.services.config_loader import get_trading_limits
+
+        return get_trading_limits()["maxOpenOrdersPerCoin"]
+    except Exception as e:
+        logger.debug("system_core: resolve max open per coin from config failed: %s", e)
+        return int(os.getenv("SYSTEM_CORE_MAX_OPEN_PER_COIN", "1"))
 
 
 def _position_dust_kwargs(last_price: float | None = None) -> dict[str, float | None]:
@@ -232,12 +253,15 @@ def check_system_core_buy_allowed(
     try:
         from app.services.order_position_service import count_open_positions_for_symbol
 
-        if count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price)) > 0:
+        max_per_coin = _resolve_max_open_per_coin()
+        open_for_symbol = count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price))
+        if open_for_symbol >= max_per_coin:
             return False, "system_core_one_active_trade_per_coin"
 
+        max_open_trades = _resolve_max_open_trades()
         open_symbols = count_distinct_symbols_with_open_positions(db)
-        if open_symbols >= _MAX_OPEN_TRADES:
-            return False, f"system_core_max_open_trades count={open_symbols} max={_MAX_OPEN_TRADES}"
+        if open_symbols >= max_open_trades:
+            return False, f"system_core_max_open_trades count={open_symbols} max={max_open_trades}"
     except Exception as e:
         logger.warning("system_core: position checks failed (allowing): %s", e)
 

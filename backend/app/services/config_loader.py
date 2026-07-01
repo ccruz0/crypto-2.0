@@ -384,7 +384,11 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         # Create default strategy_rules to ensure consistency
         logger.warning("Config has neither strategy_rules nor presets. Creating default strategy_rules to ensure consistency.")
         cfg["strategy_rules"] = default_strategy_rules
-    
+
+    # Global open-order guardrails (dashboard-configurable; env fallback at read time)
+    if "trading_limits" not in cfg or not isinstance(cfg.get("trading_limits"), dict):
+        cfg["trading_limits"] = {}
+
     return cfg
 
 
@@ -643,4 +647,35 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
         "volumeMinRatio": 0.5,  # Default
         "minPriceChangePct": preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", 1.0),
         "alertCooldownMinutes": preset_cfg.get("ALERT_COOLDOWN_MINUTES", 0.1667),
+    }
+
+
+def get_trading_limits() -> Dict[str, int]:
+    """
+    Global open-order limits for system_core trade guards.
+
+    Resolution order: trading_config.json trading_limits -> env vars -> hard defaults.
+    Defaults preserve legacy behavior: 5 total positions, 1 per coin.
+    """
+    cfg = load_config()
+    limits = cfg.get("trading_limits") or {}
+
+    env_max_total = int(os.getenv("SYSTEM_CORE_MAX_OPEN_TRADES", "5"))
+    env_max_per_coin = int(os.getenv("SYSTEM_CORE_MAX_OPEN_PER_COIN", "1"))
+
+    config_total = limits.get("maxOpenOrdersTotal")
+    if isinstance(config_total, (int, float)) and config_total >= 0:
+        max_total = int(config_total)
+    else:
+        max_total = env_max_total
+
+    config_per_coin = limits.get("maxOpenOrdersPerCoin")
+    if isinstance(config_per_coin, (int, float)) and config_per_coin >= 1:
+        max_per_coin = int(config_per_coin)
+    else:
+        max_per_coin = env_max_per_coin
+
+    return {
+        "maxOpenOrdersTotal": max_total,
+        "maxOpenOrdersPerCoin": max_per_coin,
     }

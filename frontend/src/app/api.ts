@@ -1092,6 +1092,11 @@ export interface CoinConfig {
 export interface TradingConfig {
   presets?: Record<string, TradingPreset>;
   coins?: Record<string, CoinConfig>;
+  trading_limits?: {
+    maxOpenOrdersTotal?: number;
+    maxOpenOrdersPerCoin?: number;
+  };
+  strategy_rules?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
