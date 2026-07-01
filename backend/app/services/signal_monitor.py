@@ -8511,6 +8511,13 @@ class SignalMonitorService:
                 position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
             except Exception:
                 position_exists = False
+            # Shorting: if enabled and coin trades on margin, SELL without position opens a short.
+            # Spot SELL still requires position (protect manual holdings).
+            if (not position_exists) and user_wants_margin:
+                from app.services.risk_guard import shorting_enabled
+
+                if shorting_enabled():
+                    position_exists = True
         try:
             from app.core.trading_invariants_week5 import validate_trading_decision, InvariantFailure
             fail = validate_trading_decision(
