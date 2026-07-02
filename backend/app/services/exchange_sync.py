@@ -30,10 +30,17 @@ except ModuleNotFoundError as e:
         raise
     FILL_DEDUP_ENABLED = False
     logger = logging.getLogger(__name__)
-    logger.warning("fill_dedup_postgres module not found; fill deduplication is disabled (all fills may trigger notifications).")
+    logger.warning(
+        "fill_dedup_postgres module not found; using SQLite fill_tracker fallback for fill deduplication."
+    )
 
-    class _StubFillDedup:
-        """No-op fill dedup when fill_dedup_postgres is missing. Allows all notifications."""
+    from app.services.fill_tracker import get_fill_tracker
+
+    class _FillTrackerDedupAdapter:
+        """Adapter: fill_tracker SQLite persistence when fill_dedup_postgres is absent."""
+
+        def __init__(self):
+            self._tracker = get_fill_tracker()
 
         def should_notify_fill(
             self,
@@ -41,7 +48,11 @@ except ModuleNotFoundError as e:
             current_filled_qty: Union[int, float, Decimal],
             status: str,
         ) -> tuple:
-            return (True, "fill_dedup disabled")
+            return self._tracker.should_notify_fill(
+                order_id=order_id,
+                current_filled_qty=float(current_filled_qty),
+                status=status,
+            )
 
         def record_fill(
             self,
@@ -50,10 +61,20 @@ except ModuleNotFoundError as e:
             status: str,
             notification_sent: bool = False,
         ) -> None:
-            pass
+            self._tracker.record_fill(
+                order_id=order_id,
+                filled_qty=float(filled_qty),
+                status=status,
+                notification_sent=notification_sent,
+            )
+
+    _fill_dedup_adapter: Optional["_FillTrackerDedupAdapter"] = None
 
     def get_fill_dedup(db: Session):  # noqa: ARG001
-        return _StubFillDedup()
+        global _fill_dedup_adapter
+        if _fill_dedup_adapter is None:
+            _fill_dedup_adapter = _FillTrackerDedupAdapter()
+        return _fill_dedup_adapter
 
 # build_strategy_key helper: throttle_service when present, else fallback (same pattern as signal_monitor).
 try:
@@ -2858,6 +2879,14 @@ class ExchangeSyncService:
                             )
                             if result:
                                 existing.execution_notified_at = datetime.now(timezone.utc)
+                                try:
+                                    db.flush()
+                                except Exception as flush_err:
+                                    logger.warning(
+                                        "Failed to flush execution_notified_at for %s: %s",
+                                        order_id,
+                                        flush_err,
+                                    )
                                 # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
                                 fill_dedup.record_fill(
                                     order_id=order_id,
@@ -3354,6 +3383,14 @@ class ExchangeSyncService:
                         )
                         if result:
                             new_order.execution_notified_at = datetime.now(timezone.utc)
+                            try:
+                                db.flush()
+                            except Exception as flush_err:
+                                logger.warning(
+                                    "Failed to flush execution_notified_at for %s: %s",
+                                    order_id,
+                                    flush_err,
+                                )
                             # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
                             fill_dedup.record_fill(
                                 order_id=order_id,

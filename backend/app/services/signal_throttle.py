@@ -337,6 +337,9 @@ def record_signal_event(
     """Persist the latest emitted signal."""
     side = side.upper()
     now_ts = datetime.now(timezone.utc)
+    # DB column is VARCHAR(20); lifecycle sources like "lifecycle_order_executed" must not truncate-commit-fail.
+    if source and len(source) > 20:
+        source = source[:20]
 
     existing = (
         db.query(SignalThrottleState)
