@@ -89,7 +89,7 @@ class FillTracker:
                 (cutoff_ts,)
             )
             
-            deleted = conn.total_changes()
+            deleted = conn.total_changes
             conn.commit()
             conn.close()
             

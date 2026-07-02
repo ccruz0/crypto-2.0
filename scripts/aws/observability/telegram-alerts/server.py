@@ -3,8 +3,8 @@ import os
 import requests
 from flask import Flask, request, jsonify
 
-BOT_TOKEN = os.getenv("TELEGRAM_ALERT_BOT_TOKEN", "").strip()
-CHAT_ID = os.getenv("TELEGRAM_ALERT_CHAT_ID", "").strip()
+BOT_TOKEN = (os.getenv("TELEGRAM_ALERT_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+CHAT_ID = (os.getenv("TELEGRAM_ALERT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
 app = Flask(__name__)
 
