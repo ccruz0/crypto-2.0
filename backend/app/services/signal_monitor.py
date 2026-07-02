@@ -8504,6 +8504,7 @@ class SignalMonitorService:
         # Week 5: trading safety invariants (fail-fast)
         quantity_for_validation = amount_usd if (side or "").strip().upper() == "BUY" else (amount_usd / current_price if current_price > 0 else 0)
         position_exists: Optional[bool] = None
+        is_margin_short_entry = False
         if (side or "").strip().upper() == "SELL":
             try:
                 from app.services.order_position_service import count_open_positions_for_symbol
@@ -8517,6 +8518,7 @@ class SignalMonitorService:
                 from app.services.risk_guard import shorting_enabled
 
                 if shorting_enabled():
+                    is_margin_short_entry = True
                     position_exists = True
         try:
             from app.core.trading_invariants_week5 import validate_trading_decision, InvariantFailure
@@ -8636,6 +8638,27 @@ class SignalMonitorService:
             order_id = result.get("order_id") or result.get("client_order_id")
             exchange_order_id = result.get("exchange_order_id") or order_id
             logger.info(f"[{source}] {symbol} {side} Order placed successfully: order_id={order_id}")
+
+            entry_side_upper = side.upper()
+            needs_protection = entry_side_upper == "BUY" or is_margin_short_entry
+            protection_result = None
+            if needs_protection and order_id:
+                try:
+                    protection_result = self._create_protection_after_entry_fill(
+                        db=db,
+                        symbol=symbol,
+                        entry_side=entry_side_upper,
+                        order_id=str(order_id),
+                        placement_result=result,
+                        estimated_price=result.get("avg_price") or current_price,
+                        source=source,
+                    )
+                except Exception as prot_err:
+                    logger.error(
+                        f"❌ [SL/TP] Protection creation failed for {entry_side_upper} {symbol} "
+                        f"order {order_id}: {prot_err}",
+                        exc_info=True,
+                    )
             
             return {
                 "order_id": str(order_id) if order_id else None,
@@ -8644,6 +8667,7 @@ class SignalMonitorService:
                 "avg_price": result.get("avg_price"),
                 "quantity": result.get("quantity") or result.get("cumulative_quantity"),
                 "filled_price": result.get("avg_price") or current_price,
+                "protection": protection_result,
             }
         except Exception as e:
             error_msg = str(e)[:500]
@@ -8818,6 +8842,121 @@ class SignalMonitorService:
                 f"Order was seen but status is not FILLED or cumulative_quantity is invalid. SL/TP creation will be skipped."
             )
         return None
+    
+    def _create_protection_after_entry_fill(
+        self,
+        db: Session,
+        symbol: str,
+        entry_side: str,
+        order_id: str,
+        placement_result: Dict[str, Any],
+        estimated_price: Optional[float] = None,
+        source: str = "signal_monitor",
+    ) -> Optional[Dict[str, Any]]:
+        """Create SL/TP after a confirmed entry fill (BUY long or SELL short)."""
+        from decimal import Decimal
+        from app.services.exchange_sync import exchange_sync_service
+
+        entry_side_upper = (entry_side or "").upper()
+        if entry_side_upper not in ("BUY", "SELL"):
+            logger.error(f"[SL/TP] Invalid entry_side={entry_side!r} for {symbol} order {order_id}")
+            return None
+
+        result_status = (placement_result.get("status") or "").upper()
+        is_filled_immediately = result_status in [
+            "FILLED", "PARTIALLY_FILLED", "PARTIALLY FILLED", "CANCELED", "CANCELLED"
+        ]
+        has_cumulative_qty = placement_result.get("cumulative_quantity") and float(
+            placement_result.get("cumulative_quantity", 0) or 0
+        ) > 0
+
+        filled_confirmation = None
+        if is_filled_immediately and has_cumulative_qty:
+            cumulative_qty_raw = placement_result.get("cumulative_quantity")
+            try:
+                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw)) if cumulative_qty_raw else None
+                avg_price_raw = placement_result.get("avg_price")
+                avg_price_value = float(avg_price_raw) if avg_price_raw else estimated_price
+            except (ValueError, TypeError):
+                cumulative_qty_decimal = None
+                avg_price_value = estimated_price
+
+            if cumulative_qty_decimal and cumulative_qty_decimal > 0:
+                filled_confirmation = {
+                    "status": "FILLED",
+                    "cumulative_quantity": cumulative_qty_decimal,
+                    "avg_price": avg_price_value,
+                    "filled_price": avg_price_value,
+                }
+        else:
+            filled_confirmation = self._poll_order_fill_confirmation(
+                symbol=symbol,
+                order_id=str(order_id),
+                max_attempts=ORDER_FILL_POLL_MAX_ATTEMPTS,
+                poll_interval=ORDER_FILL_POLL_INTERVAL_SECONDS,
+            )
+
+        if not filled_confirmation or filled_confirmation.get("status") != "FILLED":
+            logger.warning(
+                f"⚠️ [SL/TP] {entry_side_upper} order {order_id} ({symbol}) not confirmed FILLED; "
+                f"skipping protection creation"
+            )
+            return None
+
+        executed_qty_raw_decimal = filled_confirmation.get("cumulative_quantity")
+        executed_avg_price = filled_confirmation.get("filled_price") or estimated_price
+        if not executed_qty_raw_decimal or not isinstance(executed_qty_raw_decimal, Decimal) or executed_qty_raw_decimal <= 0:
+            logger.error(
+                f"❌ [SL/TP] {entry_side_upper} order {order_id} has invalid executed quantity: "
+                f"{executed_qty_raw_decimal}"
+            )
+            return None
+
+        executed_qty_raw_float = float(executed_qty_raw_decimal)
+        normalized_qty_str, _ = trade_client.normalize_quantity_safe_with_fallback(
+            symbol=symbol,
+            raw_quantity=executed_qty_raw_float,
+            for_sl_tp=True,
+        )
+        if not normalized_qty_str:
+            logger.error(
+                f"❌ [SL/TP] Failed to normalize quantity for {entry_side_upper} order {order_id} ({symbol})"
+            )
+            return None
+
+        normalized_qty = float(normalized_qty_str)
+        existing_sl_tp = db.query(ExchangeOrder).filter(
+            ExchangeOrder.parent_order_id == str(order_id),
+            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+            ExchangeOrder.status.in_([
+                OrderStatusEnum.NEW,
+                OrderStatusEnum.ACTIVE,
+                OrderStatusEnum.PARTIALLY_FILLED,
+            ]),
+        ).all()
+        if existing_sl_tp:
+            existing_order_ids = [str(o.exchange_order_id) for o in existing_sl_tp]
+            logger.info(
+                f"⚠️ [SL/TP] Idempotency guard: SL/TP already exist for {entry_side_upper} order "
+                f"{order_id} ({symbol}): {existing_order_ids}"
+            )
+            return {"status": "already_protected", "order_id": order_id}
+
+        logger.info(
+            f"🔒 [SL/TP] Creating protection for {entry_side_upper} {symbol} order {order_id}: "
+            f"filled_price={executed_avg_price}, qty={normalized_qty}"
+        )
+        creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
+            db=db,
+            symbol=symbol,
+            side=entry_side_upper,
+            filled_price=float(executed_avg_price),
+            filled_qty=normalized_qty,
+            order_id=str(order_id),
+            source=source,
+            skip_gate=True,
+        )
+        return creation_result
     
     async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem, 
                                  current_price: float, res_up: float, res_down: float):
