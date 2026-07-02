@@ -5,7 +5,7 @@ Checks all open positions for missing SL/TP orders and sends Telegram alerts
 import os
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
@@ -16,6 +16,45 @@ from app.services.exchange_sync import exchange_sync_service
 from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
 
 logger = logging.getLogger(__name__)
+
+
+def _find_recent_entry_order(db: Session, symbol: str) -> Optional[ExchangeOrder]:
+    """Most recent filled entry order (BUY long or SELL short), excluding protection orders."""
+    return (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol == symbol,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]),
+        )
+        .filter(
+            (ExchangeOrder.order_role.is_(None))
+            | (~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]))
+        )
+        .order_by(ExchangeOrder.exchange_create_time.desc())
+        .first()
+    )
+
+
+def _entry_side_from_order(order: ExchangeOrder) -> str:
+    if order.side == OrderSideEnum.SELL:
+        return "SELL"
+    return "BUY"
+
+
+def _compute_sl_tp_from_entry(
+    entry_price: float,
+    entry_side: str,
+    sl_percentage: float,
+    tp_percentage: float,
+) -> Tuple[float, float]:
+    if entry_side == "SELL":
+        sl_price = entry_price * (1 + sl_percentage / 100)
+        tp_price = entry_price * (1 - tp_percentage / 100)
+    else:
+        sl_price = entry_price * (1 - sl_percentage / 100)
+        tp_price = entry_price * (1 + tp_percentage / 100)
+    return sl_price, tp_price
 
 
 class SLTPCheckerService:
@@ -671,16 +710,10 @@ class SLTPCheckerService:
                 # Get current price for calculations (skip if async - will get from order instead)
                 current_price = None
                 
-                # Try to get entry price from most recent filled BUY order
+                # Try to get entry price from most recent filled entry order
                 entry_price = None
                 try:
-                    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                    recent_order = db.query(ExchangeOrder).filter(
-                        ExchangeOrder.symbol == symbol,
-                        ExchangeOrder.side == OrderSideEnum.BUY,
-                        ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                    
+                    recent_order = _find_recent_entry_order(db, symbol)
                     if recent_order:
                         entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
                         logger.info(f"Found entry price from recent order: {entry_price}")
@@ -718,23 +751,23 @@ class SLTPCheckerService:
             
             # Calculate from percentages if prices not available
             if (create_sl and not sl_price) or (create_tp and not tp_price):
-                # Get entry price: ALWAYS use filled BUY order price if available
                 entry_price = None
-                
-                # 1. ALWAYS try to get from most recent filled BUY order (most accurate entry price)
-                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                recent_order = db.query(ExchangeOrder).filter(
-                    ExchangeOrder.symbol == symbol,
-                    ExchangeOrder.side == OrderSideEnum.BUY,
-                    ExchangeOrder.status == OrderStatusEnum.FILLED
-                ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                
+                entry_side = "BUY"
+                recent_order = _find_recent_entry_order(db, symbol)
+
                 if recent_order:
                     entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
+                    entry_side = _entry_side_from_order(recent_order)
                     if entry_price:
-                        logger.info(f"✅ Using entry price from filled BUY order for {symbol}: {entry_price} (Order ID: {recent_order.exchange_order_id})")
+                        logger.info(
+                            f"✅ Using entry price from filled {entry_side} order for {symbol}: "
+                            f"{entry_price} (Order ID: {recent_order.exchange_order_id})"
+                        )
                     else:
-                        logger.warning(f"⚠️ Filled BUY order found for {symbol} but price is None (Order ID: {recent_order.exchange_order_id})")
+                        logger.warning(
+                            f"⚠️ Filled {entry_side} order found for {symbol} but price is None "
+                            f"(Order ID: {recent_order.exchange_order_id})"
+                        )
                 
                 # 2. Fallback: use purchase_price from watchlist (only if no BUY order found)
                 if not entry_price:
@@ -774,7 +807,11 @@ class SLTPCheckerService:
                 if not entry_price:
                     return {
                         'success': False,
-                        'error': f'Cannot determine entry price for {symbol}. No filled BUY order found in database. Please ensure there is a recent filled BUY order, or configure purchase_price/price in watchlist.'
+                        'error': (
+                            f'Cannot determine entry price for {symbol}. No filled entry order found in database. '
+                            f'Please ensure there is a recent filled BUY or SELL entry order, or configure '
+                            f'purchase_price/price in watchlist.'
+                        )
                     }
                 
                 # Get strategy mode and percentages
@@ -805,16 +842,16 @@ class SLTPCheckerService:
                     tp_percentage = 3.0 if strategy_mode == "conservative" else 2.0
                     logger.info(f"Using default TP percentage: {tp_percentage}% (watchlist had: {watchlist_item.tp_percentage})")
                 
-                logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
+                logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, entry_side={entry_side}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
                 
-                # Calculate SL/TP from entry price using strategy percentages
+                # Calculate SL/TP from entry price using strategy percentages (side-aware)
                 if create_sl and not sl_price:
-                    sl_price = entry_price * (1 - sl_percentage / 100)
-                    logger.info(f"Calculated SL price for {symbol}: {sl_price} (entry: {entry_price}, -{sl_percentage}%)")
+                    sl_price, _ = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
+                    logger.info(f"Calculated SL price for {symbol}: {sl_price} (entry: {entry_price}, side={entry_side}, {sl_percentage}%)")
                 
                 if create_tp and not tp_price:
-                    tp_price = entry_price * (1 + tp_percentage / 100)
-                    logger.info(f"Calculated TP price for {symbol}: {tp_price} (entry: {entry_price}, +{tp_percentage}%)")
+                    _, tp_price = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
+                    logger.info(f"Calculated TP price for {symbol}: {tp_price} (entry: {entry_price}, side={entry_side}, {tp_percentage}%)")
             
             # Round prices to reasonable precision before passing to exchange
             # The exchange will further format according to instrument tick size
@@ -829,34 +866,27 @@ class SLTPCheckerService:
             dry_run_mode = not live_trading
             
             # Ensure entry_price is available for order creation (even if prices were already set)
+            entry_side = "BUY"
             if not entry_price:
-                # Try to get entry price from most recent filled BUY order
-                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                recent_order = db.query(ExchangeOrder).filter(
-                    ExchangeOrder.symbol == symbol,
-                    ExchangeOrder.side == OrderSideEnum.BUY,
-                    ExchangeOrder.status == OrderStatusEnum.FILLED
-                ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                
+                recent_order = _find_recent_entry_order(db, symbol)
                 if recent_order:
                     entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
+                    entry_side = _entry_side_from_order(recent_order)
                     if entry_price:
-                        logger.info(f"✅ Using entry price from filled BUY order for {symbol}: {entry_price} (Order ID: {recent_order.exchange_order_id})")
+                        logger.info(
+                            f"✅ Using entry price from filled {entry_side} order for {symbol}: "
+                            f"{entry_price} (Order ID: {recent_order.exchange_order_id})"
+                        )
             
-            # Get parent order ID from most recent filled BUY order (for linking TP/SL)
+            # Get parent order ID from most recent filled entry order (for linking TP/SL)
             parent_order_id = None
             oco_group_id = None
             if entry_price:
                 try:
-                    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                    recent_order = db.query(ExchangeOrder).filter(
-                        ExchangeOrder.symbol == symbol,
-                        ExchangeOrder.side == OrderSideEnum.BUY,
-                        ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                    
+                    recent_order = _find_recent_entry_order(db, symbol)
                     if recent_order:
                         parent_order_id = recent_order.exchange_order_id
+                        entry_side = _entry_side_from_order(recent_order)
                         # Generate OCO group ID for linking SL and TP orders (same as automatic creation)
                         import uuid
                         oco_group_id = f"oco_{parent_order_id}_{int(datetime.utcnow().timestamp())}"
@@ -872,7 +902,7 @@ class SLTPCheckerService:
                 sl_result = create_stop_loss_order(
                     db=db,
                     symbol=symbol,
-                    side="BUY",  # Original order side (we assume BUY positions)
+                    side=entry_side,
                     sl_price=sl_price,
                     quantity=position_balance,
                     entry_price=entry_price,
@@ -891,7 +921,7 @@ class SLTPCheckerService:
                 tp_result = create_take_profit_order(
                     db=db,
                     symbol=symbol,
-                    side="BUY",  # Original order side (we assume BUY positions)
+                    side=entry_side,
                     tp_price=tp_price,
                     quantity=position_balance,
                     entry_price=entry_price,
@@ -1117,7 +1147,7 @@ Checks all open positions for missing SL/TP orders and sends Telegram alerts
 import os
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
@@ -1128,6 +1158,45 @@ from app.services.exchange_sync import exchange_sync_service
 from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
 
 logger = logging.getLogger(__name__)
+
+
+def _find_recent_entry_order(db: Session, symbol: str) -> Optional[ExchangeOrder]:
+    """Most recent filled entry order (BUY long or SELL short), excluding protection orders."""
+    return (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol == symbol,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]),
+        )
+        .filter(
+            (ExchangeOrder.order_role.is_(None))
+            | (~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]))
+        )
+        .order_by(ExchangeOrder.exchange_create_time.desc())
+        .first()
+    )
+
+
+def _entry_side_from_order(order: ExchangeOrder) -> str:
+    if order.side == OrderSideEnum.SELL:
+        return "SELL"
+    return "BUY"
+
+
+def _compute_sl_tp_from_entry(
+    entry_price: float,
+    entry_side: str,
+    sl_percentage: float,
+    tp_percentage: float,
+) -> Tuple[float, float]:
+    if entry_side == "SELL":
+        sl_price = entry_price * (1 + sl_percentage / 100)
+        tp_price = entry_price * (1 - tp_percentage / 100)
+    else:
+        sl_price = entry_price * (1 - sl_percentage / 100)
+        tp_price = entry_price * (1 + tp_percentage / 100)
+    return sl_price, tp_price
 
 
 class SLTPCheckerService:
@@ -1718,16 +1787,10 @@ class SLTPCheckerService:
                 # Get current price for calculations (skip if async - will get from order instead)
                 current_price = None
                 
-                # Try to get entry price from most recent filled BUY order
+                # Try to get entry price from most recent filled entry order
                 entry_price = None
                 try:
-                    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                    recent_order = db.query(ExchangeOrder).filter(
-                        ExchangeOrder.symbol == symbol,
-                        ExchangeOrder.side == OrderSideEnum.BUY,
-                        ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                    
+                    recent_order = _find_recent_entry_order(db, symbol)
                     if recent_order:
                         entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
                         logger.info(f"Found entry price from recent order: {entry_price}")
@@ -1765,23 +1828,23 @@ class SLTPCheckerService:
             
             # Calculate from percentages if prices not available
             if (create_sl and not sl_price) or (create_tp and not tp_price):
-                # Get entry price: ALWAYS use filled BUY order price if available
                 entry_price = None
-                
-                # 1. ALWAYS try to get from most recent filled BUY order (most accurate entry price)
-                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                recent_order = db.query(ExchangeOrder).filter(
-                    ExchangeOrder.symbol == symbol,
-                    ExchangeOrder.side == OrderSideEnum.BUY,
-                    ExchangeOrder.status == OrderStatusEnum.FILLED
-                ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                
+                entry_side = "BUY"
+                recent_order = _find_recent_entry_order(db, symbol)
+
                 if recent_order:
                     entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
+                    entry_side = _entry_side_from_order(recent_order)
                     if entry_price:
-                        logger.info(f"✅ Using entry price from filled BUY order for {symbol}: {entry_price} (Order ID: {recent_order.exchange_order_id})")
+                        logger.info(
+                            f"✅ Using entry price from filled {entry_side} order for {symbol}: "
+                            f"{entry_price} (Order ID: {recent_order.exchange_order_id})"
+                        )
                     else:
-                        logger.warning(f"⚠️ Filled BUY order found for {symbol} but price is None (Order ID: {recent_order.exchange_order_id})")
+                        logger.warning(
+                            f"⚠️ Filled {entry_side} order found for {symbol} but price is None "
+                            f"(Order ID: {recent_order.exchange_order_id})"
+                        )
                 
                 # 2. Fallback: use purchase_price from watchlist (only if no BUY order found)
                 if not entry_price:
@@ -1821,7 +1884,11 @@ class SLTPCheckerService:
                 if not entry_price:
                     return {
                         'success': False,
-                        'error': f'Cannot determine entry price for {symbol}. No filled BUY order found in database. Please ensure there is a recent filled BUY order, or configure purchase_price/price in watchlist.'
+                        'error': (
+                            f'Cannot determine entry price for {symbol}. No filled entry order found in database. '
+                            f'Please ensure there is a recent filled BUY or SELL entry order, or configure '
+                            f'purchase_price/price in watchlist.'
+                        )
                     }
                 
                 # Get strategy mode and percentages
@@ -1852,16 +1919,16 @@ class SLTPCheckerService:
                     tp_percentage = 3.0 if strategy_mode == "conservative" else 2.0
                     logger.info(f"Using default TP percentage: {tp_percentage}% (watchlist had: {watchlist_item.tp_percentage})")
                 
-                logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
+                logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, entry_side={entry_side}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
                 
-                # Calculate SL/TP from entry price using strategy percentages
+                # Calculate SL/TP from entry price using strategy percentages (side-aware)
                 if create_sl and not sl_price:
-                    sl_price = entry_price * (1 - sl_percentage / 100)
-                    logger.info(f"Calculated SL price for {symbol}: {sl_price} (entry: {entry_price}, -{sl_percentage}%)")
+                    sl_price, _ = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
+                    logger.info(f"Calculated SL price for {symbol}: {sl_price} (entry: {entry_price}, side={entry_side}, {sl_percentage}%)")
                 
                 if create_tp and not tp_price:
-                    tp_price = entry_price * (1 + tp_percentage / 100)
-                    logger.info(f"Calculated TP price for {symbol}: {tp_price} (entry: {entry_price}, +{tp_percentage}%)")
+                    _, tp_price = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
+                    logger.info(f"Calculated TP price for {symbol}: {tp_price} (entry: {entry_price}, side={entry_side}, {tp_percentage}%)")
             
             # Round prices to reasonable precision before passing to exchange
             # The exchange will further format according to instrument tick size
@@ -1876,34 +1943,27 @@ class SLTPCheckerService:
             dry_run_mode = not live_trading
             
             # Ensure entry_price is available for order creation (even if prices were already set)
+            entry_side = "BUY"
             if not entry_price:
-                # Try to get entry price from most recent filled BUY order
-                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                recent_order = db.query(ExchangeOrder).filter(
-                    ExchangeOrder.symbol == symbol,
-                    ExchangeOrder.side == OrderSideEnum.BUY,
-                    ExchangeOrder.status == OrderStatusEnum.FILLED
-                ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                
+                recent_order = _find_recent_entry_order(db, symbol)
                 if recent_order:
                     entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
+                    entry_side = _entry_side_from_order(recent_order)
                     if entry_price:
-                        logger.info(f"✅ Using entry price from filled BUY order for {symbol}: {entry_price} (Order ID: {recent_order.exchange_order_id})")
+                        logger.info(
+                            f"✅ Using entry price from filled {entry_side} order for {symbol}: "
+                            f"{entry_price} (Order ID: {recent_order.exchange_order_id})"
+                        )
             
-            # Get parent order ID from most recent filled BUY order (for linking TP/SL)
+            # Get parent order ID from most recent filled entry order (for linking TP/SL)
             parent_order_id = None
             oco_group_id = None
             if entry_price:
                 try:
-                    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-                    recent_order = db.query(ExchangeOrder).filter(
-                        ExchangeOrder.symbol == symbol,
-                        ExchangeOrder.side == OrderSideEnum.BUY,
-                        ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).first()
-                    
+                    recent_order = _find_recent_entry_order(db, symbol)
                     if recent_order:
                         parent_order_id = recent_order.exchange_order_id
+                        entry_side = _entry_side_from_order(recent_order)
                         # Generate OCO group ID for linking SL and TP orders (same as automatic creation)
                         import uuid
                         oco_group_id = f"oco_{parent_order_id}_{int(datetime.utcnow().timestamp())}"
@@ -1919,7 +1979,7 @@ class SLTPCheckerService:
                 sl_result = create_stop_loss_order(
                     db=db,
                     symbol=symbol,
-                    side="BUY",  # Original order side (we assume BUY positions)
+                    side=entry_side,
                     sl_price=sl_price,
                     quantity=position_balance,
                     entry_price=entry_price,
@@ -1938,7 +1998,7 @@ class SLTPCheckerService:
                 tp_result = create_take_profit_order(
                     db=db,
                     symbol=symbol,
-                    side="BUY",  # Original order side (we assume BUY positions)
+                    side=entry_side,
                     tp_price=tp_price,
                     quantity=position_balance,
                     entry_price=entry_price,
