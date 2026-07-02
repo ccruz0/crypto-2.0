@@ -66,6 +66,16 @@ jobs:
             BACKEND_IMAGE=atp-backend-rollback:predeploy docker compose -f ${COMPOSE_DIR}/docker-compose.yml up -d --no-deps backend-aws backend-aws-canary || true
             exit 1
           fi
+          # Pin the deployed image digest in .env so a later MANUAL "docker compose up"
+          # (e.g. to apply an env-var change in .env.aws, or any --force-recreate) reuses
+          # THIS image via ${BACKEND_IMAGE:-...:latest} interpolation, instead of falling
+          # back to a stale local :latest and silently reverting the deployed code.
+          if grep -q '^BACKEND_IMAGE=' ${COMPOSE_DIR}/.env 2>/dev/null; then
+            sed -i "s|^BACKEND_IMAGE=.*|BACKEND_IMAGE=${IMAGE}|" ${COMPOSE_DIR}/.env
+          else
+            echo "BACKEND_IMAGE=${IMAGE}" >> ${COMPOSE_DIR}/.env
+          fi
+          echo "Pinned BACKEND_IMAGE=${IMAGE} in ${COMPOSE_DIR}/.env"
           echo "DEPLOY OK"
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
