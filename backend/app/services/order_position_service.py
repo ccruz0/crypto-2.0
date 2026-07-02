@@ -1,22 +1,21 @@
-"""Shared helpers to calculate open positions / open BUY commitments.
+"""Shared helpers to calculate open positions for guardrails.
 
 This centralizes the logic so that:
 - SignalMonitorService
 - Global protection (_count_total_open_buy_orders)
 - Dashboard / Telegram
 
-all use the exact same definition of "open orders":
+all use the exact same definition of "open positions":
 
-    OpenOrders = Pending BUY orders (NEW/ACTIVE/PARTIALLY_FILLED)
-                 + BUY orders FILLED que todavía no han sido cerradas
-                   completamente por órdenes SELL FILLED (SL/TP/manual).
+    OpenPositions = pending bot entry orders (BUY long / SELL short)
+                    + filled bot entry orders net of protection closes on the opposite side.
 """
 
 import logging
 from typing import Tuple
 
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, not_
+from sqlalchemy import and_, or_, not_
 
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 
@@ -95,6 +94,117 @@ def _order_filled_quantity(order: ExchangeOrder) -> float:
         return float(qty or 0)
 
 
+def _main_role_filter():
+    """Principal orders — excludes STOP_LOSS / TAKE_PROFIT protection children."""
+    return or_(
+        ExchangeOrder.order_role.is_(None),
+        not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
+    )
+
+
+def _bot_main_entry_filter():
+    """Bot principal entry orders (not SL/TP children)."""
+    return and_(
+        ExchangeOrder.trade_signal_id.isnot(None),
+        ExchangeOrder.parent_order_id.is_(None),
+        _main_role_filter(),
+    )
+
+
+def _long_close_sell_filter():
+    """SELL orders that close long positions — excludes short-entry SELLs."""
+    bot_offset_sell_filter = or_(
+        ExchangeOrder.trade_signal_id.isnot(None),
+        ExchangeOrder.parent_order_id.isnot(None),
+        ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+    )
+    short_entry_shape = and_(
+        ExchangeOrder.trade_signal_id.isnot(None),
+        ExchangeOrder.parent_order_id.is_(None),
+        _main_role_filter(),
+    )
+    return and_(
+        ExchangeOrder.side == OrderSideEnum.SELL,
+        bot_offset_sell_filter,
+        not_(short_entry_shape),
+    )
+
+
+def _short_close_buy_filter():
+    """BUY orders that close short positions (protection / cover)."""
+    return and_(
+        ExchangeOrder.side == OrderSideEnum.BUY,
+        or_(
+            ExchangeOrder.parent_order_id.isnot(None),
+            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+        ),
+    )
+
+
+def _estimate_filled_open_positions(
+    net_quantity: float,
+    filled_entry_orders: list[ExchangeOrder],
+    filled_close_qty: float,
+    *,
+    symbol: str,
+    side_label: str,
+) -> int:
+    """Estimate how many filled entry orders remain open after close offsets."""
+    if net_quantity <= 0:
+        return 0
+
+    filled_entry_qty = sum(_order_filled_quantity(o) for o in filled_entry_orders)
+    if len(filled_entry_orders) > 0 and filled_entry_qty > 0:
+        avg_position_size = filled_entry_qty / len(filled_entry_orders)
+    else:
+        avg_position_size = 0.0
+
+    if net_quantity > 0 and avg_position_size > 0:
+        min_position_threshold = avg_position_size * 0.01
+        if net_quantity >= min_position_threshold:
+            estimated = max(1, int(round(net_quantity / avg_position_size)))
+        else:
+            estimated = 0
+            logger.debug(
+                "%s position too small for %s: net_qty=%.4f < threshold=%.4f",
+                side_label,
+                symbol,
+                net_quantity,
+                min_position_threshold,
+            )
+        logger.info(
+            "[POSITION_ESTIMATION] %s %s: net_qty=%.4f, avg_size=%.4f, estimated=%s, threshold=%.4f",
+            side_label,
+            symbol,
+            net_quantity,
+            avg_position_size,
+            estimated,
+            min_position_threshold,
+        )
+        return estimated
+
+    logger.debug(
+        "Using FIFO fallback for %s %s: net_qty=%.4f, avg_size=%.4f, entries=%s",
+        side_label,
+        symbol,
+        net_quantity,
+        avg_position_size,
+        len(filled_entry_orders),
+    )
+    remaining_close_qty = filled_close_qty
+    open_filled_positions = 0
+    for entry_order in filled_entry_orders:
+        entry_qty = _order_filled_quantity(entry_order)
+        if entry_qty <= 0:
+            continue
+        if remaining_close_qty >= entry_qty:
+            remaining_close_qty -= entry_qty
+        else:
+            open_filled_positions += 1
+            remaining_close_qty = 0.0
+    return open_filled_positions
+
+
 def count_open_positions_for_symbol(
     db: Session,
     symbol: str,
@@ -104,195 +214,206 @@ def count_open_positions_for_symbol(
     last_price: float | None = None,
 ) -> int:
     """
-    Returns the number of open BUY commitments for a symbol created by the bot.
+    Returns the number of open bot positions (long + short) for a symbol.
 
     Definition:
-        OpenOrders = Pending BUY orders (NEW/ACTIVE/PARTIALLY_FILLED) with trade_signal_id
-                     + BUY orders FILLED (trade_signal_id set) not fully closed by bot/protection SELLs.
+        OpenPositions = pending bot entry orders (BUY for long, SELL for short)
+                        + filled bot entry orders not fully closed by protection
+                          orders on the opposite side.
 
-    Manual or exchange-synced holdings (trade_signal_id IS NULL) are excluded from guardrails.
+    Long closes: SELL with parent_order_id or STOP_LOSS/TAKE_PROFIT (not short entries).
+    Short closes: BUY with parent_order_id or STOP_LOSS/TAKE_PROFIT.
+
+    Manual or exchange-synced holdings (trade_signal_id IS NULL) are excluded.
 
     This function works at the symbol/base level:
     - If symbol is "ADA_USDT" -> analiza solo ese par.
     - If symbol is "ADA"      -> analiza todos los pares "ADA_*".
     """
-    # 1) Pending BUY orders (principal, no SL/TP)
     pending_statuses = [
         OrderStatusEnum.NEW,
         OrderStatusEnum.ACTIVE,
         OrderStatusEnum.PARTIALLY_FILLED,
     ]
-    # Some exchanges use "PENDING" but our enum may not have it – include defensively
     pending_enum = getattr(OrderStatusEnum, "PENDING", None)
     if pending_enum is not None:
         pending_statuses.append(pending_enum)
 
     symbol_filter = _normalized_symbol_filter(symbol)
-
-    # Consider as "main" any order_role that is not STOP_LOSS/TAKE_PROFIT (including NULL/empty/custom)
-    main_role_filter = or_(
-        ExchangeOrder.order_role.is_(None),
-        not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
-    )
-    bot_buy_filter = ExchangeOrder.trade_signal_id.isnot(None)
-    bot_offset_sell_filter = or_(
-        ExchangeOrder.trade_signal_id.isnot(None),
-        ExchangeOrder.parent_order_id.isnot(None),
-        ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+    bot_entry_filter = _bot_main_entry_filter()
+    order_time = (
+        ExchangeOrder.exchange_create_time.asc(),
+        ExchangeOrder.created_at.asc(),
+        ExchangeOrder.id.asc(),
     )
 
+    # --- Long side: pending + filled BUY entries net of long-close SELLs ---
     pending_buy_orders = db.query(ExchangeOrder).filter(
         symbol_filter,
         ExchangeOrder.side == OrderSideEnum.BUY,
         ExchangeOrder.status.in_(pending_statuses),
-        main_role_filter,
-        bot_buy_filter,
+        bot_entry_filter,
     ).all()
     pending_buy_count = len(pending_buy_orders)
 
-    # 2) Filled BUY orders (posiciones ya abiertas en algún momento)
     filled_buy_orders = (
         db.query(ExchangeOrder)
         .filter(
             symbol_filter,
             ExchangeOrder.side == OrderSideEnum.BUY,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
-            main_role_filter,
-            bot_buy_filter,
+            bot_entry_filter,
         )
-        .order_by(ExchangeOrder.exchange_create_time.asc(), ExchangeOrder.created_at.asc(), ExchangeOrder.id.asc())
+        .order_by(*order_time)
         .all()
     )
-
-    # Total BUY filled quantity for this symbol/base
     filled_buy_qty = sum(_order_filled_quantity(o) for o in filled_buy_orders)
 
-    # 3) Filled SELL orders that offset bot BUYs (bot SELL, SL/TP, or protection linked via parent)
-    filled_sell_orders = (
+    filled_long_close_sells = (
         db.query(ExchangeOrder)
         .filter(
             symbol_filter,
-            ExchangeOrder.side == OrderSideEnum.SELL,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
-            bot_offset_sell_filter,
+            _long_close_sell_filter(),
         )
-        .order_by(ExchangeOrder.exchange_create_time.asc(), ExchangeOrder.created_at.asc(), ExchangeOrder.id.asc())
+        .order_by(*order_time)
         .all()
     )
-
-    filled_sell_qty = sum(_order_filled_quantity(o) for o in filled_sell_orders)
-
-    # 4) Calculate net remaining quantity for this symbol
-    # Only subtract FILLED SELL orders - pending TP/SL orders don't reduce open position count
-    # (they are just protection orders that haven't executed yet)
-    net_quantity = max(filled_buy_qty - filled_sell_qty, 0.0)
+    filled_long_close_sell_qty = sum(_order_filled_quantity(o) for o in filled_long_close_sells)
+    long_net_qty = max(filled_buy_qty - filled_long_close_sell_qty, 0.0)
 
     dust_price = last_price if last_price is not None else _infer_symbol_price(filled_buy_orders)
+
     if _is_position_dust(
-        net_quantity,
+        long_net_qty,
         min_position_qty=min_position_qty,
         min_position_usd=min_position_usd,
         last_price=dust_price,
     ):
         logger.info(
-            "[OPEN_POSITION_COUNT] symbol=%s net_qty=%.8f treated as dust "
+            "[OPEN_POSITION_COUNT] symbol=%s long_net_qty=%.8f treated as dust "
             "(min_qty=%s min_usd=%s price=%s)",
             symbol,
-            net_quantity,
+            long_net_qty,
             min_position_qty,
             min_position_usd,
             dust_price,
         )
-        return pending_buy_count
-
-    # 5) Determine how many FILLED BUY orders are still open as positions.
-    # We use a simple FIFO matching: Only FILLED SELL quantity offsets the earliest BUYs first.
-    # IMPORTANT: Pending TP/SL orders do NOT reduce open position count - they are just protection orders.
-    # Count based on net quantity and average position size, not individual orders.
-    # This prevents over-counting when multiple small orders exist.
-    remaining_sell_qty = filled_sell_qty
-    open_filled_positions = 0
-
-    # Calculate average position size from filled BUY orders
-    if len(filled_buy_orders) > 0 and filled_buy_qty > 0:
-        avg_position_size = filled_buy_qty / len(filled_buy_orders)
+        long_filled_positions = 0
     else:
-        avg_position_size = 0
+        long_filled_positions = _estimate_filled_open_positions(
+            long_net_qty,
+            filled_buy_orders,
+            filled_long_close_sell_qty,
+            symbol=symbol,
+            side_label="long",
+        )
 
-    # If we have net quantity, estimate positions based on average size
-    # This is more accurate than counting each order separately
-    if net_quantity > 0 and avg_position_size > 0:
-        # Estimate positions: net quantity divided by average position size
-        # This gives us a realistic count based on actual holdings, not individual orders
-        
-        # Add minimum threshold: only count as a position if net quantity is significant
-        # (at least 1% of average position size to avoid counting tiny remnants)
-        MIN_POSITION_THRESHOLD = avg_position_size * 0.01
-        
-        if net_quantity >= MIN_POSITION_THRESHOLD:
-            estimated_positions = max(1, int(round(net_quantity / avg_position_size)))
-        else:
-            # Net quantity is too small to count as a meaningful position
-            estimated_positions = 0
-            logger.debug(
-                f"Position too small for {symbol}: net_qty={net_quantity:.4f} < threshold={MIN_POSITION_THRESHOLD:.4f}"
-            )
-        
-        # Use estimated positions as the primary count
-        # This prevents over-counting when multiple small orders exist
-        open_filled_positions = estimated_positions
-        
-        # Log the estimation for visibility (info level so it appears in production logs)
+    # --- Short side: pending + filled SELL entries net of short-close BUYs ---
+    pending_sell_orders = db.query(ExchangeOrder).filter(
+        symbol_filter,
+        ExchangeOrder.side == OrderSideEnum.SELL,
+        ExchangeOrder.status.in_(pending_statuses),
+        bot_entry_filter,
+    ).all()
+    pending_sell_count = len(pending_sell_orders)
+
+    filled_sell_entry_orders = (
+        db.query(ExchangeOrder)
+        .filter(
+            symbol_filter,
+            ExchangeOrder.side == OrderSideEnum.SELL,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            bot_entry_filter,
+        )
+        .order_by(*order_time)
+        .all()
+    )
+    filled_sell_entry_qty = sum(_order_filled_quantity(o) for o in filled_sell_entry_orders)
+
+    filled_short_close_buys = (
+        db.query(ExchangeOrder)
+        .filter(
+            symbol_filter,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            _short_close_buy_filter(),
+        )
+        .order_by(*order_time)
+        .all()
+    )
+    filled_short_close_buy_qty = sum(_order_filled_quantity(o) for o in filled_short_close_buys)
+    short_net_qty = max(filled_sell_entry_qty - filled_short_close_buy_qty, 0.0)
+
+    short_dust_price = dust_price if dust_price is not None else _infer_symbol_price(
+        filled_sell_entry_orders
+    )
+    if _is_position_dust(
+        short_net_qty,
+        min_position_qty=min_position_qty,
+        min_position_usd=min_position_usd,
+        last_price=short_dust_price,
+    ):
         logger.info(
-            f"[POSITION_ESTIMATION] {symbol}: net_qty={net_quantity:.4f}, "
-            f"avg_size={avg_position_size:.4f}, estimated={estimated_positions}, "
-            f"threshold={MIN_POSITION_THRESHOLD:.4f}"
+            "[OPEN_POSITION_COUNT] symbol=%s short_net_qty=%.8f treated as dust "
+            "(min_qty=%s min_usd=%s price=%s)",
+            symbol,
+            short_net_qty,
+            min_position_qty,
+            min_position_usd,
+            short_dust_price,
         )
+        short_filled_positions = 0
     else:
-        # Fallback to FIFO logic if we can't calculate average (edge case)
-        # This should rarely happen, but provides a safety net
-        logger.debug(
-            f"Using FIFO fallback for {symbol}: net_qty={net_quantity:.4f}, "
-            f"avg_size={avg_position_size:.4f}, filled_buy_orders={len(filled_buy_orders)}"
+        short_filled_positions = _estimate_filled_open_positions(
+            short_net_qty,
+            filled_sell_entry_orders,
+            filled_short_close_buy_qty,
+            symbol=symbol,
+            side_label="short",
         )
-        for buy_order in filled_buy_orders:
-            buy_qty = _order_filled_quantity(buy_order)
-            if buy_qty <= 0:
-                continue
 
-            if remaining_sell_qty >= buy_qty:
-                # This BUY is fully closed by SELLs
-                remaining_sell_qty -= buy_qty
-            else:
-                # This BUY still has some net quantity open
-                open_filled_positions += 1
-                remaining_sell_qty = 0.0
+    total_open_positions = (
+        pending_buy_count
+        + long_filled_positions
+        + pending_sell_count
+        + short_filled_positions
+    )
 
-    total_open_positions = pending_buy_count + open_filled_positions
+    avg_position_size = 0.0
+    if filled_buy_qty > 0 and filled_buy_orders:
+        avg_position_size = filled_buy_qty / len(filled_buy_orders)
 
     try:
-        # Extra debug for diagnostics
-        sample_pending = [o.symbol for o in pending_buy_orders[:5]]
-        sample_buy = [o.symbol for o in filled_buy_orders[:5]]
-        sample_sell = [o.symbol for o in filled_sell_orders[:5]]
         logger.info(
-            "[OPEN_POSITION_DEBUG] base=%s pending=%s sample_pending=%s sample_buy=%s sample_sell=%s",
+            "[OPEN_POSITION_DEBUG] base=%s pending_long=%s pending_short=%s "
+            "sample_buy=%s sample_sell_entry=%s sample_long_close=%s sample_short_close=%s",
             symbol,
             pending_buy_count,
-            sample_pending,
-            sample_buy,
-            sample_sell,
+            pending_sell_count,
+            [o.symbol for o in pending_buy_orders[:5]],
+            [o.symbol for o in filled_sell_entry_orders[:5]],
+            [o.symbol for o in filled_long_close_sells[:5]],
+            [o.symbol for o in filled_short_close_buys[:5]],
         )
     except Exception:
         pass
 
     logger.info(
-        "[OPEN_POSITION_COUNT] symbol=%s pending_buy=%s filled_buy=%s filled_sell=%s net_qty=%s final_positions=%s (avg_size=%s)",
+        "[OPEN_POSITION_COUNT] symbol=%s pending_long=%s pending_short=%s "
+        "filled_buy=%s long_close_sell=%s long_net=%s long_pos=%s "
+        "filled_sell_entry=%s short_close_buy=%s short_net=%s short_pos=%s "
+        "final_positions=%s (avg_long_size=%s)",
         symbol,
         pending_buy_count,
+        pending_sell_count,
         round(filled_buy_qty, 8),
-        round(filled_sell_qty, 8),
-        round(net_quantity, 8),
+        round(filled_long_close_sell_qty, 8),
+        round(long_net_qty, 8),
+        long_filled_positions,
+        round(filled_sell_entry_qty, 8),
+        round(filled_short_close_buy_qty, 8),
+        round(short_net_qty, 8),
+        short_filled_positions,
         total_open_positions,
         round(avg_position_size, 4) if avg_position_size > 0 else 0,
     )
