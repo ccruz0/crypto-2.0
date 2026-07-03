@@ -3433,6 +3433,9 @@ class SignalMonitorService:
         # This ensures we always record an event (BLOCKED or SENT) so dashboard explains why alerts don't fire
         # State (strategy decision) is separate from event (alert emission)
         if buy_signal and alert_config["alert_enabled"] and alert_config["buy_alert_enabled"]:
+            # Define lock_key up front: the throttle-blocked branch below references it before the
+            # original assignment site, which raised UnboundLocalError and aborted monitoring.
+            lock_key = f"{symbol}_BUY"
             # Determine if we should emit (send telegram) or just record (blocked)
             # emit_buy is set above: True if throttling passed, False if blocked
             should_emit_telegram = emit_buy if 'emit_buy' in locals() else buy_allowed if 'buy_allowed' in locals() else True
@@ -3470,7 +3473,7 @@ class SignalMonitorService:
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             # This ensures only one thread can check and send an alert at a time
             # IMPORTANT: Set lock FIRST, before any checks, to prevent race conditions
-            lock_key = f"{symbol}_BUY"
+            # (lock_key is assigned at the top of this block above.)
             lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
             # Use time module (already imported at top of file)
             current_time = time.time()
@@ -5602,6 +5605,9 @@ class SignalMonitorService:
         # CRITICAL FIX: Process ALL sell signals (strategy decisions), not just those that pass throttling
         # This ensures we always record an event (BLOCKED or SENT) so dashboard explains why alerts don't fire
         if sell_signal and watchlist_item.alert_enabled and sell_alert_enabled:
+            # Define lock_key up front: the throttle-blocked branch below references it before the
+            # original assignment site, which raised UnboundLocalError and aborted monitoring.
+            lock_key = f"{symbol}_SELL"
             # Determine if we should emit (send telegram) or just record (blocked)
             # emit_sell is set above: True if throttling passed, False if blocked
             should_emit_telegram_sell = emit_sell if 'emit_sell' in locals() else sell_allowed if 'sell_allowed' in locals() else True
@@ -5640,7 +5646,7 @@ class SignalMonitorService:
                 should_emit_telegram_sell = False
             
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
-            lock_key = f"{symbol}_SELL"
+            # (lock_key is assigned at the top of this block above.)
             lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
             # Use time module (already imported at top of file)
             current_time = time.time()
