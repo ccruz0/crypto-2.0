@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple, cast
@@ -401,7 +402,8 @@ class SignalMonitorService:
         self.monitor_interval = 30  # Check signals every 30 seconds
         self.last_signal_states: Dict[str, Dict] = {}  # Track previous signal states: {symbol: {state: BUY/WAIT/SELL, last_order_price: float, orders_count: int}}
         self.processed_orders: set = set()  # Track orders we've created to avoid duplicates
-        self.order_creation_locks: Dict[str, float] = {}  # Track when we're creating orders: {symbol: timestamp}
+        self.order_creation_locks: Dict[str, float] = {}  # Track when we're creating orders: {symbol: timestamp} and {symbol:side: timestamp} (atomic dedup)
+        self._order_dedup_lock = threading.Lock()  # Guards check-and-set on order_creation_locks for the in-memory (symbol, side) dedup
         self.MAX_OPEN_ORDERS_PER_SYMBOL = 3  # Maximum open orders per symbol
         self.MIN_PRICE_CHANGE_PCT = 1.0  # Minimum 1% price change to create another order
         self.ORDER_CREATION_LOCK_SECONDS = 10  # Lock for 10 seconds after creating an order
@@ -6728,7 +6730,57 @@ class SignalMonitorService:
                 })
                 self.last_signal_states[symbol] = state_entry
     
+    def _try_claim_order_slot(self, symbol: str, side: str) -> bool:
+        """Atomically claim an in-memory dedup slot for (symbol, side).
+
+        PART B (cap race): the exchange_orders-based guardrail cannot see orders that
+        signal_monitor is *currently* placing (exchange_sync writes those rows later), so two
+        signals ~2s apart both pass the cap check and place a second order. This claims a
+        per-(symbol, side) slot under an instance lock before any cap check runs.
+
+        Returns True if the slot was claimed (caller may proceed), or False if a live claim
+        already exists (caller must reject as a duplicate). Slots older than
+        ORDER_CREATION_LOCK_SECONDS are treated as stale and reclaimed.
+        """
+        key = f"{symbol}:{side}"
+        now = time.time()
+        with self._order_dedup_lock:
+            existing = self.order_creation_locks.get(key)
+            if existing is not None and (now - existing) < self.ORDER_CREATION_LOCK_SECONDS:
+                return False
+            self.order_creation_locks[key] = now
+            return True
+
+    def _release_order_slot(self, symbol: str, side: str) -> None:
+        """Release the in-memory dedup slot claimed by _try_claim_order_slot."""
+        key = f"{symbol}:{side}"
+        with self._order_dedup_lock:
+            self.order_creation_locks.pop(key, None)
+
     async def _create_buy_order(self, db: Session, watchlist_item: WatchlistItem,  # pyright: ignore[reportGeneralTypeIssues]
+                            current_price: float, res_up: float, res_down: float):
+        """Dedup wrapper around the BUY order path (PART B: atomic (symbol, side) cap-race guard).
+
+        Claims the in-memory slot BEFORE any cap check, rejects a near-simultaneous second
+        order for the same (symbol, side), and always releases the slot on completion/error.
+        """
+        symbol = normalize_symbol_for_exchange(str(getattr(watchlist_item, "symbol", "")))
+        if not self._try_claim_order_slot(symbol, "BUY"):
+            logger.warning(
+                f"🚫 [DEDUP] Duplicate BUY suppressed for {symbol}: a BUY order is already being "
+                f"created within the last {self.ORDER_CREATION_LOCK_SECONDS}s (cap-race guard)."
+            )
+            return {
+                "error": "DUPLICATE_ORDER_SUPPRESSED",
+                "error_type": "duplicate_order_suppressed",
+                "message": f"Duplicate BUY suppressed for {symbol} (in-memory cap-race guard)",
+            }
+        try:
+            return await self._create_buy_order_impl(db, watchlist_item, current_price, res_up, res_down)
+        finally:
+            self._release_order_slot(symbol, "BUY")
+
+    async def _create_buy_order_impl(self, db: Session, watchlist_item: WatchlistItem,  # pyright: ignore[reportGeneralTypeIssues]
                             current_price: float, res_up: float, res_down: float):
         """Create a BUY order automatically based on signal"""
         symbol = normalize_symbol_for_exchange(str(getattr(watchlist_item, "symbol", "")))
@@ -8219,29 +8271,19 @@ class SignalMonitorService:
                                 order_id=str(order_id),
                             )
                             
-                            # Protection is OrderFilled-only: publish event; handler calls ProtectionOrderService
-                            try:
-                                from app.services.event_bus import get_event_bus, is_event_bus_enabled
-                                from app.services.events import OrderFilled
-                                if is_event_bus_enabled():
-                                    get_event_bus().publish(
-                                        OrderFilled(
-                                            symbol=symbol,
-                                            side="BUY",
-                                            exchange_order_id=str(order_id),
-                                            filled_price=float(executed_avg_price),
-                                            quantity=normalized_qty,
-                                            source="signal_monitor",
-                                            correlation_id=None,
-                                        )
-                                    )
-                                else:
-                                    logger.info(
-                                        "[DEPRECATION] protection_event_skipped event_bus_disabled symbol=%s order_id=%s source=signal_monitor",
-                                        symbol, order_id,
-                                    )
-                            except Exception as ev_err:
-                                logger.warning(f"Error publishing OrderFilled for BUY {symbol} order {order_id}: {ev_err}")
+                            # PART A (real path): create SL/TP directly via the working, side-aware
+                            # mechanism. The previous publish(OrderFilled(...)) is a no-op in prod
+                            # (EVENT_BUS_ENABLED defaults false; ProtectionOrderService is not
+                            # committed), which left BUY positions unprotected.
+                            self._create_protection_after_entry_fill(
+                                db=db,
+                                symbol=symbol,
+                                entry_side="BUY",
+                                order_id=str(order_id),
+                                placement_result=result,
+                                estimated_price=executed_avg_price,
+                                source="signal_monitor",
+                            )
                             filled_quantity = normalized_qty
                         
                         except Exception as sl_tp_err:
@@ -8958,7 +9000,30 @@ class SignalMonitorService:
         )
         return creation_result
     
-    async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem, 
+    async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem,
+                                 current_price: float, res_up: float, res_down: float):
+        """Dedup wrapper around the SELL order path (PART B: atomic (symbol, side) cap-race guard).
+
+        Claims the in-memory slot BEFORE any cap check, rejects a near-simultaneous second
+        order for the same (symbol, side), and always releases the slot on completion/error.
+        """
+        symbol = str(getattr(watchlist_item, "symbol", ""))
+        if not self._try_claim_order_slot(symbol, "SELL"):
+            logger.warning(
+                f"🚫 [DEDUP] Duplicate SELL suppressed for {symbol}: a SELL order is already being "
+                f"created within the last {self.ORDER_CREATION_LOCK_SECONDS}s (cap-race guard)."
+            )
+            return {
+                "error": "DUPLICATE_ORDER_SUPPRESSED",
+                "error_type": "duplicate_order_suppressed",
+                "message": f"Duplicate SELL suppressed for {symbol} (in-memory cap-race guard)",
+            }
+        try:
+            return await self._create_sell_order_impl(db, watchlist_item, current_price, res_up, res_down)
+        finally:
+            self._release_order_slot(symbol, "SELL")
+
+    async def _create_sell_order_impl(self, db: Session, watchlist_item: WatchlistItem,
                                  current_price: float, res_up: float, res_down: float):
         """Create a SELL order automatically based on signal"""
         symbol = str(getattr(watchlist_item, "symbol", ""))
@@ -9902,30 +9967,42 @@ class SignalMonitorService:
                                     order_id=str(order_id),
                                 )
                                 
-                                # Protection is OrderFilled-only: publish event; handler calls ProtectionOrderService
+                                # PART A (real path): a SELL fills two very different roles.
+                                # Only a SHORT ENTRY (margin, no existing position, shorting enabled)
+                                # needs SL/TP. A SELL that CLOSES A LONG must NOT get new protection.
+                                base_symbol = symbol.split("_")[0] if "_" in symbol else symbol
                                 try:
-                                    from app.services.event_bus import get_event_bus, is_event_bus_enabled
-                                    from app.services.events import OrderFilled
-                                    if is_event_bus_enabled():
-                                        get_event_bus().publish(
-                                            OrderFilled(
-                                                symbol=symbol,
-                                                side="SELL",
-                                                exchange_order_id=str(order_id),
-                                                filled_price=float(executed_avg_price),
-                                                quantity=normalized_qty,
-                                                source="signal_monitor",
-                                                correlation_id=None,
-                                            )
-                                        )
-                                    else:
-                                        logger.info(
-                                            "[DEPRECATION] protection_event_skipped event_bus_disabled symbol=%s order_id=%s source=signal_monitor",
-                                            symbol, order_id,
-                                        )
-                                except Exception as ev_err:
-                                    logger.warning(f"Error publishing OrderFilled for SELL {symbol} order {order_id}: {ev_err}")
-                                
+                                    from app.services.order_position_service import count_open_positions_for_symbol
+                                    position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
+                                except Exception:
+                                    position_exists = False
+                                is_short_entry = bool(user_wants_margin) and (not position_exists)
+                                try:
+                                    from app.services.risk_guard import shorting_enabled
+                                    is_short_entry = is_short_entry and shorting_enabled()
+                                except Exception:
+                                    pass
+
+                                if is_short_entry:
+                                    # Create SL/TP directly via the working, side-aware mechanism.
+                                    # The previous publish(OrderFilled(...)) was a no-op in prod
+                                    # (EVENT_BUS_ENABLED defaults false; ProtectionOrderService not
+                                    # committed), which left short positions unprotected.
+                                    self._create_protection_after_entry_fill(
+                                        db=db,
+                                        symbol=symbol,
+                                        entry_side="SELL",
+                                        order_id=str(order_id),
+                                        placement_result=result,
+                                        estimated_price=executed_avg_price,
+                                        source="signal_monitor",
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[SL/TP] SELL {symbol} order {order_id} is a long-close "
+                                        f"(not a short entry): no SL/TP created."
+                                    )
+
                                 filled_quantity = normalized_qty
                             
                             except Exception as sl_tp_err:
