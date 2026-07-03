@@ -274,6 +274,53 @@ def check_system_core_buy_allowed(
     return True, ""
 
 
+def check_system_core_short_entry_allowed(
+    db: Session,
+    symbol: str,
+    amount_usd: float,
+    *,
+    price: float,
+) -> Tuple[bool, str]:
+    """Position/exposure gates for a SHORT ENTRY (a margin SELL that opens a NEW position).
+
+    A short entry increases open exposure, so it must obey the same amount cap, daily-drawdown,
+    one-active-per-coin and max-open-trades limits as a BUY. The RSI/MA200 gates are BUY-specific
+    and are NOT applied here. Closing SELLs (which reduce exposure) must NOT be routed through
+    this guard.
+
+    Returns (allowed, reason). When guards are disabled, always (True, "").
+    """
+    if not _GUARDS_ON:
+        return True, ""
+
+    sym = (symbol or "").strip().upper()
+    base = sym.split("_")[0] if "_" in sym else sym
+
+    if amount_usd > _MAX_PER_TRADE + 1e-6:
+        return False, f"system_core_max_trade_usd amount={amount_usd} max={_MAX_PER_TRADE}"
+
+    dd_block, dd_reason = _daily_drawdown_violation(db)
+    if dd_block:
+        return False, dd_reason
+
+    try:
+        from app.services.order_position_service import count_open_positions_for_symbol
+
+        max_per_coin = _resolve_max_open_per_coin()
+        open_for_symbol = count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price))
+        if open_for_symbol >= max_per_coin:
+            return False, "system_core_one_active_trade_per_coin"
+
+        max_open_trades = _resolve_max_open_trades()
+        open_symbols = count_distinct_symbols_with_open_positions(db)
+        if open_symbols >= max_open_trades:
+            return False, f"system_core_max_open_trades count={open_symbols} max={max_open_trades}"
+    except Exception as e:
+        logger.warning("system_core: short-entry position checks failed (allowing): %s", e)
+
+    return True, ""
+
+
 # Backward-compatible alias for tests/callers that referenced the old gross-sum helper.
 def _sum_portfolio_usd(db: Session) -> float:
     return _net_equity_usd(db)

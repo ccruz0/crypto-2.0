@@ -8526,9 +8526,81 @@ class SignalMonitorService:
         rsi: Optional[float] = None,
         ma200: Optional[float] = None,
     ) -> Dict[str, Any]:
+        """Dedup choke point around the orchestrator entry path (PART B: atomic (symbol, side) cap-race guard).
+
+        The LIVE entry path is the orchestrator: ``_check_signal_for_coin_sync`` calls this
+        function directly (source="orchestrator"), NOT the ``_create_buy_order`` /
+        ``_create_sell_order`` wrappers. Those wrappers carry the cap-race dedup added in PR #114,
+        so this path bypassed it — 2026-07-03 two near-simultaneous DOT_USD SELL signals both
+        placed real orders (dedup_suppressed=0). This claims the SAME in-memory (symbol, side)
+        slot BEFORE any cap check (identical semantics to the wrappers):
+
+        - a near-simultaneous second order for the same (symbol, side) is rejected with
+          ``DUPLICATE_ORDER_SUPPRESSED`` before any placement;
+        - on a REAL placement (success) the slot is RETAINED so its TTL
+          (``ORDER_CREATION_LOCK_SECONDS``) suppresses a 2nd order 2-4s later — the real race;
+        - any non-placement outcome (block, invalid qty, exchange rejection, exception) RELEASES
+          the slot so a legitimate retry is not blocked for the whole TTL.
+
+        Only ONE dedup layer applies per entry: the orchestrator reaches this method (not the
+        wrappers), and this method calls ``_place_order_from_signal_impl`` (which never claims a
+        slot), so a single placement is guarded exactly once.
+        """
+        symbol_key = normalize_symbol_for_exchange(symbol)
+        side_key = (side or "").strip().upper()
+        if not self._try_claim_order_slot(symbol_key, side_key):
+            logger.warning(
+                f"🚫 [DEDUP] Duplicate {side_key} suppressed for {symbol_key} (orchestrator): a "
+                f"{side_key} order is already being placed within the last "
+                f"{self.ORDER_CREATION_LOCK_SECONDS}s (cap-race guard)."
+            )
+            return {
+                "error": "DUPLICATE_ORDER_SUPPRESSED",
+                "error_type": "duplicate_order_suppressed",
+                "message": f"Duplicate {side_key} suppressed for {symbol_key} (in-memory cap-race guard)",
+            }
+        placed = False
+        try:
+            result = await self._place_order_from_signal_impl(
+                db=db,
+                symbol=symbol,
+                side=side,
+                watchlist_item=watchlist_item,
+                current_price=current_price,
+                source=source,
+                correlation_id=correlation_id,
+                rsi=rsi,
+                ma200=ma200,
+            )
+            # A REAL order was placed only when there is no error and the exchange returned an id.
+            # Retain the slot ONLY then, so the TTL suppresses a 2nd order 2-4s later. Blocks,
+            # invalid-qty and exchange rejections return an "error" dict -> release below.
+            if isinstance(result, dict) and "error" not in result and (
+                result.get("order_id") or result.get("exchange_order_id")
+            ):
+                placed = True
+            return result
+        finally:
+            if not placed:
+                # Non-placement outcome (block / rejection / exception): release so a legitimate
+                # retry is not blocked for the whole TTL.
+                self._release_order_slot(symbol_key, side_key)
+
+    async def _place_order_from_signal_impl(
+        self,
+        db: Session,
+        symbol: str,
+        side: str,
+        watchlist_item: WatchlistItem,
+        current_price: float,
+        source: str = "orchestrator",
+        correlation_id: Optional[str] = None,
+        rsi: Optional[float] = None,
+        ma200: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
         Place order immediately from signal (NO eligibility checks).
-        
+
         This function bypasses ALL eligibility checks and places the order directly.
         It should ONLY be called from the orchestrator after a signal is sent.
         
@@ -8627,6 +8699,37 @@ class SignalMonitorService:
                 )
             except Exception as sc_err:
                 logger.warning("SYSTEM_CORE guards check failed, proceeding: %s", sc_err)
+
+        # A SHORT ENTRY (margin SELL opening a NEW position) increases open exposure, so it must
+        # obey the same position/exposure caps as a BUY. Closing SELLs are NOT short entries and
+        # are intentionally never blocked here (they reduce exposure). RSI/MA200 are BUY-only.
+        if is_margin_short_entry:
+            try:
+                from app.services.system_core_trade_guards import check_system_core_short_entry_allowed
+
+                ok_sc, reason_sc = check_system_core_short_entry_allowed(
+                    db,
+                    symbol,
+                    float(amount_usd),
+                    price=float(current_price),
+                )
+                if not ok_sc:
+                    logger.info(
+                        "SYSTEM_CORE short_entry_blocked symbol=%s reason=%s amount_usd=%s price=%s",
+                        symbol,
+                        reason_sc,
+                        amount_usd,
+                        current_price,
+                    )
+                    return {"error": reason_sc, "blocked": True, "message": reason_sc}
+                logger.info(
+                    "SYSTEM_CORE short_entry_allowed symbol=%s amount_usd=%s price=%s",
+                    symbol,
+                    amount_usd,
+                    current_price,
+                )
+            except Exception as sc_err:
+                logger.warning("SYSTEM_CORE short-entry guards check failed, proceeding: %s", sc_err)
         
         # Get live trading status (for dry_run)
         live_trading = get_live_trading_status(db)
