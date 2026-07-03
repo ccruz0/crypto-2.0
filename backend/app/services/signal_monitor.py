@@ -8699,6 +8699,37 @@ class SignalMonitorService:
                 )
             except Exception as sc_err:
                 logger.warning("SYSTEM_CORE guards check failed, proceeding: %s", sc_err)
+
+        # A SHORT ENTRY (margin SELL opening a NEW position) increases open exposure, so it must
+        # obey the same position/exposure caps as a BUY. Closing SELLs are NOT short entries and
+        # are intentionally never blocked here (they reduce exposure). RSI/MA200 are BUY-only.
+        if is_margin_short_entry:
+            try:
+                from app.services.system_core_trade_guards import check_system_core_short_entry_allowed
+
+                ok_sc, reason_sc = check_system_core_short_entry_allowed(
+                    db,
+                    symbol,
+                    float(amount_usd),
+                    price=float(current_price),
+                )
+                if not ok_sc:
+                    logger.info(
+                        "SYSTEM_CORE short_entry_blocked symbol=%s reason=%s amount_usd=%s price=%s",
+                        symbol,
+                        reason_sc,
+                        amount_usd,
+                        current_price,
+                    )
+                    return {"error": reason_sc, "blocked": True, "message": reason_sc}
+                logger.info(
+                    "SYSTEM_CORE short_entry_allowed symbol=%s amount_usd=%s price=%s",
+                    symbol,
+                    amount_usd,
+                    current_price,
+                )
+            except Exception as sc_err:
+                logger.warning("SYSTEM_CORE short-entry guards check failed, proceeding: %s", sc_err)
         
         # Get live trading status (for dry_run)
         live_trading = get_live_trading_status(db)
