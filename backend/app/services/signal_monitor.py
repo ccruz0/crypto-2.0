@@ -8627,7 +8627,46 @@ class SignalMonitorService:
                 )
             except Exception as sc_err:
                 logger.warning("SYSTEM_CORE guards check failed, proceeding: %s", sc_err)
-        
+
+        # HARD GUARD (pre-block): never OPEN a position we already know we cannot protect.
+        # If conditional/trigger orders are known-disabled at the account level (Crypto.com
+        # 140001 EXCHANGE_API_DISABLED), refuse the entry up front rather than opening a naked
+        # position. The breaker is tripped the first time a 140001 is observed during SL/TP
+        # creation (see _flatten_unprotected_entry); the post-fill flatten is the backstop for
+        # the first occurrence and any race.
+        entry_needs_protection = (side or "").strip().upper() == "BUY" or is_margin_short_entry
+        if entry_needs_protection:
+            try:
+                conditional_ok = trade_client._check_conditional_orders_circuit_breaker()
+            except Exception:
+                conditional_ok = True  # fail-open on introspection error; the post-fill flatten still guards
+            if not conditional_ok:
+                logger.critical(
+                    "🚫 [CONDITIONAL_ORDERS_DISABLED] %s %s entry blocked up front: conditional/trigger "
+                    "orders are known-disabled (140001). Refusing to open a position that cannot be protected.",
+                    symbol, side,
+                )
+                try:
+                    if self._telegram_send_enabled():
+                        telegram_notifier.send_message(
+                            f"🚫 <b>ENTRY BLOCKED: SL/TP DISABLED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"↔️ Side: {side}\n"
+                            f"❌ Conditional/trigger orders are disabled for this account (140001).\n"
+                            f"New entries are blocked until API permissions are restored — no naked "
+                            f"positions will be opened."
+                        )
+                except Exception as alert_err:
+                    logger.error("Failed to send CONDITIONAL_ORDERS_DISABLED alert for %s: %s", symbol, alert_err)
+                return {
+                    "error": "CONDITIONAL_ORDERS_DISABLED",
+                    "blocked": True,
+                    "message": (
+                        "Conditional/trigger orders are disabled for this account (140001); "
+                        "entry blocked to avoid an unprotected position."
+                    ),
+                }
+
         # Get live trading status (for dry_run)
         live_trading = get_live_trading_status(db)
         dry_run_mode = not live_trading
@@ -9002,18 +9041,211 @@ class SignalMonitorService:
             f"🔒 [SL/TP] Creating protection for {entry_side_upper} {symbol} order {order_id}: "
             f"filled_price={executed_avg_price}, qty={normalized_qty}"
         )
-        creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
-            db=db,
-            symbol=symbol,
-            side=entry_side_upper,
-            filled_price=float(executed_avg_price),
-            filled_qty=normalized_qty,
-            order_id=str(order_id),
-            source=source,
-            skip_gate=True,
-        )
+        creation_result: Optional[Dict[str, Any]] = None
+        creation_error: Optional[Exception] = None
+        try:
+            creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
+                db=db,
+                symbol=symbol,
+                side=entry_side_upper,
+                filled_price=float(executed_avg_price),
+                filled_qty=normalized_qty,
+                order_id=str(order_id),
+                source=source,
+                skip_gate=True,
+            )
+        except Exception as create_err:
+            creation_error = create_err
+            logger.error(
+                "❌ [SL/TP] Protection creation raised for %s %s order %s: %s",
+                entry_side_upper, symbol, order_id, create_err, exc_info=True,
+            )
+
+        # HARD INVARIANT — a freshly-opened entry must NEVER be left without a stop-loss.
+        # Crypto.com 140001 (EXCHANGE_API_DISABLED) is RETURNED as an error in the result
+        # (not raised), so exception-only guards never fire on it. Inspect the result AND
+        # catch exceptions here — the single choke point every entry path funnels through —
+        # and immediately flatten the position when the stop-loss was not actually created.
+        if creation_error is not None or not self._protection_confirms_stop_loss(creation_result):
+            self._flatten_unprotected_entry(
+                db=db,
+                symbol=symbol,
+                entry_side=entry_side_upper,
+                order_id=str(order_id),
+                filled_qty=normalized_qty,
+                filled_price=float(executed_avg_price),
+                creation_result=creation_result,
+                source=source,
+            )
         return creation_result
-    
+
+    @staticmethod
+    def _protection_confirms_stop_loss(creation_result: Optional[Dict[str, Any]]) -> bool:
+        """True only if a stop-loss order was actually created (or already exists).
+
+        The critical naked-position case (Crypto.com 140001 EXCHANGE_API_DISABLED) is
+        RETURNED as an error in ``sl_result`` rather than raised, so an exception-only
+        check would miss it. The stop-loss is the safety-critical leg: a missing SL means
+        the position has no downside protection and must be flattened.
+        """
+        if not isinstance(creation_result, dict):
+            return False
+        status = str(creation_result.get("status") or "").strip().lower()
+        if status == "already_protected":
+            return True
+        sl = creation_result.get("sl_result")
+        if not isinstance(sl, dict):
+            return False
+        return bool(sl.get("order_id")) and not sl.get("error")
+
+    @staticmethod
+    def _protection_leg_conditional_disabled(leg: Any) -> bool:
+        """True if an SL/TP result leg indicates conditional orders are disabled (140001)."""
+        if not isinstance(leg, dict):
+            return False
+        if leg.get("error_code") == 140001:
+            return True
+        err = str(leg.get("error") or "")
+        return "140001" in err or "API_DISABLED" in err
+
+    def _flatten_unprotected_entry(
+        self,
+        db: Session,
+        symbol: str,
+        entry_side: str,
+        order_id: str,
+        filled_qty: float,
+        filled_price: float,
+        creation_result: Optional[Dict[str, Any]] = None,
+        source: str = "signal_monitor",
+    ) -> Optional[Dict[str, Any]]:
+        """Immediately flatten a just-opened entry whose SL/TP protection failed.
+
+        Enforces the naked-position invariant: a BUY (long) is closed with a market SELL
+        of the filled quantity; a SELL (short) is covered with a market BUY. When the
+        failure is a 140001 (conditional orders disabled at the account level) the broker
+        circuit breaker is tripped so subsequent entries are pre-blocked up front.
+        """
+        entry_side_upper = (entry_side or "").strip().upper()
+
+        # Dry-run entries never opened a real position — nothing to flatten.
+        if str(order_id).lower().startswith("dry"):
+            logger.warning(
+                "⚠️ [UNPROTECTED_POSITION] %s %s order %s: SL/TP not created, but entry is a "
+                "dry-run — skipping flatten (no real position).",
+                symbol, entry_side_upper, order_id,
+            )
+            return None
+
+        # If the failure was a 140001, trip the conditional-orders breaker so NEW entries
+        # are pre-blocked until the account permission is restored.
+        legs = []
+        if isinstance(creation_result, dict):
+            legs = [creation_result.get("sl_result"), creation_result.get("tp_result")]
+        if any(self._protection_leg_conditional_disabled(leg) for leg in legs):
+            try:
+                trade_client._mark_conditional_orders_unavailable(
+                    code=140001,
+                    message="SL/TP creation returned 140001 during entry protection",
+                )
+                logger.critical(
+                    "🚫 [CONDITIONAL_ORDERS_DISABLED] %s: tripped conditional-orders circuit breaker "
+                    "(140001). New entries will be pre-blocked until account permission is restored.",
+                    symbol,
+                )
+            except Exception as cb_err:
+                logger.error("Failed to trip conditional-orders breaker for %s: %s", symbol, cb_err)
+
+        close_side = "SELL" if entry_side_upper == "BUY" else "BUY"
+        logger.critical(
+            "🚨 [UNPROTECTED_POSITION] %s %s order %s: SL/TP creation FAILED (no stop-loss). "
+            "Flattening via market %s to prevent naked exposure. filled_qty=%s filled_price=%s",
+            symbol, entry_side_upper, order_id, close_side, filled_qty, filled_price,
+        )
+        try:
+            if self._telegram_send_enabled():
+                telegram_notifier.send_message(
+                    f"🚨 <b>CRITICAL: SL/TP FAILED — FLATTENING</b>\n\n"
+                    f"📊 Symbol: <b>{symbol}</b>\n"
+                    f"📋 Entry Order: {order_id} ({entry_side_upper})\n"
+                    f"📦 Quantity: {filled_qty}\n"
+                    f"❌ Protection could not be created — closing position via market {close_side} "
+                    f"to avoid naked exposure."
+                )
+        except Exception as alert_err:
+            logger.error("Failed to send UNPROTECTED_POSITION alert for %s: %s", symbol, alert_err)
+
+        close_result: Optional[Dict[str, Any]] = None
+        try:
+            if close_side == "SELL":
+                # Close a long: sell the filled base quantity.
+                close_result = trade_client.place_market_order(
+                    symbol=symbol, side="SELL", qty=float(filled_qty), dry_run=False, source="AUTO",
+                )
+            else:
+                # Cover a short: a BUY market order takes notional (quote amount), not qty.
+                # Buy back ~filled_qty of base at the fill price; is_margin so it reduces the
+                # margin short rather than opening a spot long.
+                notional = float(filled_qty) * float(filled_price)
+                close_result = trade_client.place_market_order(
+                    symbol=symbol, side="BUY", notional=notional, is_margin=True, dry_run=False, source="AUTO",
+                )
+        except Exception as close_err:
+            logger.critical(
+                "❌ [AUTO_CLOSE_EXCEPTION] %s %s order %s: exception during flatten: %s. "
+                "MANUAL INTERVENTION REQUIRED.",
+                symbol, entry_side_upper, order_id, close_err, exc_info=True,
+            )
+            self._alert_flatten_failed(symbol, order_id, entry_side_upper, filled_qty, reason=str(close_err))
+            return None
+
+        close_ok = bool(close_result and close_result.get("order_id")) and not (close_result or {}).get("error")
+        if close_ok:
+            close_order_id = close_result.get("order_id")
+            logger.critical(
+                "✅ [AUTO_CLOSE] %s %s order %s: flatten market order created: %s (qty=%s).",
+                symbol, entry_side_upper, order_id, close_order_id, filled_qty,
+            )
+            try:
+                if self._telegram_send_enabled():
+                    telegram_notifier.send_message(
+                        f"✅ <b>Position Auto-Closed</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"📋 Entry Order: {order_id} ({entry_side_upper})\n"
+                        f"🔄 Close Order: {close_order_id}\n"
+                        f"📦 Quantity: {filled_qty}\n\n"
+                        f"Position was auto-closed because SL/TP could not be created."
+                    )
+            except Exception:
+                pass
+            return close_result
+
+        err_detail = (close_result or {}).get("error") if isinstance(close_result, dict) else close_result
+        logger.critical(
+            "❌ [AUTO_CLOSE_FAILED] %s %s order %s: flatten order failed (%s). MANUAL INTERVENTION REQUIRED.",
+            symbol, entry_side_upper, order_id, err_detail,
+        )
+        self._alert_flatten_failed(symbol, order_id, entry_side_upper, filled_qty, reason=str(err_detail))
+        return None
+
+    def _alert_flatten_failed(
+        self, symbol: str, order_id: str, entry_side: str, filled_qty: float, reason: str
+    ) -> None:
+        """Send the MANUAL-INTERVENTION alert when an emergency flatten could not be placed."""
+        try:
+            if self._telegram_send_enabled():
+                telegram_notifier.send_message(
+                    f"🚨 <b>CRITICAL: AUTO-CLOSE FAILED</b>\n\n"
+                    f"📊 Symbol: <b>{symbol}</b>\n"
+                    f"📋 Entry Order: {order_id} ({entry_side})\n"
+                    f"📦 Quantity: {filled_qty}\n"
+                    f"❌ Reason: {reason}\n\n"
+                    f"<b>Position is UNPROTECTED and auto-close FAILED. "
+                    f"Close it manually IMMEDIATELY.</b>"
+                )
+        except Exception as alert_err:
+            logger.error("Failed to send AUTO_CLOSE_FAILED alert for %s: %s", symbol, alert_err)
+
     async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem,
                                  current_price: float, res_up: float, res_down: float):
         """Dedup wrapper around the SELL order path (PART B: atomic (symbol, side) cap-race guard).
