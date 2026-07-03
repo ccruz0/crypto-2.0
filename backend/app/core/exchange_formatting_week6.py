@@ -165,11 +165,15 @@ def classify_exchange_error_code(code: Optional[int]) -> Optional[str]:
 
 
 def operator_action_for_api_disabled() -> str:
-    """Short operator checklist for 140001 (no secrets)."""
+    """Short operator note for 140001 on conditional orders (no secrets).
+
+    Since 2026-02-20 this is an endpoint-migration signal, not an account-disabled state: conditional
+    orders must be created via private/advanced/create-order.
+    """
     return (
-        "Enable API trading / conditional orders for this account; "
-        "check IP allowlist and sub-account permissions; "
-        "see docs/CRYPTOCOM_SL_TP_CREATION.md"
+        "140001 on a conditional order = create via private/advanced/create-order "
+        "(private/create-order deprecated STOP/TAKE_PROFIT types on 2026-02-20). "
+        "Not an account/API-disabled issue; see docs/CRYPTOCOM_SL_TP_CREATION.md"
     )
 
 

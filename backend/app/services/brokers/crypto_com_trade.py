@@ -93,6 +93,10 @@ def _classify_140001_context(
     """
     Return structured 140001 error context for SL/TP. Safe for logging (no secrets).
     api_env_hint inferred from base_url if not provided: uat/sandbox => sandbox, api.crypto.com => prod.
+
+    NOTE: 140001 on a conditional order is an endpoint-migration signal, NOT an account/API-disabled
+    state. As of 2026-02-20 Crypto.com removed STOP/TAKE_PROFIT types from `private/create-order`;
+    conditional orders must be created via `private/advanced/create-order`. The account/API key is fine.
     """
     safe_base = _safe_base_url(base_url)
     if api_env_hint is not None and api_env_hint != "":
@@ -109,8 +113,12 @@ def _classify_140001_context(
             hint = "unknown"
     return {
         "error_code": 140001,
-        "category": "permissions_or_account_configuration",
-        "message": "API_DISABLED: Check API key permissions, account settings, or environment mismatch",
+        "category": "conditional_order_endpoint_migration",
+        "message": (
+            "140001 on conditional order: create STOP/TAKE_PROFIT orders via "
+            "private/advanced/create-order (private/create-order deprecated these types on 2026-02-20). "
+            "Not an account/API-disabled issue."
+        ),
         "api_env_hint": hint,
         "base_url": safe_base,
     }
@@ -119,6 +127,26 @@ def _classify_140001_context(
 # Allowlist of non-zero codes that are acceptable when order_id exists and order is verified on exchange.
 # 220 INVALID_SIDE is NOT allowlisted: it can create ghost state and breaks SL/TP logic.
 ALLOWED_VERIFIED_NONZERO_CODES = {140001}
+
+# Conditional/trigger order types.
+#
+# As of 2026-02-20, Crypto.com REMOVED STOP_LOSS / STOP_LIMIT / TAKE_PROFIT / TAKE_PROFIT_LIMIT
+# from the `type` field of `private/create-order`. Posting these to `private/create-order` now
+# fails with HTTP 500 code 140001. Conditional/trigger orders MUST be created via the Advanced
+# Order Management API (`private/advanced/create-order`) and cancelled via
+# `private/advanced/cancel-order`. Regular MARKET / LIMIT orders still use `private/create-order`.
+# See docs/CRYPTOCOM_SL_TP_CREATION.md.
+CONDITIONAL_ORDER_TYPES = {"STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}
+ADVANCED_CREATE_ORDER_ENDPOINT = "private/advanced/create-order"
+ADVANCED_CANCEL_ORDER_ENDPOINT = "private/advanced/cancel-order"
+# `ref_price_type` is required by the advanced endpoint for conditional orders.
+# Allowed values: MARK_PRICE / LAST_PRICE / INDEX_PRICE.
+DEFAULT_REF_PRICE_TYPE = "MARK_PRICE"
+
+
+def _is_conditional_order_type(order_type: Optional[str]) -> bool:
+    """True if order_type is a conditional/trigger type routed to the advanced endpoint."""
+    return bool(order_type) and str(order_type).strip().upper() in CONDITIONAL_ORDER_TYPES
 
 
 class CryptoComTradeClient:
@@ -2195,8 +2223,11 @@ class CryptoComTradeClient:
 
     def _send_conditional_orders_api_disabled_alert(self, *, code: int, message: str) -> None:
         """
-        Alert when conditional order placement is disabled at the account level (code=140001 API_DISABLED).
-        Rate-limited (once per 24h) using the same throttle as other trigger-order capability alerts.
+        Alert when a conditional order is rejected with code=140001 AFTER routing to the advanced endpoint.
+
+        This is NOT an account/API-disabled state: as of 2026-02-20 conditional orders must be created via
+        `private/advanced/create-order` (which this client now does). A 140001 here means the advanced
+        payload/endpoint needs attention, not that the account is disabled. Rate-limited (once per 24h).
         """
         import time
 
@@ -2213,18 +2244,18 @@ class CryptoComTradeClient:
             if len(safe_msg) > 240:
                 safe_msg = safe_msg[:240] + "…"
             alert_msg = (
-                "🚫 <b>CONDITIONAL ORDERS API DISABLED</b>\n\n"
-                "Crypto.com rejected STOP_LIMIT / TAKE_PROFIT_LIMIT with API_DISABLED.\n"
+                "⚠️ <b>CONDITIONAL ORDER REJECTED (140001)</b>\n\n"
+                "Crypto.com rejected a STOP_LIMIT / TAKE_PROFIT_LIMIT order on the advanced endpoint.\n"
                 f"code={code} message={safe_msg}\n\n"
-                "Impact:\n"
-                "- SL/TP trigger orders cannot be created via API for this account.\n"
-                "- The backend will stop retrying variants until the next periodic health check.\n\n"
+                "Context:\n"
+                "- Conditional orders are created via private/advanced/create-order (create-order deprecated these types 2026-02-20).\n"
+                "- This is an endpoint/payload issue to investigate, NOT an account/API-disabled state.\n\n"
                 "<i>This alert is sent once per 24h.</i>"
             )
             telegram_notifier.send_message(alert_msg)
-            logger.info("✅ Sent system alert: Conditional orders API_DISABLED")
+            logger.info("✅ Sent system alert: Conditional order 140001 on advanced endpoint")
         except Exception as e:
-            logger.warning(f"Failed to send conditional orders API_DISABLED alert: {e}")
+            logger.warning(f"Failed to send conditional order 140001 alert: {e}")
 
     @staticmethod
     def _normalize_price_str(x: Any) -> str:
@@ -2266,57 +2297,68 @@ class CryptoComTradeClient:
 
     def _try_create_order_list_with_params(self, params: dict) -> Tuple[bool, Optional[str], Optional[dict]]:
         """
-        One-shot fallback: place a single trigger order via private/create-order-list.
-        Use when private/create-order returns 140001. params must have all numeric fields as strings.
+        One-shot fallback: place a single conditional order via the Advanced Order Management API
+        (``private/advanced/create-order``). params must have all numeric fields as strings.
+
+        NOTE: Since 2026-02-20, conditional orders can no longer be created via ``private/create-order``
+        (140001) and ``private/create-order-list`` returns 40004 for a single trigger order. The advanced
+        endpoint is the supported path. The primary SL/TP creation already targets it; this remains as a
+        defensive one-shot retry.
+
         Returns (ok, order_id, raw_response_summary). raw_response_summary only on failure (code/message/error).
         """
         from app.core.exchange_formatting_week6 import validate_sltp_payload_numeric
 
         ok_val, errs = validate_sltp_payload_numeric(params)
         if not ok_val:
-            return False, None, {"error": "payload_invalid_for_list"}
+            return False, None, {"error": "payload_invalid_for_advanced"}
 
-        list_method = "private/create-order-list"
-        order_payload = {
+        adv_method = ADVANCED_CREATE_ORDER_ENDPOINT
+        order_payload: Dict[str, Any] = {
             "instrument_name": str(params.get("instrument_name", "")),
             "side": str(params.get("side", "")).strip().upper(),
             "type": str(params.get("type", "")),
             "quantity": str(params.get("quantity", "")),
             "trigger_price": str(params.get("trigger_price", "")),
             "ref_price": str(params.get("ref_price", "")),
+            "ref_price_type": str(params.get("ref_price_type", DEFAULT_REF_PRICE_TYPE)),
         }
         if params.get("price") is not None:
             order_payload["price"] = str(params["price"])
         order_payload["client_oid"] = str(params.get("client_oid", uuid.uuid4()))
         if params.get("time_in_force"):
             order_payload["time_in_force"] = str(params["time_in_force"])
-        list_params = {"contingency_type": "NONE", "order_list": [order_payload]}
         try:
             if self.use_proxy:
-                resp = self._call_proxy(list_method, list_params)
+                resp = self._call_proxy(adv_method, order_payload)
             else:
-                payload = self.sign_request(list_method, list_params, _suppress_log=True)
+                payload = self.sign_request(adv_method, order_payload, _suppress_log=True)
                 r = http_post(
-                    f"{self.base_url}/{list_method}",
+                    f"{self.base_url}/{adv_method}",
                     json=payload,
                     headers={"Content-Type": "application/json"},
                     timeout=10,
                     calling_module="crypto_com_trade._try_create_order_list_with_params",
                 )
                 resp = r.json() if r.ok else None
-            if isinstance(resp, dict) and isinstance(resp.get("result"), list) and resp["result"]:
-                first = resp["result"][0]
-                if isinstance(first, dict):
-                    oid = first.get("order_id") or first.get("client_order_id")
-                    code = first.get("code", resp.get("code", 0))
-                    if oid and (code == 0 or code is None):
-                        return True, str(oid), None
+            if isinstance(resp, dict):
+                code = resp.get("code", 0)
+                res = resp.get("result")
+                oid = None
+                if isinstance(res, dict):
+                    oid = res.get("order_id") or res.get("client_order_id")
+                elif isinstance(res, list) and res and isinstance(res[0], dict):
+                    # Tolerate a list-shaped result.
+                    oid = res[0].get("order_id") or res[0].get("client_order_id")
+                    code = res[0].get("code", code)
+                if oid and (code == 0 or code is None):
+                    return True, str(oid), None
             code = (resp or {}).get("code") if isinstance(resp, dict) else None
             msg = (resp or {}).get("message", "") if isinstance(resp, dict) else ""
-            return False, None, {"error": (msg or "create-order-list failed")[:200], "code": code, "message": msg}
+            return False, None, {"error": (msg or "advanced/create-order failed")[:200], "code": code, "message": msg}
         except Exception as e:
             safe_msg = str(e)[:200] if e else "unknown"
-            logger.debug("create-order-list fallback failed: %s", safe_msg)
+            logger.debug("advanced/create-order fallback failed: %s", safe_msg)
             return False, None, {"error": safe_msg}
 
     def _mark_trigger_orders_unavailable(self, *, code: int, message: str) -> None:
@@ -2491,7 +2533,8 @@ class CryptoComTradeClient:
                 "last_response": None,
             }
 
-        method = "private/create-order"
+        # Conditional/trigger orders must use the Advanced Order Management API (see module docstring).
+        method = ADVANCED_CREATE_ORDER_ENDPOINT
         url = f"{self.base_url}/{method}"
 
         def _tif_normalize_for_exchange(x: Any) -> Optional[str]:
@@ -2666,6 +2709,8 @@ class CryptoComTradeClient:
                 "instrument_name": instrument_name,
                 "side": (side or "").strip().upper(),
                 "type": order_type,
+                # Required by the advanced endpoint for conditional orders.
+                "ref_price_type": DEFAULT_REF_PRICE_TYPE,
             }
 
             # Base numeric/string fields
@@ -4704,10 +4749,17 @@ class CryptoComTradeClient:
         from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("cancel_order", None)
 
-        # Use advanced cancel only for OTO/OTOCO orders; standard cancel for single conditional orders
+        # Conditional/trigger orders (STOP_LIMIT/TAKE_PROFIT_LIMIT/STOP_LOSS/TAKE_PROFIT) and OTO/OTOCO
+        # orders are created via the Advanced Order Management API and must be cancelled via the advanced
+        # endpoint. Everything else (MARKET/LIMIT) uses the standard cancel endpoint.
         detail = self._get_order_detail_summary(order_id)
-        if self._is_advanced_oto_order(detail):
-            method = "private/advanced/cancel-order"
+        detail_type = (detail or {}).get("type") if isinstance(detail, dict) else None
+        if (
+            self._is_advanced_oto_order(detail)
+            or _is_conditional_order_type(order_type)
+            or _is_conditional_order_type(detail_type)
+        ):
+            method = ADVANCED_CANCEL_ORDER_ENDPOINT
         else:
             method = "private/cancel-order"
         params = {"order_id": order_id}
@@ -4811,7 +4863,9 @@ class CryptoComTradeClient:
         from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("place_stop_loss_order", symbol)
 
-        method = "private/create-order"
+        # STOP_LIMIT is a conditional/trigger order. Since 2026-02-20 these must be created via the
+        # Advanced Order Management API; `private/create-order` rejects them with 140001. See module docstring.
+        method = ADVANCED_CREATE_ORDER_ENDPOINT
         inst_meta = self._get_instrument_metadata(symbol)
         if not inst_meta:
             error_msg = f"Instrument metadata unavailable for {symbol} - cannot format SL payload"
@@ -4891,7 +4945,9 @@ class CryptoComTradeClient:
                 "price": price_str,
                 "quantity": qty_str,
                 "trigger_price": trigger_str,
-                "ref_price": ref_price_str
+                "ref_price": ref_price_str,
+                # Required by the advanced endpoint for conditional orders.
+                "ref_price_type": DEFAULT_REF_PRICE_TYPE,
             }
             # Crypto.com expects "GOOD_TILL_CANCEL" (and rejects "GTC" with Error 40003).
             if include_time_in_force:
@@ -4941,7 +4997,8 @@ class CryptoComTradeClient:
                 "price": price_str,
                 "quantity": qty_str,
                 "trigger_price": trigger_str,
-                "ref_price": ref_price_str  # Always include ref_price = SL price
+                "ref_price": ref_price_str,  # Always include ref_price = SL price
+                "ref_price_type": DEFAULT_REF_PRICE_TYPE,
             },
             # Variation 10: Minimal params but WITH ref_price (ref_price is required for correct Trigger Condition)
             {
@@ -4951,7 +5008,8 @@ class CryptoComTradeClient:
                 "price": price_str,
                 "quantity": qty_str,
                 "trigger_price": trigger_str,
-                "ref_price": ref_price_str  # Always include ref_price = SL price
+                "ref_price": ref_price_str,  # Always include ref_price = SL price
+                "ref_price_type": DEFAULT_REF_PRICE_TYPE,
             },
             # Variation 11: Different parameter order (trigger_price before price)
             {
@@ -4961,7 +5019,8 @@ class CryptoComTradeClient:
                 "trigger_price": trigger_str,
                 "price": price_str,
                 "quantity": qty_str,
-                "ref_price": ref_price_str
+                "ref_price": ref_price_str,
+                "ref_price_type": DEFAULT_REF_PRICE_TYPE,
             },
             # Variation 12: Explicit time_in_force (GOOD_TILL_CANCEL)
             {
@@ -4972,6 +5031,7 @@ class CryptoComTradeClient:
                 "quantity": qty_str,
                 "trigger_price": trigger_str,
                 "ref_price": ref_price_str,
+                "ref_price_type": DEFAULT_REF_PRICE_TYPE,
                 "time_in_force": "GOOD_TILL_CANCEL"
             }
         ])
@@ -5459,7 +5519,7 @@ class CryptoComTradeClient:
                         elif error_code == 140001:
                             ctx = _classify_140001_context(self.base_url)
                             logger.warning(
-                                "SLTP_140001 instrument_name=%s order_type=STOP_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=Likely permission or env mismatch",
+                                "SLTP_140001 instrument_name=%s order_type=STOP_LIMIT endpoint=private/advanced/create-order api_env_hint=%s base_host=%s note=140001 on advanced endpoint - conditional-order endpoint/payload issue, not account-disabled",
                                 symbol, ctx["api_env_hint"], ctx["base_url"],
                             )
                             try:
@@ -5468,7 +5528,7 @@ class CryptoComTradeClient:
                                 pass
                             ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
                             if ok_list and order_id_list:
-                                logger.info("STOP_LIMIT placed via create-order-list after 140001 from create-order")
+                                logger.info("STOP_LIMIT placed via advanced/create-order retry after 140001")
                                 return {"order_id": order_id_list, "error": None}
                             fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
                             return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
@@ -5523,7 +5583,7 @@ class CryptoComTradeClient:
                     error_msg = result.get("message", "API_DISABLED")
                     ctx = _classify_140001_context(self.base_url)
                     logger.warning(
-                        "SLTP_140001 instrument_name=%s order_type=STOP_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=HTTP 200 with code 140001",
+                        "SLTP_140001 instrument_name=%s order_type=STOP_LIMIT endpoint=private/advanced/create-order api_env_hint=%s base_host=%s note=HTTP 200 with code 140001 on advanced endpoint",
                         symbol, ctx["api_env_hint"], ctx["base_url"],
                     )
                     try:
@@ -5532,7 +5592,7 @@ class CryptoComTradeClient:
                         pass
                     ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
                     if ok_list and order_id_list:
-                        logger.info("STOP_LIMIT placed via create-order-list after 140001 from create-order (200 body)")
+                        logger.info("STOP_LIMIT placed via advanced/create-order retry after 140001 (200 body)")
                         return {"order_id": order_id_list, "error": None}
                     fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
                     return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
@@ -5589,7 +5649,9 @@ class CryptoComTradeClient:
         from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("place_take_profit_order", symbol)
 
-        method = "private/create-order"
+        # TAKE_PROFIT_LIMIT is a conditional/trigger order. Since 2026-02-20 these must be created via
+        # the Advanced Order Management API; `private/create-order` rejects them with 140001.
+        method = ADVANCED_CREATE_ORDER_ENDPOINT
         inst_meta = self._get_instrument_metadata(symbol)
         if not inst_meta:
             error_msg = f"Instrument metadata unavailable for {symbol} - cannot format TP payload"
@@ -5734,12 +5796,18 @@ class CryptoComTradeClient:
                 
                 # Ensure trigger_price and price are EXACTLY the same string
                 params_base["trigger_price"] = params_base["price"]  # Force exact equality
-                
+
                 # Add ref_price (REQUIRED) - must match TP price exactly
                 params_base["ref_price"] = params_base["price"]
+                # ref_price_type is required by the advanced endpoint for conditional orders.
+                params_base["ref_price_type"] = DEFAULT_REF_PRICE_TYPE
 
-                # Build trigger_condition variations (some endpoints are strict about spacing)
+                # Build trigger_condition variations (some endpoints are strict about spacing).
+                # The advanced endpoint derives the trigger from ref_price/ref_price_type and does not
+                # require trigger_condition, so try WITHOUT it first (matches the verified payload),
+                # then fall back to the spaced/unspaced string forms.
                 trigger_condition_variations = [
+                    None,
                     f">= {tp_price_formatted}",
                     f">={tp_price_formatted}",
                 ]
@@ -5779,7 +5847,9 @@ class CryptoComTradeClient:
                 for params_idx, params_base_variant in enumerate(params_variations_list, 1):
                     for tc_idx, trigger_condition in enumerate(trigger_condition_variations, 1):
                         params = params_base_variant.copy()
-                        params["trigger_condition"] = trigger_condition
+                        # trigger_condition is optional on the advanced endpoint; omit it when None.
+                        if trigger_condition is not None:
+                            params["trigger_condition"] = trigger_condition
 
                         # Determine if this variation includes side field
                         has_side_field = "side" in params
@@ -5987,7 +6057,7 @@ class CryptoComTradeClient:
                                 if error_code == 140001:
                                     ctx = _classify_140001_context(self.base_url)
                                     logger.warning(
-                                        "SLTP_140001 instrument_name=%s order_type=TAKE_PROFIT_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=Likely permission or env mismatch",
+                                        "SLTP_140001 instrument_name=%s order_type=TAKE_PROFIT_LIMIT endpoint=private/advanced/create-order api_env_hint=%s base_host=%s note=140001 on advanced endpoint - conditional-order endpoint/payload issue, not account-disabled",
                                         symbol, ctx["api_env_hint"], ctx["base_url"],
                                     )
                                     try:
@@ -5996,7 +6066,7 @@ class CryptoComTradeClient:
                                         pass
                                     ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
                                     if ok_list and order_id_list:
-                                        logger.info("TAKE_PROFIT_LIMIT placed via create-order-list after 140001 from create-order")
+                                        logger.info("TAKE_PROFIT_LIMIT placed via advanced/create-order retry after 140001")
                                         return {"order_id": order_id_list, "error": None}
                                     fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
                                     return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
@@ -6096,7 +6166,7 @@ class CryptoComTradeClient:
                             error_msg = result.get("message", "API_DISABLED")
                             ctx = _classify_140001_context(self.base_url)
                             logger.warning(
-                                "SLTP_140001 instrument_name=%s order_type=TAKE_PROFIT_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=HTTP 200 with code 140001",
+                                "SLTP_140001 instrument_name=%s order_type=TAKE_PROFIT_LIMIT endpoint=private/advanced/create-order api_env_hint=%s base_host=%s note=HTTP 200 with code 140001 on advanced endpoint",
                                 symbol, ctx["api_env_hint"], ctx["base_url"],
                             )
                             try:
@@ -6105,7 +6175,7 @@ class CryptoComTradeClient:
                                 pass
                             ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
                             if ok_list and order_id_list:
-                                logger.info("TAKE_PROFIT_LIMIT placed via create-order-list after 140001 from create-order (200 body)")
+                                logger.info("TAKE_PROFIT_LIMIT placed via advanced/create-order retry after 140001 (200 body)")
                                 return {"order_id": order_id_list, "error": None}
                             fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
                             return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
