@@ -136,19 +136,65 @@ class TestOrderDedupSlot:
         impl.assert_not_called()
         assert result["error"] == "DUPLICATE_ORDER_SUPPRESSED"
 
-    def test_slot_released_allows_next_order(self):
+    def test_slot_released_on_error_allows_retry(self):
+        # A REAL failure releases the slot so a legitimate retry is not blocked for the whole TTL.
+        svc = SignalMonitorService()
+        calls = {"n": 0}
+
+        async def _impl(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return {"order_id": "ok"}
+
+        with patch.object(svc, "_create_buy_order_impl", side_effect=_impl):
+            with pytest.raises(RuntimeError):
+                asyncio.run(svc._create_buy_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
+            # Slot was released on error -> the retry proceeds immediately (no TTL wait).
+            r2 = asyncio.run(svc._create_buy_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
+
+        assert r2 == {"order_id": "ok"}
+        assert calls["n"] == 2
+
+    def test_sequential_success_holds_slot_until_ttl(self):
+        # This is the REAL race: two orders 2-4s apart. After a SUCCESSFUL order the slot is
+        # intentionally retained (NOT released) so the TTL suppresses the 2nd order. Once the TTL
+        # expires the slot is reclaimed and a later order is allowed again.
         svc = SignalMonitorService()
 
         async def _impl(*a, **k):
             return {"order_id": "ok"}
 
-        with patch.object(svc, "_create_buy_order_impl", side_effect=_impl):
+        with patch.object(svc, "_create_buy_order_impl", side_effect=_impl) as impl:
             r1 = asyncio.run(svc._create_buy_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
-            # Slot released in finally -> a later order proceeds.
+            # 2nd call within the TTL -> suppressed BEFORE impl runs (no 2nd real order).
             r2 = asyncio.run(svc._create_buy_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
+            # Age the retained slot beyond the TTL -> the guard reclaims it and the 3rd proceeds.
+            svc.order_creation_locks["ETH_USDT:BUY"] -= (svc.ORDER_CREATION_LOCK_SECONDS + 1)
+            r3 = asyncio.run(svc._create_buy_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
 
         assert r1 == {"order_id": "ok"}
-        assert r2 == {"order_id": "ok"}
+        assert r2["error"] == "DUPLICATE_ORDER_SUPPRESSED"
+        assert r3 == {"order_id": "ok"}
+        assert impl.call_count == 2  # r1 and r3 ran the impl body; r2 was suppressed before it
+
+    def test_sell_sequential_success_holds_slot_until_ttl(self):
+        # Same retain-until-TTL behavior on the SELL wrapper.
+        svc = SignalMonitorService()
+
+        async def _impl(*a, **k):
+            return {"order_id": "ok"}
+
+        with patch.object(svc, "_create_sell_order_impl", side_effect=_impl) as impl:
+            r1 = asyncio.run(svc._create_sell_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
+            r2 = asyncio.run(svc._create_sell_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
+            svc.order_creation_locks["ETH_USDT:SELL"] -= (svc.ORDER_CREATION_LOCK_SECONDS + 1)
+            r3 = asyncio.run(svc._create_sell_order(_make_db(), _make_watchlist_item(), 2000.0, 0.0, 0.0))
+
+        assert r1 == {"order_id": "ok"}
+        assert r2["error"] == "DUPLICATE_ORDER_SUPPRESSED"
+        assert r3 == {"order_id": "ok"}
+        assert impl.call_count == 2
 
     def test_two_near_simultaneous_orders_only_one_runs(self):
         svc = SignalMonitorService()

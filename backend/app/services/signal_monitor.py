@@ -6762,7 +6762,10 @@ class SignalMonitorService:
         """Dedup wrapper around the BUY order path (PART B: atomic (symbol, side) cap-race guard).
 
         Claims the in-memory slot BEFORE any cap check, rejects a near-simultaneous second
-        order for the same (symbol, side), and always releases the slot on completion/error.
+        order for the same (symbol, side). On SUCCESS the slot is NOT released: it expires by
+        ORDER_CREATION_LOCK_SECONDS (TTL), which is what suppresses a 2nd order 2-4s later
+        (the real race). Only a real failure releases the slot so a legitimate retry is not
+        blocked for the whole TTL.
         """
         symbol = normalize_symbol_for_exchange(str(getattr(watchlist_item, "symbol", "")))
         if not self._try_claim_order_slot(symbol, "BUY"):
@@ -6777,8 +6780,13 @@ class SignalMonitorService:
             }
         try:
             return await self._create_buy_order_impl(db, watchlist_item, current_price, res_up, res_down)
-        finally:
+        except Exception:
+            # Real failure: release the slot so a legitimate retry is not blocked for the whole TTL.
             self._release_order_slot(symbol, "BUY")
+            raise
+        # On SUCCESS: do NOT release — the slot expires by ORDER_CREATION_LOCK_SECONDS (TTL), which
+        # is what suppresses a 2nd order 2-4s later (the real race). The exchange_orders-based
+        # guardrail catches it once exchange_sync records the 1st position.
 
     async def _create_buy_order_impl(self, db: Session, watchlist_item: WatchlistItem,  # pyright: ignore[reportGeneralTypeIssues]
                             current_price: float, res_up: float, res_down: float):
@@ -9005,7 +9013,10 @@ class SignalMonitorService:
         """Dedup wrapper around the SELL order path (PART B: atomic (symbol, side) cap-race guard).
 
         Claims the in-memory slot BEFORE any cap check, rejects a near-simultaneous second
-        order for the same (symbol, side), and always releases the slot on completion/error.
+        order for the same (symbol, side). On SUCCESS the slot is NOT released: it expires by
+        ORDER_CREATION_LOCK_SECONDS (TTL), which is what suppresses a 2nd order 2-4s later
+        (the real race). Only a real failure releases the slot so a legitimate retry is not
+        blocked for the whole TTL.
         """
         symbol = str(getattr(watchlist_item, "symbol", ""))
         if not self._try_claim_order_slot(symbol, "SELL"):
@@ -9020,8 +9031,13 @@ class SignalMonitorService:
             }
         try:
             return await self._create_sell_order_impl(db, watchlist_item, current_price, res_up, res_down)
-        finally:
+        except Exception:
+            # Real failure: release the slot so a legitimate retry is not blocked for the whole TTL.
             self._release_order_slot(symbol, "SELL")
+            raise
+        # On SUCCESS: do NOT release — the slot expires by ORDER_CREATION_LOCK_SECONDS (TTL), which
+        # is what suppresses a 2nd order 2-4s later (the real race). The exchange_orders-based
+        # guardrail catches it once exchange_sync records the 1st position.
 
     async def _create_sell_order_impl(self, db: Session, watchlist_item: WatchlistItem,
                                  current_price: float, res_up: float, res_down: float):
