@@ -8462,6 +8462,8 @@ class SignalMonitorService:
                                 placement_result=result,
                                 estimated_price=executed_avg_price,
                                 source="signal_monitor",
+                                is_margin=use_margin,
+                                leverage=leverage_value if use_margin else None,
                             )
                             filled_quantity = normalized_qty
                         
@@ -8517,11 +8519,15 @@ class SignalMonitorService:
                                     try:
                                         # Use market order for immediate execution
                                         # place_market_order requires qty as float for SELL orders
+                                        # Match the entry's margin mode: a SPOT SELL of a margin
+                                        # long is rejected with 306 INSUFFICIENT_AVAILABLE_BALANCE.
                                         close_qty_float = float(close_qty_str)
                                         close_result = trade_client.place_market_order(
                                             symbol=symbol,
                                             side="SELL",
                                             qty=close_qty_float,
+                                            is_margin=use_margin,
+                                            leverage=leverage_value if use_margin else None,
                                             dry_run=False  # CRITICAL: This is a real close order
                                         )
                                         
@@ -9015,6 +9021,8 @@ class SignalMonitorService:
                         placement_result=result,
                         estimated_price=result.get("avg_price") or current_price,
                         source=source,
+                        is_margin=use_margin,
+                        leverage=leverage_value if use_margin else None,
                     )
                 except Exception as prot_err:
                     logger.error(
@@ -9215,8 +9223,15 @@ class SignalMonitorService:
         placement_result: Dict[str, Any],
         estimated_price: Optional[float] = None,
         source: str = "signal_monitor",
+        is_margin: bool = False,
+        leverage: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Create SL/TP after a confirmed entry fill (BUY long or SELL short)."""
+        """Create SL/TP after a confirmed entry fill (BUY long or SELL short).
+
+        ``is_margin`` / ``leverage`` describe how the entry was opened so that, if
+        protection cannot be created, the emergency flatten closes the position in the
+        SAME margin mode (a margin long flattened as spot is rejected with 306).
+        """
         from decimal import Decimal
         from app.services.exchange_sync import exchange_sync_service
 
@@ -9354,6 +9369,8 @@ class SignalMonitorService:
                 filled_price=float(executed_avg_price),
                 creation_result=creation_result,
                 source=source,
+                is_margin=is_margin,
+                leverage=leverage,
             )
         return creation_result
 
@@ -9396,6 +9413,8 @@ class SignalMonitorService:
         filled_price: float,
         creation_result: Optional[Dict[str, Any]] = None,
         source: str = "signal_monitor",
+        is_margin: bool = False,
+        leverage: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """Immediately flatten a just-opened entry whose SL/TP protection failed.
 
@@ -9403,6 +9422,12 @@ class SignalMonitorService:
         of the filled quantity; a SELL (short) is covered with a market BUY. When the
         failure is a 140001 (conditional orders disabled at the account level) the broker
         circuit breaker is tripped so subsequent entries are pre-blocked up front.
+
+        The close MUST match the entry's margin mode. A margin long lives on the margin
+        wallet, not as spot base balance, so flattening it with a plain SPOT SELL is
+        rejected by Crypto.com with 306 INSUFFICIENT_AVAILABLE_BALANCE (live incident
+        2026-07-04, DOT_USD 10x long) and leaves the position naked. Pass is_margin /
+        leverage through so the flatten reduces the margin position instead.
         """
         entry_side_upper = (entry_side or "").strip().upper()
 
@@ -9456,17 +9481,25 @@ class SignalMonitorService:
         close_result: Optional[Dict[str, Any]] = None
         try:
             if close_side == "SELL":
-                # Close a long: sell the filled base quantity.
+                # Close a long: sell the filled base quantity. Match the entry's margin
+                # mode — a SPOT SELL of a margin long fails with 306
+                # INSUFFICIENT_AVAILABLE_BALANCE (the base is on the margin wallet, not
+                # spot-available), so a margin long MUST be flattened with a margin SELL.
                 close_result = trade_client.place_market_order(
-                    symbol=symbol, side="SELL", qty=float(filled_qty), dry_run=False, source="AUTO",
+                    symbol=symbol, side="SELL", qty=float(filled_qty),
+                    is_margin=is_margin, leverage=leverage,
+                    dry_run=False, source="AUTO",
                 )
             else:
                 # Cover a short: a BUY market order takes notional (quote amount), not qty.
-                # Buy back ~filled_qty of base at the fill price; is_margin so it reduces the
-                # margin short rather than opening a spot long.
+                # Buy back ~filled_qty of base at the fill price; a short can only exist on
+                # margin, so is_margin=True reduces the margin short rather than opening a
+                # spot long.
                 notional = float(filled_qty) * float(filled_price)
                 close_result = trade_client.place_market_order(
-                    symbol=symbol, side="BUY", notional=notional, is_margin=True, dry_run=False, source="AUTO",
+                    symbol=symbol, side="BUY", notional=notional,
+                    is_margin=True, leverage=leverage,
+                    dry_run=False, source="AUTO",
                 )
         except Exception as close_err:
             logger.critical(
@@ -10528,6 +10561,8 @@ class SignalMonitorService:
                                         placement_result=result,
                                         estimated_price=executed_avg_price,
                                         source="signal_monitor",
+                                        is_margin=use_margin,
+                                        leverage=leverage_value if use_margin else None,
                                     )
                                 else:
                                     logger.info(

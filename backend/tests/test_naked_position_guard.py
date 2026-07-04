@@ -108,7 +108,8 @@ class TestProtectionPredicates:
 
 
 class TestFlattenOnProtectionFailure:
-    def _run_protection(self, entry_side, creation_result=None, side_effect=None, order_id="entry-1"):
+    def _run_protection(self, entry_side, creation_result=None, side_effect=None,
+                        order_id="entry-1", is_margin=False, leverage=None):
         svc = SignalMonitorService()
         db = _make_db()
         with patch("app.services.signal_monitor.trade_client") as mock_tc, \
@@ -128,18 +129,38 @@ class TestFlattenOnProtectionFailure:
                 placement_result=_filled_placement(order_id),
                 estimated_price=2000.0,
                 source="orchestrator",
+                is_margin=is_margin,
+                leverage=leverage,
             )
             return mock_tc
 
     def test_long_flattened_with_market_sell_on_140001(self):
+        # Spot long -> spot SELL (no margin flags forced on).
         mock_tc = self._run_protection("BUY", creation_result=_sltp_140001())
         mock_tc.place_market_order.assert_called_once()
         kwargs = mock_tc.place_market_order.call_args.kwargs
         assert kwargs["side"] == "SELL"
         assert kwargs["dry_run"] is False
         assert float(kwargs["qty"]) == pytest.approx(0.05)
+        assert kwargs["is_margin"] is False
         # 140001 -> breaker tripped so future entries are pre-blocked.
         mock_tc._mark_conditional_orders_unavailable.assert_called_once()
+
+    def test_margin_long_flattened_with_margin_sell(self):
+        # Regression for the 2026-07-04 DOT_USD incident: a 10x margin long could NOT be
+        # flattened because the emergency close was a plain SPOT SELL, which the exchange
+        # rejected with 306 INSUFFICIENT_AVAILABLE_BALANCE (the base is on the margin
+        # wallet, not spot-available). The close MUST inherit is_margin / leverage.
+        mock_tc = self._run_protection(
+            "BUY", creation_result=_sltp_140001(), is_margin=True, leverage=10,
+        )
+        mock_tc.place_market_order.assert_called_once()
+        kwargs = mock_tc.place_market_order.call_args.kwargs
+        assert kwargs["side"] == "SELL"
+        assert kwargs["is_margin"] is True
+        assert kwargs["leverage"] == 10
+        assert float(kwargs["qty"]) == pytest.approx(0.05)
+        assert kwargs["dry_run"] is False
 
     def test_short_covered_with_market_buy_on_140001(self):
         mock_tc = self._run_protection("SELL", creation_result=_sltp_140001())
