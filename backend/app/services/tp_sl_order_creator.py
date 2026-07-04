@@ -172,6 +172,8 @@ def create_take_profit_order(
                 ignore_trade_yes=True,  # SL/TP is for existing positions
                 ignore_daily_limit=True,  # Do not block protective orders by daily limit
                 ignore_usd_limit=True,  # Do not block protective orders by USD limit
+                ignore_cooldown=True,  # Protective orders must never be throttled by the entry cooldown
+                parent_order_id=parent_order_id,
             )
             if not allowed:
                 # Emit lifecycle event and send Telegram notification
@@ -401,6 +403,8 @@ def create_stop_loss_order(
                 ignore_trade_yes=True,  # SL/TP is for existing positions
                 ignore_daily_limit=True,  # Do not block protective orders by daily limit
                 ignore_usd_limit=True,  # Do not block protective orders by USD limit
+                ignore_cooldown=True,  # Protective orders must never be throttled by the entry cooldown
+                parent_order_id=parent_order_id,
             )
             if not allowed:
                 # Emit lifecycle event and send Telegram notification
