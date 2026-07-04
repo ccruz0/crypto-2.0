@@ -7,13 +7,21 @@ This document explains how Take Profit (TP) and Stop Loss (SL) orders are create
 - **TAKE_PROFIT_LIMIT**: Used for take-profit. Trigger and execution price are the same (TP price). Trigger condition: market price >= TP price (for SELL to close long).
 - **STOP_LIMIT**: Used for stop-loss. Trigger and execution price are the same (SL price). Trigger condition: market price <= SL price (for SELL to close long).
 
-Both use the `private/create-order` endpoint with `type` set to the order type. The exchange may also support batch/trigger endpoints; the code tries multiple parameter variants when formatting fails.
+**Endpoint (updated 2026-07-03):** conditional/trigger orders are created via the **Advanced Order
+Management API** — `private/advanced/create-order` — **not** `private/create-order`. As of
+**2026-02-20**, Crypto.com removed `STOP_LOSS`, `STOP_LIMIT`, `TAKE_PROFIT`, and `TAKE_PROFIT_LIMIT`
+from the `type` field of `private/create-order`; posting them there now fails with **HTTP 500 code
+140001**. Regular `MARKET` / `LIMIT` orders still use `private/create-order`. The advanced payload
+additionally requires **`ref_price_type`** (default `MARK_PRICE`; allowed: `MARK_PRICE` / `LAST_PRICE`
+/ `INDEX_PRICE`). Cancels, and detail/open-order lookups for these conditional orders, use the
+matching advanced endpoints (`private/advanced/cancel-order`, etc.).
 
 ## Required fields and formats
 
 - **instrument_name** / **symbol**: e.g. `ETH_USDT`.
 - **side**: `BUY` or `SELL` (closing side: SELL for long, BUY for short).
-- **type**: `TAKE_PROFIT_LIMIT` or `STOP_LIMIT`.
+- **type**: `TAKE_PROFIT_LIMIT` or `STOP_LIMIT` (routed to `private/advanced/create-order`).
+- **ref_price_type**: Required by the advanced endpoint. Default `MARK_PRICE` (allowed: `MARK_PRICE` / `LAST_PRICE` / `INDEX_PRICE`).
 - **quantity**: String, decimal format. Must be quantized to the instrument’s **qty_tick_size** (step). Use **ROUND_DOWN** for quantity. No scientific notation, no commas.
 - **price**: String, decimal format. Must be quantized to **price_tick_size** (tick). TAKE_PROFIT uses **ROUND_UP**; STOP_LOSS uses **ROUND_DOWN**. No scientific notation, no commas.
 - **trigger_price**: String, same rules as price. For TAKE_PROFIT_LIMIT and STOP_LIMIT, trigger_price typically equals price.
@@ -49,11 +57,24 @@ The formatting layer is in `backend/app/core/exchange_formatting_week6.py` (e.g.
 - **How we prevent it**: Quantize all prices to the instrument’s **price_tick_size**; format as plain decimal strings (no scientific notation, no commas). We try several decimal-format variants and trigger_condition variants. On 308 we log `decision=FAILED reason_code=INVALID_PRICE_FORMAT` with pre-quantized and quantized values (no secrets).
 - **Where to change formatting**: `backend/app/core/exchange_formatting_week6.py` (quantize/format helpers); `backend/app/services/brokers/crypto_com_trade.py` (`normalize_price`, `normalize_quantity`, and the 308 handling in `place_stop_loss_order` / `place_take_profit_order`).
 
-### Error 140001: API_DISABLED
+### Error 140001: conditional-order endpoint migration (NOT account-disabled)
 
-- **Meaning**: Conditional/trigger orders are disabled for this account or API key (e.g. endpoint permissions, IP allowlist, or account setting).
-- **Behaviour**: We do not retry the same request (140001 is non-retryable). We log `decision=BLOCKED reason_code=EXCHANGE_API_DISABLED` and include a short operator checklist. A rate-limited Telegram alert is sent (once per 24h). Retry/circuit logic treats 140001 as non-retryable.
-- **Operator steps**: Enable API trading / conditional orders for the account; check IP allowlist and sub-account permissions. See the log field `operator_action` and the in-app alert text. No amount of code change will fix 140001 without the account/API being enabled for conditional orders.
+- **Root cause (confirmed 2026-07-03, verified live against the exchange)**: On **2026-02-20**
+  Crypto.com **removed** `STOP_LOSS` / `STOP_LIMIT` / `TAKE_PROFIT` / `TAKE_PROFIT_LIMIT` from the
+  `type` field of `private/create-order`. Posting a conditional order to `private/create-order` now
+  returns **HTTP 500 code 140001**. This is **not** an account/API-key permission problem: the same
+  account and key create these orders successfully on `private/advanced/create-order` (verified with
+  tiny live test orders that were created `code=0` and then cancelled cleanly via
+  `private/advanced/cancel-order`). Regular `MARKET` / `LIMIT` orders on `private/create-order` are
+  unaffected.
+- **Fix**: Conditional order creation is routed to `private/advanced/create-order` with
+  `ref_price_type` (default `MARK_PRICE`). Cancels for these orders use `private/advanced/cancel-order`.
+  See `place_stop_loss_order` / `place_take_profit_order` / `cancel_order` in
+  `backend/app/services/brokers/crypto_com_trade.py`.
+- **If 140001 still occurs on the advanced endpoint**: treat it as an endpoint/payload issue to
+  investigate (e.g. a required advanced field or a value format), **not** an account-disabled state.
+  A rate-limited Telegram alert (once per 24h) reflects this. The conditional-order circuit breaker no
+  longer trips the entry path once creation uses the advanced endpoint.
 
 ## Where in code to change formatting rules
 
