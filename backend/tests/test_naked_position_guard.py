@@ -173,6 +173,24 @@ class TestFlattenOnProtectionFailure:
         assert float(kwargs["notional"]) == pytest.approx(100.0)
         mock_tc._mark_conditional_orders_unavailable.assert_called_once()
 
+    def test_margin_short_covered_with_margin_buy_carries_leverage(self):
+        # Regression companion to test_margin_long_flattened_with_margin_sell: a margin
+        # SHORT must be covered with a margin BUY that carries the entry leverage. A margin
+        # order that drops its leverage can be rejected by the broker, leaving the short
+        # naked (2026-07-04 DOT_USD residual short: the SELL entry filled but no covering
+        # BUY was ever placed). Assert leverage is threaded through to the cover order.
+        mock_tc = self._run_protection(
+            "SELL", creation_result=_sltp_140001(), is_margin=True, leverage=10,
+        )
+        mock_tc.place_market_order.assert_called_once()
+        kwargs = mock_tc.place_market_order.call_args.kwargs
+        assert kwargs["side"] == "BUY"
+        assert kwargs["is_margin"] is True
+        assert kwargs["leverage"] == 10
+        # BUY market takes notional (quote) ~= qty * price = 0.05 * 2000 = 100.
+        assert float(kwargs["notional"]) == pytest.approx(100.0)
+        assert kwargs["dry_run"] is False
+
     def test_no_flatten_when_stop_loss_created(self):
         mock_tc = self._run_protection("BUY", creation_result=_sltp_ok())
         mock_tc.place_market_order.assert_not_called()
