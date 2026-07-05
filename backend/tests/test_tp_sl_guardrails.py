@@ -428,3 +428,105 @@ class TestProtectiveOrderCooldownBypass:
         mock_place_order.assert_called_once()
         mock_emit_event.assert_not_called()
 
+
+class TestProtectiveOrderLiveToggleBypass:
+    """Regression tests for the 2026-07-04 naked-position incident (LIVE_TRADING cause).
+
+    Real prod telegram evidence: a filled entry's protective SL/TP were BOTH blocked with
+    "blocked: Live toggle is OFF" (LIVE_TRADING step 1), and the emergency flatten too,
+    leaving DOT_USD/ETH short positions naked. Turning the live toggle OFF must NEVER strip
+    protection from an already-open position. NEW entries remain blocked when LIVE is OFF.
+    """
+
+    def test_can_place_blocks_entry_but_allows_protective_when_live_off(self):
+        """Unit: with LIVE_TRADING OFF, a normal entry is blocked while a protective
+        order (is_protective_order=True) is allowed through step 1."""
+        from app.utils.trading_guardrails import can_place_real_order
+        db = MagicMock()
+        with patch('app.utils.trading_guardrails.get_live_trading_status', return_value=False):
+            entry_allowed, entry_reason = can_place_real_order(
+                db=db, symbol="DOT_USD", order_usd_value=10.0, side="BUY",
+            )
+            prot_allowed, _ = can_place_real_order(
+                db=db, symbol="DOT_USD", order_usd_value=10.0, side="SELL",
+                ignore_trade_yes=True, ignore_daily_limit=True, ignore_usd_limit=True,
+                ignore_cooldown=True, is_protective_order=True,
+            )
+        # NEW entry stays fail-closed-blocked.
+        assert entry_allowed is False
+        assert entry_reason == "blocked: Live toggle is OFF"
+        # Protective SL/TP passes step 1 despite LIVE being OFF.
+        assert prot_allowed is True
+
+    @patch('app.services.tp_sl_order_creator.can_place_real_order')
+    def test_sl_forwards_is_protective_order(self, mock_can_place, mock_db):
+        """SL guardrail call must pass is_protective_order=True."""
+        mock_can_place.return_value = (True, None)
+        create_stop_loss_order(
+            db=mock_db, symbol="DOT_USD", side="BUY", sl_price=9.5, quantity=1.0,
+            entry_price=10.0, parent_order_id="entry_abc123", dry_run=False,
+        )
+        mock_can_place.assert_called_once()
+        assert mock_can_place.call_args[1]["is_protective_order"] is True
+
+    @patch('app.services.tp_sl_order_creator.can_place_real_order')
+    def test_tp_forwards_is_protective_order(self, mock_can_place, mock_db):
+        """TP guardrail call must pass is_protective_order=True."""
+        mock_can_place.return_value = (True, None)
+        create_take_profit_order(
+            db=mock_db, symbol="DOT_USD", side="BUY", tp_price=11.0, quantity=1.0,
+            entry_price=10.0, parent_order_id="entry_abc123", dry_run=False,
+        )
+        mock_can_place.assert_called_once()
+        assert mock_can_place.call_args[1]["is_protective_order"] is True
+
+    @patch('app.services.tp_sl_order_creator.telegram_notifier')
+    @patch('app.services.signal_monitor._emit_lifecycle_event')
+    @patch.object(trade_client, '_get_instrument_metadata', return_value=None)
+    @patch.object(trade_client, 'place_stop_loss_order')
+    def test_sl_allowed_when_live_trading_off(
+        self, mock_place_order, _mock_meta, mock_emit_event, mock_telegram, mock_db
+    ):
+        """End-to-end with the REAL guardrail: a protective SL is placed even when the
+        LIVE_TRADING toggle is OFF (the exact naked-position cause)."""
+        mock_place_order.return_value = {"order_id": "sl_protected"}
+
+        with patch('app.utils.trading_guardrails.get_live_trading_status', return_value=False), \
+             patch('app.utils.trading_guardrails._get_telegram_kill_switch_status', return_value=False), \
+             patch('app.utils.trading_guardrails.count_total_open_positions', return_value=0), \
+             patch('app.utils.trading_guardrails._parse_allowlist', return_value=set()):
+            result = create_stop_loss_order(
+                db=mock_db, symbol="DOT_USD", side="BUY", sl_price=9.5, quantity=1.0,
+                entry_price=10.0, parent_order_id="entry_abc123", dry_run=False,
+            )
+
+        assert result["order_id"] == "sl_protected"
+        assert result.get("error") is None
+        mock_place_order.assert_called_once()
+        mock_emit_event.assert_not_called()
+
+    @patch('app.services.tp_sl_order_creator.telegram_notifier')
+    @patch('app.services.signal_monitor._emit_lifecycle_event')
+    @patch.object(trade_client, '_get_instrument_metadata', return_value=None)
+    @patch.object(trade_client, 'place_take_profit_order')
+    def test_tp_allowed_when_live_trading_off(
+        self, mock_place_order, _mock_meta, mock_emit_event, mock_telegram, mock_db
+    ):
+        """End-to-end: a protective TP is placed even when LIVE_TRADING is OFF."""
+        mock_place_order.return_value = {"order_id": "tp_protected"}
+
+        with patch('app.utils.trading_guardrails.get_live_trading_status', return_value=False), \
+             patch('app.utils.trading_guardrails._get_telegram_kill_switch_status', return_value=False), \
+             patch('app.utils.trading_guardrails.count_total_open_positions', return_value=0), \
+             patch('app.utils.trading_guardrails._parse_allowlist', return_value=set()):
+            result = create_take_profit_order(
+                db=mock_db, symbol="DOT_USD", side="BUY", tp_price=11.0, quantity=1.0,
+                entry_price=10.0, parent_order_id="entry_abc123", dry_run=False,
+                source="manual",
+            )
+
+        assert result["order_id"] == "tp_protected"
+        assert result.get("error") is None
+        mock_place_order.assert_called_once()
+        mock_emit_event.assert_not_called()
+

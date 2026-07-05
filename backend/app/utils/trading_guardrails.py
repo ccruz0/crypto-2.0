@@ -129,12 +129,14 @@ def can_place_real_order(
     ignore_usd_limit: bool = False,
     ignore_cooldown: bool = False,
     parent_order_id: Optional[str] = None,
+    is_protective_order: bool = False,
 ) -> Tuple[bool, Optional[str]]:
     """
     Check if a real order can be placed based on true sources of truth.
     
     Checks in order:
-    1. Live toggle must be ON (TradingSettings.LIVE_TRADING)
+    1. Live toggle must be ON (TradingSettings.LIVE_TRADING) - skipped for protective
+       SL/TP orders (is_protective_order=True)
     2. Telegram kill switch must be OFF (TradingSettings.TRADING_KILL_SWITCH)
     3. Trade Yes for symbol must be YES (WatchlistItem.trade_enabled) - skipped if ignore_trade_yes=True
     4. TRADING_ENABLED env (optional final override - if false, always block)
@@ -151,7 +153,12 @@ def can_place_real_order(
         ignore_usd_limit: If True, skip MAX_USD_PER_ORDER check (protective SL/TP orders)
         ignore_cooldown: If True, skip MIN_SECONDS_BETWEEN_ORDERS check (protective SL/TP orders)
         parent_order_id: Optional parent order id for logs (SL/TP tracing)
-        
+        is_protective_order: If True, this is a protective Stop-Loss / Take-Profit order
+            for an EXISTING position. The LIVE_TRADING toggle (step 1) does NOT block such
+            orders, so turning trading OFF never strips protection from open positions
+            (naked-position incident, DOT_USD/ETH 2026-07-04). NEW entry orders are
+            unaffected and still fail-closed-blocked when the toggle is OFF.
+
     Returns:
         Tuple[allowed, block_reason]
         - allowed: True if order should be placed, False if blocked
@@ -159,18 +166,28 @@ def can_place_real_order(
     """
     symbol_upper = symbol.upper()
     
-    # 1. Live toggle must be ON
-    try:
-        live_enabled = get_live_trading_status(db)
-        if not live_enabled:
-            reason = "blocked: Live toggle is OFF"
-            logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+    # 1. Live toggle must be ON (NEW entry orders only).
+    # Protective SL/TP orders for EXISTING positions are exempt: turning the live toggle
+    # OFF must never strip protection from already-open positions. A real incident
+    # (DOT_USD/ETH 2026-07-04) left naked positions because the just-opened entry's SL/TP
+    # were blocked here with "Live toggle is OFF" and the emergency flatten too. New
+    # entries are unaffected — they are still fail-closed-blocked when the toggle is OFF.
+    if is_protective_order:
+        logger.info(
+            f"[GUARDRAIL] live-toggle check bypassed for protective SL/TP order symbol={symbol} side={side}"
+        )
+    else:
+        try:
+            live_enabled = get_live_trading_status(db)
+            if not live_enabled:
+                reason = "blocked: Live toggle is OFF"
+                logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+                return False, reason
+        except Exception as e:
+            logger.error(f"Error checking Live toggle: {e}")
+            # Conservative: block on error
+            reason = "blocked: error checking Live toggle"
             return False, reason
-    except Exception as e:
-        logger.error(f"Error checking Live toggle: {e}")
-        # Conservative: block on error
-        reason = "blocked: error checking Live toggle"
-        return False, reason
     
     # 2. Telegram kill switch must be OFF
     try:

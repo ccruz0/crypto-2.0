@@ -173,6 +173,7 @@ def create_take_profit_order(
                 ignore_daily_limit=True,  # Do not block protective orders by daily limit
                 ignore_usd_limit=True,  # Do not block protective orders by USD limit
                 ignore_cooldown=True,  # Protective orders must never be throttled by the entry cooldown
+                is_protective_order=True,  # Exempt from LIVE_TRADING toggle: never strip protection from an open position
                 parent_order_id=parent_order_id,
             )
             if not allowed:
@@ -404,6 +405,7 @@ def create_stop_loss_order(
                 ignore_daily_limit=True,  # Do not block protective orders by daily limit
                 ignore_usd_limit=True,  # Do not block protective orders by USD limit
                 ignore_cooldown=True,  # Protective orders must never be throttled by the entry cooldown
+                is_protective_order=True,  # Exempt from LIVE_TRADING toggle: never strip protection from an open position
                 parent_order_id=parent_order_id,
             )
             if not allowed:
