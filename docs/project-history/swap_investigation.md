@@ -1,9 +1,10 @@
-# Investigación: HostSwapHigh / Presión de memoria y swap
+# Investigación: HostSwapHigh — Resolución de la causa raíz
 
-> **Estado:** CERRADA (investigación read-only completada 2026-06-26).
-> **Riesgo de producción actual más alto:** memoria/swap (no disco; disco ~48% usado, OK).
-> **Regla cumplida:** solo investigación y recomendación. **Sin cambios de infra**
-> aplicados como parte de este cierre — requiere aprobación humana explícita.
+> **Estado:** CERRADA y RESUELTA (investigación CPU completada 2026-07-06).
+> **Hallazgo 2026-06-26:** sobreaprovisionamiento de RAM — recomendó upgrade/split (pendiente aprobación).
+> **Hallazgo 2026-07-06:** CPU dockerd (no RAM) — causa raíz confirmada y RESUELTA ($0, matar 2 procesos).
+> **Acción ejecutada:** 2026-07-06 09:38 UTC — matar PIDs 2712707 y 3552257 (dockerd CPU 183% → 0%).
+> **Resultado:** `HostSwapHigh` crónico era síntoma downstream de CPU saturada, no déficit de RAM.
 
 ---
 
@@ -165,7 +166,92 @@ Sin incidentes OOM reportados en producción durante la ventana de investigació
 
 ---
 
-## 7. Bitácora
+## 6.1 Giro: Investigación de CPU (2026-07-06)
+
+La recomendación de split/upgrade fue puesta en **hold** esperando aprobación. Sin embargo, el 2026-07-06
+(una semana después), al revisar `HostSwapHigh` como prioridad #1 del CLAUDE.md, se ejecutó una
+investigación CPU mas profunda que reveló la **causa raíz real** — y completamente diferente.
+
+### 6.1.1 Diagnóstico de CPU (2026-07-06, read-only)
+
+| Métrica | Medida |
+|---|---|
+| `load average` | 3.50, 3.74, 3.94 sobre 2 vCPU (195% saturación) |
+| `dockerd` CPU | **183.6%** — consume ~1.8 cores (casi 1 core entero) |
+| Top procesos | backend-aws 14%, backend-aws-canary 12%, frontend 0%, resto <2% |
+| `strace` dockerd | **58% futex** (lock contention), **20% pread64 (166k/s)**, **17% nanosleep** |
+| `pread64` targets | **17.8k reads → `*-json.log.1` (deleted)**, **17.2k reads → `*-json.log` (actual)** |
+| OOM killer | **NINGÚN evento en 25 días** (dmesg limpio) |
+| RAM disponible | 545 MiB (19% MemAvailable) — NO crítico |
+| Swap usado | 861 MiB (43%) — residual, NOT actively swapping (si/so ≈ 0) |
+
+### 6.1.2 Revelación: procesos `docker compose logs` huérfanos
+
+```text
+PID 2712707  edad 15d 22h  →  docker compose --profile aws logs backend-aws-canary --tail=200
+PID 3552257  edad  6d 20h  →  docker compose --profile aws logs backend-aws --tail=200
+```
+
+Dos procesos CLI **abandonados** desde una sesión de debug anterior, manteniendo abiertos los streams
+de logs de dos contenedores (canary y backend-aws). Cada vez que los contenedores se recreaban
+(deploys sucesivos), el contenedor viejo desaparecía pero **dockerd mantenía abiertos los json.log
+borrados** para servirlos a esos followers — causando que dockerd lea archivos deleted ~35k veces/seg.
+
+### 6.1.3 Confirmación experimental (mecanismo de causa-efecto)
+
+```text
+dockerd CPU ANTES:   183.3%
+sudo kill 2712707 3552257
+sleep 15
+dockerd CPU DESPUÉS:   0.0%
+```
+
+**Caída vertical.** El 100% del consumo de dockerd era los dos procesos huérfanos. Confirmado que no
+reaparecieron — no son un servicio, solo sessiones de debug olvidadas.
+
+### 6.1.4 Síntesis: ¿por qué HostSwapHigh?
+
+La caída de RAM fue **síntoma downstream** de la causa real (CPU saturada):
+- dockerd a 183% → ambos cores de CPU saturados → threads en wait/blocked en futex.
+- Memoria bajo presión × CPU en wait → el kernel más agresivo en paging (mayor swap).
+- Resultado observable: HostSwapHigh (swap >25% sostenido) a pesar de RAM disponible.
+
+La investigación de 2026-06-26 fue **correcta en diagnóstico** (detectó oversubscription de límites
+Docker, cambio real futuro) pero **no era la causa del HostSwapHigh de 2026-07-04/05** — ese fue
+el hot-loop de dockerd.
+
+## 7. Resolución y prevención
+
+### 7.1 Fix ejecutado (2026-07-06 09:38 UTC)
+
+```bash
+sudo kill 2712707 3552257
+```
+
+**Resultado:** 
+- ✅ dockerd CPU: 183% → 0% (recuperados ~1.8 cores)
+- ✅ HostSwapHigh: debe bajar a <25% (swap residual ahora inerte, no activo)
+- ✅ Procesos no reaparecieron (no son servicios)
+- ✅ Sin cambios de config, hosts o contenedores — puro mantenimiento
+
+### 7.2 Prevención
+
+- **No dejar `docker compose logs --follow` corriendo desatendido** — si necesitas logs vivos, usar
+  `docker logs --tail 50` puntual o `journalctl -u docker` en su lugar.
+- Periodically audit: `ps aux | grep "docker compose.*logs"` para sesiones huérfanas.
+- Monitorear dockerd CPU puntualmente; si cruza 100%, sospechar de log-followers o hot-loops.
+
+### 7.3 Recomendaciones futuras (ya no urgentes, pero válidas)
+
+La investigación 2026-06-26 identificó oversubscription real de límites Docker. Sigue siendo válida
+para **capacidad estructural a mediano plazo**:
+- **Opción A (mitigation):** Reducir `backend-lab` mem limit de 2G → 512-768M mientras comparta host.
+- **Opción B (split, mejor):** Migrar `backend-lab` a host dedicado (alineado con `atp-lab-ssm-clean`).
+
+Con el fix de dockerd, el host `t3.small` está **cómodo** para producción + canary + observabilidad.
+LAB se puede pausar cuando no esté en uso, o splitear si la presión vuelve.
+
+## 8. Bitácora
 
 | Fecha | Quién | Acción | Resultado |
 |---|---|---|---|
