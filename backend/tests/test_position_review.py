@@ -91,6 +91,18 @@ def test_enumerate_filters_fiat_and_dust(db):
     assert sorted(p["key"] for p in positions) == ["BTC_USD:LONG", "DOT_USD:SHORT"]
 
 
+def test_enumerate_excludes_all_stablecoins_and_fiat(db):
+    # No stablecoin or fiat balance (positive or negative) should ever be a "position".
+    accounts = [{"currency": c, "quantity": "-1000", "market_value": "-1000"}
+                for c in ("USDT", "USDC", "DAI", "FDUSD", "PYUSD", "TUSD", "EUR", "EURT", "GBP")]
+    accounts.append({"currency": "BTC", "quantity": "1.0", "market_value": "60000"})
+    with patch("app.services.brokers.crypto_com_trade.trade_client") as tc, \
+         patch.object(prs, "_resolve_symbol", side_effect=lambda db, c: f"{c}_USD"):
+        tc.get_account_summary.return_value = {"accounts": accounts}
+        positions = prs.enumerate_open_positions(db)
+    assert [p["key"] for p in positions] == ["BTC_USD:LONG"]  # only the crypto
+
+
 # --- callback parsing / routing --------------------------------------------
 def test_confirm_key_parse_roundtrip():
     cd = f"{prs.PREFIX_CONFIRM}DOT_USD:SHORT"

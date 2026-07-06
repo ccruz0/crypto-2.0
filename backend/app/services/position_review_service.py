@@ -26,7 +26,23 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 # --- Config -----------------------------------------------------------------
-FIAT_CURRENCIES = {"USD", "USDT", "USDC", "EUR", "DAI", "TUSD"}
+# Fiat + stablecoins are cash/debt, never "positions" to prompt about. Extra entries can be
+# added via env POSITION_REVIEW_EXTRA_STABLES (comma-separated).
+_STABLE_AND_FIAT = {
+    # USD stablecoins
+    "USDT", "USDC", "DAI", "TUSD", "BUSD", "FDUSD", "PYUSD", "USDP", "GUSD", "USDD",
+    "LUSD", "SUSD", "USDE", "FRAX", "USTC", "PAX", "USDG",
+    # EUR stablecoins
+    "EURT", "EURS", "EURC", "AGEUR",
+    # Fiat
+    "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "SGD", "BRL", "KRW", "TRY",
+}
+_EXTRA_STABLES = {
+    c.strip().upper()
+    for c in os.getenv("POSITION_REVIEW_EXTRA_STABLES", "").split(",")
+    if c.strip()
+}
+FIAT_CURRENCIES = _STABLE_AND_FIAT | _EXTRA_STABLES
 DUST_USD = float(os.getenv("POSITION_REVIEW_DUST_USD", "1.0"))
 SNOOZE_DAYS = int(os.getenv("POSITION_REVIEW_SNOOZE_DAYS", "30"))
 REVIEW_HOUR_UTC = int(os.getenv("POSITION_REVIEW_HOUR_UTC", "9"))  # daily send hour (UTC)
