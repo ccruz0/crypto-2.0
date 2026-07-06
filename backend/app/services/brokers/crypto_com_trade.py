@@ -3884,6 +3884,19 @@ class CryptoComTradeClient:
             assert qty is not None
             raw_quantity = float(qty)
             normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
+
+            # Emergency fallback for forced-close / protection paths when metadata missing
+            if normalized_qty_str is None:
+                normalized_qty_str, norm_diag = self.normalize_quantity_safe_with_fallback(
+                    symbol=symbol,
+                    raw_quantity=raw_quantity,
+                    for_sl_tp=True,
+                )
+                if normalized_qty_str:
+                    logger.warning(
+                        f"⚠️ [ORDER_PLACEMENT] Market SELL using safe normalization fallback: "
+                        f"reason={norm_diag.get('final_reason')}, qty={normalized_qty_str}"
+                    )
             
             # Check if normalized quantity is valid
             if normalized_qty_str is None:
@@ -6200,11 +6213,121 @@ class CryptoComTradeClient:
         logger.error(f"❌ All TAKE_PROFIT_LIMIT price/trigger format variations failed. Last error: {last_error}")
         return {"error": f"All format variations failed. Last error: {last_error}"}
     
+    @staticmethod
+    def _instrument_symbol_candidates(symbol: str) -> List[str]:
+        """Return symbol variants to try when resolving instrument metadata."""
+        base = (symbol or "").strip().upper()
+        candidates = [
+            base,
+            base.replace("-", "_"),
+            base.replace("_", "-"),
+        ]
+        if base.endswith("_USD"):
+            candidates.append(base[:-4] + "_USDT")
+        if base.endswith("_USDT"):
+            candidates.append(base[:-5] + "_USD")
+
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for cand in candidates:
+            cand_clean = (cand or "").strip().upper()
+            if not cand_clean or cand_clean in seen:
+                continue
+            seen.add(cand_clean)
+            uniq.append(cand_clean)
+        return uniq
+
+    @staticmethod
+    def _parse_instrument_entry(inst: dict, symbol_upper: str) -> Optional[dict]:
+        """Parse a single instrument entry from the exchange API into metadata dict."""
+        inst_name = inst.get("symbol", "") or inst.get("instrument_name", "")
+        if inst_name.upper() != symbol_upper:
+            return None
+
+        qty_tick_size_raw = inst.get("qty_tick_size")
+        min_quantity_raw = inst.get("min_quantity")
+        price_tick_size_raw = inst.get("price_tick_size")
+
+        if not qty_tick_size_raw or qty_tick_size_raw == "":
+            logger.error(f"❌ Missing qty_tick_size for {symbol_upper} in instrument data")
+            return None
+
+        min_qty_fallback = min_quantity_raw
+        try:
+            if min_qty_fallback is None or str(min_qty_fallback).strip() == "":
+                min_qty_fallback = qty_tick_size_raw or "0"
+        except Exception:
+            min_qty_fallback = qty_tick_size_raw or "0"
+
+        metadata = {
+            "quantity_decimals": inst.get("quantity_decimals", 2),
+            "qty_tick_size": str(qty_tick_size_raw),
+            "min_quantity": str(min_qty_fallback),
+            "price_decimals": inst.get("price_decimals", 2),
+            "price_tick_size": str(price_tick_size_raw) if price_tick_size_raw is not None else "0.0001",
+        }
+
+        logger.info(f"✅ [INSTRUMENT_METADATA] Fetched for {symbol_upper}:")
+        logger.info(f"   Full raw API entry: {json.dumps(inst, indent=2)}")
+        logger.info(
+            f"   Parsed metadata: qty_tick_size='{metadata['qty_tick_size']}' (type: str), "
+            f"quantity_decimals={metadata['quantity_decimals']}, min_quantity='{metadata['min_quantity']}'"
+        )
+        return metadata
+
+    @staticmethod
+    def _infer_sl_tp_quantity_metadata(raw_quantity: float) -> dict:
+        """
+        Infer quantity step/min when exchange metadata is unavailable.
+        Used only as an emergency fallback for SL/TP and forced-close paths.
+        """
+        import math
+
+        if raw_quantity <= 0:
+            return {
+                "quantity_decimals": 2,
+                "qty_tick_size": "0.01",
+                "min_quantity": "0.01",
+                "inferred": True,
+            }
+
+        rounded = round(raw_quantity)
+        if abs(raw_quantity - rounded) < 1e-6 and rounded >= 1:
+            return {
+                "quantity_decimals": 0,
+                "qty_tick_size": "1",
+                "min_quantity": "1",
+                "inferred": True,
+            }
+
+        # 0.01% of quantity, snapped to a power-of-ten step
+        step_val = max(raw_quantity * 0.0001, 1e-8)
+        if step_val >= 1:
+            decimals = 0
+            step_val = 1.0
+        else:
+            exp = int(math.floor(math.log10(step_val)))
+            step_val = 10.0 ** exp
+            decimals = max(0, -exp)
+
+        if decimals > 8:
+            decimals = 8
+            step_val = 10 ** (-decimals)
+
+        step_str = format(step_val, f".{decimals}f") if decimals > 0 else "1"
+        return {
+            "quantity_decimals": decimals,
+            "qty_tick_size": step_str,
+            "min_quantity": step_str,
+            "inferred": True,
+        }
+
     def _get_instrument_metadata(self, symbol: str) -> Optional[dict]:
         """
         Get instrument metadata for a symbol from Crypto.com Exchange API.
         Caches results in-memory for the run to avoid repeated API calls.
-        
+        Tries USD/USDT and underscore/dash symbol variants before giving up.
+
         Returns dict with keys:
         - quantity_decimals: int
         - qty_tick_size: str (e.g., "0.1")
@@ -6214,65 +6337,44 @@ class CryptoComTradeClient:
         Returns None if instrument not found or API call fails.
         """
         symbol_upper = symbol.upper()
-        
-        # Check cache first
-        if symbol_upper in self._instrument_cache:
-            return self._instrument_cache[symbol_upper]
-        
+        candidates = self._instrument_symbol_candidates(symbol_upper)
+
+        for cand in candidates:
+            cached = self._instrument_cache.get(cand)
+            if cached is not None:
+                if cand != symbol_upper:
+                    self._instrument_cache[symbol_upper] = cached
+                return cached
+
         try:
             public_url = f"{REST_BASE}/public/get-instruments"
             response = http_get(public_url, timeout=10, calling_module="crypto_com_trade._get_instrument_metadata")
             response.raise_for_status()
             result = response.json()
-            
-            if "result" in result:
-                # Crypto.com API v1 uses "data" field (not "instruments")
-                instruments = result["result"].get("data", result["result"].get("instruments", []))
-                for inst in instruments:
-                    # Crypto.com API uses "symbol" field
-                    inst_name = inst.get("symbol", "") or inst.get("instrument_name", "")
-                    if inst_name.upper() == symbol_upper:
-                        # Extract and preserve as strings (NO float conversion - per Rule 1)
-                        qty_tick_size_raw = inst.get("qty_tick_size")
-                        min_quantity_raw = inst.get("min_quantity")
-                        price_tick_size_raw = inst.get("price_tick_size")
-                        
-                        # VALIDATION: Ensure qty_tick_size exists and is valid
-                        if not qty_tick_size_raw or qty_tick_size_raw == "":
-                            logger.error(f"❌ Missing qty_tick_size for {symbol_upper} in instrument data")
-                            self._instrument_cache[symbol_upper] = None
-                            return None
-                        
-                        # If min_quantity is missing from the exchange instrument metadata,
-                        # do NOT default to "0.001" (too large for BTC-like instruments).
-                        # Instead, use qty_tick_size as a conservative minimum.
-                        min_qty_fallback = min_quantity_raw
-                        try:
-                            if min_qty_fallback is None or str(min_qty_fallback).strip() == "":
-                                min_qty_fallback = qty_tick_size_raw or "0"
-                        except Exception:
-                            min_qty_fallback = qty_tick_size_raw or "0"
 
-                        metadata = {
-                            "quantity_decimals": inst.get("quantity_decimals", 2),
-                            "qty_tick_size": str(qty_tick_size_raw),  # Keep as string (no float conversion)
-                            "min_quantity": str(min_qty_fallback),  # Keep as string
-                            "price_decimals": inst.get("price_decimals", 2),
-                            "price_tick_size": str(price_tick_size_raw) if price_tick_size_raw is not None else "0.0001",  # Keep as string
-                        }
-                        
-                        # Log full raw instrument entry for validation
-                        logger.info(f"✅ [INSTRUMENT_METADATA] Fetched for {symbol_upper}:")
-                        logger.info(f"   Full raw API entry: {json.dumps(inst, indent=2)}")
-                        logger.info(f"   Parsed metadata: qty_tick_size='{metadata['qty_tick_size']}' (type: str), quantity_decimals={metadata['quantity_decimals']}, min_quantity='{metadata['min_quantity']}'")
-                        
-                        # Cache it
-                        self._instrument_cache[symbol_upper] = metadata
-                        return metadata
+            if "result" in result:
+                instruments = result["result"].get("data", result["result"].get("instruments", []))
+                for cand in candidates:
+                    if cand in self._instrument_cache and self._instrument_cache[cand] is not None:
+                        meta = self._instrument_cache[cand]
+                        self._instrument_cache[symbol_upper] = meta
+                        return meta
+
+                    for inst in instruments:
+                        metadata = self._parse_instrument_entry(inst, cand)
+                        if metadata:
+                            self._instrument_cache[cand] = metadata
+                            self._instrument_cache[symbol_upper] = metadata
+                            if cand != symbol_upper:
+                                logger.info(
+                                    f"✅ [INSTRUMENT_METADATA] Resolved {symbol_upper} via variant {cand}"
+                                )
+                            return metadata
+
+                    self._instrument_cache[cand] = None
         except Exception as e:
             logger.warning(f"⚠️ Could not fetch instrument metadata for {symbol_upper}: {e}")
-        
-        # Not found - cache None to avoid repeated failed lookups
+
         self._instrument_cache[symbol_upper] = None
         return None
     
@@ -6486,17 +6588,26 @@ class CryptoComTradeClient:
             "final_reason": None,
         }
         
-        # Get instrument metadata
+        # Get instrument metadata (with USD/USDT variant lookup)
         inst_meta = self._get_instrument_metadata(symbol)
         diagnostics["instrument_metadata"] = inst_meta
-        
+
         if not inst_meta:
-            diagnostics["final_reason"] = "instrument_rules_unavailable"
-            logger.error(
-                f"❌ [NORMALIZE_SAFE] {symbol}: Instrument rules unavailable. "
-                f"raw_qty={raw_quantity}, for_sl_tp={for_sl_tp}"
-            )
-            return None, diagnostics
+            if for_sl_tp:
+                inst_meta = self._infer_sl_tp_quantity_metadata(raw_quantity)
+                diagnostics["instrument_metadata"] = inst_meta
+                diagnostics["strategies_tried"].append("inferred_metadata")
+                logger.warning(
+                    f"⚠️ [NORMALIZE_SAFE] {symbol}: Instrument rules unavailable — using inferred metadata. "
+                    f"raw_qty={raw_quantity}, inferred_step={inst_meta.get('qty_tick_size')}"
+                )
+            else:
+                diagnostics["final_reason"] = "instrument_rules_unavailable"
+                logger.error(
+                    f"❌ [NORMALIZE_SAFE] {symbol}: Instrument rules unavailable. "
+                    f"raw_qty={raw_quantity}, for_sl_tp={for_sl_tp}"
+                )
+                return None, diagnostics
         
         quantity_decimals = inst_meta["quantity_decimals"]
         qty_tick_size_str = inst_meta["qty_tick_size"]
