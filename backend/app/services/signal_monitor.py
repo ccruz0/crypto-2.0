@@ -5477,9 +5477,18 @@ class SignalMonitorService:
                         error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
                         logger.warning(f"Skipping automatic order creation for {symbol}: trade_amount_usd not configured (trade_enabled={watchlist_item.trade_enabled}, alert_enabled={watchlist_item.alert_enabled})")
                         
-                        # Send error notification to Telegram
+                        # Send error notification to Telegram only if it's a REAL error, not a guardrail block
+                        # Guardrail blocks (RSI, EMA, min size) are normal and shouldn't interrupt the operator
+                        is_guardrail_block = any(
+                            keyword in str(error_message).lower()
+                            for keyword in [
+                                "rsi=", "ema", "volatility", "below_min_order_size",
+                                "guardrail", "condition not met", "threshold",
+                            ]
+                        )
+
                         try:
-                            if self._telegram_send_enabled():
+                            if self._telegram_send_enabled() and not is_guardrail_block:
                                 telegram_notifier.send_message(
                                     f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -5487,7 +5496,11 @@ class SignalMonitorService:
                                     f"📊 Signal: BUY signal detected\n"
                                 f"⚠️ Trade enabled: {watchlist_item.trade_enabled}\n"
                                 f"❌ Error: {error_message}"
-                            )
+                                )
+                            elif is_guardrail_block:
+                                logger.info(
+                                    f"ℹ️ [GUARDRAIL_BLOCK] {symbol} BUY - Order blocked by guardrail (not notifying): {error_message}"
+                                )
                         except Exception as e:
                             logger.warning(f"Failed to send Telegram error notification: {e}")
                 else:
@@ -7814,18 +7827,28 @@ class SignalMonitorService:
                     except Exception as update_err:
                         logger.warning(f"Failed to update original BUY SIGNAL message for {symbol} on ORDER_FAILED: {update_err}")
                     
-                    # Send Telegram notification about the error
+                    # Send Telegram notification about the error (only if it's a REAL error, not a guardrail)
                     try:
                         error_details = error_msg or ""
+
+                        # Check if this is a guardrail block (not a real error)
+                        is_guardrail_block = any(
+                            keyword in str(error_details).lower()
+                            for keyword in [
+                                "rsi=", "ema", "volatility", "below_min_order_size",
+                                "guardrail", "condition not met", "threshold",
+                            ]
+                        )
+
                         if use_margin:
                             error_details += "\n\n⚠️ <b>MARGIN ORDER FAILED</b> - Insufficient margin balance available.\nThe account may be over-leveraged or margin trading may not be enabled."
-                        
+
                         # Include trade_enabled state in error message for debugging
                         trade_status_note = ""
                         if current_trade_enabled is not None:
                             trade_status_note = f"\n📊 Trade enabled status: {current_trade_enabled} (order was attempted because trade_enabled=True at that time)"
-                        
-                        if self._telegram_send_enabled():
+
+                        if self._telegram_send_enabled() and not is_guardrail_block:
                             telegram_notifier.send_message(
                                 f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7835,6 +7858,10 @@ class SignalMonitorService:
                             f"❌ Error: {error_details}{trade_status_note}\n\n"
                             f"⚠️ The symbol remains in your watchlist. Please check the configuration and try again."
                         )
+                        elif is_guardrail_block:
+                            logger.info(
+                                f"ℹ️ [GUARDRAIL_BLOCK] {symbol} BUY - Order blocked by guardrail (not notifying): {error_details}"
+                            )
                     except Exception as notify_err:
                         logger.warning(f"Failed to send Telegram error notification: {notify_err}")
                     
