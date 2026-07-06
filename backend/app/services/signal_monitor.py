@@ -465,6 +465,41 @@ class SignalMonitorService:
     def _telegram_send_enabled(self) -> bool:
         return bool(self._get_telegram_runtime_config().get("enabled"))
 
+    def _validate_trade_enabled_from_db(self, db: Session, symbol: str) -> bool:
+        """
+        Validate that trade_enabled=true in the database for a symbol.
+
+        This is a CRITICAL check that runs BEFORE every order creation to ensure
+        the system respects the authoritative database state, not an in-memory cache.
+
+        Args:
+            db: Database session
+            symbol: Trading symbol (e.g., "BTC_USD")
+
+        Returns:
+            bool: True if trade_enabled=true in DB, False otherwise
+        """
+        try:
+            fresh_item = get_canonical_watchlist_item(db, symbol)
+            if not fresh_item:
+                logger.warning(f"[TRADE_ENABLED_CHECK] {symbol} - No watchlist item found in DB")
+                return False
+
+            trade_enabled = bool(getattr(fresh_item, 'trade_enabled', False))
+            if not trade_enabled:
+                logger.info(
+                    f"[TRADE_ENABLED_CHECK] {symbol} - BLOCKED: trade_enabled=False in DB. "
+                    f"Order creation will NOT proceed."
+                )
+                return False
+
+            logger.debug(f"[TRADE_ENABLED_CHECK] {symbol} - OK: trade_enabled=True in DB")
+            return True
+        except Exception as e:
+            logger.error(f"[TRADE_ENABLED_CHECK] {symbol} - Error reading trade_enabled from DB: {e}")
+            # Fail CLOSED: if we can't verify, don't create the order
+            return False
+
     def _telegram_chat_id(self) -> Optional[str]:
         return self._get_telegram_runtime_config().get("chat_id")
 
@@ -5249,6 +5284,16 @@ class SignalMonitorService:
                                 f"[CRYPTO_ORDER_ATTEMPT] {symbol} BUY price=${current_price:.4f} "
                                 f"qty_usd=${watchlist_item.trade_amount_usd:.2f} trade_enabled={watchlist_item.trade_enabled}"
                             )
+                            # CRITICAL: Validate trade_enabled from DB one final time before creating order (PR #129)
+                            if not self._validate_trade_enabled_from_db(db, symbol):
+                                logger.warning(
+                                    f"🚫 [BUY_ORDER_BLOCKED] {symbol} - trade_enabled=False in DB. "
+                                    f"Order creation cancelled."
+                                )
+                                telegram_notifier.notify_telegram(
+                                    f"🚫 BUY order blocked for {symbol}: trade_enabled=False in database"
+                                )
+                                continue  # Skip to next symbol
                             # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
                             order_result = asyncio.run(self._create_buy_order(db, watchlist_item, current_price, res_up, res_down))
                             # Check for errors first (error dicts are truthy but have "error" key)
@@ -6367,8 +6412,24 @@ class SignalMonitorService:
                                     )
                                 
                                 try:
-                                    # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
-                                    order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
+                                    # CRITICAL: Validate trade_enabled from DB one final time before creating order (PR #129)
+                                    if not self._validate_trade_enabled_from_db(db, symbol):
+                                        logger.warning(
+                                            f"🚫 [SELL_ORDER_BLOCKED] {symbol} - trade_enabled=False in DB. "
+                                            f"Order creation cancelled."
+                                        )
+                                        telegram_notifier.notify_telegram(
+                                            f"🚫 SELL order blocked for {symbol}: trade_enabled=False in database"
+                                        )
+                                        # Set error result to be handled by existing error handling code
+                                        order_result = {
+                                            "error_type": "trade_disabled",
+                                            "message": "trade_enabled=False in database",
+                                            "error": "trade_enabled validation failed"
+                                        }
+                                    else:
+                                        # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
+                                        order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
                                     
                                     # DIAGNOSTIC: Log result for TRX_USDT
                                     if symbol == "TRX_USDT" or symbol == "TRX_USD":
