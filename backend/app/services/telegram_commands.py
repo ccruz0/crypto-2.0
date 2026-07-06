@@ -5815,6 +5815,10 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif callback_data.startswith("skip_sl_tp_"):
             symbol = callback_data.replace("skip_sl_tp_", "")
             handle_skip_sl_tp_reminder_command(chat_id, f"/skip_sl_tp_reminder {symbol}", db)
+        elif callback_data.startswith("posrev_"):
+            # Daily Position Review buttons: Close / Confirm / Cancel / Keep-30-days.
+            from app.services.position_review_service import dispatch_callback as _posrev_dispatch
+            _posrev_dispatch(chat_id, callback_data, db)
         elif callback_data == "menu:main":
             # Show main menu
             logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:main' to show_main_menu, chat_id={chat_id}")
