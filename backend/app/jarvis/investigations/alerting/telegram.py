@@ -45,9 +45,9 @@ def format_investigation_alert_message(
 
 
 def should_send_telegram(alert: AlertRecord, *, info_enabled: bool) -> bool:
+    # Only send Telegram alerts for CRITICAL issues. WARNING and INFO are logged but not notified
+    # (read-only warnings shouldn't interrupt the operator; log them instead)
     if alert.severity == AlertSeverity.CRITICAL.value:
-        return True
-    if alert.severity == AlertSeverity.WARNING.value:
         return True
     if alert.severity == AlertSeverity.INFO.value:
         return info_enabled
