@@ -5293,7 +5293,9 @@ class SignalMonitorService:
                                 telegram_notifier.notify_telegram(
                                     f"🚫 BUY order blocked for {symbol}: trade_enabled=False in database"
                                 )
-                                continue  # Skip to next symbol
+                                if symbol in self.order_creation_locks:
+                                    del self.order_creation_locks[symbol]
+                                return
                             # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
                             order_result = asyncio.run(self._create_buy_order(db, watchlist_item, current_price, res_up, res_down))
                             # Check for errors first (error dicts are truthy but have "error" key)
@@ -5750,7 +5752,6 @@ class SignalMonitorService:
                 # Use get_canonical_watchlist_item to get the correct item (same logic as transition emitter)
                 db.expire_all()  # Force refresh from database
                 try:
-                    from app.services.watchlist_selector import get_canonical_watchlist_item
                     fresh_check = get_canonical_watchlist_item(db, symbol)
                     if fresh_check:
                         sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
