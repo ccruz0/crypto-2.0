@@ -263,19 +263,28 @@ def execute_close(db: Session, symbol: str, side: str) -> Dict[str, Any]:
             return {"error": "POSITION_ALREADY_FLAT", "message": f"{symbol} is already flat"}
         market_value = abs(float(acc.get("market_value") or 0))
 
+        from app.services.margin_decision_helper import DEFAULT_CONFIGURED_LEVERAGE
+
         if qty < 0:  # SHORT -> cover with margin BUY (notional = quote value)
             notional = market_value if market_value > 0 else None
             if not notional:
                 return {"error": "NO_PRICE", "message": f"Cannot size close for {symbol}"}
+            # A short only exists on margin (is_margin=True); leverage is REQUIRED by the
+            # broker for any margin order — omitting it raises "Margin trade requires leverage".
             result = trade_client.place_market_order(
-                symbol=symbol, side="BUY", notional=notional, is_margin=True,
+                symbol=symbol, side="BUY", notional=notional,
+                is_margin=True, leverage=DEFAULT_CONFIGURED_LEVERAGE,
                 dry_run=False, source="AUTO",
             )
-        else:  # LONG -> SELL the base; margin unless a spot balance backs it
+        else:  # LONG -> SELL the base
             available = float(acc.get("available", acc.get("max_withdrawal", qty)) or 0)
-            is_margin = available < qty  # spot-available covers it -> spot sell
+            # Spot-available (tolerant of 8-decimal truncation of `available`) -> plain spot
+            # SELL. Otherwise it is a margin long: SELL on margin WITH leverage.
+            is_margin = available < qty * 0.99
             result = trade_client.place_market_order(
-                symbol=symbol, side="SELL", qty=abs(qty), is_margin=is_margin,
+                symbol=symbol, side="SELL", qty=abs(qty),
+                is_margin=is_margin,
+                leverage=DEFAULT_CONFIGURED_LEVERAGE if is_margin else None,
                 dry_run=False, source="AUTO",
             )
         logger.warning("posrev: close %s %s -> %s", symbol, side, result)

@@ -118,8 +118,38 @@ def test_execute_close_short_covers_with_margin_buy(db):
     kwargs = tc.place_market_order.call_args.kwargs
     assert kwargs["side"] == "BUY"
     assert kwargs["is_margin"] is True
+    # Margin orders REQUIRE leverage; omitting it made prod raise "Margin trade requires leverage".
+    assert kwargs["leverage"] == 10.0
     assert kwargs["notional"] == pytest.approx(10.0)
     assert kwargs["dry_run"] is False
+
+
+def test_execute_close_spot_long_sells_spot_without_leverage(db):
+    # available ~= qty (spot holding) -> plain spot SELL, no leverage.
+    accounts = [{"currency": "SUI", "quantity": "9.23135826591", "available": "9.23135826",
+                 "market_value": "6.8"}]
+    with patch("app.services.brokers.crypto_com_trade.trade_client") as tc:
+        tc.get_account_summary.return_value = {"accounts": accounts}
+        tc.place_market_order.return_value = {"order_id": "sell-1"}
+        prs.execute_close(db, "SUI_USD", "LONG")
+    kwargs = tc.place_market_order.call_args.kwargs
+    assert kwargs["side"] == "SELL"
+    assert kwargs["is_margin"] is False
+    assert kwargs["leverage"] is None
+    assert kwargs["qty"] == pytest.approx(9.23135826591)
+
+
+def test_execute_close_margin_long_passes_leverage(db):
+    # available << qty (base locked on margin) -> margin SELL WITH leverage.
+    accounts = [{"currency": "BTC", "quantity": "2.0", "available": "0.1", "market_value": "120000"}]
+    with patch("app.services.brokers.crypto_com_trade.trade_client") as tc:
+        tc.get_account_summary.return_value = {"accounts": accounts}
+        tc.place_market_order.return_value = {"order_id": "sell-2"}
+        prs.execute_close(db, "BTC_USD", "LONG")
+    kwargs = tc.place_market_order.call_args.kwargs
+    assert kwargs["side"] == "SELL"
+    assert kwargs["is_margin"] is True
+    assert kwargs["leverage"] == 10.0
 
 
 def test_execute_close_flat_returns_error(db):
