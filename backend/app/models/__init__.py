@@ -32,6 +32,7 @@ from app.models.jarvis_control_models import (
     JarvisControlSession,
     JarvisControlTask,
 )
+from app.models.position_review_state import PositionReviewState
 
 __all__ = [
     "WatchlistItem",
@@ -64,6 +65,7 @@ __all__ = [
     "JarvisControlTask",
     "JarvisControlApproval",
     "JarvisControlAuditEvent",
+    "PositionReviewState",
 ]
 
 

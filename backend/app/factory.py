@@ -673,6 +673,18 @@ def create_app(role: str = "legacy") -> FastAPI:
                     logger.info(
                         "Daily report loop skipped (RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate work)"
                     )
+
+                # Daily Position Review: prompt the operator to close each open position,
+                # with a 30-day per-position snooze. Only the poller instance runs it so
+                # standby/canary don't duplicate the alert.
+                if _run_poller:
+                    try:
+                        from app.services.position_review_service import start_position_review_loop
+
+                        asyncio.create_task(start_position_review_loop())
+                        logger.info("Position review daily loop started")
+                    except Exception as e:
+                        logger.error("Failed to start position review loop: %s", e, exc_info=True)
             except Exception as e:
                 logger.error(f"Background init error: {e}", exc_info=True)
     
