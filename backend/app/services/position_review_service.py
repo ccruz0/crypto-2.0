@@ -264,6 +264,11 @@ def execute_close(db: Session, symbol: str, side: str) -> Dict[str, Any]:
         market_value = abs(float(acc.get("market_value") or 0))
 
         from app.services.margin_decision_helper import DEFAULT_CONFIGURED_LEVERAGE
+        from app.services.risk_config import MAX_LEVERAGE
+
+        # Margin orders require leverage, but it must not exceed the risk cap
+        # (else risk_guard rejects with "Leverage N exceeds cap M").
+        close_leverage = min(DEFAULT_CONFIGURED_LEVERAGE, MAX_LEVERAGE)
 
         if qty < 0:  # SHORT -> cover with margin BUY (notional = quote value)
             notional = market_value if market_value > 0 else None
@@ -273,7 +278,7 @@ def execute_close(db: Session, symbol: str, side: str) -> Dict[str, Any]:
             # broker for any margin order — omitting it raises "Margin trade requires leverage".
             result = trade_client.place_market_order(
                 symbol=symbol, side="BUY", notional=notional,
-                is_margin=True, leverage=DEFAULT_CONFIGURED_LEVERAGE,
+                is_margin=True, leverage=close_leverage,
                 dry_run=False, source="AUTO",
             )
         else:  # LONG -> SELL the base
@@ -284,7 +289,7 @@ def execute_close(db: Session, symbol: str, side: str) -> Dict[str, Any]:
             result = trade_client.place_market_order(
                 symbol=symbol, side="SELL", qty=abs(qty),
                 is_margin=is_margin,
-                leverage=DEFAULT_CONFIGURED_LEVERAGE if is_margin else None,
+                leverage=close_leverage if is_margin else None,
                 dry_run=False, source="AUTO",
             )
         logger.warning("posrev: close %s %s -> %s", symbol, side, result)

@@ -9,6 +9,10 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.models.position_review_state import PositionReviewState
 from app.services import position_review_service as prs
+from app.services.margin_decision_helper import DEFAULT_CONFIGURED_LEVERAGE
+from app.services.risk_config import MAX_LEVERAGE
+
+EXPECTED_CLOSE_LEVERAGE = min(DEFAULT_CONFIGURED_LEVERAGE, MAX_LEVERAGE)  # capped by risk_guard
 
 
 @pytest.fixture
@@ -118,8 +122,10 @@ def test_execute_close_short_covers_with_margin_buy(db):
     kwargs = tc.place_market_order.call_args.kwargs
     assert kwargs["side"] == "BUY"
     assert kwargs["is_margin"] is True
-    # Margin orders REQUIRE leverage; omitting it made prod raise "Margin trade requires leverage".
-    assert kwargs["leverage"] == 10.0
+    # Margin orders REQUIRE leverage, but it must stay within the risk cap
+    # (prod raised "Margin trade requires leverage" without it, then "Leverage 10 exceeds cap 5").
+    assert kwargs["leverage"] == EXPECTED_CLOSE_LEVERAGE
+    assert kwargs["leverage"] <= MAX_LEVERAGE
     assert kwargs["notional"] == pytest.approx(10.0)
     assert kwargs["dry_run"] is False
 
@@ -149,7 +155,8 @@ def test_execute_close_margin_long_passes_leverage(db):
     kwargs = tc.place_market_order.call_args.kwargs
     assert kwargs["side"] == "SELL"
     assert kwargs["is_margin"] is True
-    assert kwargs["leverage"] == 10.0
+    assert kwargs["leverage"] == EXPECTED_CLOSE_LEVERAGE
+    assert kwargs["leverage"] <= MAX_LEVERAGE
 
 
 def test_execute_close_flat_returns_error(db):
