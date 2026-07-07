@@ -9209,6 +9209,16 @@ class SignalMonitorService:
             logger.error(
                 f"❌ [SL/TP] Failed to normalize quantity for {entry_side_upper} order {order_id} ({symbol})"
             )
+            self._flatten_unprotected_entry(
+                db=db,
+                symbol=symbol,
+                entry_side=entry_side_upper,
+                order_id=str(order_id),
+                filled_qty=executed_qty_raw_float,
+                filled_price=float(executed_avg_price or 0),
+                creation_result=None,
+                source=source,
+            )
             return None
 
         normalized_qty = float(normalized_qty_str)
