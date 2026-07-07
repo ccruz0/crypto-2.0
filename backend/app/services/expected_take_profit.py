@@ -578,6 +578,53 @@ def calculate_expected_profit(
     return expected_profit, expected_profit_pct
 
 
+def split_lot_across_tps(lot: OpenLot) -> List[Tuple[ExchangeOrder, Decimal]]:
+    """
+    Split a matched lot's quantity proportionally across ALL TP orders matched
+    to it (primary ``matched_tp`` plus any ``_additional_tp_orders``).
+
+    This is the single source of truth used by both the summary and the details
+    endpoints so their expected-profit totals are guaranteed to agree. Without
+    this, the summary previously multiplied the FULL lot quantity by a single
+    TP's price, inflating the total when one lot is covered by several TPs.
+
+    Returns a list of ``(tp_order, lot_qty_for_this_tp)`` tuples.
+    """
+    if not lot.matched_tp:
+        return []
+
+    tp_orders_for_lot = [lot.matched_tp]
+    if getattr(lot, "_additional_tp_orders", None):
+        tp_orders_for_lot.extend(lot._additional_tp_orders)
+
+    total_tp_qty = Decimal("0")
+    for tp in tp_orders_for_lot:
+        tp_qty = Decimal(str(tp.quantity))
+        tp_filled = Decimal(str(tp.cumulative_quantity or 0))
+        total_tp_qty += (tp_qty - tp_filled)
+
+    splits: List[Tuple[ExchangeOrder, Decimal]] = []
+    accumulated_lot_qty = Decimal("0")
+    for idx, tp in enumerate(tp_orders_for_lot):
+        tp_qty = Decimal(str(tp.quantity))
+        tp_filled = Decimal(str(tp.cumulative_quantity or 0))
+        tp_remaining = tp_qty - tp_filled
+
+        # The last TP absorbs whatever lot quantity remains so the split always
+        # sums exactly to lot.lot_qty (no rounding drift).
+        if idx == len(tp_orders_for_lot) - 1:
+            lot_qty_for_this_tp = lot.lot_qty - accumulated_lot_qty
+        elif total_tp_qty > 0:
+            lot_qty_for_this_tp = (tp_remaining / total_tp_qty) * lot.lot_qty
+            accumulated_lot_qty += lot_qty_for_this_tp
+        else:
+            lot_qty_for_this_tp = Decimal("0")
+
+        splits.append((tp, lot_qty_for_this_tp))
+
+    return splits
+
+
 def get_expected_take_profit_summary(
     db: Session,
     portfolio_assets: List[Dict],
@@ -981,10 +1028,12 @@ def get_expected_take_profit_summary(
         actual_position_value = Decimal("0")
         
         for lot in all_matched:
-            if lot.matched_tp:
-                tp_price = Decimal(str(lot.matched_tp.price or 0))
+            # Split the lot proportionally across ALL matched TP orders (same
+            # logic as the details endpoint) so the summary total matches details.
+            for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
+                tp_price = Decimal(str(tp.price or 0))
                 if tp_price > 0:
-                    profit, _ = calculate_expected_profit(lot.buy_price, tp_price, lot.lot_qty)
+                    profit, _ = calculate_expected_profit(lot.buy_price, tp_price, lot_qty_for_this_tp)
                     total_expected_profit += profit
             # Add to actual position value (at buy price)
             actual_position_value += lot.buy_price * lot.lot_qty
@@ -1349,36 +1398,13 @@ def get_expected_take_profit_details(
         if not lot.matched_tp:
             continue
         
-        # Get all TP orders that match this lot (primary + additional)
-        tp_orders_for_lot = [lot.matched_tp]
-        if hasattr(lot, '_additional_tp_orders') and lot._additional_tp_orders:
-            tp_orders_for_lot.extend(lot._additional_tp_orders)
-        
-        # Calculate how much of the lot each TP order covers
-        # For multiple TP orders, we need to split the lot proportionally based on TP quantities
-        total_tp_qty = Decimal("0")
-        for tp in tp_orders_for_lot:
-            tp_qty = Decimal(str(tp.quantity))
-            tp_filled = Decimal(str(tp.cumulative_quantity or 0))
-            total_tp_qty += (tp_qty - tp_filled)
-        
-        # Process each TP order that matches this lot
-        accumulated_lot_qty = Decimal("0")
-        
-        for idx, tp in enumerate(tp_orders_for_lot):
+        # Split the lot proportionally across ALL matched TP orders using the
+        # shared helper (same computation the summary now uses).
+        for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
             tp_price = Decimal(str(tp.price or 0))
             tp_qty = Decimal(str(tp.quantity))
             tp_filled = Decimal(str(tp.cumulative_quantity or 0))
             tp_remaining = tp_qty - tp_filled
-            
-            # Calculate the portion of the lot this TP order covers
-            # If this is the last TP, cover the remaining lot quantity
-            if idx == len(tp_orders_for_lot) - 1:
-                lot_qty_for_this_tp = lot.lot_qty - accumulated_lot_qty
-            else:
-                # Proportionally split based on TP quantity
-                lot_qty_for_this_tp = (tp_remaining / total_tp_qty) * lot.lot_qty
-                accumulated_lot_qty += lot_qty_for_this_tp
             
             # Calculate profit for this portion
             profit, profit_pct = calculate_expected_profit(lot.buy_price, tp_price, lot_qty_for_this_tp)
