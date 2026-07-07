@@ -626,6 +626,8 @@ services:
     container_name: atp-alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
+      # Single-node: disable gossip mesh (fails without advertise addr in Docker bridge nets)
+      - "--cluster.listen-address="
     volumes:
       - ./scripts/aws/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     ports:
@@ -672,8 +674,10 @@ services:
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
+      # Omit /var/lib/docker bind: snap Docker uses /var/snap/docker/common/var-lib-docker
+      # and plain /var/lib/docker may not exist (compose up fails with read-only FS error).
       - /dev/disk/:/dev/disk:ro
     ports:
       - "127.0.0.1:8080:8080"
