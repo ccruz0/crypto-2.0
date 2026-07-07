@@ -12,6 +12,12 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 if [ -f /app/secrets/runtime.env ]; then
+  # Host-mounted secrets may be ubuntu:root 640; gunicorn workers run as appuser and
+  # pydantic also opens secrets/runtime.env directly — ensure group-readable.
+  if [ "$(id -u)" = "0" ]; then
+    chown root:appuser /app/secrets/runtime.env 2>/dev/null || true
+    chmod 640 /app/secrets/runtime.env 2>/dev/null || true
+  fi
   set -a
   . /app/secrets/runtime.env
   set +a
