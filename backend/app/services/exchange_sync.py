@@ -154,17 +154,30 @@ def should_notify_executed_fill(
 
 def link_system_trade_signal_to_order(db: Session, order: ExchangeOrder) -> bool:
     """Attach trade_signal_id to an ExchangeOrder when a TradeSignal references it."""
-    if getattr(order, "trade_signal_id", None) is not None:
-        return False
     order_id = str(order.exchange_order_id)
+    if getattr(order, "trade_signal_id", None) is not None:
+        logger.debug(
+            "[SLTP_SYSTEM_LINK] order=%s (%s) already has trade_signal_id=%s",
+            order_id,
+            order.symbol,
+            order.trade_signal_id,
+        )
+        return False
+
     signal = db.query(TradeSignal).filter(
         TradeSignal.exchange_order_id == order_id
     ).first()
     if not signal:
+        logger.debug(
+            "[SLTP_SYSTEM_LINK] No TradeSignal.exchange_order_id match for order=%s symbol=%s",
+            order_id,
+            order.symbol,
+        )
         return False
+
     order.trade_signal_id = signal.id
     logger.info(
-        "[SL/TP_SYSTEM_LINK] Linked trade_signal_id=%s to order %s (%s)",
+        "[SLTP_SYSTEM_LINK] Linked trade_signal_id=%s to order %s (%s)",
         signal.id,
         order_id,
         order.symbol,
@@ -174,17 +187,59 @@ def link_system_trade_signal_to_order(db: Session, order: ExchangeOrder) -> bool
 
 def is_system_created_order(db: Session, order: ExchangeOrder) -> bool:
     """True when the order was created by ATP (signal monitor / alerts), not manual exchange."""
-    if getattr(order, "trade_signal_id", None) is not None:
+    order_id = str(order.exchange_order_id)
+    trade_signal_id = getattr(order, "trade_signal_id", None)
+    if trade_signal_id is not None:
+        logger.debug(
+            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=trade_signal_id=%s",
+            order_id,
+            order.symbol,
+            trade_signal_id,
+        )
         return True
     if getattr(order, "parent_order_id", None) is not None:
+        logger.debug(
+            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=parent_order_id",
+            order_id,
+            order.symbol,
+        )
         return True
-    order_id = str(order.exchange_order_id)
-    return (
+
+    signal_match = (
         db.query(TradeSignal.id)
         .filter(TradeSignal.exchange_order_id == order_id)
         .first()
-        is not None
     )
+    if signal_match is not None:
+        logger.debug(
+            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=trade_signal_exchange_order_id",
+            order_id,
+            order.symbol,
+        )
+        return True
+
+    from app.models.order_intent import OrderIntent
+
+    intent_match = (
+        db.query(OrderIntent.id)
+        .filter(OrderIntent.order_id == order_id)
+        .first()
+    )
+    if intent_match is not None:
+        logger.debug(
+            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=order_intent",
+            order_id,
+            order.symbol,
+        )
+        return True
+
+    logger.info(
+        "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=False "
+        "(no trade_signal_id, TradeSignal row, or OrderIntent)",
+        order_id,
+        order.symbol,
+    )
+    return False
 
 
 def has_complete_sl_tp_protection(db: Session, parent_order_id: str) -> bool:
@@ -214,13 +269,23 @@ def should_auto_create_sl_tp_on_sync(
     now_utc: datetime,
 ) -> Tuple[bool, str]:
     """Gate SL/TP backfill during exchange_sync history processing."""
-    link_system_trade_signal_to_order(db, order)
+    linked = link_system_trade_signal_to_order(db, order)
 
     parent_id = str(order.exchange_order_id)
     if has_complete_sl_tp_protection(db, parent_id):
         return False, "already_protected"
 
-    if is_system_created_order(db, order):
+    is_system = is_system_created_order(db, order)
+    logger.info(
+        "[SLTP_SYSTEM_GATE] order=%s symbol=%s linked=%s is_system=%s filled_time=%s",
+        parent_id,
+        order.symbol,
+        linked,
+        is_system,
+        order_filled_time,
+    )
+
+    if is_system:
         return True, "system_order_needs_protection"
 
     if not order_filled_time:
