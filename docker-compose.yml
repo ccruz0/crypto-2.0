@@ -35,10 +35,6 @@ services:
     # SECURITY: No ports mapping - database is only accessible via Docker network
     # Backend connects using service name: postgresql://trader:pass@db:5432/atp
     # Verify: ss -lntp | grep 5432 should return empty (no public listener)
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     restart: always
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-trader}"]
@@ -543,10 +539,6 @@ services:
     #   - /app/.next
     # And use: command: npm run dev
     # But for production, keep read_only and no volumes for security
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     read_only: true
     tmpfs:
       - /tmp
