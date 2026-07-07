@@ -4436,13 +4436,28 @@ function resolveDecisionIndexColor(value: number): string {
             }
 
             // Set SL/TP percentages from backend (after processing all items)
+            // CRITICAL: Backend is source of truth - also sync to localStorage so the
+            // preserveLocalChanges refresh path stops reverting to stale cached values
+            // (mirrors how watchlist_amounts is persisted above).
             if (Object.keys(backendSLPercent).length > 0) {
               setCoinSLPercent(prev => ({ ...prev, ...backendSLPercent }));
               logger.info('✅ Initialized sl_percentage from backend:', Object.keys(backendSLPercent).length, 'coins');
+              try {
+                const currentSL = JSON.parse(localStorage.getItem('watchlist_sl_percent') || '{}');
+                localStorage.setItem('watchlist_sl_percent', JSON.stringify({ ...currentSL, ...backendSLPercent }));
+              } catch (err) {
+                logger.warn('Failed to update localStorage with backend SL percentages:', err);
+              }
             }
             if (Object.keys(backendTPPercent).length > 0) {
               setCoinTPPercent(prev => ({ ...prev, ...backendTPPercent }));
               logger.info('✅ Initialized tp_percentage from backend:', Object.keys(backendTPPercent).length, 'coins');
+              try {
+                const currentTP = JSON.parse(localStorage.getItem('watchlist_tp_percent') || '{}');
+                localStorage.setItem('watchlist_tp_percent', JSON.stringify({ ...currentTP, ...backendTPPercent }));
+              } catch (err) {
+                logger.warn('Failed to update localStorage with backend TP percentages:', err);
+              }
             }
           } catch (err) {
             logger.warn('Failed to load from backend:', err);
