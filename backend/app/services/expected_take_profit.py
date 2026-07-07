@@ -2,8 +2,10 @@
 Expected Take Profit Service
 
 Calculates expected take profit for open positions by:
-1. Rebuilding open lots from executed orders (FIFO)
-2. Matching TP orders to lots (OCO first, then FIFO fallback)
+1. Rebuilding open lots from executed orders (FIFO netting of buys vs sells)
+2. Matching TP orders to lots by real OTOCO parent linkage first
+   (tp.parent_order_id -> buy.exchange_order_id), then OCO group id, then
+   FIFO time-order as a last-resort fallback
 3. Calculating expected profit per lot and aggregated
 """
 import logging
@@ -276,6 +278,99 @@ def _normalize_symbol(symbol: str) -> str:
         # Treat USD and USDT as equivalent
         return base
     return symbol
+
+
+def match_tp_orders_by_parent(
+    lots: List[OpenLot],
+    tp_orders: List[ExchangeOrder]
+) -> Tuple[List[OpenLot], List[OpenLot], List[ExchangeOrder]]:
+    """
+    Match TP orders to lots by the REAL OTOCO parent linkage (highest priority).
+
+    On this account each BUY was placed as an OTOCO with its own attached TP, so
+    the authoritative pairing is the exchange parent->child relationship, not
+    FIFO time order. That linkage is persisted as ``ExchangeOrder.parent_order_id``
+    on the TP (SELL) row, pointing at the parent BUY's ``exchange_order_id``.
+
+    A lot is matched to a TP when ``tp.parent_order_id == lot.buy_order_id``.
+    This is an exact, globally-unique order-id join, so it is trusted without
+    quantity/time heuristics. If several TPs share the same parent BUY, the
+    earliest is the primary match and the rest are attached as
+    ``_additional_tp_orders`` (consumed by ``split_lot_across_tps``).
+
+    Args:
+        lots: List of open lots
+        tp_orders: List of active TP orders
+
+    Returns:
+        Tuple of (matched_lots, unmatched_lots, remaining_tp_orders)
+    """
+    matched_lots: List[OpenLot] = []
+    used_tp_ids = set()
+
+    for lot in lots:
+        if lot.matched_tp is not None:
+            continue
+        if not lot.buy_order_id:
+            # Virtual/aggregated lots have no single parent BUY to join on.
+            continue
+
+        linked = [
+            tp for tp in tp_orders
+            if tp.exchange_order_id not in used_tp_ids
+            and getattr(tp, "parent_order_id", None)
+            and str(tp.parent_order_id) == str(lot.buy_order_id)
+            and tp.side == OrderSideEnum.SELL
+            and tp.status in ACTIVE_TP_STATUSES
+        ]
+        if not linked:
+            continue
+
+        # Deterministic order: oldest TP first.
+        linked.sort(key=lambda t: (t.exchange_create_time or t.created_at or datetime.min.replace(tzinfo=timezone.utc)))
+
+        lot.matched_tp = linked[0]
+        lot.match_origin = "OTOCO"
+        used_tp_ids.add(linked[0].exchange_order_id)
+        if len(linked) > 1:
+            lot._additional_tp_orders = linked[1:]
+            for tp in linked[1:]:
+                used_tp_ids.add(tp.exchange_order_id)
+        matched_lots.append(lot)
+        logger.info(
+            f"OTOCO matched: lot buy_order_id={lot.buy_order_id[:15]}... "
+            f"(qty={float(lot.lot_qty):.8f}) to TP {linked[0].exchange_order_id[:15]}... "
+            f"(price={float(linked[0].price or 0):.2f}) via parent_order_id linkage"
+        )
+
+    unmatched_lots = [lot for lot in lots if lot.matched_tp is None]
+    remaining_tps = [tp for tp in tp_orders if tp.exchange_order_id not in used_tp_ids]
+    return matched_lots, unmatched_lots, remaining_tps
+
+
+def match_all_tp_orders(
+    open_lots: List[OpenLot],
+    tp_orders: List[ExchangeOrder]
+) -> Tuple[List[OpenLot], List[OpenLot]]:
+    """
+    Single source of truth for pairing TP orders to open lots, used by BOTH the
+    summary and the details paths so they can never disagree.
+
+    Priority order:
+      1. Real OTOCO parent linkage (``tp.parent_order_id == lot.buy_order_id``)
+      2. OCO group id linkage (``tp.oco_group_id == lot.oco_group_id``)
+      3. FIFO fallback (time-ordered) for lots/TPs with no explicit linkage
+
+    Returns:
+        Tuple of (all_matched_lots, unmatched_lots)
+    """
+    parent_matched, unmatched_lots, remaining_tps = match_tp_orders_by_parent(open_lots, tp_orders)
+    oco_matched, unmatched_lots, remaining_tps = match_tp_orders_oco(unmatched_lots, remaining_tps)
+    fifo_lots = match_tp_orders_fifo(unmatched_lots, remaining_tps)
+
+    all_matched = parent_matched + oco_matched + [lot for lot in fifo_lots if lot.matched_tp is not None]
+    unmatched = [lot for lot in fifo_lots if lot.matched_tp is None]
+    return all_matched, unmatched
 
 
 def match_tp_orders_oco(
@@ -1059,13 +1154,8 @@ def get_expected_take_profit_summary(
         
         logger.info(f"Expected TP: Found {len(tp_orders)} active TP orders for {symbol} (base: {symbol_base}, actual: {actual_symbol}) - USD/USDT combined")
         
-        # Match TP orders (OCO first, then FIFO)
-        oco_matched, unmatched_lots, remaining_tps = match_tp_orders_oco(open_lots, tp_orders)
-        fifo_matched_lots = match_tp_orders_fifo(unmatched_lots, remaining_tps)
-        
-        # Combine all matched lots
-        all_matched = oco_matched + [lot for lot in fifo_matched_lots if lot.matched_tp is not None]
-        unmatched = [lot for lot in fifo_matched_lots if lot.matched_tp is None]
+        # Match TP orders: real OTOCO parent linkage first, then OCO group, then FIFO
+        all_matched, unmatched = match_all_tp_orders(open_lots, tp_orders)
         
         # Calculate totals
         covered_qty = sum(float(lot.lot_qty) for lot in all_matched)
@@ -1444,13 +1534,8 @@ def get_expected_take_profit_details(
     # Get active TP orders
     tp_orders = get_active_tp_orders(db, symbol)
     
-    # Match TP orders (OCO first, then FIFO)
-    oco_matched, unmatched_lots, remaining_tps = match_tp_orders_oco(open_lots, tp_orders)
-    fifo_matched_lots = match_tp_orders_fifo(unmatched_lots, remaining_tps)
-    
-    # Combine all matched lots
-    all_matched = oco_matched + [lot for lot in fifo_matched_lots if lot.matched_tp is not None]
-    unmatched = [lot for lot in fifo_matched_lots if lot.matched_tp is None]
+    # Match TP orders: real OTOCO parent linkage first, then OCO group, then FIFO
+    all_matched, unmatched = match_all_tp_orders(open_lots, tp_orders)
     
     # Build matched lot details (with grouping of orders executed at same time)
     matched_lot_details_raw = []
