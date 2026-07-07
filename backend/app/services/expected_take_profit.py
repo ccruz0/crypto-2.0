@@ -164,6 +164,51 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     return open_lots
 
 
+def compute_average_buy_price(db: Session, symbol: str) -> Tuple[Optional[Decimal], bool]:
+    """
+    Compute the weighted-average entry price (cost basis) for a coin's currently
+    open position.
+
+    This reuses ``rebuild_open_lots`` (the same FIFO source of truth the Expected
+    Take Profit modal uses) so the Portfolio tab P&L stays consistent with the
+    modal. The average is weighted by the remaining open quantity of each lot
+    (filled BUY orders, FIFO-netted against filled SELLs) across symbol variants
+    (e.g. DOGE, DOGE_USD, DOGE_USDT).
+
+    Args:
+        db: Database session
+        symbol: Coin symbol ("DOGE" or "DOGE_USD" style both accepted)
+
+    Returns:
+        (avg_buy_price, cost_basis_unknown). ``avg_buy_price`` is ``None`` when
+        ``cost_basis_unknown`` is ``True`` (no tracked filled BUY orders with a
+        valid price remain open for the position — do NOT fabricate a number).
+    """
+    open_lots = rebuild_open_lots(db, symbol)
+    if not open_lots:
+        return None, True
+
+    total_qty = Decimal("0")
+    total_cost = Decimal("0")
+    for lot in open_lots:
+        if getattr(lot, "cost_basis_unknown", False):
+            # Buy price is a current-price fallback, not a real cost basis.
+            continue
+        if lot.buy_price is None or lot.buy_price <= 0 or lot.lot_qty <= 0:
+            continue
+        total_qty += lot.lot_qty
+        total_cost += lot.buy_price * lot.lot_qty
+
+    if total_qty <= 0 or total_cost <= 0:
+        return None, True
+
+    avg_buy_price = total_cost / total_qty
+    if avg_buy_price <= 0:
+        return None, True
+
+    return avg_buy_price, False
+
+
 def get_active_tp_orders(db: Session, symbol: str) -> List[ExchangeOrder]:
     """
     Get active take profit orders for a symbol.

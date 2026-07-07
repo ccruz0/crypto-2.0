@@ -104,6 +104,12 @@ export interface PortfolioAsset {
   updated_at: string;
   tp?: number;  // Take profit price
   sl?: number;  // Stop loss price
+  // Per-coin unrealized P&L vs cost basis (from filled BUY orders).
+  // When cost_basis_unknown is true, pnl fields are null and the UI renders "—".
+  avg_buy_price?: number | null;
+  pnl_pct?: number | null;  // (current_price - avg_buy_price) / avg_buy_price * 100
+  net_profit_usd?: number | null;  // balance * (current_price - avg_buy_price)
+  cost_basis_unknown?: boolean;
 }
 
 export interface TopCoin {
