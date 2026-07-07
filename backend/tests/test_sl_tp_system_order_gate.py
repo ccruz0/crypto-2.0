@@ -33,8 +33,28 @@ def test_is_system_created_order_via_trade_signal_id():
 def test_is_system_created_order_via_trade_signal_table():
     db = MagicMock()
     order = _order(trade_signal_id=None)
-    db.query.return_value.filter.return_value.first.return_value = (99,)
+    db.query.return_value.filter.return_value.first.side_effect = [(99,), None]
     assert is_system_created_order(db, order) is True
+
+
+def test_is_system_created_order_via_order_intent():
+    db = MagicMock()
+    order = _order(trade_signal_id=None)
+    db.query.return_value.filter.return_value.first.side_effect = [None, (42,)]
+    assert is_system_created_order(db, order) is True
+
+
+def test_two_doge_orders_both_detected_as_system():
+    """Each DOGE order id must resolve independently (not symbol-overwritten)."""
+    db = MagicMock()
+    order_a = _order(exchange_order_id="5755600491448633454", symbol="DOGE_USD")
+    order_b = _order(exchange_order_id="5755600491449038884", symbol="DOGE_USD")
+
+    db.query.return_value.filter.return_value.first.side_effect = [(11,), None, (12,), None]
+    assert is_system_created_order(db, order_a) is True
+
+    db.query.return_value.filter.return_value.first.side_effect = [(12,), None]
+    assert is_system_created_order(db, order_b) is True
 
 
 def test_should_create_for_system_order_without_timestamp():

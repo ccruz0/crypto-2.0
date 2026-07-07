@@ -85,6 +85,67 @@ def upsert_trade_signal(
             "archived": SignalStatusEnum.ARCHIVED
         }
         status_enum = status_map.get(status.lower(), SignalStatusEnum.PENDING)
+
+        # When linking a specific exchange order, use a per-order TradeSignal row.
+        # The symbol-only upsert below overwrites exchange_order_id and breaks
+        # multi-order symbols (e.g. two DOGE_USD BUYs on the same day).
+        if exchange_order_id:
+            order_id_str = str(exchange_order_id).strip()
+            existing_for_order = db.query(TradeSignal).filter(
+                TradeSignal.exchange_order_id == order_id_str
+            ).first()
+            if existing_for_order:
+                existing_for_order.preset = preset_enum
+                existing_for_order.sl_profile = risk_profile_enum
+                existing_for_order.should_trade = should_trade
+                existing_for_order.status = status_enum
+                if entry_price and not existing_for_order.entry_price:
+                    existing_for_order.entry_price = entry_price
+                if current_price is not None:
+                    existing_for_order.current_price = current_price
+                if notes:
+                    existing_for_order.notes = notes
+                existing_for_order.last_update_at = datetime.utcnow()
+                db.commit()
+                logger.debug(
+                    "Updated trade signal id=%s for order %s (%s)",
+                    existing_for_order.id,
+                    order_id_str,
+                    symbol,
+                )
+                return existing_for_order
+
+            new_signal = TradeSignal(
+                symbol=symbol,
+                preset=preset_enum,
+                sl_profile=risk_profile_enum,
+                rsi=rsi,
+                ma50=ma50,
+                ma200=ma200,
+                ema10=ema10,
+                ma10w=ma10w,
+                atr=atr,
+                resistance_up=resistance_up,
+                resistance_down=resistance_down,
+                entry_price=entry_price or current_price,
+                current_price=current_price,
+                volume_24h=volume_24h,
+                volume_ratio=volume_ratio,
+                should_trade=should_trade,
+                status=status_enum,
+                exchange_order_id=order_id_str,
+                notes=notes,
+            )
+            db.add(new_signal)
+            db.commit()
+            db.refresh(new_signal)
+            logger.info(
+                "Created per-order trade signal id=%s for %s exchange_order_id=%s",
+                new_signal.id,
+                symbol,
+                order_id_str,
+            )
+            return new_signal
         
         # Check if signal already exists
         existing = db.query(TradeSignal).filter(
