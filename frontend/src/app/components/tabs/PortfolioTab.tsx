@@ -247,16 +247,54 @@ export default function PortfolioTab({
                         Value (USD) {sortField === 'value' && (sortDirection === 'asc' ? '↑' : '↓')}
                       </div>
                     </th>
+                    <th
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
+                      title="Unrealized profit/loss vs weighted-average buy price. Shows — when no tracked buy orders exist."
+                    >
+                      <div className="flex items-center gap-1">P&amp;L %</div>
+                    </th>
+                    <th
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
+                      title="Unrealized net profit in USD vs cost basis. Shows — when no tracked buy orders exist."
+                    >
+                      <div className="flex items-center gap-1">Net Profit (USD)</div>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {sortedAssets.map((asset) => (
-                    <tr key={asset.coin} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{asset.coin}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{formatNumber(asset.balance)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-white">{formatNumber(asset.value_usd)}</td>
-                    </tr>
-                  ))}
+                  {sortedAssets.map((asset) => {
+                    const hasCostBasis =
+                      !asset.cost_basis_unknown &&
+                      asset.pnl_pct !== null && asset.pnl_pct !== undefined &&
+                      asset.net_profit_usd !== null && asset.net_profit_usd !== undefined;
+                    const pnlPositive = hasCostBasis && (asset.pnl_pct as number) >= 0;
+                    const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
+                    return (
+                      <tr key={asset.coin} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{asset.coin}</td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{formatNumber(asset.balance)}</td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-white">{formatNumber(asset.value_usd)}</td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm">
+                          {hasCostBasis ? (
+                            <span className={`font-medium ${pnlColorClass}`}>
+                              {pnlPositive ? '+' : ''}{(asset.pnl_pct as number).toFixed(2)}%
+                            </span>
+                          ) : (
+                            <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm">
+                          {hasCostBasis ? (
+                            <span className={`font-medium ${pnlColorClass}`}>
+                              {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(asset.net_profit_usd as number))}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

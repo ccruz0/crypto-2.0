@@ -1148,6 +1148,55 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                         f"{float(sl_price):.2f}" if sl_price else None,
                     )
         
+        # Enrich each asset with per-coin unrealized P&L vs its cost basis.
+        # Reuses the expected_take_profit cost-basis source of truth so the
+        # Portfolio tab and the Expected TP modal agree. When no filled BUY
+        # orders are tracked for a coin, cost_basis_unknown=True and pnl fields
+        # stay None so the frontend renders "—" (we never fabricate a number).
+        def _enrich_portfolio_pnl():
+            from app.services.expected_take_profit import compute_average_buy_price
+
+            fiat_bases = {"USD", "USDT", "USDC", "EUR", "DAI"}
+            for asset in portfolio_assets:
+                asset["avg_buy_price"] = None
+                asset["pnl_pct"] = None
+                asset["net_profit_usd"] = None
+                asset["cost_basis_unknown"] = True
+
+                coin = (asset.get("coin") or asset.get("currency") or asset.get("asset") or "").upper()
+                base = coin.split("_")[0] if "_" in coin else coin
+                if not base or base in fiat_bases:
+                    continue
+
+                try:
+                    balance = float(asset.get("balance") or 0)
+                    usd_value = float(asset.get("usd_value") or asset.get("value_usd") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if balance <= 0 or usd_value <= 0:
+                    continue
+
+                try:
+                    avg_price, cost_basis_unknown = compute_average_buy_price(db, coin)
+                except Exception as pnl_err:
+                    log.warning(f"[PORTFOLIO_PNL] cost-basis lookup failed for {coin}: {pnl_err}")
+                    continue
+
+                if cost_basis_unknown or not avg_price or float(avg_price) <= 0:
+                    continue
+
+                avg = float(avg_price)
+                current_price = usd_value / balance
+                asset["avg_buy_price"] = avg
+                asset["pnl_pct"] = (current_price - avg) / avg * 100.0
+                asset["net_profit_usd"] = usd_value - (balance * avg)
+                asset["cost_basis_unknown"] = False
+
+        try:
+            await asyncio.to_thread(_enrich_portfolio_pnl)
+        except Exception as enrich_err:
+            log.warning(f"[PORTFOLIO_PNL] P&L enrichment skipped: {enrich_err}")
+
         # Log portfolio data for debugging
         log.info(f"Portfolio loaded: {len(portfolio_assets)} assets, total_usd=${total_usd_value:,.2f}")
         if portfolio_assets:
