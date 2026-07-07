@@ -40,6 +40,7 @@ class OpenLot:
         lot_qty: Decimal,
         parent_order_id: Optional[str] = None,
         oco_group_id: Optional[str] = None,
+        cost_basis_unknown: bool = False,
     ):
         self.symbol = symbol
         self.buy_order_id = buy_order_id
@@ -50,6 +51,10 @@ class OpenLot:
         self.oco_group_id = oco_group_id
         self.matched_tp = None  # Will hold matched TP order
         self.match_origin = None  # "OCO" or "FIFO"
+        # True when buy_price is the current-market-price fallback (no real
+        # filled BUY order / cost basis found). Consumers must NOT report a
+        # computed expected profit for such lots (it would be meaningless).
+        self.cost_basis_unknown = cost_basis_unknown
 
 
 def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
@@ -955,6 +960,7 @@ def get_expected_take_profit_summary(
                                 lot_qty=Decimal(str(balance)),
                                 parent_order_id=recent_buy.parent_order_id,
                                 oco_group_id=recent_buy.oco_group_id,
+                                cost_basis_unknown=True,  # buy price is current-price fallback
                             )
                             open_lots = [virtual_lot]
                             logger.info(f"Expected TP: Created uncovered virtual lot for {symbol} with current price as buy price (buy order price unavailable): qty={balance}, price={current_price}, symbol={recent_buy.symbol}")
@@ -972,6 +978,7 @@ def get_expected_take_profit_summary(
                         lot_qty=Decimal(str(balance)),
                         parent_order_id=None,
                         oco_group_id=None,
+                        cost_basis_unknown=True,  # no real BUY order / cost basis found
                     )
                     open_lots = [virtual_lot]
                     logger.info(f"Expected TP: Created uncovered virtual lot for {symbol} with current price as buy price (no historical BUY order found): qty={balance}, price={current_price}")
@@ -1044,6 +1051,13 @@ def get_expected_take_profit_summary(
         
         position_value = net_qty * current_price
         
+        # If the position's cost basis is unknown (buy price is the current-price
+        # fallback because no real filled BUY order exists), we must NOT report a
+        # computed expected profit or a value-at-buy-price: both would be
+        # meaningless / misleading. Net qty and position value (at current price)
+        # remain real and are kept.
+        cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
+        
         # Use actual_symbol for the result key and symbol field
         # This ensures consistency with order symbols (e.g., "BTC_USDT" instead of "BTC")
         results[actual_symbol] = {
@@ -1051,11 +1065,12 @@ def get_expected_take_profit_summary(
             "net_qty": net_qty,
             "current_price": current_price,
             "position_value": position_value,
-            "actual_position_value": float(actual_position_value),  # Value at buy price
+            "actual_position_value": None if cost_basis_unknown else float(actual_position_value),  # Value at buy price
             "covered_qty": covered_qty,
             "uncovered_qty": uncovered_qty,
-            "total_expected_profit": float(total_expected_profit),
+            "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
             "coverage_ratio": covered_qty / net_qty if net_qty > 0 else 0,
+            "cost_basis_unknown": cost_basis_unknown,
         }
     
     return results
@@ -1333,7 +1348,8 @@ def get_expected_take_profit_details(
                     )
                     recent_buy = most_recent_buy['order']
                     buy_time = recent_buy.exchange_create_time or recent_buy.created_at
-                    lot_buy_price = weighted_avg_price if weighted_avg_price > 0 else (
+                    has_real_cost_basis = weighted_avg_price > 0
+                    lot_buy_price = weighted_avg_price if has_real_cost_basis else (
                         Decimal(str(current_price)) if current_price > 0 else Decimal("0")
                     )
                     if lot_buy_price > 0:
@@ -1345,6 +1361,7 @@ def get_expected_take_profit_details(
                             lot_qty=fallback_balance,
                             parent_order_id=recent_buy.parent_order_id,
                             oco_group_id=recent_buy.oco_group_id,
+                            cost_basis_unknown=not has_real_cost_basis,  # current-price fallback
                         )
 
                 # No usable buy order price: fall back to current price so the
@@ -1358,6 +1375,7 @@ def get_expected_take_profit_details(
                         lot_qty=fallback_balance,
                         parent_order_id=None,
                         oco_group_id=None,
+                        cost_basis_unknown=True,  # no real BUY order / cost basis found
                     )
 
                 if virtual_lot is not None:
@@ -1375,6 +1393,7 @@ def get_expected_take_profit_details(
                 "uncovered_qty": 0,
                 "total_expected_profit": 0,
                 "matched_lots": [],
+                "cost_basis_unknown": False,
             }
     
     # Get active TP orders
@@ -1400,6 +1419,7 @@ def get_expected_take_profit_details(
         
         # Split the lot proportionally across ALL matched TP orders using the
         # shared helper (same computation the summary now uses).
+        lot_cost_basis_unknown = getattr(lot, "cost_basis_unknown", False)
         for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
             tp_price = Decimal(str(tp.price or 0))
             tp_qty = Decimal(str(tp.quantity))
@@ -1409,15 +1429,20 @@ def get_expected_take_profit_details(
             # Calculate profit for this portion
             profit, profit_pct = calculate_expected_profit(lot.buy_price, tp_price, lot_qty_for_this_tp)
             
-            total_expected_profit += profit
             total_covered_qty += lot_qty_for_this_tp
-            total_actual_position_value += lot.buy_price * lot_qty_for_this_tp
+            # When the cost basis is unknown (buy price is the current-price
+            # fallback), the profit and value-at-buy-price are meaningless, so we
+            # neither accumulate them into the totals nor expose them; the
+            # frontend renders "—" using the cost_basis_unknown flag.
+            if not lot_cost_basis_unknown:
+                total_expected_profit += profit
+                total_actual_position_value += lot.buy_price * lot_qty_for_this_tp
             
             matched_lot_details_raw.append({
                 "symbol": lot.symbol,
                 "buy_order_id": lot.buy_order_id,
                 "buy_time": lot.buy_time.isoformat() if lot.buy_time else None,
-                "buy_price": float(lot.buy_price),
+                "buy_price": None if lot_cost_basis_unknown else float(lot.buy_price),
                 "lot_qty": float(lot_qty_for_this_tp),  # Portion of lot covered by this TP
                 "tp_order_id": tp.exchange_order_id,
                 "tp_time": (tp.exchange_create_time or tp.created_at).isoformat() if (tp.exchange_create_time or tp.created_at) else None,
@@ -1425,8 +1450,9 @@ def get_expected_take_profit_details(
                 "tp_qty": float(tp_remaining),
                 "tp_status": tp.status.value,
                 "match_origin": lot.match_origin,
-                "expected_profit": float(profit),
-                "expected_profit_pct": float(profit_pct),
+                "expected_profit": None if lot_cost_basis_unknown else float(profit),
+                "expected_profit_pct": None if lot_cost_basis_unknown else float(profit_pct),
+                "cost_basis_unknown": lot_cost_basis_unknown,
             })
     
     # Group orders executed at the same time with the same TP
@@ -1470,15 +1496,24 @@ def get_expected_take_profit_details(
             # Aggregate lot quantities
             total_lot_qty = sum(l["lot_qty"] for l in lots)
             
-            # Weighted average buy price (weighted by lot_qty)
-            total_buy_value = sum(l["buy_price"] * l["lot_qty"] for l in lots)
-            avg_buy_price = total_buy_value / total_lot_qty if total_lot_qty > 0 else lots[0]["buy_price"]
+            # If the cost basis is unknown for this group, buy_price / expected
+            # profit fields are None and must stay None (no meaningful average).
+            group_cost_basis_unknown = any(l.get("cost_basis_unknown") for l in lots)
             
-            # Sum expected profit and calculate average profit percentage
-            total_expected_profit_group = sum(l["expected_profit"] for l in lots)
-            # Weighted average profit percentage
-            total_profit_pct_weighted = sum(l["expected_profit_pct"] * l["lot_qty"] for l in lots)
-            avg_profit_pct = total_profit_pct_weighted / total_lot_qty if total_lot_qty > 0 else lots[0]["expected_profit_pct"]
+            if group_cost_basis_unknown:
+                avg_buy_price = None
+                total_expected_profit_group = None
+                avg_profit_pct = None
+            else:
+                # Weighted average buy price (weighted by lot_qty)
+                total_buy_value = sum(l["buy_price"] * l["lot_qty"] for l in lots)
+                avg_buy_price = total_buy_value / total_lot_qty if total_lot_qty > 0 else lots[0]["buy_price"]
+                
+                # Sum expected profit and calculate average profit percentage
+                total_expected_profit_group = sum(l["expected_profit"] for l in lots)
+                # Weighted average profit percentage
+                total_profit_pct_weighted = sum(l["expected_profit_pct"] * l["lot_qty"] for l in lots)
+                avg_profit_pct = total_profit_pct_weighted / total_lot_qty if total_lot_qty > 0 else lots[0]["expected_profit_pct"]
             
             # Use values from first lot for TP and match info (they should all be the same)
             first_lot = lots[0]
@@ -1499,7 +1534,7 @@ def get_expected_take_profit_details(
                 "buy_order_ids": buy_order_ids,  # All order IDs in group
                 "buy_order_count": len(buy_order_ids),  # Number of orders grouped
                 "buy_time": earliest_buy_time,  # Earliest buy time
-                "buy_price": float(avg_buy_price),  # Weighted average buy price
+                "buy_price": None if avg_buy_price is None else float(avg_buy_price),  # Weighted average buy price
                 "lot_qty": float(total_lot_qty),  # Total quantity
                 "tp_order_id": tp_order_id,
                 "tp_time": tp_time,
@@ -1507,8 +1542,9 @@ def get_expected_take_profit_details(
                 "tp_qty": first_lot["tp_qty"],
                 "tp_status": first_lot["tp_status"],
                 "match_origin": first_lot["match_origin"],
-                "expected_profit": float(total_expected_profit_group),
-                "expected_profit_pct": float(avg_profit_pct),
+                "expected_profit": None if total_expected_profit_group is None else float(total_expected_profit_group),
+                "expected_profit_pct": None if avg_profit_pct is None else float(avg_profit_pct),
+                "cost_basis_unknown": group_cost_basis_unknown,
                 "is_grouped": True,  # Flag to indicate this is a grouped entry
             }
             matched_lot_details.append(grouped_entry)
@@ -1567,16 +1603,23 @@ def get_expected_take_profit_details(
     # Use calculated actual position value from matched lots
     # This ensures accuracy when lots are split across multiple TP orders
     
+    # If any open lot has an unknown cost basis (buy price is the current-price
+    # fallback), suppress the aggregate expected profit and value-at-buy-price so
+    # the frontend renders "—" instead of a misleading number. Net qty, position
+    # value (at current price) and covered/uncovered qty stay real.
+    cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
+    
     return {
         "symbol": symbol,
         "net_qty": net_qty,
         "current_price": current_price,
         "position_value": position_value,
-        "actual_position_value": float(total_actual_position_value),
+        "actual_position_value": None if cost_basis_unknown else float(total_actual_position_value),
         "covered_qty": float(total_covered_qty),
         "uncovered_qty": uncovered_qty,
-        "total_expected_profit": float(total_expected_profit),
+        "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
         "matched_lots": matched_lot_details,
         "has_uncovered": uncovered_qty > 0,
+        "cost_basis_unknown": cost_basis_unknown,
     }
 

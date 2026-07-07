@@ -253,13 +253,19 @@ export default function ExpectedTakeProfitTab({
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {formatNumber(item.uncovered_qty)}
                   </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
-                    (item.total_expected_profit || 0) >= 0 
-                      ? 'text-green-600 dark:text-green-400' 
-                      : 'text-red-600 dark:text-red-400'
-                  }`}>
-                    {formatNumber(item.total_expected_profit, '$')}
-                  </td>
+                  {item.cost_basis_unknown ? (
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-400 dark:text-gray-500" title="Cost basis not tracked (no recorded buy orders)">
+                      —
+                    </td>
+                  ) : (
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
+                      (item.total_expected_profit || 0) >= 0 
+                        ? 'text-green-600 dark:text-green-400' 
+                        : 'text-red-600 dark:text-red-400'
+                    }`}>
+                      {formatNumber(item.total_expected_profit, '$')}
+                    </td>
+                  )}
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {item.current_price ? formatNumber(item.current_price, item.symbol) : 'N/A'}
                   </td>
@@ -308,6 +314,13 @@ export default function ExpectedTakeProfitTab({
               </div>
             ) : expectedTPDetails ? (
               <div className="space-y-6">
+                {expectedTPDetails.cost_basis_unknown && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/30 p-3 text-sm text-amber-800 dark:text-amber-200">
+                    Cost basis not tracked for this position — there are no recorded buy orders,
+                    so the buy price and expected profit cannot be computed and are shown as "—".
+                    Quantities and current position value remain accurate.
+                  </div>
+                )}
                 {/* Summary Section */}
                 <div className="bg-gray-50 dark:bg-slate-700 rounded-lg p-4">
                   <h4 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">Summary</h4>
@@ -338,13 +351,19 @@ export default function ExpectedTakeProfitTab({
                     </div>
                     <div>
                       <div className="text-sm text-gray-600 dark:text-gray-400">Expected Profit</div>
-                      <div className={`text-lg font-semibold ${
-                        (expectedTPDetails.total_expected_profit || 0) >= 0
-                          ? 'text-green-600 dark:text-green-400'
-                          : 'text-red-600 dark:text-red-400'
-                      }`}>
-                        {formatNumber(expectedTPDetails.total_expected_profit, '$')}
-                      </div>
+                      {expectedTPDetails.cost_basis_unknown ? (
+                        <div className="text-lg font-semibold text-gray-400 dark:text-gray-500" title="Cost basis not tracked (no recorded buy orders)">
+                          —
+                        </div>
+                      ) : (
+                        <div className={`text-lg font-semibold ${
+                          (expectedTPDetails.total_expected_profit || 0) >= 0
+                            ? 'text-green-600 dark:text-green-400'
+                            : 'text-red-600 dark:text-red-400'
+                        }`}>
+                          {formatNumber(expectedTPDetails.total_expected_profit, '$')}
+                        </div>
+                      )}
                     </div>
                     {expectedTPDetails.current_price !== undefined && (
                       <div>
@@ -418,7 +437,13 @@ export default function ExpectedTakeProfitTab({
                                 )}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200">
-                                {formatNumber(lot.buy_price, lot.symbol)}
+                                {lot.cost_basis_unknown ? (
+                                  <span className="text-gray-400 dark:text-gray-500" title="Cost basis not tracked (no recorded buy orders)">
+                                    Cost basis not tracked
+                                  </span>
+                                ) : (
+                                  formatNumber(lot.buy_price, lot.symbol)
+                                )}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                                 {lot.buy_time ? formatDateTime(new Date(lot.buy_time)) : 'N/A'}
@@ -447,17 +472,25 @@ export default function ExpectedTakeProfitTab({
                                 </span>
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-sm text-right">
-                                <div className={`font-semibold ${
-                                  (lot.expected_profit || 0) >= 0
-                                    ? 'text-green-600 dark:text-green-400'
-                                    : 'text-red-600 dark:text-red-400'
-                                }`}>
-                                  {formatNumber(lot.expected_profit, '$')}
-                                </div>
-                                {lot.expected_profit_pct !== undefined && (
-                                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                                    ({lot.expected_profit_pct >= 0 ? '+' : ''}{lot.expected_profit_pct.toFixed(2)}%)
+                                {lot.cost_basis_unknown ? (
+                                  <div className="font-semibold text-gray-400 dark:text-gray-500" title="Cost basis not tracked (no recorded buy orders)">
+                                    —
                                   </div>
+                                ) : (
+                                  <>
+                                    <div className={`font-semibold ${
+                                      (lot.expected_profit || 0) >= 0
+                                        ? 'text-green-600 dark:text-green-400'
+                                        : 'text-red-600 dark:text-red-400'
+                                    }`}>
+                                      {formatNumber(lot.expected_profit, '$')}
+                                    </div>
+                                    {lot.expected_profit_pct !== undefined && lot.expected_profit_pct !== null && (
+                                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                                        ({lot.expected_profit_pct >= 0 ? '+' : ''}{lot.expected_profit_pct.toFixed(2)}%)
+                                      </div>
+                                    )}
+                                  </>
                                 )}
                               </td>
                             </tr>

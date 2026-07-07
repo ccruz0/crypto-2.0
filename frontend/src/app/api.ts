@@ -1639,12 +1639,13 @@ export interface ExpectedTPSummaryItem {
   symbol: string;
   net_qty: number;
   position_value: number;
-  actual_position_value?: number; // Value at buy price (cost basis)
+  actual_position_value?: number | null; // Value at buy price (cost basis); null when cost basis unknown
   covered_qty: number;
   uncovered_qty: number;
-  total_expected_profit: number;
+  total_expected_profit: number | null; // null when cost basis is unknown (current-price fallback)
   current_price?: number;
   coverage_ratio?: number;
+  cost_basis_unknown?: boolean; // true when buy price is the current-price fallback (no real BUY orders)
 }
 
 export interface ExpectedTPSummary {
@@ -1684,7 +1685,7 @@ export interface ExpectedTPMatchedLot {
   buy_order_ids?: string[]; // For grouped entries
   buy_order_count?: number; // For grouped entries
   buy_time: string | null;
-  buy_price: number;
+  buy_price: number | null; // null when cost basis is unknown (current-price fallback)
   lot_qty: number;
   tp_order_id: string;
   tp_time: string | null;
@@ -1692,8 +1693,9 @@ export interface ExpectedTPMatchedLot {
   tp_qty: number;
   tp_status: string;
   match_origin: string;
-  expected_profit: number;
-  expected_profit_pct: number;
+  expected_profit: number | null; // null when cost basis is unknown
+  expected_profit_pct: number | null; // null when cost basis is unknown
+  cost_basis_unknown?: boolean; // true when buy price is the current-price fallback
   is_grouped?: boolean; // For grouped entries
 }
 
@@ -1701,13 +1703,14 @@ export interface ExpectedTPDetails {
   symbol: string;
   net_qty: number;
   position_value: number;
-  actual_position_value?: number;
+  actual_position_value?: number | null;
   covered_qty: number;
   uncovered_qty: number;
-  total_expected_profit: number;
+  total_expected_profit: number | null; // null when cost basis is unknown
   matched_lots: ExpectedTPMatchedLot[]; // Backend returns 'matched_lots', not 'lots'
   current_price?: number;
   has_uncovered?: boolean;
+  cost_basis_unknown?: boolean; // true when buy price is the current-price fallback
   uncovered_entry?: {
     symbol: string;
     uncovered_qty: number;
