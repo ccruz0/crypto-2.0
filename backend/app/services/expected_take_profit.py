@@ -303,7 +303,7 @@ def match_tp_orders_oco(
                 used_tp_ids.add(tp.exchange_order_id)
                 matched_lots.append(lot)
                 single_match_found = True
-                logger.info(f"OCO matched: lot {lot.buy_order_id[:15]}... (qty={float(lot.lot_qty):.8f}) to TP {tp.exchange_order_id[:15]}... (qty={float(tp_remaining):.8f})")
+                logger.info(f"OCO matched: lot {(lot.buy_order_id or 'VIRTUAL')[:15]}... (qty={float(lot.lot_qty):.8f}) to TP {tp.exchange_order_id[:15]}... (qty={float(tp_remaining):.8f})")
                 break
         
         if single_match_found:
@@ -350,7 +350,7 @@ def match_tp_orders_oco(
                 used_tp_ids.add(tp.exchange_order_id)
             
             matched_lots.append(lot)
-            logger.info(f"OCO matched: lot {lot.buy_order_id[:15]}... (qty={float(lot.lot_qty):.8f}) to {len(selected_tps)} TP order(s) from same OCO group (total: {float(accumulated_tp_qty):.8f})")
+            logger.info(f"OCO matched: lot {(lot.buy_order_id or 'VIRTUAL')[:15]}... (qty={float(lot.lot_qty):.8f}) to {len(selected_tps)} TP order(s) from same OCO group (total: {float(accumulated_tp_qty):.8f})")
     
     # Return matched lots and unused TP orders
     unmatched_lots = [lot for lot in lots if lot.matched_tp is None]
@@ -545,7 +545,7 @@ def match_tp_orders_fifo(
             for tp in matching_tps:
                 used_tp_ids.add(tp.exchange_order_id)
             
-            logger.info(f"FIFO matched lot {lot.buy_order_id[:15]}... (qty={float(lot_qty):.8f}) to {len(matching_tps)} TP order(s) (total: {float(accumulated_tp_qty):.8f})")
+            logger.info(f"FIFO matched lot {(lot.buy_order_id or 'VIRTUAL')[:15]}... (qty={float(lot_qty):.8f}) to {len(matching_tps)} TP order(s) (total: {float(accumulated_tp_qty):.8f})")
     
     return lots
 
