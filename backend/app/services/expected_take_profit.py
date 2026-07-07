@@ -1217,7 +1217,104 @@ def get_expected_take_profit_details(
                         )
                         open_lots = [virtual_lot]
                         logger.info(f"Expected TP Details: Created virtual lot for {symbol} from portfolio balance: qty={balance}, weighted_avg_price={weighted_avg_price} (from {len(all_buy_orders)} buy orders), symbol={virtual_lot_symbol}, buy_order_id={recent_buy.exchange_order_id[:15]}... (preferred symbol: {preferred_symbol})")
-        
+
+        # Fallback: still no open lots but we have a portfolio balance.
+        # Mirror the summary path so positions acquired without tracked FILLED buy
+        # orders (e.g. reconciled from the exchange) still produce a virtual lot,
+        # otherwise the per-symbol details modal shows all zeros / "no matched lots".
+        if not open_lots:
+            fallback_balance = Decimal("0")
+            if portfolio_balance and portfolio_balance > 0:
+                fallback_balance = Decimal(str(portfolio_balance))
+            elif portfolio_summary:
+                for bal in portfolio_summary.get("balances", []):
+                    currency = bal.get("currency", "").upper()
+                    if currency == symbol or currency == symbol.split('_')[0]:
+                        fallback_balance = Decimal(str(bal.get("balance", 0) or 0))
+                        break
+                if fallback_balance <= 0:
+                    for asset in portfolio_summary.get("assets", []):
+                        coin = asset.get("coin", "").upper()
+                        if coin == symbol or coin == symbol.split('_')[0]:
+                            fallback_balance = Decimal(str(asset.get("balance", 0) or 0))
+                            break
+
+            if fallback_balance > 0:
+                from datetime import datetime, timezone
+                logger.info(f"Expected TP Details: No lots/buy-orders for {symbol}, has balance {fallback_balance} - creating virtual lot")
+                symbol_variants = [symbol]
+                if '_' not in symbol:
+                    symbol_variants.extend([f"{symbol}_USDT", f"{symbol}_USD"])
+                else:
+                    if symbol.endswith('_USDT'):
+                        symbol_variants.append(symbol.replace('_USDT', '_USD'))
+                    elif symbol.endswith('_USD'):
+                        symbol_variants.append(symbol.replace('_USD', '_USDT'))
+
+                # Try to derive a weighted-average buy price from any filled BUY orders
+                all_buy_orders = []
+                for variant in symbol_variants:
+                    orders = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.symbol == variant,
+                        ExchangeOrder.side == OrderSideEnum.BUY,
+                        ExchangeOrder.status == OrderStatusEnum.FILLED
+                    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
+                    for order in orders:
+                        price = order.avg_price or order.price
+                        if (not price or price == 0) and order.cumulative_quantity and order.cumulative_quantity > 0 \
+                                and order.cumulative_value and order.cumulative_value > 0:
+                            price = order.cumulative_value / order.cumulative_quantity
+                        if price and price > 0:
+                            qty = Decimal(str(order.cumulative_quantity or order.quantity or 0))
+                            if qty > 0:
+                                all_buy_orders.append({
+                                    'order': order,
+                                    'price': Decimal(str(price)),
+                                    'qty': qty,
+                                })
+
+                virtual_lot = None
+                if all_buy_orders:
+                    total_value = sum(bo['price'] * bo['qty'] for bo in all_buy_orders)
+                    total_qty = sum(bo['qty'] for bo in all_buy_orders)
+                    weighted_avg_price = total_value / total_qty if total_qty > 0 else Decimal("0")
+                    most_recent_buy = max(
+                        all_buy_orders,
+                        key=lambda bo: bo['order'].exchange_create_time or bo['order'].created_at or datetime.min.replace(tzinfo=timezone.utc)
+                    )
+                    recent_buy = most_recent_buy['order']
+                    buy_time = recent_buy.exchange_create_time or recent_buy.created_at
+                    lot_buy_price = weighted_avg_price if weighted_avg_price > 0 else (
+                        Decimal(str(current_price)) if current_price > 0 else Decimal("0")
+                    )
+                    if lot_buy_price > 0:
+                        virtual_lot = OpenLot(
+                            symbol=recent_buy.symbol,
+                            buy_order_id=recent_buy.exchange_order_id,
+                            buy_time=buy_time or datetime.now(timezone.utc),
+                            buy_price=lot_buy_price,
+                            lot_qty=fallback_balance,
+                            parent_order_id=recent_buy.parent_order_id,
+                            oco_group_id=recent_buy.oco_group_id,
+                        )
+
+                # No usable buy order price: fall back to current price so the
+                # position is still shown (buy price unknown).
+                if virtual_lot is None and current_price > 0:
+                    virtual_lot = OpenLot(
+                        symbol=symbol,
+                        buy_order_id=None,
+                        buy_time=datetime.now(timezone.utc),
+                        buy_price=Decimal(str(current_price)),
+                        lot_qty=fallback_balance,
+                        parent_order_id=None,
+                        oco_group_id=None,
+                    )
+
+                if virtual_lot is not None:
+                    open_lots = [virtual_lot]
+                    logger.info(f"Expected TP Details: Created fallback virtual lot for {symbol}: qty={fallback_balance}, buy_price={virtual_lot.buy_price}, symbol={virtual_lot.symbol}")
+
         if not open_lots:
             return {
                 "symbol": symbol,

@@ -3181,34 +3181,23 @@ def get_expected_take_profit_details_endpoint(symbol: str, db: Session = Depends
         
         symbol = symbol.upper()
         
-        # Get current price from portfolio
+        # Get current price and balance from portfolio.
+        # get_portfolio_summary() returns a "balances" list (currency/balance/usd_value);
+        # use it as the single source of truth, exactly like the summary endpoint does.
         portfolio_summary = get_portfolio_summary(db)
-        portfolio_assets = portfolio_summary.get("assets", [])
-        portfolio_balances = portfolio_summary.get("balances", [])
+        portfolio_balances = portfolio_summary.get("balances", []) if portfolio_summary else []
         
         current_price = 0.0
         balance = 0.0
         
-        # Try assets format first
-        for asset in portfolio_assets:
-            coin = asset.get("coin", "").upper()
-            if coin == symbol or coin == symbol.split('_')[0]:
-                balance = asset.get("balance", 0)
-                value_usd = asset.get("value_usd", 0)
+        for bal in portfolio_balances:
+            currency = bal.get("currency", "").upper()
+            if currency == symbol or currency == symbol.split('_')[0]:
+                balance = bal.get("balance", 0)
+                value_usd = bal.get("usd_value", 0) or bal.get("value_usd", 0)
                 if balance > 0 and value_usd > 0:
                     current_price = float(value_usd) / float(balance)
                     break
-        
-        # Try balances format if not found
-        if current_price <= 0:
-            for bal in portfolio_balances:
-                currency = bal.get("currency", "").upper()
-                if currency == symbol or currency == symbol.split('_')[0]:
-                    balance = bal.get("balance", 0)
-                    value_usd = bal.get("usd_value", 0) or bal.get("value_usd", 0)
-                    if balance > 0 and value_usd > 0:
-                        current_price = float(value_usd) / float(balance)
-                        break
         
         # Get detailed data (pass balance and portfolio_summary for virtual lot creation)
         details = get_expected_take_profit_details(db, symbol, current_price, balance, portfolio_summary)
