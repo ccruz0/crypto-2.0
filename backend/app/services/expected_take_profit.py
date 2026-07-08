@@ -30,6 +30,10 @@ ACTIVE_TP_STATUSES = [
 # Executed status for orders that have filled
 EXECUTED_STATUS = OrderStatusEnum.FILLED
 
+# When parent_order_id was not persisted, OTOCO child TPs are still co-created
+# within seconds of their parent BUY with matching quantity.
+OTOCO_COCREATION_MAX_SECONDS = 30
+
 
 class OpenLot:
     """Represents an open lot (remaining quantity from a BUY order)"""
@@ -348,6 +352,83 @@ def match_tp_orders_by_parent(
     return matched_lots, unmatched_lots, remaining_tps
 
 
+def match_tp_orders_by_cocreation(
+    lots: List[OpenLot],
+    tp_orders: List[ExchangeOrder],
+) -> Tuple[List[OpenLot], List[OpenLot], List[ExchangeOrder]]:
+    """
+    Infer OTOCO linkage when ``parent_order_id`` was not persisted on the TP row.
+
+    On this account each BUY is placed as an OTOCO with an attached TP. When
+    exchange sync backfills orders without the parent->child columns, the
+    authoritative signal is co-creation: the TP appears within a few seconds of
+    its parent BUY with the same remaining quantity. Prefer exact quantity
+    matches, then the smallest time delta.
+    """
+    matched_lots: List[OpenLot] = []
+    used_tp_ids: set = set()
+    used_buy_ids: set = set()
+
+    candidates: List[Tuple[Tuple[float, float], OpenLot, ExchangeOrder]] = []
+
+    for lot in lots:
+        if not lot.buy_time or not lot.buy_order_id:
+            continue
+        lot_base = _normalize_symbol(lot.symbol)
+        for tp in tp_orders:
+            if getattr(tp, "parent_order_id", None):
+                continue
+            if tp.exchange_order_id in used_tp_ids:
+                continue
+            if tp.side != OrderSideEnum.SELL or tp.status not in ACTIVE_TP_STATUSES:
+                continue
+            if _normalize_symbol(tp.symbol) != lot_base:
+                continue
+
+            tp_time = tp.exchange_create_time or tp.created_at
+            if not tp_time:
+                continue
+            delta_s = (tp_time - lot.buy_time).total_seconds()
+            if delta_s < 0 or delta_s > OTOCO_COCREATION_MAX_SECONDS:
+                continue
+
+            tp_qty = Decimal(str(tp.quantity))
+            tp_filled = Decimal(str(tp.cumulative_quantity or 0))
+            tp_remaining = tp_qty - tp_filled
+            if tp_remaining <= 0:
+                continue
+
+            qty_diff = abs(tp_remaining - lot.lot_qty)
+            tolerance = max(lot.lot_qty * Decimal("0.01"), Decimal("0.00000001"))
+            if qty_diff > tolerance:
+                continue
+
+            candidates.append(((float(qty_diff), delta_s), lot, tp))
+
+    candidates.sort(key=lambda item: item[0])
+
+    for (_qty_diff, _delta_s), lot, tp in candidates:
+        if lot.buy_order_id in used_buy_ids or lot.matched_tp is not None:
+            continue
+        if tp.exchange_order_id in used_tp_ids:
+            continue
+
+        lot.matched_tp = tp
+        lot.match_origin = "OTOCO"
+        matched_lots.append(lot)
+        used_buy_ids.add(lot.buy_order_id)
+        used_tp_ids.add(tp.exchange_order_id)
+        logger.info(
+            f"OTOCO co-creation matched: lot buy_order_id={lot.buy_order_id[:15]}... "
+            f"(qty={float(lot.lot_qty):.8f}) to TP {tp.exchange_order_id[:15]}... "
+            f"(qty={float(tp.quantity):.8f}) delta={_delta_s:.1f}s"
+        )
+
+    unmatched_lots = [lot for lot in lots if lot.matched_tp is None]
+    remaining_tps = [tp for tp in tp_orders if tp.exchange_order_id not in used_tp_ids]
+    return matched_lots, unmatched_lots, remaining_tps
+
+
 def match_all_tp_orders(
     open_lots: List[OpenLot],
     tp_orders: List[ExchangeOrder]
@@ -358,17 +439,26 @@ def match_all_tp_orders(
 
     Priority order:
       1. Real OTOCO parent linkage (``tp.parent_order_id == lot.buy_order_id``)
-      2. OCO group id linkage (``tp.oco_group_id == lot.oco_group_id``)
-      3. FIFO fallback (time-ordered) for lots/TPs with no explicit linkage
+      2. OTOCO co-creation inference (TP created within seconds of BUY, qty match)
+      3. OCO group id linkage (``tp.oco_group_id == lot.oco_group_id``)
+      4. FIFO fallback (time-ordered) for lots/TPs with no explicit linkage
 
     Returns:
         Tuple of (all_matched_lots, unmatched_lots)
     """
     parent_matched, unmatched_lots, remaining_tps = match_tp_orders_by_parent(open_lots, tp_orders)
+    cocreation_matched, unmatched_lots, remaining_tps = match_tp_orders_by_cocreation(
+        unmatched_lots, remaining_tps
+    )
     oco_matched, unmatched_lots, remaining_tps = match_tp_orders_oco(unmatched_lots, remaining_tps)
     fifo_lots = match_tp_orders_fifo(unmatched_lots, remaining_tps)
 
-    all_matched = parent_matched + oco_matched + [lot for lot in fifo_lots if lot.matched_tp is not None]
+    all_matched = (
+        parent_matched
+        + cocreation_matched
+        + oco_matched
+        + [lot for lot in fifo_lots if lot.matched_tp is not None]
+    )
     unmatched = [lot for lot in fifo_lots if lot.matched_tp is None]
     return all_matched, unmatched
 
