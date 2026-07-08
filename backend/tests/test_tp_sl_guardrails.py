@@ -3,6 +3,7 @@ Tests for SL/TP order creation guardrails.
 Ensures that guardrails (Live toggle, Telegram kill switch) are enforced
 for SL/TP order creation paths.
 """
+import os
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from sqlalchemy.orm import Session
@@ -338,6 +339,38 @@ class TestProtectiveOrderCooldownBypass:
         assert call_kwargs["ignore_trade_yes"] is True
         # parent order id is forwarded for guardrail bypass tracing
         assert call_kwargs["parent_order_id"] == "entry_abc123"
+
+    def test_protective_order_bypasses_max_open_orders_total(self):
+        """Protective SL/TP must not be blocked when MAX_OPEN_ORDERS_TOTAL is reached."""
+        from app.utils.trading_guardrails import can_place_real_order
+
+        db = MagicMock()
+        with patch.dict(os.environ, {"MAX_OPEN_ORDERS_TOTAL": "10"}), \
+             patch("app.utils.trading_guardrails.get_live_trading_status", return_value=True), \
+             patch("app.utils.trading_guardrails._get_telegram_kill_switch_status", return_value=False), \
+             patch("app.utils.trading_guardrails._get_trade_enabled_for_symbol", return_value=True), \
+             patch("app.utils.trading_guardrails.count_total_open_positions", return_value=10), \
+             patch("app.utils.trading_guardrails._parse_allowlist", return_value=set()):
+            entry_allowed, entry_reason = can_place_real_order(
+                db=db, symbol="BTC_USD", order_usd_value=10.0, side="BUY",
+            )
+            prot_allowed, prot_reason = can_place_real_order(
+                db=db,
+                symbol="BTC_USD",
+                order_usd_value=10.0,
+                side="SELL",
+                ignore_trade_yes=True,
+                ignore_daily_limit=True,
+                ignore_usd_limit=True,
+                ignore_cooldown=True,
+                is_protective_order=True,
+                parent_order_id="entry_btc123",
+            )
+
+        assert entry_allowed is False
+        assert "MAX_OPEN_ORDERS_TOTAL" in (entry_reason or "")
+        assert prot_allowed is True
+        assert prot_reason is None
 
     @patch('app.services.tp_sl_order_creator.can_place_real_order')
     def test_tp_bypasses_all_protective_limits(self, mock_can_place, mock_db):

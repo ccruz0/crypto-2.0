@@ -1572,66 +1572,43 @@ class ExchangeSyncService:
         db.expire_all()
 
         logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
-        
-        # Single path: delegate to ProtectionOrderService (HAND_OFF_TOTAL and idempotency inside service)
-        from app.services.protection_order_service import get_protection_order_service  # pyright: ignore[reportMissingImports]
+
         from app.services.live_trading_gate import get_live_trading  # pyright: ignore[reportMissingImports]
 
-        result = get_protection_order_service().request_protection_for_filled_order(
-            db=db,
-            symbol=symbol,
-            filled_order_id=order_id,
-            filled_side=side,
-            filled_price=filled_price_f,
-            quantity=filled_qty,
-            source=source,
-            correlation_id=None,
-            dry_run=False,
-            force=force,
-            strict_percentages=strict_percentages,
-            sl_price_override=sl_price_override_f,
-            tp_price_override=tp_price_override_f,
-        )
-
         try:
-            if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                del self._sl_tp_creation_locks[lock_key]
-        except Exception:
-            pass
+            impl_result = self._create_sl_tp_impl(
+                db=db,
+                symbol=symbol,
+                side_upper=side_upper,
+                filled_price_f=filled_price_f,
+                filled_qty=filled_qty,
+                order_id=order_id,
+                source=source,
+                strict_percentages=strict_percentages,
+                sl_price_override_f=sl_price_override_f,
+                tp_price_override_f=tp_price_override_f,
+            )
+        finally:
+            try:
+                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                    del self._sl_tp_creation_locks[lock_key]
+            except Exception:
+                pass
 
-        if result.get("status") == "blocked" or result.get("status") == "skipped":
-            return None
-
-        details = result.get("details") or {}
-        sl_result = details.get("sl_result")
-        tp_result = details.get("tp_result")
-        sl_order_id = details.get("sl_order_id")
-        tp_order_id = details.get("tp_order_id")
-        sl_price = details.get("sl_price")
-        tp_price = details.get("tp_price")
-        oco_group_id = details.get("oco_group_id")
-        skip_tp_creation = details.get("skip_tp_creation", False)
-        skip_tp_reason = details.get("skip_tp_reason")
+        sl_result = impl_result.get("sl_result")
+        tp_result = impl_result.get("tp_result")
+        sl_order_id = (sl_result or {}).get("order_id")
+        tp_order_id = (tp_result or {}).get("order_id")
+        sl_price = impl_result.get("sl_price")
+        tp_price = impl_result.get("tp_price")
+        oco_group_id = impl_result.get("oco_group_id")
+        skip_tp_creation = impl_result.get("skip_tp_creation", False)
+        skip_tp_reason = impl_result.get("skip_tp_reason")
         live_trading = get_live_trading(db)
         sl_order_error = (sl_result or {}).get("error")
         tp_order_error = (tp_result or {}).get("error")
 
-        if result.get("status") == "already_protected":
-            return {
-                "symbol": symbol,
-                "order_id": order_id,
-                "source": source,
-                "live_trading": bool(live_trading),
-                "oco_group_id": oco_group_id,
-                "sl_price": float(sl_price) if sl_price is not None else None,
-                "tp_price": float(tp_price) if tp_price is not None else None,
-                "sl_result": sl_result,
-                "tp_result": tp_result,
-                "skip_tp_creation": bool(skip_tp_creation),
-                "skip_tp_reason": skip_tp_reason,
-            }
-
-        # status is "created" or "failed" - prepare for Telegram notification
+        # Prepare for Telegram notification
         watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
         sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"
         _sl_pct = getattr(watchlist_item, "sl_percentage", None) if watchlist_item else None
