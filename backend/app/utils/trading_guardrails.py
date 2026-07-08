@@ -244,6 +244,7 @@ def can_place_real_order(
         ignore_usd_limit=ignore_usd_limit,
         ignore_cooldown=ignore_cooldown,
         parent_order_id=parent_order_id,
+        is_protective_order=is_protective_order,
     )
 
 
@@ -256,6 +257,7 @@ def _check_risk_limits(
     ignore_usd_limit: bool = False,
     ignore_cooldown: bool = False,
     parent_order_id: Optional[str] = None,
+    is_protective_order: bool = False,
 ) -> Tuple[bool, Optional[str]]:
     """
     Check risk limits (MAX_OPEN_ORDERS_TOTAL, MAX_ORDERS_PER_SYMBOL_PER_DAY, MAX_USD_PER_ORDER, MIN_SECONDS_BETWEEN_ORDERS).
@@ -265,18 +267,24 @@ def _check_risk_limits(
     """
     symbol_upper = symbol.upper()
     
-    # MAX_OPEN_ORDERS_TOTAL check
-    try:
-        total_open = count_total_open_positions(db)
-        if total_open >= MAX_OPEN_ORDERS_TOTAL:
-            reason = f"blocked: MAX_OPEN_ORDERS_TOTAL limit reached ({total_open}/{MAX_OPEN_ORDERS_TOTAL})"
-            logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+    # MAX_OPEN_ORDERS_TOTAL check — skip for protective SL/TP (must not block protection on open positions)
+    if is_protective_order:
+        logger.info(
+            f"[GUARDRAIL] MAX_OPEN_ORDERS_TOTAL check bypassed for protective SL/TP order "
+            f"symbol={symbol} side={side} parent_order_id={parent_order_id}"
+        )
+    else:
+        try:
+            total_open = count_total_open_positions(db)
+            if total_open >= MAX_OPEN_ORDERS_TOTAL:
+                reason = f"blocked: MAX_OPEN_ORDERS_TOTAL limit reached ({total_open}/{MAX_OPEN_ORDERS_TOTAL})"
+                logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+                return False, reason
+        except Exception as e:
+            logger.error(f"Error checking MAX_OPEN_ORDERS_TOTAL: {e}")
+            # Conservative: block on error
+            reason = "blocked: error checking open orders limit"
             return False, reason
-    except Exception as e:
-        logger.error(f"Error checking MAX_OPEN_ORDERS_TOTAL: {e}")
-        # Conservative: block on error
-        reason = "blocked: error checking open orders limit"
-        return False, reason
     
     # MAX_ORDERS_PER_SYMBOL_PER_DAY check (optional skip for protective orders)
     if not ignore_daily_limit:

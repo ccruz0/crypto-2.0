@@ -9,7 +9,7 @@ route:
   group_interval: 5m
   repeat_interval: 2h
   routes:
-    # Warning-level host alerts stay in Prometheus/Grafana only — no Telegram noise.
+    # Warning-level host alerts are logged in Prometheus/Grafana only — no Telegram noise.
     - receiver: "null"
       matchers:
         - severity="warning"
