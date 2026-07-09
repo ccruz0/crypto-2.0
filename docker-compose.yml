@@ -342,8 +342,6 @@ services:
       - RUN_TELEGRAM_POLLER=false
       # Do not run the signal monitor loop here — primary backend-aws holds the DB lock for trading execution
       - RUN_SIGNAL_MONITOR=false
-      # Canary must not run exchange_sync — avoids duplicate SL/TP Telegram from idempotent paths
-      - DEBUG_DISABLE_EXCHANGE_SYNC=true
       - RUNTIME_ORIGIN=AWS
       - EXECUTION_CONTEXT=AWS
       - TRADING_ENABLED=${TRADING_ENABLED:-true}
