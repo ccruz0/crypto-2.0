@@ -196,7 +196,7 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                                     instrument = balance.get("instrument_name", "")
                                     quantity = float(balance.get("quantity", "0") or 0)
                                     currency = _normalize_currency_name(instrument)
-                                    if quantity > 0 and currency:
+                                    if quantity != 0 and currency:
                                         accounts.append({
                                             "currency": currency,
                                             "balance": str(quantity),
@@ -208,7 +208,7 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                                     instrument = balance.get("instrument_name", "")
                                     quantity = float(balance.get("quantity", "0") or 0)
                                     currency = _normalize_currency_name(instrument)
-                                    if quantity > 0 and currency:
+                                    if quantity != 0 and currency:
                                         accounts.append({
                                             "currency": currency,
                                             "balance": str(quantity),
