@@ -87,10 +87,12 @@ class SLTPCheckerService:
         """
         Check for OCO-related issues and stale/orphan protection orders.
 
-        Orphan/stale cases:
-        - Missing parent_order_id or oco_group_id
+        Orphan/stale cases (actionable only):
         - Sibling in OCO group already FILLED (other leg should be cancelled)
         - ACTIVE in DB but not present on exchange open orders (ghost/stale)
+
+        Standalone trigger TPs/SLs on the exchange without parent_order_id or
+        oco_group_id are valid (legacy/manual orders) and must not be flagged.
         """
         issues = {'orphaned_orders': [], 'incomplete_groups': [], 'total_oco_groups': 0}
         sl_tp_types = [
@@ -113,11 +115,11 @@ class SLTPCheckerService:
 
             for order in active_sl_tp:
                 reasons: List[str] = []
-
-                if not order.parent_order_id:
-                    reasons.append("missing parent_order_id")
-                if not order.oco_group_id:
-                    reasons.append("missing oco_group_id")
+                on_exchange = bool(
+                    order.exchange_order_id
+                    and exchange_open_ids
+                    and str(order.exchange_order_id) in exchange_open_ids
+                )
 
                 if order.oco_group_id:
                     siblings = db.query(ExchangeOrder).filter(
@@ -146,11 +148,7 @@ class SLTPCheckerService:
                         if reason not in reasons:
                             reasons.append(reason)
 
-                if (
-                    order.exchange_order_id
-                    and exchange_open_ids
-                    and str(order.exchange_order_id) not in exchange_open_ids
-                ):
+                if order.exchange_order_id and exchange_open_ids and not on_exchange:
                     reasons.append("ACTIVE in DB but not on exchange")
 
                 if reasons and order.exchange_order_id not in seen_orphan_ids:
