@@ -21,8 +21,10 @@ MAX_WAIT_ITERATIONS="${MAX_WAIT_ITERATIONS:-600}"
 export AWS_REGION="$REGION"
 
 GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
-GIT_SYNC_CMD="${GIT_PULL_PREFIX}cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1; rm -f .git/refs/remotes/origin/main 2>/dev/null || true; git fetch origin main && git reset --hard FETCH_HEAD 2>/dev/null || git reset --hard origin/main; git submodule update --init --recursive 2>/dev/null || true"
+PROD_CD='if [ -d /home/ubuntu/crypto-2.0/.git ]; then cd /home/ubuntu/crypto-2.0; elif [ -d /home/ubuntu/automated-trading-platform/.git ]; then cd /home/ubuntu/automated-trading-platform; else echo "ERR: no production git repository found" >&2; exit 1; fi'
+GIT_SYNC_CMD="${GIT_PULL_PREFIX}${PROD_CD}; rm -f .git/refs/remotes/origin/main 2>/dev/null || true; git fetch origin main && git reset --hard FETCH_HEAD 2>/dev/null || git reset --hard origin/main; git submodule update --init --recursive 2>/dev/null || true"
 export GIT_SYNC_CMD
+export PROD_CD
 
 echo "=== Deploy frontend-aws via SSM (instance $INSTANCE_ID) ==="
 echo ""
@@ -41,10 +43,11 @@ fi
 PARAMS="commands=$(python3 <<'PY'
 import json, os
 sync = os.environ["GIT_SYNC_CMD"]
+prod_cd = os.environ["PROD_CD"]
 cmds = [
     "set -e",
     sync,
-    "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
+    prod_cd,
     "bash scripts/aws/prod_frontend_deploy.sh",
 ]
 print(json.dumps(cmds), end="")

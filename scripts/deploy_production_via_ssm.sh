@@ -48,21 +48,24 @@ fi
 GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
 # Drop broken loose ref so fetch can recreate it (avoids: cannot lock ref ... expected <old-sha>)
 GIT_FETCH_CMD="${GIT_PULL_PREFIX}rm -f .git/refs/remotes/origin/main 2>/dev/null || true; git fetch origin main && git reset --hard FETCH_HEAD 2>/dev/null || git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true"
-# DB must be healthy before backend-aws (see prior: postgres_hardened unhealthy blocked compose).
+# Prefer crypto-2.0 (canonical PROD clone); automated-trading-platform is legacy fallback only if it has .git
+PROD_CD='if [ -d /home/ubuntu/crypto-2.0/.git ]; then cd /home/ubuntu/crypto-2.0; elif [ -d /home/ubuntu/automated-trading-platform/.git ]; then cd /home/ubuntu/automated-trading-platform; else echo "ERR: no production git repository found" >&2; exit 1; fi'
 export GIT_FETCH_CMD
+export PROD_CD
 export SKIP_REBUILD
 export NO_CACHE
 # AWS CLI expects: --parameters 'commands=["a","b"]' (see `aws ssm send-command help` examples)
 PARAMS="commands=$(python3 <<'PY'
 import json, os
 git = os.environ["GIT_FETCH_CMD"]
+prod_cd = os.environ["PROD_CD"]
 stack = (
     f'SKIP_REBUILD={os.environ.get("SKIP_REBUILD", "0")} '
     f'NO_CACHE={os.environ.get("NO_CACHE", "0")} bash scripts/aws/prod_stack_up.sh'
 )
 cmds = [
     "set -e",
-    "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
+    prod_cd,
     git,
     stack,
 ]
