@@ -269,10 +269,19 @@ export default function PortfolioTab({
                       asset.net_profit_usd !== null && asset.net_profit_usd !== undefined;
                     const pnlPositive = hasCostBasis && (asset.pnl_pct as number) >= 0;
                     const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
+                    const isShort = (asset.balance ?? 0) < 0;
+                    const balanceColorClass = isShort ? 'text-red-600 font-medium' : 'text-gray-500 dark:text-gray-300';
                     return (
                       <tr key={asset.coin} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{asset.coin}</td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{formatNumber(asset.balance)}</td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                          {asset.coin}
+                          {isShort && (
+                            <span className="ml-2 text-xs font-semibold uppercase text-red-600 bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded">
+                              Short
+                            </span>
+                          )}
+                        </td>
+                        <td className={`px-4 py-3 whitespace-nowrap text-sm ${balanceColorClass}`}>{formatNumber(asset.balance)}</td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-white">{formatNumber(asset.value_usd)}</td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm">
                           {hasCostBasis ? (

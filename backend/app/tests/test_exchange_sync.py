@@ -536,3 +536,70 @@ def test_sync_balances_handles_mixed_float_decimal_arithmetic(db_session, monkey
     assert btc_balance.total == Decimal("2.0")
     assert btc_balance.free == Decimal("1.8")
     assert btc_balance.locked == Decimal("0.2")  # 2.0 - 1.8
+
+
+def test_create_sl_tp_impl_skips_when_active_protection_exists(db_session, monkeypatch):
+    """_create_sl_tp_impl must not place duplicate SL/TP when parent already has active legs."""
+    from datetime import datetime, timezone
+    from app.models.exchange_order import OrderSideEnum, OrderStatusEnum
+
+    parent_id = "5755600491091887888"
+    db_session.add(
+        ExchangeOrder(
+            exchange_order_id="73817490101967199",
+            symbol="BTC_USD",
+            side=OrderSideEnum.SELL,
+            order_type="STOP_LIMIT",
+            status=OrderStatusEnum.ACTIVE,
+            price=Decimal("56109.46"),
+            quantity=Decimal("0.00016"),
+            parent_order_id=parent_id,
+            order_role="STOP_LOSS",
+            exchange_create_time=datetime.now(timezone.utc),
+        )
+    )
+    db_session.add(
+        ExchangeOrder(
+            exchange_order_id="73817490101968336",
+            symbol="BTC_USD",
+            side=OrderSideEnum.SELL,
+            order_type="TAKE_PROFIT_LIMIT",
+            status=OrderStatusEnum.ACTIVE,
+            price=Decimal("62967.28"),
+            quantity=Decimal("0.00016"),
+            parent_order_id=parent_id,
+            order_role="TAKE_PROFIT",
+            exchange_create_time=datetime.now(timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    def _should_not_call(**_kwargs):
+        raise AssertionError("create_stop_loss_order/create_take_profit_order should not be called")
+
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.create_stop_loss_order",
+        _should_not_call,
+    )
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.create_take_profit_order",
+        _should_not_call,
+    )
+
+    service = ExchangeSyncService()
+    result = service._create_sl_tp_impl(
+        db=db_session,
+        symbol="BTC_USD",
+        side_upper="BUY",
+        filled_price_f=61720.39,
+        filled_qty=0.00016,
+        order_id=parent_id,
+        source="test",
+        strict_percentages=False,
+        sl_price_override_f=None,
+        tp_price_override_f=None,
+    )
+
+    assert result.get("status") == "already_protected"
+    assert result["sl_result"]["order_id"] == "73817490101967199"
+    assert result["tp_result"]["order_id"] == "73817490101968336"

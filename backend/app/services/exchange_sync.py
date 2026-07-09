@@ -873,9 +873,33 @@ class ExchangeSyncService:
                                 logger.debug(f"Order {order.exchange_order_id} ({order.symbol}) status is {resolved_status} - still pending, not marking as canceled")
                                 continue
                         else:
-                            # Order not found in exchange history - cannot determine status
-                            # Do NOT mark as canceled - leave it for next sync cycle
-                            logger.debug(f"Order {order.exchange_order_id} ({order.symbol}) not found in exchange history - status unknown, leaving for next sync")
+                            # Order not found in exchange history - mark stale DB ghosts as cancelled
+                            # after a grace period (avoids cancelling brand-new orders during API lag).
+                            order_created = order.exchange_create_time or order.created_at
+                            age_seconds = None
+                            if order_created:
+                                created_utc = order_created
+                                if created_utc.tzinfo is None:
+                                    created_utc = created_utc.replace(tzinfo=timezone.utc)
+                                age_seconds = (datetime.now(timezone.utc) - created_utc).total_seconds()
+                            if age_seconds is not None and age_seconds >= 120:
+                                old_status = order.status
+                                order.status = OrderStatusEnum.CANCELLED
+                                order.exchange_update_time = datetime.now(timezone.utc)
+                                logger.info(
+                                    "Order %s (%s) not in open orders or history for %.0fs — marking CANCELLED (DB ghost cleanup)",
+                                    order.exchange_order_id,
+                                    order.symbol,
+                                    age_seconds,
+                                )
+                                if old_status != OrderStatusEnum.CANCELLED:
+                                    cancelled_orders.append(order)
+                            else:
+                                logger.debug(
+                                    "Order %s (%s) not found in exchange history - status unknown, leaving for next sync",
+                                    order.exchange_order_id,
+                                    order.symbol,
+                                )
                             continue
                 
                 # Send Telegram notification for cancelled orders (batched)
@@ -1784,6 +1808,45 @@ class ExchangeSyncService:
         from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
 
         default_result = {"sl_result": {"order_id": None, "error": None}, "tp_result": {"order_id": None, "error": None}, "oco_group_id": None, "sl_price": None, "tp_price": None, "skip_tp_creation": False, "skip_tp_reason": None}
+        active_statuses = [
+            OrderStatusEnum.NEW,
+            OrderStatusEnum.ACTIVE,
+            OrderStatusEnum.PARTIALLY_FILLED,
+        ]
+        existing_sl = (
+            db.query(ExchangeOrder)
+            .filter(
+                ExchangeOrder.parent_order_id == str(order_id),
+                ExchangeOrder.order_role == "STOP_LOSS",
+                ExchangeOrder.status.in_(active_statuses),
+            )
+            .order_by(ExchangeOrder.id.asc())
+            .first()
+        )
+        existing_tp = (
+            db.query(ExchangeOrder)
+            .filter(
+                ExchangeOrder.parent_order_id == str(order_id),
+                ExchangeOrder.order_role == "TAKE_PROFIT",
+                ExchangeOrder.status.in_(active_statuses),
+            )
+            .order_by(ExchangeOrder.id.asc())
+            .first()
+        )
+        if existing_sl and existing_tp:
+            logger.info(
+                "[SLTP_IDEMPOTENCY] parent=%s symbol=%s already has active SL=%s TP=%s — skipping creation",
+                order_id,
+                symbol,
+                existing_sl.exchange_order_id,
+                existing_tp.exchange_order_id,
+            )
+            return {
+                **default_result,
+                "status": "already_protected",
+                "sl_result": {"order_id": existing_sl.exchange_order_id, "error": None},
+                "tp_result": {"order_id": existing_tp.exchange_order_id, "error": None},
+            }
         watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
         sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"
         sl_pct = 3.0 if sl_tp_mode == "conservative" else 2.0
@@ -1816,30 +1879,46 @@ class ExchangeSyncService:
         sl_price = round(sl_price, 2) if sl_price >= 100 else round(sl_price, 4)
         tp_price = round(tp_price, 2) if tp_price >= 100 else round(tp_price, 4)
         oco_group_id = f"oco_{order_id}_{int(time.time())}"
-        sl_result = create_stop_loss_order(
-            db=db,
-            symbol=symbol,
-            side=side_upper,
-            sl_price=sl_price,
-            quantity=filled_qty,
-            entry_price=filled_price_f,
-            parent_order_id=order_id,
-            oco_group_id=oco_group_id,
-            dry_run=False,
-            source=source,
-        )
-        tp_result = create_take_profit_order(
-            db=db,
-            symbol=symbol,
-            side=side_upper,
-            tp_price=tp_price,
-            quantity=filled_qty,
-            entry_price=filled_price_f,
-            parent_order_id=order_id,
-            oco_group_id=oco_group_id,
-            dry_run=False,
-            source=source,
-        )
+        if existing_sl:
+            sl_result = {"order_id": existing_sl.exchange_order_id, "error": None}
+            logger.info(
+                "[SLTP_IDEMPOTENCY] Reusing existing SL %s for parent %s",
+                existing_sl.exchange_order_id,
+                order_id,
+            )
+        else:
+            sl_result = create_stop_loss_order(
+                db=db,
+                symbol=symbol,
+                side=side_upper,
+                sl_price=sl_price,
+                quantity=filled_qty,
+                entry_price=filled_price_f,
+                parent_order_id=order_id,
+                oco_group_id=oco_group_id,
+                dry_run=False,
+                source=source,
+            )
+        if existing_tp:
+            tp_result = {"order_id": existing_tp.exchange_order_id, "error": None}
+            logger.info(
+                "[SLTP_IDEMPOTENCY] Reusing existing TP %s for parent %s",
+                existing_tp.exchange_order_id,
+                order_id,
+            )
+        else:
+            tp_result = create_take_profit_order(
+                db=db,
+                symbol=symbol,
+                side=side_upper,
+                tp_price=tp_price,
+                quantity=filled_qty,
+                entry_price=filled_price_f,
+                parent_order_id=order_id,
+                oco_group_id=oco_group_id,
+                dry_run=False,
+                source=source,
+            )
         return {
             "sl_result": sl_result,
             "tp_result": tp_result,

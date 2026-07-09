@@ -841,7 +841,7 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                         "usd_value": float(bal.get("usd_value", 0) or 0),
                     }
                     for bal in balances_list
-                    if bal.get("currency") and (float(bal.get("usd_value", 0) or 0) > 0 or float(bal.get("balance", 0) or 0) > 0)
+                    if bal.get("currency") and (float(bal.get("usd_value", 0) or 0) != 0 or float(bal.get("balance", 0) or 0) != 0)
                 ]
         
         # If cache/snapshot returned zero assets, try one-off live fetch so Portfolio tab can show data

@@ -413,11 +413,16 @@ def update_portfolio_cache(db: Session) -> Dict:
                         price_source = "not_found"
                         price_used = None
             
-            # Only skip negative balances (debts/loans), but save zero balances
-            # This ensures all assets are tracked even if balance is temporarily 0
+            # Include negative coin balances (margin shorts). Stablecoin debt stays in portfolio_loans.
             if balance < 0:
-                logger.debug(f"Skipping {currency}: balance is negative (likely a loan/debt)")
-                continue
+                if currency in ["USD", "USDT", "USDC"]:
+                    logger.debug(
+                        f"Skipping negative {currency} balance (margin debt tracked via portfolio_loans)"
+                    )
+                    continue
+                logger.info(
+                    f"📉 {currency}: negative balance={balance:.8f} (short/margin position) — including in portfolio"
+                )
             
             # For stablecoins, use balance as USD value if not already calculated
             # This check happens after all price calculations, so it's a final fallback
@@ -426,8 +431,8 @@ def update_portfolio_cache(db: Session) -> Dict:
                 logger.info(f"✅ {currency}: stablecoin fallback, using balance as USD value: ${usd_value:.2f}")
             
             # Calculate collateral value (after haircut) for margin Wallet Balance
-            # collateral_value = raw_value * (1 - haircut)
-            collateral_value = usd_value * (1 - haircut) if usd_value > 0 else 0.0
+            # collateral_value = raw_value * (1 - haircut); shorts contribute negative collateral
+            collateral_value = usd_value * (1 - haircut) if usd_value != 0 else 0.0
             
             # Store diagnostic data if enabled
             if PORTFOLIO_DEBUG and diagnostic_data is not None:
@@ -456,8 +461,8 @@ def update_portfolio_cache(db: Session) -> Dict:
             # Always save the balance to database, even if usd_value is 0 (might be updated later or price data missing)
             # This ensures we have a record of all balances
             # Track raw assets (for display) and collateral (for Wallet Balance calculation)
-            if usd_value > 0:
-                total_usd += usd_value  # Raw gross assets
+            if usd_value != 0:
+                total_usd += usd_value  # Raw gross assets (includes shorts as negative)
                 total_collateral_usd += collateral_value  # Collateral after haircut
                 logger.info(f"✅ {currency}: balance={balance:.8f}, raw_value=${usd_value:.2f}, haircut={haircut:.4f}, collateral=${collateral_value:.2f} → added to totals")
             else:
@@ -803,9 +808,9 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
         
         # OPTIMIZATION 2: Calculate total_usd from deduplicated balances_data
         # This ensures consistency with the balances list (same deduplication logic)
-        # Only sum positive USD values (negative values would indicate debts/loans which are handled separately)
-        total_assets_usd = sum(float(usd_value) for _, _, usd_value in balances_data 
-                              if usd_value is not None and float(usd_value) > 0)
+        # Sum all non-zero USD values (shorts are negative; stablecoin debt handled via portfolio_loans)
+        total_assets_usd = sum(float(usd_value) for _, _, usd_value in balances_data
+                              if usd_value is not None and float(usd_value) != 0)
         
         # Calculate total_collateral_usd (after haircuts) for Margin Wallet Balance
         # Crypto.com Margin "Wallet Balance" = Σ(collateral_value) - borrowed
