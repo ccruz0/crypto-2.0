@@ -334,6 +334,23 @@ main() {
     exit 2
   fi
 
+  # Signal monitor stall: light remediation (health/fix, then backend restart) without
+  # full stack destructive mode. verify.sh reports FAIL:SIGNAL_MONITOR when cycles are stale.
+  case "$REASON" in
+    *SIGNAL_MONITOR*)
+      if [ -x "$SCRIPT_DIR/remediate_signal_monitor.sh" ]; then
+        echo "Signal monitor remediation starting (reason=$REASON)..."
+        if [ "$DRY_RUN" = "1" ]; then
+          ATP_REMEDIATE_DRY_RUN=1 bash "$SCRIPT_DIR/remediate_signal_monitor.sh" "$REASON" || true
+        else
+          bash "$SCRIPT_DIR/remediate_signal_monitor.sh" "$REASON" || true
+        fi
+        echo "Self-heal end (signal_monitor): $(date -Is)"
+        exit 0
+      fi
+      ;;
+  esac
+
   if [ "$ALLOW_DESTRUCTIVE" = "1" ]; then
     heal_services
     echo "Self-heal end (services): $(date -Is)"

@@ -110,6 +110,13 @@ is_market_incident() {
   return 1
 }
 
+is_signal_monitor_incident() {
+  case "$1" in
+    *SIGNAL_MONITOR*) return 0 ;;
+  esac
+  return 1
+}
+
 # Classify incident severity: critical (alert) | warning | info (no Telegram for non-critical)
 # critical: market_data stale > CRITICAL_UPDATER_AGE_MINUTES, or backend/API unreachable
 # warning:  market_data stale but <= threshold, or other FAIL
@@ -131,8 +138,9 @@ classify_severity() {
     echo "warning"
     return
   fi
-  # Non-market: API/backend down is critical
+  # Non-market: API/backend down or stalled signal monitor is critical
   case "$verify" in
+    *SIGNAL_MONITOR*) echo "critical" ;;
     *API_HEALTH*missing*|*API_HEALTH*timeout*|*connection*refused*) echo "critical" ;;
     *) echo "warning" ;;
   esac
@@ -341,6 +349,43 @@ verify_label: PASS (was ${last_verify:-n/a})"
     fi
   fi
 
+  # --- SIGNAL_MONITOR incident: run targeted remediation silently (no Telegram) ---
+  if [ "$REMEDIATION_ENABLED" = "1" ] && is_signal_monitor_incident "$last_verify"; then
+    if [ "${attempts:-0}" -lt "$MAX_REMEDIATION_ATTEMPTS" ] && [ -x "$REPO_ROOT/scripts/selfheal/remediate_signal_monitor.sh" ]; then
+      log_heal "event=remediation_started attempt=$((attempts + 1)) max=$MAX_REMEDIATION_ATTEMPTS verify_label=${last_verify:-n/a} component=signal_monitor (no TG)"
+      REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="$BASE" ATP_REMEDIATE_DRY_RUN="$DRY_RUN" \
+        ATP_REMEDIATE_SIGNAL_MONITOR_GRACE_SEC="${ATP_REMEDIATE_SIGNAL_MONITOR_GRACE_SEC:-60}" \
+        bash "$REPO_ROOT/scripts/selfheal/remediate_signal_monitor.sh" "$last_verify" 2>/dev/null | while read -r line; do log_heal "$line"; done || true
+      if [ "$DRY_RUN" != "1" ] && [ -x "$REPO_ROOT/scripts/selfheal/verify.sh" ]; then
+        if REPO_DIR="$REPO_ROOT" BASE="$BASE" "$REPO_ROOT/scripts/selfheal/verify.sh" >/dev/null 2>&1; then
+          log_heal "event=post_remediation_verification result=PASS component=signal_monitor"
+          send_tg "✅ ATP Health recovered ($now_ts)
+Signal monitor remediation succeeded (health/fix or backend restart).
+verify_label: PASS (was ${last_verify:-n/a})"
+          jq -n --arg ts "$now_ts" \
+            '{last_sent_ts:$ts,last_reason:"recovered_after_remediation",last_streak:0,incident_open:false,incident_fingerprint:"",remediation_attempts:0,last_remediation_ts:"",last_escalation_ts:"",first_fail_ts:"",action_alert_sent:false}' > "$STATE_FILE" 2>/dev/null || true
+          exit 0
+        fi
+        log_heal "event=post_remediation_verification result=FAIL component=signal_monitor"
+      fi
+      attempts=$((attempts + 1))
+      if command -v jq >/dev/null 2>&1; then
+        prev="{}"
+        [ -r "$STATE_FILE" ] && prev="$(cat "$STATE_FILE" 2>/dev/null || echo '{}')"
+        echo "$prev" | jq \
+          --arg ts "$now_ts" \
+          --arg fp "$fp" \
+          --arg fft "${first_fail_ts:-$now_ts}" \
+          --argjson att "$attempts" \
+          --argjson streak "$streak" \
+          --arg reason "$reason" \
+          '. + {last_remediation_ts:$ts,incident_open:true,incident_fingerprint:$fp,first_fail_ts:$fft,remediation_attempts:$att,last_streak:$streak,last_reason:$reason}' \
+          2>/dev/null > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE" 2>/dev/null || true
+      fi
+      exit 0
+    fi
+  fi
+
   # --- Do not resend: one alert per incident (action_alert_sent) ---
   if [ "$action_alert_sent" = "true" ]; then
     log_heal "event=action_alert_already_sent fingerprint=$fp (no resend)"
@@ -353,6 +398,8 @@ verify_label: PASS (was ${last_verify:-n/a})"
   # Send only when: remediation_failed (market and max attempts reached, or non-market) AND severity == critical
   local should_send=0
   if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
+    [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ] && should_send=1
+  elif is_signal_monitor_incident "$last_verify"; then
     [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ] && should_send=1
   else
     should_send=1
@@ -380,6 +427,8 @@ verify_label: PASS (was ${last_verify:-n/a})"
   local root_cause=""
   if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
     root_cause="Market data stale (market_updater not updating). market_updater_age_min: ${last_age:-n/a} | verify_label: ${last_verify:-n/a}"
+  elif is_signal_monitor_incident "$last_verify"; then
+    root_cause="Signal monitor stalled (no fresh cycles). verify_label: ${last_verify:-n/a} | global_status: ${last_global:-n/a}"
   else
     root_cause="Health check failing. verify_label: ${last_verify:-n/a} | market_data: ${last_md:-n/a} | market_updater: ${last_mu:-n/a}"
   fi
@@ -398,6 +447,12 @@ Last snapshot: ${last_ts:-n/a} | global_status: ${last_global:-n/a}"
 Action: Runbook EC2_FIX_MARKET_DATA_NOW — SSH to prod, restart stack + market-updater, POST /api/market/update-cache. Or tap the button below to trigger full fix on next health check.
 Log: /var/log/atp/health_alert_heal.log"
     send_tg_with_button "$msg"
+  elif is_signal_monitor_incident "$last_verify"; then
+    msg="$msg
+
+Action: Auto-remediation (health/fix + backend restart) was attempted ${attempts:-0} time(s). Manual fallback: docker compose --profile aws restart backend-aws
+Log: /var/log/atp/health_alert_heal.log"
+    send_tg "$msg"
   else
     msg="$msg
 
@@ -450,6 +505,8 @@ Action: Check backend and runbook ATP_HEALTH_ALERT_STREAK_FAIL.md. Log: /var/log
   if [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
     if is_market_incident "$last_verify" "$last_md" "$last_mu" && [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
       ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="${BASE}" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
+    elif is_signal_monitor_incident "$last_verify" && [ -x "$REPO_ROOT/scripts/selfheal/remediate_signal_monitor.sh" ]; then
+      ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="${BASE}" nohup ./scripts/selfheal/remediate_signal_monitor.sh "$last_verify" >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     elif [ -x "$REPO_ROOT/scripts/selfheal/heal.sh" ]; then
       ( cd "$REPO_ROOT" && nohup ./scripts/selfheal/heal.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     fi

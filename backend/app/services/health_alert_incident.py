@@ -52,6 +52,11 @@ def is_market_data_incident(
     return False
 
 
+def is_signal_monitor_incident(verify_label: str) -> bool:
+    """True when verify.sh reports stalled or failed signal monitor."""
+    return "SIGNAL_MONITOR" in (verify_label or "").upper()
+
+
 def incident_fingerprint(
     verify_label: str,
     market_data_status: str = "",
@@ -114,6 +119,8 @@ def evaluate_after_snapshot(
     market_incident = is_market_data_incident(
         verify_label, market_data_status, market_updater_status
     )
+    signal_monitor_incident = is_signal_monitor_incident(verify_label)
+    remediable_incident = market_incident or signal_monitor_incident
     incident_open = bool(state.get("incident_open"))
     state_fp = state.get("incident_fingerprint") or ""
     attempts = int(state.get("remediation_attempts") or 0)
@@ -132,8 +139,8 @@ def evaluate_after_snapshot(
 
     # First time in failure for this fingerprint -> allow alert after remediation attempt
     # (caller runs remediation before calling again with post-verify; first call may set state only)
-    if not market_incident:
-        # Non-market incident: use simple cooldown only, no remediation gate
+    if not remediable_incident:
+        # Non-remediable incident: use simple cooldown only, no remediation gate
         mins_since_sent = _epoch_minutes_ago(now_epoch, state.get("last_sent_ts") or "")
         if mins_since_sent < cooldown_mins:
             # Do not bypass just because streak grew
@@ -144,7 +151,7 @@ def evaluate_after_snapshot(
         out.log_event = "escalation_non_market"
         return out
 
-    # Market incident: one alert per incident (action_alert_sent)
+    # Market or signal-monitor incident: one alert per incident (action_alert_sent)
     if incident_open and state_fp == fp:
         if state.get("action_alert_sent"):
             out.suppress_reason = "action_alert_already_sent"
