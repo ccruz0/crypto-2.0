@@ -1728,6 +1728,29 @@ class SignalMonitorService:
         }
     
     @staticmethod
+    def _is_first_side_alert(throttle_reason: Optional[str]) -> bool:
+        """True when throttle says there is no previous same-side signal for this strategy."""
+        if not throttle_reason:
+            return False
+        reason_lower = throttle_reason.lower()
+        return "no previous" in reason_lower or "first signal" in reason_lower
+
+    def _resolve_previous_alert_price(
+        self,
+        snapshot_price: Optional[float],
+        symbol: str,
+        side: str,
+        throttle_reason: Optional[str],
+        db: Session,
+    ) -> Optional[float]:
+        """Resolve previous alert price for display, aligned with throttle semantics."""
+        if snapshot_price is not None and snapshot_price > 0:
+            return snapshot_price
+        if self._is_first_side_alert(throttle_reason):
+            return None
+        return self._get_last_alert_price(symbol, side, db)
+
+    @staticmethod
     def _format_price_variation(previous_price: Optional[float], current_price: float) -> Optional[str]:
         if previous_price is None or previous_price <= 0:
             return None
@@ -3545,7 +3568,13 @@ class SignalMonitorService:
                 # Use the price from snapshot (saved before record_signal_event) for consistent price change calculation
                 # This ensures "Cambio desde última alerta" matches the price change shown in the trigger reason
                 # Fallback to database query if snapshot price not available (shouldn't happen, but safe fallback)
-                prev_buy_price: Optional[float] = prev_buy_price_from_snapshot if prev_buy_price_from_snapshot is not None else self._get_last_alert_price(symbol, "BUY", db)
+                prev_buy_price: Optional[float] = self._resolve_previous_alert_price(
+                    prev_buy_price_from_snapshot,
+                    symbol,
+                    "BUY",
+                    throttle_buy_reason,
+                    db,
+                )
                 
                 # ========================================================================
                 # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
@@ -5765,7 +5794,13 @@ class SignalMonitorService:
                 # Use the price from snapshot (saved before record_signal_event) for consistent price change calculation
                 # This ensures "Cambio desde última alerta" matches the price change shown in the trigger reason
                 # Fallback to database query if snapshot price not available (shouldn't happen, but safe fallback)
-                prev_sell_price: Optional[float] = prev_sell_price_from_snapshot if prev_sell_price_from_snapshot is not None else self._get_last_alert_price(symbol, "SELL", db)
+                prev_sell_price: Optional[float] = self._resolve_previous_alert_price(
+                    prev_sell_price_from_snapshot,
+                    symbol,
+                    "SELL",
+                    throttle_sell_reason,
+                    db,
+                )
                 
                 logger.info(
                     f"🔍 {symbol} SELL alert ready to send (throttling already verified by should_emit_signal)"

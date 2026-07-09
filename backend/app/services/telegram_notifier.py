@@ -1177,6 +1177,33 @@ class TelegramNotifier:
         origin = get_runtime_origin()  # Will be "AWS" if RUNTIME_ORIGIN=AWS is set
         return self.send_message(message.strip(), origin=origin)
     
+    @staticmethod
+    def _is_first_side_alert(throttle_reason: Optional[str]) -> bool:
+        if not throttle_reason:
+            return False
+        reason_lower = throttle_reason.lower()
+        return "no previous" in reason_lower or "first signal" in reason_lower
+
+    def _format_price_change_text(
+        self,
+        price: float,
+        price_variation: Optional[str],
+        previous_price: Optional[float],
+        throttle_reason: Optional[str],
+    ) -> str:
+        if self._is_first_side_alert(throttle_reason):
+            return "\n📊 Cambio desde última alerta: Primera alerta"
+        if price_variation:
+            return f"\n📊 Cambio desde última alerta: {price_variation}"
+        if previous_price is not None and previous_price > 0:
+            try:
+                change_pct = ((price - previous_price) / previous_price) * 100
+                direction = "↑" if change_pct > 0 else "↓" if change_pct < 0 else "→"
+                return f"\n📊 Cambio desde última alerta: {direction} {abs(change_pct):.2f}%"
+            except (ZeroDivisionError, ValueError):
+                return "\n📊 Cambio desde última alerta: N/A"
+        return "\n📊 Cambio desde última alerta: Primera alerta"
+
     def _format_trigger_reason(self, throttle_reason: str) -> str:
         """Format throttle reason into a user-friendly trigger explanation.
         
@@ -1336,22 +1363,12 @@ class TelegramNotifier:
         
         timestamp = self._format_timestamp()
         
-        # Always show price change percentage from last alert
-        price_change_text = ""
-        if price_variation:
-            # Use provided price_variation if available
-            price_change_text = f"\n📊 Cambio desde última alerta: {price_variation}"
-        elif previous_price is not None and previous_price > 0:
-            # Calculate price change if previous_price is provided
-            try:
-                change_pct = ((price - previous_price) / previous_price) * 100
-                direction = "↑" if change_pct > 0 else "↓" if change_pct < 0 else "→"
-                price_change_text = f"\n📊 Cambio desde última alerta: {direction} {abs(change_pct):.2f}%"
-            except (ZeroDivisionError, ValueError):
-                price_change_text = "\n📊 Cambio desde última alerta: N/A"
-        else:
-            # First alert for this symbol/side
-            price_change_text = "\n📊 Cambio desde última alerta: Primera alerta"
+        price_change_text = self._format_price_change_text(
+            price=price,
+            price_variation=price_variation,
+            previous_price=previous_price,
+            throttle_reason=throttle_reason,
+        )
         
         price_line = f"💵 Price: ${price:,.4f}"
         
@@ -1514,22 +1531,12 @@ class TelegramNotifier:
         
         timestamp = self._format_timestamp()
         
-        # Always show price change percentage from last alert
-        price_change_text = ""
-        if price_variation:
-            # Use provided price_variation if available
-            price_change_text = f"\n📊 Cambio desde última alerta: {price_variation}"
-        elif previous_price is not None and previous_price > 0:
-            # Calculate price change if previous_price is provided
-            try:
-                change_pct = ((price - previous_price) / previous_price) * 100
-                direction = "↑" if change_pct > 0 else "↓" if change_pct < 0 else "→"
-                price_change_text = f"\n📊 Cambio desde última alerta: {direction} {abs(change_pct):.2f}%"
-            except (ZeroDivisionError, ValueError):
-                price_change_text = "\n📊 Cambio desde última alerta: N/A"
-        else:
-            # First alert for this symbol/side
-            price_change_text = "\n📊 Cambio desde última alerta: Primera alerta"
+        price_change_text = self._format_price_change_text(
+            price=price,
+            price_variation=price_variation,
+            previous_price=previous_price,
+            throttle_reason=throttle_reason,
+        )
         
         price_line = f"💵 Price: ${price:,.4f}"
         
