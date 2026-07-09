@@ -36,6 +36,7 @@ class TradingScheduler:
         self.last_kr_refresh_date = None  # Track last Jarvis KR metric refresh
         self.kr_refresh_time = time_module(7, 30)  # Daily 7:30 AM
         self.last_hourly_sl_tp_check = None  # Track last hourly SL/TP check (datetime)
+        self.last_orphan_order_check = None  # Track last orphan-order alert (datetime)
         self._scheduler_task = None  # Track the running task to prevent duplicates
         # Locks for atomic check-and-set operations on date tracking variables
         self._daily_summary_lock = asyncio.Lock()
@@ -46,6 +47,7 @@ class TradingScheduler:
         self._daily_followup_lock = asyncio.Lock()
         self._kr_refresh_lock = asyncio.Lock()
         self._hourly_sl_tp_check_lock = asyncio.Lock()
+        self._orphan_order_check_lock = asyncio.Lock()
     
     def check_daily_summary_sync(self):
         """Check if it's time to send daily summary - synchronous worker
@@ -458,7 +460,41 @@ class TradingScheduler:
             logger.error(f"Error in hourly SL/TP check: {e}", exc_info=True)
             from app.api.routes_monitoring import record_workflow_execution
             record_workflow_execution("hourly_sl_tp_check", "error", None, str(e))
-    
+
+    def check_orphan_orders_sync(self):
+        """Detect orphaned/stale SL/TP orders and send Telegram alert."""
+        logger.info("Checking for orphaned/stale SL/TP orders...")
+        try:
+            db = SessionLocal()
+            try:
+                sent = sl_tp_checker_service.send_orphan_order_alert(db)
+                logger.info("Orphan order check completed (alert_sent=%s)", sent)
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("orphan_order_check", "success", None)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error checking orphaned orders: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("orphan_order_check", "error", None, str(e))
+
+    async def check_orphan_orders(self):
+        """Run orphan-order alert every 6 hours (on the hour)."""
+        now = datetime.now(timezone.utc)
+        should_check = (
+            now.minute <= 1
+            and (
+                self.last_orphan_order_check is None
+                or (now - self.last_orphan_order_check).total_seconds() >= 6 * 3600
+            )
+        )
+
+        async with self._orphan_order_check_lock:
+            if should_check:
+                self.last_orphan_order_check = now
+                await asyncio.to_thread(self.check_orphan_orders_sync)
+                await asyncio.sleep(120)
+
     async def check_hourly_sl_tp_missed(self):
         """Check for FILLED orders missing SL/TP - async wrapper
         Runs every hour at :00 minutes
@@ -675,6 +711,7 @@ class TradingScheduler:
                 await self.check_weekly_executive_report()
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()
+                await self.check_orphan_orders()
                 await self.check_nightly_consistency()
                 # DISABLED: Hourly SL/TP check - use Telegram menu button instead
                 # await self.check_hourly_sl_tp_missed()  # Check for missed SL/TP every hour
