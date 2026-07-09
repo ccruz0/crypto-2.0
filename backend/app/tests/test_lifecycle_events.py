@@ -110,6 +110,29 @@ def test_trade_blocked_emits_event_no_order_attempt(mock_telegram, db_session, m
 
 
 @patch('app.api.routes_monitoring.add_telegram_message')
+def test_trade_blocked_live_toggle_off_suppresses_telegram(mock_telegram, db_session, mock_watchlist_item):
+    """Expected live-toggle-off blocks should not spam Telegram."""
+    _emit_lifecycle_event(
+        db=db_session,
+        symbol="ETH_USDT",
+        strategy_key="swing:conservative",
+        side="BUY",
+        price=3000.0,
+        event_type="TRADE_BLOCKED",
+        event_reason="blocked: Live toggle is OFF",
+    )
+    db_session.commit()
+
+    mock_telegram.assert_not_called()
+
+    blocked_event = db_session.query(SignalThrottleState).filter(
+        SignalThrottleState.symbol == "ETH_USDT",
+        SignalThrottleState.emit_reason.like("%TRADE_BLOCKED%"),
+    ).first()
+    assert blocked_event is not None
+
+
+@patch('app.api.routes_monitoring.add_telegram_message')
 def test_order_success_emits_attempt_and_created(mock_telegram, db_session, mock_watchlist_item):
     """Test that ORDER_ATTEMPT then ORDER_CREATED are emitted when order succeeds"""
     # Emit ORDER_ATTEMPT
