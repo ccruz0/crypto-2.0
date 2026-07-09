@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { TopCoin, TradingSignals, saveCoinSettings, updateWatchlistAlert, updateBuyAlert, updateSellAlert, StrategyDecision, TradingConfig } from '@/app/api';
+import { TopCoin, TradingSignals, saveCoinSettings, updateCoinConfig, updateWatchlistAlert, updateBuyAlert, updateSellAlert, StrategyDecision, TradingConfig } from '@/app/api';
 import { formatDateTime, formatNumber, normalizeSymbolKey } from '@/utils/formatting';
 import { logger } from '@/utils/logger';
 import { useWatchlist } from '@/hooks/useWatchlist';
@@ -624,50 +624,57 @@ export default function WatchlistTab({
   }, [setCoinTPPercent]);
 
   // Handler for changing coin strategy
-  const handleStrategyChange = useCallback(async (symbol: string, strategyKey: string) => {
+  const handleStrategyChange = useCallback(async (symbol: string, strategyKey: string, previousStrategy?: string) => {
     const symbolKey = normalizeSymbolKey(symbol);
     setUpdatingCoins(prev => new Set(prev).add(symbol));
     
+    // Parse strategy key (e.g., "swing-conservative" -> preset="swing", risk="conservative")
+    const parts = strategyKey.split('-');
+    const preset = parts[0] || 'swing';
+    const risk = parts[1] || 'conservative';
+
+    const applyStrategyToParent = (key: string) => {
+      if (onCoinUpdated) {
+        onCoinUpdated(symbol, {
+          strategy_key: key,
+          strategy_preset: preset,
+          strategy_risk: risk,
+          sl_tp_mode: risk,
+        });
+      }
+    };
+
+    // Optimistic update so the dropdown does not snap back while requests are in flight
+    applyStrategyToParent(strategyKey);
+    
     try {
-      // Parse strategy key (e.g., "swing-conservative" -> preset="swing", risk="conservative")
-      const parts = strategyKey.split('-');
-      const preset = parts[0] || 'swing';
-      const risk = parts[1] || 'conservative';
+      // Strategy resolution on the backend uses BOTH sources:
+      // 1. trading_config.json per-coin preset (swing/intraday/scalp)
+      // 2. WatchlistItem.sl_tp_mode (conservative/aggressive when preset has no risk suffix)
+      const [, result] = await Promise.all([
+        updateCoinConfig(symbol, { preset: strategyKey }),
+        saveCoinSettings(symbol, { sl_tp_mode: risk }),
+      ]);
       
-      // CRITICAL: Update WatchlistItem.sl_tp_mode ONLY (single source of truth)
-      // trading_config.json is a preset catalog only, NOT state - do NOT write to it
-      // The backend's resolve_strategy_profile reads preset from trading_config.json (catalog)
-      // and risk from WatchlistItem.sl_tp_mode (state)
-      const result = await saveCoinSettings(symbol, {
-        sl_tp_mode: risk,  // Update risk mode in WatchlistItem (DB is source of truth)
-      });
-      
-      // REGRESSION GUARD: Verify API response contains updated strategy_key
-      // This ensures UI state matches DB state
       if (result?.strategy_key && result.strategy_key !== strategyKey) {
-        logger.warn(`[STRATEGY_MISMATCH] Strategy update mismatch for ${symbol}: requested=${strategyKey}, API=${result.strategy_key}. Backend resolved different strategy.`);
+        logger.warn(`[STRATEGY_MISMATCH] Strategy update mismatch for ${symbol}: requested=${strategyKey}, API=${result.strategy_key}. Using requested strategy for UI.`);
       }
       
-      // Clear local state - UI will use API response as truth
-      // Do NOT update localCoinPresets - it's a legacy fallback only
       setLocalCoinPresets(prev => {
         const updated = { ...prev };
-        delete updated[symbolKey];  // Remove to force using API values
+        delete updated[symbolKey];
         return updated;
       });
       
-      // Notify parent if callback provided (for backward compatibility)
       if (onCoinPresetChange) {
         onCoinPresetChange(symbol, strategyKey);
       }
       
-      // CRITICAL: Update parent's topCoins array with backend response (includes updated SL/TP prices)
-      // This ensures UI immediately reflects the new strategy and its calculated SL/TP values
       if (onCoinUpdated && result) {
         onCoinUpdated(symbol, {
-          strategy_key: result.strategy_key || strategyKey,
-          strategy_preset: result.strategy_preset,
-          strategy_risk: result.strategy_risk || risk,
+          strategy_key: strategyKey,
+          strategy_preset: preset,
+          strategy_risk: risk,
           sl_tp_mode: result.sl_tp_mode || risk,
           sl_price: result.sl_price,
           tp_price: result.tp_price,
@@ -676,17 +683,18 @@ export default function WatchlistTab({
         });
       }
       
-      logger.info(`✅ Strategy updated for ${symbol}: ${strategyKey} (sl_tp_mode=${risk}). DB is source of truth.`);
+      logger.info(`✅ Strategy updated for ${symbol}: ${strategyKey} (preset=${preset}, sl_tp_mode=${risk})`);
       
     } catch (err) {
       logger.error(`Failed to update strategy for ${symbol}:`, err);
-      // Revert on error (clear local state)
+      if (previousStrategy) {
+        applyStrategyToParent(previousStrategy);
+      }
       setLocalCoinPresets(prev => {
         const updated = { ...prev };
         delete updated[symbolKey];
         return updated;
       });
-      // Show error to user
       alert(`Error al actualizar la estrategia para ${symbol}. Por favor, intenta de nuevo.`);
     } finally {
       setUpdatingCoins(prev => {
@@ -695,7 +703,7 @@ export default function WatchlistTab({
         return next;
       });
     }
-  }, [onCoinPresetChange]);
+  }, [onCoinPresetChange, onCoinUpdated]);
 
   // Available strategy options
   const strategyOptions = [
@@ -1172,7 +1180,7 @@ export default function WatchlistTab({
                         return (
                           <select
                             value={dropdownStrategy}
-                            onChange={(e) => handleStrategyChange(coin?.instrument_name, e.target.value)}
+                            onChange={(e) => handleStrategyChange(coin?.instrument_name, e.target.value, dropdownStrategy)}
                             disabled={isCoinUpdating}
                             className="px-2 py-1 text-xs border border-gray-300 rounded bg-white dark:bg-gray-700 dark:border-gray-600 dark:text-white disabled:opacity-50"
                             title={`Select strategy for this coin (current: ${formatStrategyName(dropdownStrategy)})`}

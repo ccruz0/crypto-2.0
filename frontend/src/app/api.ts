@@ -580,11 +580,45 @@ export async function updateDashboardItem(id: number, item: Partial<WatchlistIte
 
 // Save coin settings by symbol
 // Finds the watchlist item by symbol and updates it with the provided settings
+function symbolMatchesWatchlistItem(requested: string, itemSymbol: string): boolean {
+  const normalized = requested.toUpperCase();
+  const item = itemSymbol.toUpperCase();
+  if (item === normalized) return true;
+  if (normalized.endsWith('_USD') && item === normalized.replace('_USD', '_USDT')) return true;
+  if (normalized.endsWith('_USDT') && item === normalized.replace('_USDT', '_USD')) return true;
+  return false;
+}
+
+function selectCanonicalWatchlistItem(items: WatchlistItem[]): WatchlistItem | undefined {
+  if (items.length === 0) return undefined;
+  if (items.length === 1) return items[0];
+
+  const nonDeleted = items.filter(item => !item.is_deleted);
+  const candidates = nonDeleted.length > 0 ? nonDeleted : items;
+
+  return [...candidates].sort((a, b) => {
+    const aAlert = a.alert_enabled ? 0 : 1;
+    const bAlert = b.alert_enabled ? 0 : 1;
+    if (aAlert !== bAlert) return aAlert - bAlert;
+
+    const aTime = a.updated_at || a.created_at || '';
+    const bTime = b.updated_at || b.created_at || '';
+    const aTimestamp = aTime ? new Date(aTime).getTime() : 0;
+    const bTimestamp = bTime ? new Date(bTime).getTime() : 0;
+    if (aTimestamp !== bTimestamp) return bTimestamp - aTimestamp;
+
+    return (b.id || 0) - (a.id || 0);
+  })[0];
+}
+
 export async function saveCoinSettings(symbol: string, settings: Partial<CoinSettings>): Promise<CoinSettings> {
   try {
-    // Get dashboard to find the item by symbol
+    const normalizedSymbol = symbol.toUpperCase();
     const dashboard = await getDashboard();
-    const item = dashboard.find(item => item.symbol === symbol.toUpperCase());
+    const matchingItems = dashboard.filter(item =>
+      symbolMatchesWatchlistItem(normalizedSymbol, item.symbol || '')
+    );
+    const item = selectCanonicalWatchlistItem(matchingItems);
     
     if (!item) {
       throw new Error(`Watchlist item not found for symbol: ${symbol}`);
