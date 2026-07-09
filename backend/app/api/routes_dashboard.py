@@ -1036,15 +1036,15 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         open_position_counts = tp_orders_by_symbol
         
         # Format portfolio assets (v4.0 format)
-        # Filter: include all balances with balance > 0 OR usd_value > 0 (v4.0 behavior)
+        # Filter: include non-zero balances/usd (margin shorts are negative)
         portfolio_assets = []
         market_prices: Dict[str, float] = {}
         for balance in balances_list:
             balance_amount = balance.get("balance", 0.0)
             usd_value = balance.get("usd_value", 0.0)
             
-            # v4.0 filter: include if balance > 0 OR usd_value > 0
-            if balance_amount > 0 or usd_value > 0:
+            # Include longs and shorts: non-zero balance OR non-zero usd_value
+            if balance_amount != 0 or usd_value != 0:
                 currency = balance.get("currency", balance.get("asset", "")).upper()
                 # Extract base currency (e.g., "AAVE" from "AAVE_USDT" or just "AAVE")
                 base_currency = currency.split("_")[0] if "_" in currency else currency
@@ -1244,7 +1244,7 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                                 for balance in balances_list:
                                     balance_amount = balance.get("balance", 0.0)
                                     usd_value = balance.get("usd_value", 0.0)
-                                    if balance_amount > 0 or usd_value > 0:
+                                    if balance_amount != 0 or usd_value != 0:
                                         currency = balance.get("currency", "")
                                         portfolio_assets.append({
                                             "currency": currency,
@@ -3171,9 +3171,9 @@ def get_expected_take_profit_summary_endpoint(db: Session = Depends(get_db)):
                 "value_usd": bal.get("usd_value", 0),
             }
             for bal in portfolio_balances
-            if bal.get("balance", 0) > 0
+            if bal.get("balance", 0) != 0
         ]
-        log.info(f"Expected TP: Processing {len(portfolio_assets)} assets with positive balance")
+        log.info(f"Expected TP: Processing {len(portfolio_assets)} assets with non-zero balance")
         
         # Build market prices dict from portfolio data
         market_prices: Dict[str, float] = {}
@@ -3181,7 +3181,7 @@ def get_expected_take_profit_summary_endpoint(db: Session = Depends(get_db)):
             symbol = asset.get("coin", "").upper()
             balance = asset.get("balance", 0)
             value_usd = asset.get("value_usd", 0)
-            if balance > 0:
+            if balance != 0:
                 market_prices[symbol] = float(value_usd) / float(balance)
         
         # Get expected take profit summary
@@ -3244,7 +3244,7 @@ def get_expected_take_profit_details_endpoint(symbol: str, db: Session = Depends
             if currency == symbol or currency == symbol.split('_')[0]:
                 balance = bal.get("balance", 0)
                 value_usd = bal.get("usd_value", 0) or bal.get("value_usd", 0)
-                if balance > 0 and value_usd > 0:
+                if balance != 0 and value_usd != 0:
                     current_price = float(value_usd) / float(balance)
                     break
         
