@@ -1020,6 +1020,7 @@ function DashboardPageContent() {
   const [coinTPPercent, setCoinTPPercent] = useState<Record<string, string>>({});
   // Track recently saved amounts to prevent overwriting with stale backend data
   const recentlySavedAmounts = useRef<Record<string, number>>({});
+  const recentlySavedStrategies = useRef<Record<string, number>>({});
   const [calculatedSL, setCalculatedSL] = useState<Record<string, number>>({});
   const [calculatedTP, setCalculatedTP] = useState<Record<string, number>>({});
   const [showOverrideValues, setShowOverrideValues] = useState<Record<string, {sl: boolean, tp: boolean}>>({});
@@ -2846,6 +2847,10 @@ function resolveDecisionIndexColor(value: number): string {
       return nextValue;
     }
 
+    const symbolKey = existing?.instrument_name ? normalizeSymbolKey(existing.instrument_name) : '';
+    const lastStrategySave = symbolKey ? recentlySavedStrategies.current[symbolKey] : undefined;
+    const strategyRecentlySaved = lastStrategySave !== undefined && (Date.now() - lastStrategySave) < 10000;
+
     return {
       ...existing,
       ...incoming,
@@ -2862,10 +2867,16 @@ function resolveDecisionIndexColor(value: number): string {
       res_up: chooseValue(incoming.res_up, existing.res_up),
       res_down: chooseValue(incoming.res_down, existing.res_down),
       strategy: incoming.strategy ?? existing.strategy,
-      // Strategy fields from backend
-      strategy_key: incoming.strategy_key ?? existing.strategy_key,
-      strategy_preset: incoming.strategy_preset ?? existing.strategy_preset,
-      strategy_risk: incoming.strategy_risk ?? existing.strategy_risk,
+      // Strategy fields: preserve recent local saves during background polling
+      strategy_key: strategyRecentlySaved
+        ? (existing.strategy_key ?? incoming.strategy_key)
+        : (incoming.strategy_key ?? existing.strategy_key),
+      strategy_preset: strategyRecentlySaved
+        ? (existing.strategy_preset ?? incoming.strategy_preset)
+        : (incoming.strategy_preset ?? existing.strategy_preset),
+      strategy_risk: strategyRecentlySaved
+        ? (existing.strategy_risk ?? incoming.strategy_risk)
+        : (incoming.strategy_risk ?? existing.strategy_risk),
       // SL/TP fields from backend
       sl_price: chooseValue(incoming.sl_price, existing.sl_price),
       tp_price: chooseValue(incoming.tp_price, existing.tp_price),
@@ -4805,12 +4816,6 @@ function resolveDecisionIndexColor(value: number): string {
               onCoinPresetChange={async (symbol: string, preset: string) => {
                 const symbolKey = normalizeSymbolKey(symbol);
                 setCoinPresets(prev => ({ ...prev, [symbolKey]: preset }));
-                try {
-                  await updateCoinConfig(symbol, { preset });
-                  logger.info(`✅ Strategy updated for ${symbol}: ${preset}`);
-                } catch (err) {
-                  logger.error(`Failed to update strategy for ${symbol}:`, err);
-                }
               }}
               onAmountSaved={(symbol) => {
                 // Mark amount as recently saved to prevent overwriting with stale backend data
@@ -4821,6 +4826,10 @@ function resolveDecisionIndexColor(value: number): string {
                 updateSingleCoin(symbol, updates);
                 
                 const symbolKey = normalizeSymbolKey(symbol);
+
+                if (updates.strategy_key !== undefined) {
+                  recentlySavedStrategies.current[symbolKey] = Date.now();
+                }
                 
                 // Update trade_enabled state if provided
                 if (updates.trade_enabled !== undefined) {
