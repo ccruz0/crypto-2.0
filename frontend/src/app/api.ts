@@ -1651,10 +1651,14 @@ export async function getOpenOrdersSummary(): Promise<OpenOrdersSummary> {
 // Convert dashboard balances to portfolio assets
 export function dashboardBalancesToPortfolioAssets(balances: DashboardBalance[]): PortfolioAsset[] {
   return balances
-    .filter(balance => balance && (balance.asset || balance.currency || balance.coin) && (balance.balance || balance.total || 0) > 0)
+    .filter(balance => {
+      if (!balance || !(balance.asset || balance.currency || balance.coin)) return false;
+      const amount = balance.balance ?? balance.total ?? 0;
+      return amount != 0;
+    })
     .map(balance => {
       const asset = balance.asset || balance.currency || balance.coin || '';
-      const balanceAmount = balance.balance || balance.total || 0;
+      const balanceAmount = balance.balance ?? balance.total ?? 0;
       // Prioritize usd_value, then market_value, then 0
       // Don't filter by > 0 - preserve all values including 0
       const usdValue = (balance.usd_value !== undefined && balance.usd_value !== null)
