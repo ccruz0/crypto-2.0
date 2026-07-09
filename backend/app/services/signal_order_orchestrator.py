@@ -14,9 +14,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.models.order_intent import OrderIntent
+from app.models.order_intent import OrderIntent, OrderIntentStatusEnum
 from app.utils.symbols import normalize_symbol_for_exchange
 from app.utils.live_trading import get_live_trading_status
 from app.utils.decision_reason import make_skip, ReasonCode
@@ -98,7 +98,7 @@ def create_order_intent(
     Returns:
         Tuple of (OrderIntent or None, status)
         - If duplicate: (None, "DEDUP_SKIPPED")
-        - If LIVE_TRADING=false: (OrderIntent with status ORDER_BLOCKED_LIVE_TRADING, "ORDER_BLOCKED_LIVE_TRADING")
+        - If LIVE_TRADING=false: (OrderIntent with status BLOCKED_LIVE_TRADING, "BLOCKED_LIVE_TRADING")
         - If success: (OrderIntent with status PENDING, "PENDING")
     """
     # Compute idempotency key
@@ -124,24 +124,32 @@ def create_order_intent(
         logger.info(f"[ORCHESTRATOR] {normalized_symbol} {side} LIVE_TRADING=false - Order blocked but signal was sent")
         
         # Create order intent with BLOCKED status
+        blocked_status = OrderIntentStatusEnum.BLOCKED_LIVE_TRADING.value
         try:
             order_intent = OrderIntent(
                 idempotency_key=idempotency_key,
                 signal_id=signal_id,
                 symbol=normalized_symbol,
                 side=side,
-                status="ORDER_BLOCKED_LIVE_TRADING",
+                status=blocked_status,
                 error_message="LIVE_TRADING is disabled",
             )
             db.add(order_intent)
             db.commit()
-            return order_intent, "ORDER_BLOCKED_LIVE_TRADING"
+            return order_intent, blocked_status
         except IntegrityError:
             # Duplicate idempotency_key
             db.rollback()
             logger.warning(f"[ORCHESTRATOR] {normalized_symbol} {side} Duplicate idempotency_key detected (LIVE_TRADING=false path)")
             existing = db.query(OrderIntent).filter(OrderIntent.idempotency_key == idempotency_key).first()
-            return existing, "DEDUP_SKIPPED"
+            return existing, OrderIntentStatusEnum.DEDUP_SKIPPED.value
+        except SQLAlchemyError as db_err:
+            db.rollback()
+            logger.error(
+                f"[ORCHESTRATOR] {normalized_symbol} {side} Failed to persist BLOCKED_LIVE_TRADING intent: {db_err}",
+                exc_info=True,
+            )
+            raise
     
     # Try to insert order intent (atomic deduplication)
     try:

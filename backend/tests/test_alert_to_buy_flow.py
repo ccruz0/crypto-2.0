@@ -126,7 +126,7 @@ def test_order_intent_created_when_signal_id_missing():
             side="BUY",
             message_content="BUY SIGNAL btc/usdt 1.00 test",
         )
-        assert status in ("PENDING", "ORDER_BLOCKED_LIVE_TRADING")
+        assert status in ("PENDING", "BLOCKED_LIVE_TRADING")
         assert order_intent is not None
         assert order_intent.idempotency_key
     finally:
