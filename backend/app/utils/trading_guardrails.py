@@ -25,6 +25,20 @@ from app.utils.live_trading import get_live_trading_status
 
 logger = logging.getLogger(__name__)
 
+# Routine guardrail outcomes when trading is intentionally disabled — log/monitor only.
+_EXPECTED_TRADE_BLOCK_TELEGRAM_PHRASES = (
+    "live toggle is off",
+    "trade yes is off",
+)
+
+
+def should_notify_trade_block_to_telegram(*reasons: Optional[str]) -> bool:
+    """Return False for expected operator-disabled trading states (no Telegram noise)."""
+    haystack = " ".join(r for r in reasons if r).lower()
+    if not haystack:
+        return True
+    return not any(phrase in haystack for phrase in _EXPECTED_TRADE_BLOCK_TELEGRAM_PHRASES)
+
 
 # Environment variables with defaults
 MAX_OPEN_ORDERS_TOTAL = int(os.getenv("MAX_OPEN_ORDERS_TOTAL", "3"))

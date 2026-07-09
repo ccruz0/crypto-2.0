@@ -140,18 +140,21 @@ def place_order(
                 allowed = True
         
         if not allowed:
-            # Send Telegram alert
+            # Send Telegram alert only for unexpected blocks
             try:
-                value_text = f"💵 Value: ${order_usd_value:.2f}\n" if order_usd_value else ""
-                telegram_notifier.send_message(
-                    f"🚫 <b>TRADE BLOCKED</b>\n\n"
-                    f"📊 Symbol: <b>{request.symbol}</b>\n"
-                    f"🔄 Side: {request.side.value}\n"
-                    f"📋 Type: {request.type.value}\n"
-                    f"{value_text}"
-                    f"🚫 <b>Reason:</b> {block_reason}",
-                    symbol=request.symbol,
-                )
+                from app.utils.trading_guardrails import should_notify_trade_block_to_telegram
+
+                if should_notify_trade_block_to_telegram(block_reason):
+                    value_text = f"💵 Value: ${order_usd_value:.2f}\n" if order_usd_value else ""
+                    telegram_notifier.send_message(
+                        f"🚫 <b>TRADE BLOCKED</b>\n\n"
+                        f"📊 Symbol: <b>{request.symbol}</b>\n"
+                        f"🔄 Side: {request.side.value}\n"
+                        f"📋 Type: {request.type.value}\n"
+                        f"{value_text}"
+                        f"🚫 <b>Reason:</b> {block_reason}",
+                        symbol=request.symbol,
+                    )
             except Exception as e:
                 logger.warning(f"Failed to send Telegram alert for blocked order: {e}")
             

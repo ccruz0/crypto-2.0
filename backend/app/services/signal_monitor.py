@@ -161,25 +161,35 @@ def _emit_lifecycle_event(
         
         # Build message based on event type
         if event_type == "TRADE_BLOCKED":
-            message = f"🚫 TRADE BLOCKED: {symbol} {side} - {event_reason}"
-            if error_message:
-                message += f"\nError: {error_message}"
-            if reason_message:
-                message += f"\nReason: {reason_message}"
-            add_telegram_message(
-                message=message,
-                symbol=symbol,
-                blocked=True,
-                throttle_status="TRADE_BLOCKED",
-                throttle_reason=event_reason,
-                decision_type=decision_type or "SKIPPED",
-                reason_code=reason_code or "GUARDRAIL_BLOCKED",
-                reason_message=reason_message or event_reason,
-                context_json=context_json,
-                exchange_error_snippet=exchange_error_snippet,
-                correlation_id=correlation_id,
-                db=db,
-            )
+            from app.utils.trading_guardrails import should_notify_trade_block_to_telegram
+
+            if should_notify_trade_block_to_telegram(event_reason, reason_message):
+                message = f"🚫 TRADE BLOCKED: {symbol} {side} - {event_reason}"
+                if error_message:
+                    message += f"\nError: {error_message}"
+                if reason_message:
+                    message += f"\nReason: {reason_message}"
+                add_telegram_message(
+                    message=message,
+                    symbol=symbol,
+                    blocked=True,
+                    throttle_status="TRADE_BLOCKED",
+                    throttle_reason=event_reason,
+                    decision_type=decision_type or "SKIPPED",
+                    reason_code=reason_code or "GUARDRAIL_BLOCKED",
+                    reason_message=reason_message or event_reason,
+                    context_json=context_json,
+                    exchange_error_snippet=exchange_error_snippet,
+                    correlation_id=correlation_id,
+                    db=db,
+                )
+            else:
+                logger.info(
+                    "TRADE_BLOCKED notification suppressed (expected): %s %s — %s",
+                    symbol,
+                    side,
+                    event_reason,
+                )
         elif event_type == "ORDER_ATTEMPT":
             message = f"🔄 ORDER_ATTEMPT: {symbol} {side} - {event_reason}"
             add_telegram_message(
@@ -5258,7 +5268,15 @@ class SignalMonitorService:
                     logger.warning(f"Error en última verificación de trade_enabled para {symbol} (BUY): {e}")
                     # Use existing values if refresh fails
                 
-                if watchlist_item.trade_enabled:
+                from app.utils.live_trading import get_live_trading_status
+
+                live_trading_active = get_live_trading_status(db)
+                if not live_trading_active:
+                    logger.info(
+                        f"ℹ️ [ORDER_CREATION_CHECK] {symbol} - LIVE_TRADING=OFF; "
+                        f"skipping automatic order creation (alert-only mode)"
+                    )
+                elif watchlist_item.trade_enabled:
                     logger.info(f"✅ [ORDER_CREATION_CHECK] {symbol} - trade_enabled=True confirmed, proceeding with order creation")
                     if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
                         logger.info(f"✅ Trade enabled for {symbol} - creating BUY order automatically")
@@ -5490,7 +5508,12 @@ class SignalMonitorService:
                         )
 
                         try:
-                            if self._telegram_send_enabled() and not is_guardrail_block:
+                            if (
+                                self._telegram_send_enabled()
+                                and not is_guardrail_block
+                                and live_trading_active
+                                and watchlist_item.trade_enabled
+                            ):
                                 telegram_notifier.send_message(
                                     f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7264,7 +7287,7 @@ class SignalMonitorService:
             logger.info(f"📊 ORDER PARAMETERS: symbol={symbol}, side={side_upper}, notional={amount_usd}, is_margin={use_margin}, leverage={leverage_value}")
             
             # Check trading guardrails before order placement
-            from app.utils.trading_guardrails import can_place_real_order
+            from app.utils.trading_guardrails import can_place_real_order, should_notify_trade_block_to_telegram
             allowed, block_reason = can_place_real_order(
                 db=db,
                 symbol=symbol,
@@ -7300,9 +7323,9 @@ class SignalMonitorService:
                     event_reason=block_reason or "blocked",
                     decision_reason=decision_reason,
                 )
-                # Send Telegram alert
+                # Send Telegram alert only for unexpected blocks (not live toggle / trade off)
                 try:
-                    if self._telegram_send_enabled():
+                    if self._telegram_send_enabled() and should_notify_trade_block_to_telegram(block_reason):
                         telegram_notifier.send_message(
                             f"🚫 <b>TRADE BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
