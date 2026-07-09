@@ -4006,9 +4006,12 @@ class SignalMonitorService:
                                             context_json=decision_reason.context,
                                             correlation_id=str(uuid_module.uuid4()),
                                         )
-                                elif intent_status == "ORDER_BLOCKED_LIVE_TRADING":
+                                elif intent_status in (
+                                    "BLOCKED_LIVE_TRADING",
+                                    "ORDER_BLOCKED_LIVE_TRADING",  # legacy return value
+                                ):
                                     # LIVE_TRADING=false - order blocked
-                                    logger.info(f"[ORCHESTRATOR] {symbol} BUY ORDER_BLOCKED_LIVE_TRADING - Signal sent but order blocked")
+                                    logger.info(f"[ORCHESTRATOR] {symbol} BUY BLOCKED_LIVE_TRADING - Signal sent but order blocked")
                                     self._upsert_watchlist_signal_state(
                                         db,
                                         symbol=normalized_symbol,
@@ -4342,6 +4345,12 @@ class SignalMonitorService:
                             except Exception as orchestrator_err:
                                 # Orchestrator error - log but don't fail the signal
                                 logger.error(f"[ORCHESTRATOR] {symbol} BUY Orchestrator error: {orchestrator_err}", exc_info=True)
+                                try:
+                                    db.rollback()
+                                except Exception as rollback_err:
+                                    logger.warning(
+                                        f"[ORCHESTRATOR] {symbol} BUY rollback after orchestrator error failed: {rollback_err}"
+                                    )
                             # CRITICAL: Record signal event in BD ONLY after successful send to prevent duplicate alerts
                             # This ensures that if multiple calls happen simultaneously, only the first one will update the state
                             try:
@@ -6121,9 +6130,12 @@ class SignalMonitorService:
                                         context_json=decision_reason.context,
                                         correlation_id=str(uuid_module.uuid4()),
                                     )
-                                elif intent_status == "ORDER_BLOCKED_LIVE_TRADING":
+                                elif intent_status in (
+                                    "BLOCKED_LIVE_TRADING",
+                                    "ORDER_BLOCKED_LIVE_TRADING",  # legacy return value
+                                ):
                                     # LIVE_TRADING=false - order blocked
-                                    logger.info(f"[ORCHESTRATOR] {symbol} SELL ORDER_BLOCKED_LIVE_TRADING - Signal sent but order blocked")
+                                    logger.info(f"[ORCHESTRATOR] {symbol} SELL BLOCKED_LIVE_TRADING - Signal sent but order blocked")
                                     self._upsert_watchlist_signal_state(
                                         db,
                                         symbol=normalized_symbol,
@@ -6370,6 +6382,12 @@ class SignalMonitorService:
                             except Exception as orchestrator_err:
                                 # Orchestrator error - log but don't fail the signal
                                 logger.error(f"[ORCHESTRATOR] {symbol} SELL Orchestrator error: {orchestrator_err}", exc_info=True)
+                                try:
+                                    db.rollback()
+                                except Exception as rollback_err:
+                                    logger.warning(
+                                        f"[ORCHESTRATOR] {symbol} SELL rollback after orchestrator error failed: {rollback_err}"
+                                    )
                             
                             # CRITICAL: Record signal event in BD ONLY after successful send to prevent duplicate alerts
                             try:

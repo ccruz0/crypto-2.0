@@ -11,7 +11,8 @@ class OrderIntentStatusEnum(str, Enum):
     ORDER_PLACED = "ORDER_PLACED"
     ORDER_FAILED = "ORDER_FAILED"
     DEDUP_SKIPPED = "DEDUP_SKIPPED"
-    ORDER_BLOCKED_LIVE_TRADING = "ORDER_BLOCKED_LIVE_TRADING"
+    # Must fit order_intents.status VARCHAR(20) — ORDER_BLOCKED_LIVE_TRADING (26) truncates in Postgres.
+    BLOCKED_LIVE_TRADING = "BLOCKED_LIVE_TRADING"
 
 
 class OrderIntent(Base):

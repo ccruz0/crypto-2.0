@@ -75,7 +75,7 @@ def test_orchestrator_deduplication():
         
         # Verify order intent was created
         assert order_intent1 is not None, "Order intent should be created"
-        assert status1 in ("PENDING", "ORDER_BLOCKED_LIVE_TRADING"), f"Status should be PENDING or ORDER_BLOCKED_LIVE_TRADING, got {status1}"
+        assert status1 in ("PENDING", "BLOCKED_LIVE_TRADING"), f"Status should be PENDING or BLOCKED_LIVE_TRADING, got {status1}"
         assert order_intent1.signal_id == signal_id, "Signal ID should match"
         assert order_intent1.symbol == symbol, "Symbol should match"
         assert order_intent1.side == side, "Side should match"
@@ -126,7 +126,7 @@ def test_orchestrator_deduplication():
         
         # Verify new intent was created
         assert order_intent3 is not None, "New order intent should be created"
-        assert status3 in ("PENDING", "ORDER_BLOCKED_LIVE_TRADING"), f"Status should be PENDING or ORDER_BLOCKED_LIVE_TRADING, got {status3}"
+        assert status3 in ("PENDING", "BLOCKED_LIVE_TRADING"), f"Status should be PENDING or BLOCKED_LIVE_TRADING, got {status3}"
         assert order_intent3.signal_id == signal_id2, "Signal ID should match"
         
         # Verify we now have 2 order intents
