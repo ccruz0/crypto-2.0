@@ -9309,6 +9309,8 @@ class SignalMonitorService:
                 filled_price=float(executed_avg_price or 0),
                 creation_result=None,
                 source=source,
+                is_margin=is_margin,
+                leverage=leverage,
             )
             return None
 
