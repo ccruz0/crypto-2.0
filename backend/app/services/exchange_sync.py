@@ -376,6 +376,21 @@ ORDER_HISTORY_PRIORITY_MAX = int(os.environ.get("ORDER_HISTORY_PRIORITY_MAX", "8
 ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN = int(os.environ.get("ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN", "3"))
 
 
+def _protection_order_price(order: ExchangeOrder) -> Optional[float]:
+    """Best-effort limit/trigger price from a persisted SL/TP order row."""
+    for attr in ("price", "trigger_condition"):
+        val = getattr(order, attr, None)
+        if val is None:
+            continue
+        try:
+            parsed = float(val)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
 class ExchangeSyncService:
     """Service to sync exchange data with database"""
     
@@ -1632,6 +1647,33 @@ class ExchangeSyncService:
         sl_order_error = (sl_result or {}).get("error")
         tp_order_error = (tp_result or {}).get("error")
 
+        # Idempotent path: another process already created SL/TP — do not re-notify Telegram.
+        if impl_result.get("status") == "already_protected":
+            logger.info(
+                "📢 Skipping SL/TP Telegram for order %s (%s): already protected (idempotent).",
+                order_id,
+                symbol,
+            )
+            try:
+                if hasattr(self, "_sl_tp_creation_locks") and lock_key in self._sl_tp_creation_locks:
+                    del self._sl_tp_creation_locks[lock_key]
+            except Exception:
+                pass
+            return {
+                "symbol": symbol,
+                "order_id": order_id,
+                "source": source,
+                "status": "already_protected",
+                "live_trading": bool(live_trading),
+                "oco_group_id": oco_group_id,
+                "sl_price": float(sl_price) if sl_price is not None else None,
+                "tp_price": float(tp_price) if tp_price is not None else None,
+                "sl_result": sl_result,
+                "tp_result": tp_result,
+                "skip_tp_creation": bool(skip_tp_creation),
+                "skip_tp_reason": skip_tp_reason,
+            }
+
         # Prepare for Telegram notification
         watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
         sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"
@@ -1736,6 +1778,37 @@ class ExchangeSyncService:
                 # Always send notification, even if one order failed
                 sl_price_f = float(sl_price) if sl_price is not None else 0.0
                 tp_price_f = float(tp_price) if tp_price is not None else 0.0
+                if sl_price_f <= 0 and existing_sl_check:
+                    sl_price_f = _protection_order_price(existing_sl_check) or sl_price_f
+                if tp_price_f <= 0 and existing_tp_check:
+                    tp_price_f = _protection_order_price(existing_tp_check) or tp_price_f
+                if (sl_order_id or tp_order_id) and (sl_price_f <= 0 or tp_price_f <= 0):
+                    logger.warning(
+                        "📢 Skipping SL/TP Telegram for order %s (%s): missing valid SL/TP prices "
+                        "(sl_price=%s, tp_price=%s).",
+                        order_id,
+                        symbol,
+                        sl_price_f,
+                        tp_price_f,
+                    )
+                    try:
+                        if hasattr(self, "_sl_tp_creation_locks") and lock_key in self._sl_tp_creation_locks:
+                            del self._sl_tp_creation_locks[lock_key]
+                    except Exception:
+                        pass
+                    return {
+                        "symbol": symbol,
+                        "order_id": order_id,
+                        "source": source,
+                        "live_trading": bool(live_trading),
+                        "oco_group_id": oco_group_id,
+                        "sl_price": sl_price_f if sl_price_f > 0 else None,
+                        "tp_price": tp_price_f if tp_price_f > 0 else None,
+                        "sl_result": sl_result,
+                        "tp_result": tp_result,
+                        "skip_tp_creation": bool(skip_tp_creation),
+                        "skip_tp_reason": skip_tp_reason,
+                    }
                 result = telegram_notifier.send_sl_tp_orders(
                     symbol=symbol,
                     sl_price=sl_price_f,
@@ -1846,6 +1919,8 @@ class ExchangeSyncService:
                 "status": "already_protected",
                 "sl_result": {"order_id": existing_sl.exchange_order_id, "error": None},
                 "tp_result": {"order_id": existing_tp.exchange_order_id, "error": None},
+                "sl_price": _protection_order_price(existing_sl),
+                "tp_price": _protection_order_price(existing_tp),
             }
         watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
         sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"

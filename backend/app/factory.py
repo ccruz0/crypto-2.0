@@ -550,7 +550,14 @@ def create_app(role: str = "legacy") -> FastAPI:
                 else:
                     logger.warning("PERF: Trading scheduler DISABLED for performance testing")
             
-                if not DEBUG_DISABLE_EXCHANGE_SYNC:
+                if DEBUG_DISABLE_EXCHANGE_SYNC:
+                    logger.warning("PERF: Exchange sync service DISABLED for performance testing")
+                elif not _run_signal_monitor_enabled():
+                    logger.info(
+                        "Exchange sync disabled on passive backend (RUN_SIGNAL_MONITOR=false); "
+                        "primary backend-aws runs exchange_sync to avoid duplicate SL/TP work"
+                    )
+                else:
                     try:
                         logger.info("🔧 Starting Exchange sync service...")
                         from app.services.exchange_sync import exchange_sync_service
@@ -559,8 +566,6 @@ def create_app(role: str = "legacy") -> FastAPI:
                         logger.info("✅ Exchange sync service started (will delay first sync by 15s)")
                     except Exception as e:
                         logger.error(f"❌ Failed to start exchange sync: {e}", exc_info=True)
-                else:
-                    logger.warning("PERF: Exchange sync service DISABLED for performance testing")
             
                 if DEBUG_DISABLE_SIGNAL_MONITOR:
                     logger.warning("PERF: Signal monitor service DISABLED for performance testing")
