@@ -1086,11 +1086,13 @@ class TelegramNotifier:
                 tp_profit = (entry_price - tp_price) * quantity  # Profit if TP hits (price dropped)
                 tp_profit_pct = ((entry_price - tp_price) / entry_price) * 100
             
-            # Format profit/loss text (always show absolute values with correct signs)
+            # Format profit/loss text (SL is always shown as a loss; TP as profit)
+            sl_loss_display = -abs(sl_loss)
+            sl_loss_pct_display = -abs(sl_loss_pct)
             profit_loss_text = f"""
 💰 <b>PROFIT/LOSS ESTIMATES</b>
    💵 Entry Price: ${entry_price:,.4f}
-   📉 If SL hits: ${sl_loss:,.2f} ({sl_loss_pct:,.2f}%)
+   📉 If SL hits: ${sl_loss_display:,.2f} ({sl_loss_pct_display:,.2f}%)
    📈 If TP hits: ${tp_profit:,.2f} ({tp_profit_pct:,.2f}%)"""
         
         # Format SL order details with trigger and ref prices
