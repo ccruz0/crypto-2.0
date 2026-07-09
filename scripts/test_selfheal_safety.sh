@@ -299,6 +299,48 @@ test_destructive_gate() {
   teardown_fake_bin
 }
 
+test_signal_monitor_safe_remediation() {
+  local cooldown tmpdir
+  cooldown="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+
+  cat >"$tmpdir/curl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/api/health/fix"* ]]; then
+  exit 0
+fi
+if [[ "$*" == *"/api/health/system"* ]]; then
+  echo '{"signal_monitor":{"status":"PASS"}}'
+  exit 0
+fi
+echo "UNEXPECTED curl: $*" >&2
+exit 99
+EOF
+  chmod +x "$tmpdir/curl"
+
+  cat >"$tmpdir/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "UNEXPECTED docker: $*" >&2
+exit 99
+EOF
+  chmod +x "$tmpdir/docker"
+
+  local out exit_code=0
+  out="$(PATH="$tmpdir:$PATH" ATP_SELFHEAL_COOLDOWN_FILE="$cooldown" ATP_REMEDIATE_SIGNAL_MONITOR_GRACE_SEC=0 \
+    REPO_DIR="$ROOT_DIR" "$ROOT_DIR/scripts/selfheal/heal.sh" "FAIL:SIGNAL_MONITOR:FAIL" 2>&1)" || exit_code=$?
+
+  rm -f "$cooldown"
+  rm -rf "$tmpdir"
+
+  if [ "$exit_code" -ne 0 ]; then
+    fail "signal monitor heal should exit 0 (got $exit_code)"
+    return
+  fi
+  echo "$out" | grep -q "Signal monitor remediation starting" || fail "missing signal monitor remediation start"
+  echo "$out" | grep -qv "UNEXPECTED:" || fail "signal monitor heal invoked unexpected docker"
+  pass "FAIL:SIGNAL_MONITOR triggers light remediation without full destructive mode"
+}
+
 test_executable_permissions() {
   if bash "$ROOT_DIR/scripts/test_selfheal_executable_permissions.sh" >/dev/null 2>&1; then
     pass "executable permission guard still passes"
@@ -315,6 +357,7 @@ test_deploy_marker_skip_run
 test_with_deploy_marker_cleanup
 test_unknown_verify_no_docker
 test_destructive_gate
+test_signal_monitor_safe_remediation
 test_executable_permissions
 
 echo ""

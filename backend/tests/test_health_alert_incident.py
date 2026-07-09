@@ -16,6 +16,13 @@ def test_is_market_data_incident_verify_label():
     assert is_market_data_incident("FAIL:API_HEALTH:missing") is False
 
 
+def test_is_signal_monitor_incident_verify_label():
+    from app.services.health_alert_incident import is_signal_monitor_incident
+
+    assert is_signal_monitor_incident("FAIL:SIGNAL_MONITOR:FAIL") is True
+    assert is_signal_monitor_incident("FAIL:MARKET_DATA:FAIL") is False
+
+
 def test_is_market_data_incident_status_pair():
     assert is_market_data_incident("other", "FAIL", "FAIL") is True
     assert is_market_data_incident("other", "PASS", "FAIL") is False
