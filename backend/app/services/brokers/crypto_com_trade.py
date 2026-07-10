@@ -4744,7 +4744,13 @@ class CryptoComTradeClient:
             logger.error(f"❌ Error placing {margin_status} limit order for {symbol}: {e}")
             return {"error": str(e)}
     
-    def cancel_order(self, order_id: str, order_type: Optional[str] = None) -> dict:
+    def cancel_order(
+        self,
+        order_id: str,
+        order_type: Optional[str] = None,
+        *,
+        dry_run: Optional[bool] = None,
+    ) -> dict:
         """
         Cancel order by order_id.
         
@@ -4755,7 +4761,18 @@ class CryptoComTradeClient:
         if skip:
             return {"order_id": order_id, "skipped": True, "reason": skip.get("reason", "")}
         self._refresh_runtime_flags()
-        if not self.live_trading:
+        if dry_run is None:
+            from app.database import SessionLocal
+            from app.utils.live_trading import get_live_trading_status
+
+            db = SessionLocal()
+            try:
+                actual_dry_run = not get_live_trading_status(db)
+            finally:
+                db.close()
+        else:
+            actual_dry_run = dry_run
+        if self._resolve_actual_dry_run(actual_dry_run):
             logger.info(f"DRY_RUN: cancel_order - {order_id}")
             return {"order_id": order_id, "status": "CANCELLED"}
         
