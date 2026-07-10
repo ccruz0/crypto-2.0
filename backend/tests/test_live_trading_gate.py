@@ -154,8 +154,12 @@ def test_cancel_order_dry_path_skips_broker_gate():
         with patch("app.core.runtime.is_aws_runtime", return_value=False):
             client = CryptoComTradeClient()
     with patch("app.services.brokers.crypto_com_trade.require_aws_or_skip", return_value=None):
-        with patch("app.services.live_trading_gate.require_mutation_allowed_for_broker") as req:
-            client.cancel_order("order-dry-1")
+        with patch("app.database.SessionLocal") as SessionLocal:
+            db = MagicMock()
+            SessionLocal.return_value = db
+            with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
+                with patch("app.services.live_trading_gate.require_mutation_allowed_for_broker") as req:
+                    client.cancel_order("order-dry-1")
     req.assert_not_called()
 
 
@@ -164,15 +168,41 @@ def test_cancel_order_live_path_invokes_broker_gate():
         with patch("app.core.runtime.is_aws_runtime", return_value=False):
             client = CryptoComTradeClient()
             with patch("app.services.brokers.crypto_com_trade.require_aws_or_skip", return_value=None):
-                with patch("app.services.live_trading_gate.require_mutation_allowed_for_broker") as req:
-                    with patch.object(client, "_get_order_detail_summary", return_value={}):
-                        with patch.object(client, "_is_advanced_oto_order", return_value=False):
-                            with patch.object(
-                                client,
-                                "sign_request",
-                                return_value={"skipped": True, "reason": "test_skip"},
-                            ):
-                                client.cancel_order("order-live-1")
+                with patch("app.database.SessionLocal") as SessionLocal:
+                    db = MagicMock()
+                    SessionLocal.return_value = db
+                    with patch("app.utils.live_trading.get_live_trading_status", return_value=True):
+                        with patch("app.services.live_trading_gate.require_mutation_allowed_for_broker") as req:
+                            with patch.object(client, "_get_order_detail_summary", return_value={}):
+                                with patch.object(client, "_is_advanced_oto_order", return_value=False):
+                                    with patch.object(
+                                        client,
+                                        "sign_request",
+                                        return_value={"skipped": True, "reason": "test_skip"},
+                                    ):
+                                        client.cancel_order("order-live-1")
+            req.assert_called_once()
+
+
+def test_cancel_order_aws_honors_db_live_trading_over_pinned_flag():
+    with patch.dict(os.environ, {"LIVE_TRADING": "true"}, clear=False):
+        with patch("app.core.runtime.is_aws_runtime", return_value=True):
+            client = CryptoComTradeClient()
+            client.live_trading = False
+            with patch("app.services.brokers.crypto_com_trade.require_aws_or_skip", return_value=None):
+                with patch("app.database.SessionLocal") as SessionLocal:
+                    db = MagicMock()
+                    SessionLocal.return_value = db
+                    with patch("app.utils.live_trading.get_live_trading_status", return_value=True):
+                        with patch("app.services.live_trading_gate.require_mutation_allowed_for_broker") as req:
+                            with patch.object(client, "_get_order_detail_summary", return_value={}):
+                                with patch.object(client, "_is_advanced_oto_order", return_value=False):
+                                    with patch.object(
+                                        client,
+                                        "sign_request",
+                                        return_value={"skipped": True, "reason": "test_skip"},
+                                    ):
+                                        client.cancel_order("order-live-aws-1")
             req.assert_called_once()
 
 
