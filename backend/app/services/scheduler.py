@@ -724,6 +724,11 @@ class TradingScheduler:
             check_telegram_health(origin="scheduler_startup")
         except Exception as e:
             logger.warning(f"[SCHEDULER] Failed to run Telegram health-check on startup: {e}")
+
+        try:
+            await asyncio.to_thread(self.check_approval_queue_sync)
+        except Exception as e:
+            logger.warning("[SCHEDULER] Failed approval queue maintenance on startup: %s", e)
         
         logger.info("run_scheduler() called - starting scheduler")
         self.running = True
