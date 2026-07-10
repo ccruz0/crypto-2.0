@@ -80,6 +80,19 @@ def create_take_profit_order(
     # After SELL: TP is BUY (buy at profit)
     entry_side = side.upper()  # Ensure uppercase
     tp_side = get_closing_side_from_entry(entry_side)
+
+    if parent_order_id and not dry_run:
+        from app.services.sl_tp_protection import get_active_protection_order
+
+        existing_tp = get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
+        if existing_tp:
+            logger.info(
+                "[%s_TP] Reusing active TP %s for parent %s",
+                source.upper(),
+                existing_tp.exchange_order_id,
+                parent_order_id,
+            )
+            return {"order_id": existing_tp.exchange_order_id, "error": None}
     
     # CRITICAL: Verify TP price is valid for current market conditions (AUTO mode only).
     #
@@ -370,6 +383,19 @@ def create_stop_loss_order(
     sl_trigger = sl_price  # trigger_price equals sl_price
     entry_side = side.upper()  # Ensure uppercase
     sl_side = get_closing_side_from_entry(entry_side)
+
+    if parent_order_id and not dry_run:
+        from app.services.sl_tp_protection import get_active_protection_order
+
+        existing_sl = get_active_protection_order(db, parent_order_id, "STOP_LOSS")
+        if existing_sl:
+            logger.info(
+                "[%s_SL] Reusing active SL %s for parent %s",
+                source.upper(),
+                existing_sl.exchange_order_id,
+                parent_order_id,
+            )
+            return {"order_id": existing_sl.exchange_order_id, "error": None}
     
     logger.info(
         f"[{source.upper()}_SL] Creating SL order: {symbol}, entry_side={entry_side}, closing_side={sl_side}, "

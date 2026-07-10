@@ -18,6 +18,12 @@ from app.models.trade_signal import TradeSignal, SignalStatusEnum
 from app.services.brokers.crypto_com_trade import CryptoComTradeClient, trade_client
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
+from app.services.sl_tp_protection import (
+    get_active_protection_order,
+    has_complete_sl_tp_protection,
+    release_sl_tp_creation_lock,
+    try_acquire_sl_tp_creation_lock,
+)
 # fill_dedup_postgres may be absent in some deployments; run with fill dedup disabled if missing.
 # EC2 verification after deploy: git reset --hard origin/main; rebuild backend image with --no-cache;
 # docker exec <backend_container> python3 -c "import app.services.exchange_sync as m; print('OK')";
@@ -240,26 +246,6 @@ def is_system_created_order(db: Session, order: ExchangeOrder) -> bool:
         order.symbol,
     )
     return False
-
-
-def has_complete_sl_tp_protection(db: Session, parent_order_id: str) -> bool:
-    """True when both an active SL and TP exist for the parent entry order."""
-    roles = {
-        row[0]
-        for row in db.query(ExchangeOrder.order_role)
-        .filter(
-            ExchangeOrder.parent_order_id == str(parent_order_id),
-            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
-            ExchangeOrder.status.in_([
-                OrderStatusEnum.NEW,
-                OrderStatusEnum.ACTIVE,
-                OrderStatusEnum.PARTIALLY_FILLED,
-            ]),
-        )
-        .all()
-        if row[0]
-    }
-    return "STOP_LOSS" in roles and "TAKE_PROFIT" in roles
 
 
 def should_auto_create_sl_tp_on_sync(
@@ -924,20 +910,27 @@ class ExchangeSyncService:
                         
                         if len(cancelled_orders) == 1:
                             order = cancelled_orders[0]
-                            order_type = order.order_type or "UNKNOWN"
-                            order_role = f" ({order.order_role})" if order.order_role else ""
-                            side = order.side.value if hasattr(order.side, 'value') else str(order.side)
-                            price_text = f"\n💵 Price: ${order.price:.4f}" if order.price else ""
-                            qty_text = f"\n📦 Quantity: {order.quantity:.8f}" if order.quantity else ""
-                            
-                            message = (
-                                f"❌ <b>ORDER CANCELLED (Sync)</b>\n\n"
-                                f"📊 Symbol: <b>{order.symbol}</b>\n"
-                                f"🔄 Side: {side}\n"
-                                f"🎯 Type: {order_type}{order_role}\n"
-                                f"📋 Order ID: <code>{order.exchange_order_id}</code>{price_text}{qty_text}\n"
-                                f"📋 Status Source: order_history\n\n"
-                                f"💡 <b>Reason:</b> Order confirmed as CANCELLED via exchange order history"
+                            parent_entry_side = None
+                            if order.parent_order_id:
+                                parent_order = db.query(ExchangeOrder).filter(
+                                    ExchangeOrder.exchange_order_id == order.parent_order_id
+                                ).first()
+                                if parent_order:
+                                    parent_entry_side = (
+                                        parent_order.side.value
+                                        if hasattr(parent_order.side, "value")
+                                        else str(parent_order.side)
+                                    )
+                            message = telegram_notifier.format_sync_cancelled_order_message(
+                                symbol=order.symbol,
+                                side=order.side.value if hasattr(order.side, "value") else str(order.side),
+                                order_type=order.order_type or "UNKNOWN",
+                                order_id=order.exchange_order_id,
+                                order_role=order.order_role,
+                                parent_order_id=order.parent_order_id,
+                                parent_entry_side=parent_entry_side,
+                                price=float(order.price) if order.price else None,
+                                quantity=float(order.quantity) if order.quantity else None,
                             )
                         else:
                             message = (
@@ -1576,31 +1569,44 @@ class ExchangeSyncService:
             )
             return default_result
 
-        # CRITICAL: Use a database-level lock to prevent concurrent SL/TP creation for the same order
-        # This prevents race conditions where multiple calls create SL/TP simultaneously
-        import time
-        lock_key = f"sl_tp_creation_{order_id}"
-        lock_timeout = 30  # 30 seconds timeout
-        
-        # Check if we're already creating SL/TP for this order (in-memory lock)
-        if hasattr(self, '_sl_tp_creation_locks'):
-            if lock_key in self._sl_tp_creation_locks:
-                lock_timestamp = self._sl_tp_creation_locks[lock_key]
-                if time.time() - lock_timestamp < lock_timeout:
-                    logger.warning(
-                        f"🚫 BLOCKED: SL/TP creation already in progress for order {order_id} ({symbol}). "
-                        f"Skipping to prevent duplicate creation."
-                    )
-                    return default_result
-                else:
-                    # Lock expired, remove it
-                    del self._sl_tp_creation_locks[lock_key]
-        else:
-            self._sl_tp_creation_locks = {}
-        
-        # Set lock
-        self._sl_tp_creation_locks[lock_key] = time.time()
-        
+        # Cross-process lock: in-memory locks do not work across backend-aws / canary workers.
+        lock_acquired = try_acquire_sl_tp_creation_lock(db, order_id)
+        if not lock_acquired:
+            existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
+            existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
+            if existing_sl or existing_tp:
+                logger.info(
+                    "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
+                    "Reusing existing protection (SL=%s, TP=%s).",
+                    order_id,
+                    symbol,
+                    existing_sl.exchange_order_id if existing_sl else None,
+                    existing_tp.exchange_order_id if existing_tp else None,
+                )
+                return {
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "source": source,
+                    "status": "already_protected",
+                    "sl_result": {
+                        "order_id": existing_sl.exchange_order_id if existing_sl else None,
+                        "error": None,
+                    },
+                    "tp_result": {
+                        "order_id": existing_tp.exchange_order_id if existing_tp else None,
+                        "error": None,
+                    },
+                    "sl_price": _protection_order_price(existing_sl) if existing_sl else None,
+                    "tp_price": _protection_order_price(existing_tp) if existing_tp else None,
+                }
+            logger.warning(
+                "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
+                "Skipping to prevent duplicate creation.",
+                order_id,
+                symbol,
+            )
+            return default_result
+
         # Sync open orders so the single-path service sees latest state before idempotency check
         try:
             logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
@@ -1628,11 +1634,7 @@ class ExchangeSyncService:
                 tp_price_override_f=tp_price_override_f,
             )
         finally:
-            try:
-                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                    del self._sl_tp_creation_locks[lock_key]
-            except Exception:
-                pass
+            release_sl_tp_creation_lock(db, order_id)
 
         sl_result = impl_result.get("sl_result")
         tp_result = impl_result.get("tp_result")
@@ -1654,11 +1656,6 @@ class ExchangeSyncService:
                 order_id,
                 symbol,
             )
-            try:
-                if hasattr(self, "_sl_tp_creation_locks") and lock_key in self._sl_tp_creation_locks:
-                    del self._sl_tp_creation_locks[lock_key]
-            except Exception:
-                pass
             return {
                 "symbol": symbol,
                 "order_id": order_id,
@@ -1701,9 +1698,6 @@ class ExchangeSyncService:
                             f"📢 Notification already sent for order {order_id} ({symbol}) "
                             f"{time_since_notification:.1f}s ago. Skipping duplicate notification."
                         )
-                        # Best-effort cleanup of in-memory lock
-                        if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                            del self._sl_tp_creation_locks[lock_key]
                         return
             else:
                 self._sl_tp_notification_sent = {}
@@ -1728,9 +1722,6 @@ class ExchangeSyncService:
                     f"📢 SL/TP orders already exist for order {order_id} ({symbol}) and no new orders created. "
                     f"Skipping duplicate notification."
                 )
-                # Best-effort cleanup of in-memory lock
-                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                    del self._sl_tp_creation_locks[lock_key]
                 return default_result
 
             # If orders failed, send error notification with detailed error messages
@@ -1791,11 +1782,6 @@ class ExchangeSyncService:
                         sl_price_f,
                         tp_price_f,
                     )
-                    try:
-                        if hasattr(self, "_sl_tp_creation_locks") and lock_key in self._sl_tp_creation_locks:
-                            del self._sl_tp_creation_locks[lock_key]
-                    except Exception:
-                        pass
                     return {
                         "symbol": symbol,
                         "order_id": order_id,
@@ -1837,13 +1823,6 @@ class ExchangeSyncService:
         except Exception as telegram_err:
             logger.error(f"❌ Exception sending Telegram notification for SL/TP: {telegram_err}", exc_info=True)
 
-        # Best-effort cleanup of in-memory lock (also expires automatically)
-        try:
-            if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                del self._sl_tp_creation_locks[lock_key]
-        except Exception:
-            pass
-
         # Return a structured result for API endpoints / callers that want to surface details.
         # (Existing callers that ignore the return value remain compatible.)
         try:
@@ -1881,31 +1860,8 @@ class ExchangeSyncService:
         from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
 
         default_result = {"sl_result": {"order_id": None, "error": None}, "tp_result": {"order_id": None, "error": None}, "oco_group_id": None, "sl_price": None, "tp_price": None, "skip_tp_creation": False, "skip_tp_reason": None}
-        active_statuses = [
-            OrderStatusEnum.NEW,
-            OrderStatusEnum.ACTIVE,
-            OrderStatusEnum.PARTIALLY_FILLED,
-        ]
-        existing_sl = (
-            db.query(ExchangeOrder)
-            .filter(
-                ExchangeOrder.parent_order_id == str(order_id),
-                ExchangeOrder.order_role == "STOP_LOSS",
-                ExchangeOrder.status.in_(active_statuses),
-            )
-            .order_by(ExchangeOrder.id.asc())
-            .first()
-        )
-        existing_tp = (
-            db.query(ExchangeOrder)
-            .filter(
-                ExchangeOrder.parent_order_id == str(order_id),
-                ExchangeOrder.order_role == "TAKE_PROFIT",
-                ExchangeOrder.status.in_(active_statuses),
-            )
-            .order_by(ExchangeOrder.id.asc())
-            .first()
-        )
+        existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
+        existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
         if existing_sl and existing_tp:
             logger.info(
                 "[SLTP_IDEMPOTENCY] parent=%s symbol=%s already has active SL=%s TP=%s — skipping creation",
