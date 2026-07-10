@@ -979,43 +979,73 @@ class SLTPCheckerService:
                     logger.warning(f"Could not get parent order ID for {symbol}: {e}")
             
             # Use the reusable TP/SL order creator functions (same as automatic creation)
+            from app.services.sl_tp_protection import get_active_protection_order
+
             # Create SL order if requested
             sl_order_id = None
             sl_error = None
             if create_sl and sl_price and entry_price:
-                sl_result = create_stop_loss_order(
-                    db=db,
-                    symbol=symbol,
-                    side=entry_side,
-                    sl_price=sl_price,
-                    quantity=position_balance,
-                    entry_price=entry_price,
-                    parent_order_id=parent_order_id,
-                    oco_group_id=oco_group_id,
-                    dry_run=dry_run_mode,
-                    source="manual"
+                existing_sl = (
+                    get_active_protection_order(db, parent_order_id, "STOP_LOSS")
+                    if parent_order_id
+                    else None
                 )
-                sl_order_id = sl_result.get("order_id")
-                sl_error = sl_result.get("error")
+                if existing_sl:
+                    sl_order_id = existing_sl.exchange_order_id
+                    logger.info(
+                        "Reusing existing SL %s for %s (parent %s)",
+                        sl_order_id,
+                        symbol,
+                        parent_order_id,
+                    )
+                else:
+                    sl_result = create_stop_loss_order(
+                        db=db,
+                        symbol=symbol,
+                        side=entry_side,
+                        sl_price=sl_price,
+                        quantity=position_balance,
+                        entry_price=entry_price,
+                        parent_order_id=parent_order_id,
+                        oco_group_id=oco_group_id,
+                        dry_run=dry_run_mode,
+                        source="manual",
+                    )
+                    sl_order_id = sl_result.get("order_id")
+                    sl_error = sl_result.get("error")
             
             # Create TP order if requested
             tp_order_id = None
             tp_error = None
             if create_tp and tp_price and entry_price:
-                tp_result = create_take_profit_order(
-                    db=db,
-                    symbol=symbol,
-                    side=entry_side,
-                    tp_price=tp_price,
-                    quantity=position_balance,
-                    entry_price=entry_price,
-                    parent_order_id=parent_order_id,
-                    oco_group_id=oco_group_id,
-                    dry_run=dry_run_mode,
-                    source="manual"
+                existing_tp = (
+                    get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
+                    if parent_order_id
+                    else None
                 )
-                tp_order_id = tp_result.get("order_id")
-                tp_error = tp_result.get("error")
+                if existing_tp:
+                    tp_order_id = existing_tp.exchange_order_id
+                    logger.info(
+                        "Reusing existing TP %s for %s (parent %s)",
+                        tp_order_id,
+                        symbol,
+                        parent_order_id,
+                    )
+                else:
+                    tp_result = create_take_profit_order(
+                        db=db,
+                        symbol=symbol,
+                        side=entry_side,
+                        tp_price=tp_price,
+                        quantity=position_balance,
+                        entry_price=entry_price,
+                        parent_order_id=parent_order_id,
+                        oco_group_id=oco_group_id,
+                        dry_run=dry_run_mode,
+                        source="manual",
+                    )
+                    tp_order_id = tp_result.get("order_id")
+                    tp_error = tp_result.get("error")
             
             # BR-3: ATOMIC ROLLBACK - If both SL and TP were requested, both must succeed
             # If one failed, cancel the other (rollback)

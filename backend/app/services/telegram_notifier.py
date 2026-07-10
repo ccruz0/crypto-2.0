@@ -1016,8 +1016,83 @@ class TelegramNotifier:
         # Executed order alert → send_message() → get_runtime_origin() → Telegram
         # This works because backend-aws service has RUNTIME_ORIGIN=AWS
         return self.send_message(message.strip())
+
+    @staticmethod
+    def _position_label_from_entry_side(entry_side: Optional[str]) -> str:
+        side = (entry_side or "").upper()
+        if side == "BUY":
+            return "LONG (opened via BUY entry)"
+        if side == "SELL":
+            return "SHORT (opened via SELL entry)"
+        return "Unknown"
+
+    @staticmethod
+    def _protection_role_label(order_role: Optional[str]) -> str:
+        role = (order_role or "").upper()
+        if role == "STOP_LOSS":
+            return "Stop Loss"
+        if role == "TAKE_PROFIT":
+            return "Take Profit"
+        return "Protection"
+
+    @staticmethod
+    def _exit_side_label(entry_side: Optional[str]) -> str:
+        side = (entry_side or "").upper()
+        if side == "BUY":
+            return "SELL"
+        if side == "SELL":
+            return "BUY"
+        return "N/A"
+
+    def format_sync_cancelled_order_message(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        order_type: str,
+        order_id: str,
+        order_role: Optional[str] = None,
+        parent_order_id: Optional[str] = None,
+        parent_entry_side: Optional[str] = None,
+        price: Optional[float] = None,
+        quantity: Optional[float] = None,
+    ) -> str:
+        """Format a sync cancellation alert with entry vs exit-order context."""
+        is_protection = bool(order_role)
+        price_text = f"\n💵 Price: ${price:,.4f}" if price else ""
+        qty_text = f"\n📦 Quantity: {quantity:,.8f}" if quantity else ""
+
+        if is_protection:
+            position_text = self._position_label_from_entry_side(parent_entry_side)
+            role_label = self._protection_role_label(order_role)
+            parent_text = (
+                f"\n📋 Entry Order ID: <code>{parent_order_id}</code>"
+                if parent_order_id
+                else ""
+            )
+            return (
+                f"❌ <b>PROTECTION ORDER CANCELLED (Sync)</b>\n\n"
+                f"📊 Symbol: <b>{symbol}</b>\n"
+                f"📍 Position: <b>{position_text}</b>\n"
+                f"🛡️ Role: <b>{role_label}</b> (exit order — not a new entry)\n"
+                f"🔄 Exit Side: <b>{side}</b>\n"
+                f"🎯 Type: {order_type}{parent_text}\n"
+                f"📋 Order ID: <code>{order_id}</code>{price_text}{qty_text}\n"
+                f"📋 Status Source: order_history\n\n"
+                f"💡 <b>Reason:</b> Old protection leg removed during exchange sync"
+            )
+
+        return (
+            f"❌ <b>ENTRY ORDER CANCELLED (Sync)</b>\n\n"
+            f"📊 Symbol: <b>{symbol}</b>\n"
+            f"📈 Entry Side: <b>{side}</b>\n"
+            f"🎯 Type: {order_type}\n"
+            f"📋 Order ID: <code>{order_id}</code>{price_text}{qty_text}\n"
+            f"📋 Status Source: order_history\n\n"
+            f"💡 <b>Reason:</b> Order confirmed as CANCELLED via exchange order history"
+        )
     
-    def send_sl_tp_orders(self, symbol: str, sl_price: float, tp_price: float, 
+    def send_sl_tp_orders(self, symbol: str, sl_price: float, tp_price: float,
                          quantity: float, mode: str, 
                          sl_order_id: Optional[str] = None, 
                          tp_order_id: Optional[str] = None,
@@ -1034,7 +1109,26 @@ class TelegramNotifier:
                          original_order_side: Optional[str] = None):
         """Send SL/TP orders notification with profit/loss calculations and order details"""
         mode_emoji = "🛡️" if mode == "conservative" else "⚡"
-        original_order_text = f"\n📋 Original Order ID: {original_order_id}" if original_order_id else ""
+        entry_side = (original_order_side or "").upper()
+        if not entry_side:
+            if sl_side == "SELL" or tp_side == "SELL":
+                entry_side = "BUY"
+            elif sl_side == "BUY" or tp_side == "BUY":
+                entry_side = "SELL"
+
+        position_label = self._position_label_from_entry_side(entry_side)
+        exit_side = self._exit_side_label(entry_side)
+        original_order_text = ""
+        if original_order_id:
+            entry_price_text = f" @ ${entry_price:,.4f}" if entry_price else ""
+            original_order_text = (
+                f"\n📋 Entry Order: <code>{original_order_id}</code> — "
+                f"<b>{entry_side or 'N/A'}</b>{entry_price_text}"
+            )
+        context_text = (
+            f"\n📍 Position: <b>{position_label}</b>"
+            f"\n💡 SL/TP are <b>exit orders ({exit_side})</b> to close the position — not new entries."
+        )
         
         # Determine SL side text
         if sl_side:
@@ -1116,7 +1210,7 @@ class TelegramNotifier:
         
         sl_order_details = ""
         if sl_order_id:
-            sl_order_details = f"\n{sl_emoji} <b>SL Order Details:</b>"
+            sl_order_details = f"\n{sl_emoji} <b>SL Order (exit):</b>"
             sl_order_details += f"\n   🆔 Order ID: {sl_order_id}"
             sl_order_details += f"\n   📊 Type: STOP_LIMIT{sl_side_text}"
             sl_order_details += f"\n   💵 Price: ${sl_price:,.4f}"
@@ -1137,7 +1231,7 @@ class TelegramNotifier:
         
         tp_order_details = ""
         if tp_order_id:
-            tp_order_details = f"\n{tp_emoji} <b>TP Order Details:</b>"
+            tp_order_details = f"\n{tp_emoji} <b>TP Order (exit):</b>"
             tp_order_details += f"\n   🆔 Order ID: {tp_order_id}"
             tp_order_details += f"\n   📊 Type: TAKE_PROFIT_LIMIT{tp_side_text}"
             tp_order_details += f"\n   💵 Execution Price: ${tp_price:,.4f}"
@@ -1165,7 +1259,7 @@ class TelegramNotifier:
         message = f"""
 {mode_emoji} <b>SL/TP ORDERS CREATED</b>
 
-📊 Symbol: <b>{symbol}</b>
+📊 Symbol: <b>{symbol}</b>{context_text}
 📦 Quantity: {quantity:,.6f}{profit_loss_text}
 {strategy_text}{original_order_text}{sl_order_details}{tp_order_details}
 📅 Time: {timestamp}

@@ -22,11 +22,12 @@ from app.utils.live_trading import get_live_trading_status
 def find_duplicate_orders(db, symbol: str):
     """
     Find duplicate SL/TP orders for a symbol.
-    
-    Returns:
-        dict: {group_key: [orders]} where group_key identifies duplicates
+
+    Primary rule: more than one active order with the same parent_order_id and
+    order_role (e.g. two STOP_LOSS legs for one entry) is a duplicate set.
+
+    Fallback: group orphan protection orders by type/price/qty when parent is missing.
     """
-    # Find all active SL/TP orders for the symbol
     sl_tp_orders = db.query(ExchangeOrder).filter(
         ExchangeOrder.symbol == symbol,
         ExchangeOrder.order_type.in_(['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']),
@@ -36,26 +37,37 @@ def find_duplicate_orders(db, symbol: str):
             OrderStatusEnum.PARTIALLY_FILLED
         ])
     ).all()
-    
-    # Group orders by characteristics that make them duplicates
-    # Key: (order_type, price, quantity, trigger_price/condition)
-    groups = defaultdict(list)
-    
+
+    duplicate_groups = {}
+
+    # 1) Parent + role duplicates (most common production case)
+    parent_role_groups = defaultdict(list)
     for order in sl_tp_orders:
-        # Create a key based on order characteristics
-        # For SL/TP orders, duplicates have same: type, price, quantity, and similar trigger
+        if order.parent_order_id and order.order_role:
+            key = ("parent_role", order.parent_order_id, order.order_role)
+            parent_role_groups[key].append(order)
+
+    for key, orders in parent_role_groups.items():
+        if len(orders) > 1:
+            duplicate_groups[key] = orders
+
+    # 2) Orphan duplicates without parent linkage
+    orphan_groups = defaultdict(list)
+    for order in sl_tp_orders:
+        if order.parent_order_id and order.order_role:
+            continue
         key = (
+            "orphan",
             order.order_type,
-            round(float(order.price), 8) if order.price else None,  # Round to 8 decimals for comparison
+            round(float(order.price), 8) if order.price else None,
             round(float(order.quantity), 8) if order.quantity else None,
-            # For trigger orders, we can't easily get trigger_price from DB, so use price as proxy
-            # Orders with same price and quantity are likely duplicates
         )
-        groups[key].append(order)
-    
-    # Filter to only groups with duplicates (2+ orders)
-    duplicate_groups = {k: orders for k, orders in groups.items() if len(orders) > 1}
-    
+        orphan_groups[key].append(order)
+
+    for key, orders in orphan_groups.items():
+        if len(orders) > 1:
+            duplicate_groups[key] = orders
+
     return duplicate_groups
 
 def cancel_duplicate_orders(db, symbol: str, dry_run: bool = True):
@@ -81,11 +93,14 @@ def cancel_duplicate_orders(db, symbol: str, dry_run: bool = True):
     total_failed = 0
     
     for group_key, orders in duplicate_groups.items():
-        # group_key is a tuple: (order_type, price, quantity)
-        order_type = group_key[0]
-        price = group_key[1] if len(group_key) > 1 else None
-        qty = group_key[2] if len(group_key) > 2 else None
-        print(f"📦 Group: {order_type} @ {price} qty={qty}")
+        if group_key[0] == "parent_role":
+            _, parent_order_id, order_role = group_key
+            print(f"📦 Group: parent={parent_order_id} role={order_role}")
+        else:
+            order_type = group_key[1]
+            price = group_key[2] if len(group_key) > 2 else None
+            qty = group_key[3] if len(group_key) > 3 else None
+            print(f"📦 Group: orphan {order_type} @ {price} qty={qty}")
         print(f"   Found {len(orders)} duplicate orders:")
         
         # Sort orders: prefer those with parent_order_id, then by creation time (oldest first)
