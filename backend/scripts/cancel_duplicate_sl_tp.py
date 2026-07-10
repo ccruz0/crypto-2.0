@@ -10,14 +10,42 @@ import sys
 import os
 from datetime import datetime, timezone
 from collections import defaultdict
+from typing import Optional
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-from app.services.brokers.crypto_com_trade import trade_client
+from app.services.brokers.crypto_com_trade import trade_client, ADVANCED_CANCEL_ORDER_ENDPOINT
 from app.utils.live_trading import get_live_trading_status
+from app.utils.http_client import http_post
+
+def cancel_order_on_exchange(order_id: str, *, order_type: Optional[str] = None) -> dict:
+    """Cancel a protection/trigger order via the exchange API (bypasses LIVE_TRADING DB gate)."""
+    trade_client._refresh_runtime_flags()
+    detail = trade_client._get_order_detail_summary(order_id)
+    detail_type = (detail or {}).get("type") if isinstance(detail, dict) else None
+    from app.services.brokers.crypto_com_trade import _is_conditional_order_type
+
+    if _is_conditional_order_type(order_type) or _is_conditional_order_type(detail_type):
+        method = ADVANCED_CANCEL_ORDER_ENDPOINT
+    else:
+        method = "private/cancel-order"
+    payload = trade_client.sign_request(method, {"order_id": order_id})
+    url = f"{trade_client.base_url}/{method}"
+    response = http_post(
+        url,
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=15,
+        calling_module="cancel_duplicate_sl_tp",
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("code") not in (0, None):
+        return {"error": body.get("message") or str(body)}
+    return body.get("result") or body
 
 def find_duplicate_orders(db, symbol: str):
     """
@@ -70,7 +98,7 @@ def find_duplicate_orders(db, symbol: str):
 
     return duplicate_groups
 
-def cancel_duplicate_orders(db, symbol: str, dry_run: bool = True):
+def cancel_duplicate_orders(db, symbol: str, dry_run: bool = True, force_exchange: bool = False):
     """
     Cancel duplicate SL/TP orders, keeping one from each group.
     
@@ -136,7 +164,10 @@ def cancel_duplicate_orders(db, symbol: str, dry_run: bool = True):
                     order_id = order.exchange_order_id
                     print(f"   🗑️  Cancelling {order_id}...", end=" ")
                     
-                    result = trade_client.cancel_order(order_id)
+                    if force_exchange:
+                        result = cancel_order_on_exchange(order_id, order_type=order.order_type)
+                    else:
+                        result = trade_client.cancel_order(order_id, order_type=order.order_type)
                     
                     if "error" not in result:
                         # Update order status in database
@@ -179,6 +210,11 @@ def main():
     parser = argparse.ArgumentParser(description="Cancel duplicate SL/TP orders")
     parser.add_argument("--symbol", default="ALGO_USDT", help="Symbol to check (default: ALGO_USDT)")
     parser.add_argument("--live", action="store_true", help="Actually cancel orders (default: dry run)")
+    parser.add_argument(
+        "--force-exchange",
+        action="store_true",
+        help="Use direct exchange cancel API (for duplicate cleanup when DB LIVE_TRADING is off)",
+    )
     parser.add_argument("--all-symbols", action="store_true", help="Check all symbols with duplicates")
     
     args = parser.parse_args()
@@ -186,11 +222,19 @@ def main():
     db = create_db_session()
     try:
         live_trading = get_live_trading_status(db)
-        dry_run = not (args.live and live_trading)
-        
+        dry_run = not args.live
+        if args.live and args.force_exchange:
+            dry_run = False
+        elif args.live and not live_trading:
+            dry_run = True
+
         if dry_run and args.live:
-            print("⚠️  WARNING: LIVE_TRADING is disabled. Running in DRY RUN mode.")
-            print("   Set LIVE_TRADING=true to enable actual cancellation.")
+            print("⚠️  WARNING: Running in DRY RUN mode (pass --live to cancel).")
+            if not args.force_exchange:
+                print("   Set LIVE_TRADING=true or pass --force-exchange for authorized cleanup.")
+            print()
+        elif args.live and args.force_exchange and not live_trading:
+            print("⚠️  Using --force-exchange: direct exchange cancel (DB LIVE_TRADING is off).")
             print()
         
         if args.all_symbols:
@@ -212,10 +256,10 @@ def main():
                 duplicate_groups = find_duplicate_orders(db, symbol)
                 if duplicate_groups:
                     print(f"📊 {symbol}: {len(duplicate_groups)} duplicate group(s)")
-                    cancel_duplicate_orders(db, symbol, dry_run=dry_run)
+                    cancel_duplicate_orders(db, symbol, dry_run=dry_run, force_exchange=args.force_exchange)
                     print()
         else:
-            cancel_duplicate_orders(db, args.symbol, dry_run=dry_run)
+            cancel_duplicate_orders(db, args.symbol, dry_run=dry_run, force_exchange=args.force_exchange)
     finally:
         db.close()
 

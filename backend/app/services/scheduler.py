@@ -37,6 +37,7 @@ class TradingScheduler:
         self.kr_refresh_time = time_module(7, 30)  # Daily 7:30 AM
         self.last_hourly_sl_tp_check = None  # Track last hourly SL/TP check (datetime)
         self.last_orphan_order_check = None  # Track last orphan-order alert (datetime)
+        self.last_approval_queue_check = None  # Track last approval queue maintenance (datetime)
         self._scheduler_task = None  # Track the running task to prevent duplicates
         # Locks for atomic check-and-set operations on date tracking variables
         self._daily_summary_lock = asyncio.Lock()
@@ -48,6 +49,7 @@ class TradingScheduler:
         self._kr_refresh_lock = asyncio.Lock()
         self._hourly_sl_tp_check_lock = asyncio.Lock()
         self._orphan_order_check_lock = asyncio.Lock()
+        self._approval_queue_check_lock = asyncio.Lock()
     
     def check_daily_summary_sync(self):
         """Check if it's time to send daily summary - synchronous worker
@@ -461,6 +463,49 @@ class TradingScheduler:
             from app.api.routes_monitoring import record_workflow_execution
             record_workflow_execution("hourly_sl_tp_check", "error", None, str(e))
 
+    def check_approval_queue_sync(self):
+        """Refresh approval queue metrics and expire very old pending items."""
+        logger.info("Running approval queue maintenance...")
+        try:
+            db = SessionLocal()
+            try:
+                from app.services.approval_queue_monitor import run_approval_queue_maintenance
+                from app.api.routes_monitoring import record_workflow_execution
+
+                stats = run_approval_queue_maintenance(db)
+                if stats.get("stale_total", 0) > 0:
+                    logger.warning(
+                        "[APPROVAL_QUEUE] stale_pending=%s oldest_age_s=%.0f pending_total=%s",
+                        stats.get("stale_total"),
+                        stats.get("oldest_pending_age_seconds", 0),
+                        stats.get("pending_total"),
+                    )
+                if stats.get("expired", 0) > 0:
+                    logger.info("[APPROVAL_QUEUE] expired=%s", stats.get("expired"))
+                record_workflow_execution("approval_queue_maintenance", "success", None)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error("Error in approval queue maintenance: %s", e, exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("approval_queue_maintenance", "error", None, str(e))
+
+    async def check_approval_queue(self):
+        """Run approval queue maintenance hourly."""
+        now = datetime.now(timezone.utc)
+        should_check = (
+            now.minute <= 1
+            and (
+                self.last_approval_queue_check is None
+                or (now - self.last_approval_queue_check).total_seconds() >= 3600
+            )
+        )
+        async with self._approval_queue_check_lock:
+            if should_check:
+                self.last_approval_queue_check = now
+                await asyncio.to_thread(self.check_approval_queue_sync)
+                await asyncio.sleep(2)
+
     def check_orphan_orders_sync(self):
         """Detect orphaned/stale SL/TP orders and send Telegram alert."""
         logger.info("Checking for orphaned/stale SL/TP orders...")
@@ -712,6 +757,7 @@ class TradingScheduler:
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()
                 await self.check_orphan_orders()
+                await self.check_approval_queue()
                 await self.check_nightly_consistency()
                 # DISABLED: Hourly SL/TP check - use Telegram menu button instead
                 # await self.check_hourly_sl_tp_missed()  # Check for missed SL/TP every hour
