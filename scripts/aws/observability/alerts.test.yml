@@ -79,6 +79,22 @@ tests:
         alertname: HostSwapHigh
         exp_alerts: []
 
+  # Approval queue stale pending tasks.
+  - interval: 1m
+    input_series:
+      - series: 'approval_queue_stale_total{job="backend"}'
+        values: "2x45"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ApprovalQueueStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: backend
+            exp_annotations:
+              summary: "Approval queue has stale pending tasks"
+              description: "One or more agent approval tasks have been pending longer than the configured stale threshold (default 24h). Review the Approval Center and resolve or expire stale items."
+
   # Sustained low idle (~10%) => non-idle ~90% > 85%: HostCPUSaturated (warning).
   - interval: 1m
     input_series:
