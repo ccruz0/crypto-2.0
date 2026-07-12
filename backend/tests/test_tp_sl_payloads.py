@@ -62,8 +62,10 @@ class TestTPSLPayloads(unittest.TestCase):
             "status": "OPEN"
         }
     
+    @patch('app.services.sl_tp_protection.get_active_protection_order', return_value=None)
+    @patch('app.services.tp_sl_order_creator.resolve_sltp_margin_context', return_value=(False, None))
     @patch('app.services.tp_sl_order_creator.trade_client')
-    def test_take_profit_payloads_match(self, mock_trade_client):
+    def test_take_profit_payloads_match(self, mock_trade_client, _mock_margin, _mock_active):
         """Test that automatic and manual TP creation use identical parameters"""
         # Setup mock to capture arguments
         mock_trade_client.place_take_profit_order = MagicMock(side_effect=[
@@ -152,8 +154,10 @@ class TestTPSLPayloads(unittest.TestCase):
                          f"Payloads must be identical. Differences: "
                          f"auto={auto_params}, manual={manual_params}")
     
+    @patch('app.services.sl_tp_protection.get_active_protection_order', return_value=None)
+    @patch('app.services.tp_sl_order_creator.resolve_sltp_margin_context', return_value=(False, None))
     @patch('app.services.tp_sl_order_creator.trade_client')
-    def test_stop_loss_payloads_match(self, mock_trade_client):
+    def test_stop_loss_payloads_match(self, mock_trade_client, _mock_margin, _mock_active):
         """Test that automatic and manual SL creation use identical parameters"""
         # Setup mock to capture arguments
         mock_trade_client.place_stop_loss_order = MagicMock(side_effect=[
