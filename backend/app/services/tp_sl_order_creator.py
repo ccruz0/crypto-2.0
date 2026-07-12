@@ -23,6 +23,19 @@ _rules_missing_alert_times: Dict[str, float] = {}
 _RULES_MISSING_ALERT_COOLDOWN_SECONDS = 6 * 3600  # 6 hours
 
 
+def resolve_sltp_margin_context(db: Session, symbol: str) -> Tuple[bool, Optional[float]]:
+    """Return (is_margin, leverage) from watchlist for SL/TP placement."""
+    from app.models.watchlist import WatchlistItem
+
+    item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+    if not item:
+        return False, None
+    is_margin = bool(getattr(item, "trade_on_margin", False))
+    leverage_raw = getattr(item, "leverage", None)
+    leverage = float(leverage_raw) if leverage_raw not in (None, "") else None
+    return is_margin, leverage
+
+
 def get_closing_side_from_entry(entry_side: str) -> str:
     """
     Get the correct closing side for TP/SL orders based on entry side.
@@ -80,6 +93,11 @@ def create_take_profit_order(
     # After SELL: TP is BUY (buy at profit)
     entry_side = side.upper()  # Ensure uppercase
     tp_side = get_closing_side_from_entry(entry_side)
+    watchlist_is_margin, watchlist_leverage = resolve_sltp_margin_context(db, symbol)
+    if not is_margin:
+        is_margin = watchlist_is_margin
+    if leverage is None:
+        leverage = watchlist_leverage
 
     if parent_order_id and not dry_run:
         from app.services.sl_tp_protection import get_active_protection_order
@@ -383,6 +401,11 @@ def create_stop_loss_order(
     sl_trigger = sl_price  # trigger_price equals sl_price
     entry_side = side.upper()  # Ensure uppercase
     sl_side = get_closing_side_from_entry(entry_side)
+    watchlist_is_margin, watchlist_leverage = resolve_sltp_margin_context(db, symbol)
+    if not is_margin:
+        is_margin = watchlist_is_margin
+    if leverage is None:
+        leverage = watchlist_leverage
 
     if parent_order_id and not dry_run:
         from app.services.sl_tp_protection import get_active_protection_order

@@ -277,6 +277,11 @@ def should_auto_create_sl_tp_on_sync(
     if not order_filled_time:
         return False, "external_order_no_timestamp"
 
+    has_sl = get_active_protection_order(db, parent_id, "STOP_LOSS") is not None
+    has_tp = get_active_protection_order(db, parent_id, "TAKE_PROFIT") is not None
+    if has_sl ^ has_tp:
+        return True, "half_protected_backfill"
+
     filled_at = order_filled_time
     if filled_at.tzinfo is None:
         filled_at = filled_at.replace(tzinfo=timezone.utc)
@@ -464,10 +469,73 @@ class ExchangeSyncService:
                     }
             
             logger.debug(f"Order {order_id} not found in exchange order history (searched last 24h)")
+            advanced_info = self._resolve_advanced_order_status_from_exchange(order_id, order_created_at)
+            if advanced_info:
+                return advanced_info
             return None
             
         except Exception as e:
             logger.warning(f"Error resolving order status from exchange for {order_id}: {e}", exc_info=True)
+            return None
+
+    def _resolve_advanced_order_status_from_exchange(
+        self, order_id: str, order_created_at: Optional[datetime] = None
+    ) -> Optional[Dict]:
+        """Resolve conditional/advanced order status (includes REJECTED + reject_reason)."""
+        try:
+            from datetime import timedelta
+
+            instrument_name = None
+            try:
+                from app.database import SessionLocal
+                from app.models.exchange_order import ExchangeOrder
+
+                db = SessionLocal()
+                try:
+                    row = db.query(ExchangeOrder).filter(ExchangeOrder.exchange_order_id == order_id).first()
+                    if row:
+                        instrument_name = row.symbol
+                finally:
+                    db.close()
+            except Exception:
+                instrument_name = None
+
+            end_time_ms = int(time.time() * 1000)
+            if order_created_at:
+                start_time = order_created_at - timedelta(hours=1)
+                start_time_ms = int(start_time.timestamp() * 1000)
+            else:
+                start_time_ms = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
+
+            params: Dict[str, Any] = {"limit": 200, "start_time": start_time_ms, "end_time": end_time_ms}
+            if instrument_name:
+                params["instrument_name"] = instrument_name
+            response = trade_client.get_advanced_order_history(**params)
+            if not response or "data" not in response:
+                return None
+            for order_data in response.get("data", []) or []:
+                if str(order_data.get("order_id", "")) == order_id:
+                    status_str = str(order_data.get("status", "")).upper()
+                    cumulative_qty = float(order_data.get("cumulative_quantity", 0) or 0)
+                    price = order_data.get("limit_price") or order_data.get("price") or order_data.get("avg_price")
+                    quantity = float(order_data.get("quantity", 0) or 0)
+                    reject_reason = order_data.get("reject_reason")
+                    logger.info(
+                        "Found advanced order %s in history: status=%s reject_reason=%s",
+                        order_id,
+                        status_str,
+                        reject_reason,
+                    )
+                    return {
+                        "status": status_str,
+                        "cumulative_quantity": cumulative_qty,
+                        "price": float(price) if price else None,
+                        "quantity": quantity,
+                        "reject_reason": reject_reason,
+                    }
+            return None
+        except Exception as e:
+            logger.debug("Advanced order history lookup failed for %s: %s", order_id, e)
             return None
     
     def _mark_order_processed(self, order_id: str):
@@ -838,6 +906,21 @@ class ExchangeSyncService:
                                 order.status = OrderStatusEnum(resolved_status)
                                 order.exchange_update_time = datetime.now(timezone.utc)
                                 logger.info(f"Order {order.exchange_order_id} ({order.symbol}) confirmed as {resolved_status} via exchange history")
+                                if resolved_status == "REJECTED" and order.order_role in ("STOP_LOSS", "TAKE_PROFIT"):
+                                    reject_reason = order_info.get("reject_reason") or "unknown"
+                                    try:
+                                        from app.services.telegram_notifier import telegram_notifier
+
+                                        telegram_notifier.send_message(
+                                            "🚫 <b>PROTECTION ORDER REJECTED</b>\n\n"
+                                            f"📊 Symbol: <b>{order.symbol}</b>\n"
+                                            f"📋 Role: {order.order_role}\n"
+                                            f"🆔 Order: <code>{order.exchange_order_id}</code>\n"
+                                            f"⚠️ Reason: <code>{reject_reason}</code>",
+                                            symbol=order.symbol,
+                                        )
+                                    except Exception as alert_err:
+                                        logger.warning("Failed protection reject alert: %s", alert_err)
                                 
                                 # Emit ORDER_CANCELED event if status actually changed
                                 if old_status != OrderStatusEnum(resolved_status):

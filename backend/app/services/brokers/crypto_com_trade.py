@@ -1960,6 +1960,56 @@ class CryptoComTradeClient:
             logger.error("Error getting advanced open orders: %s", exc)
             return build_private_api_error(sync_status="api_error", error_message=str(exc), endpoint=method)
 
+    ADVANCED_ORDER_HISTORY_ENDPOINT = "private/advanced/get-order-history"
+
+    def get_advanced_order_history(
+        self,
+        *,
+        instrument_name: Optional[str] = None,
+        limit: int = 200,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> dict:
+        """Fetch advanced/conditional order history (includes REJECTED + reject_reason)."""
+        skip = require_aws_or_skip("get_advanced_order_history")
+        if skip:
+            return {"data": [], **skip}
+        self._refresh_runtime_flags()
+
+        params: Dict[str, Any] = {"limit": int(limit)}
+        if instrument_name:
+            params["instrument_name"] = instrument_name
+        if start_time is not None:
+            params["start_time"] = int(start_time)
+        if end_time is not None:
+            params["end_time"] = int(end_time)
+
+        method = self.ADVANCED_ORDER_HISTORY_ENDPOINT
+        try:
+            if self.use_proxy:
+                result = self._call_proxy(method, params)
+            else:
+                payload = self.sign_request(method, params)
+                response = http_post(
+                    f"{self.base_url}/{method}",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=15,
+                    calling_module="crypto_com_trade.get_advanced_order_history",
+                )
+                result = response.json() if response.ok else {}
+            if not isinstance(result, dict):
+                return {"data": []}
+            if result.get("code") not in (0, None, "0"):
+                return {"data": [], "error": result.get("message"), "code": result.get("code")}
+            data = result.get("result", {}).get("data", result.get("result", []))
+            if isinstance(data, dict):
+                data = data.get("data", [])
+            return {"data": data if isinstance(data, list) else []}
+        except Exception as exc:
+            logger.warning("get_advanced_order_history failed: %s", exc)
+            return {"data": [], "error": str(exc)}
+
     def _tag_advanced_open_orders(self, orders: list[Any]) -> list[dict[str, Any]]:
         tagged: list[dict[str, Any]] = []
         for item in orders:
@@ -4987,6 +5037,8 @@ class CryptoComTradeClient:
             # Add leverage if margin trading
             if is_margin and leverage:
                 params["leverage"] = str(int(leverage))
+            if is_margin:
+                params["reduce_only"] = True
             return params
         
         # Create variations with different side formats and parameter combinations
@@ -5845,6 +5897,8 @@ class CryptoComTradeClient:
                 # Add leverage if margin trading
                 if is_margin and leverage:
                     params_base["leverage"] = str(int(leverage))
+                if is_margin:
+                    params_base["reduce_only"] = True
                 
                 # CRITICAL: side field is REQUIRED for TAKE_PROFIT_LIMIT orders
                 # Crypto.com rejects orders without side field (error 40004: Missing or invalid argument)
