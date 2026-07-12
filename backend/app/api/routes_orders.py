@@ -1598,6 +1598,42 @@ def get_order_history(
         
         # Convert to API format
         orders = []
+
+        PROTECTION_ROLES = {"STOP_LOSS", "TAKE_PROFIT"}
+        TRIGGER_ORDER_TYPES = {
+            "STOP_LIMIT", "STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT",
+        }
+        from app.services.sl_tp_protection import ACTIVE_PROTECTION_STATUSES
+
+        def _is_filled_entry_order(order_row: ExchangeOrder) -> bool:
+            if order_row.status != OrderStatusEnum.FILLED:
+                return False
+            if order_row.order_role in PROTECTION_ROLES:
+                return False
+            order_type = (order_row.order_type or "").upper()
+            if order_type in TRIGGER_ORDER_TYPES:
+                return False
+            side_val = order_row.side.value if hasattr(order_row.side, "value") else str(order_row.side)
+            return side_val == "BUY"
+
+        entry_order_ids = [
+            order.exchange_order_id for order in all_orders if _is_filled_entry_order(order)
+        ]
+        parents_with_tp: set = set()
+        parents_with_sl: set = set()
+        if entry_order_ids:
+            linked_protection = db.query(ExchangeOrder).filter(
+                ExchangeOrder.parent_order_id.in_(entry_order_ids),
+                ExchangeOrder.order_role.in_(list(PROTECTION_ROLES)),
+                ExchangeOrder.status.in_(ACTIVE_PROTECTION_STATUSES + [OrderStatusEnum.FILLED]),
+            ).all()
+            for protection_order in linked_protection:
+                parent_id = protection_order.parent_order_id
+                if protection_order.order_role == "TAKE_PROFIT":
+                    parents_with_tp.add(parent_id)
+                elif protection_order.order_role == "STOP_LOSS":
+                    parents_with_sl.add(parent_id)
+
         for order in all_orders:
             # Get creation time (prefer exchange_create_time, fallback to created_at)
             create_time = order.exchange_create_time or order.created_at
@@ -1627,6 +1663,11 @@ def get_order_history(
                 except (AttributeError, ValueError, OSError) as e:
                     logger.debug(f"Error formatting update_time for order {order.exchange_order_id}: {e}")
             
+            is_entry = _is_filled_entry_order(order)
+            has_linked_tp = order.exchange_order_id in parents_with_tp if is_entry else None
+            has_linked_sl = order.exchange_order_id in parents_with_sl if is_entry else None
+            is_orphan = bool(is_entry and not has_linked_tp and not has_linked_sl)
+
             orders.append({
                 "order_id": order.exchange_order_id,
                 "client_oid": order.client_oid,
@@ -1635,6 +1676,10 @@ def get_order_history(
                 "order_type": order.order_type or "LIMIT",
                 "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
                 "order_role": order.order_role,  # Include order_role for SL/TP identification
+                "parent_order_id": order.parent_order_id,
+                "has_linked_tp": has_linked_tp,
+                "has_linked_sl": has_linked_sl,
+                "is_orphan": is_orphan,
                 "quantity": str(float(order.quantity)) if order.quantity else "0",
                 "price": str(float(order.price)) if order.price else "0",
                 "avg_price": str(float(order.avg_price)) if order.avg_price else None,

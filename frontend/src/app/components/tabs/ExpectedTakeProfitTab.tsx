@@ -18,10 +18,11 @@ interface ExpectedTakeProfitTabProps {
   expectedTPDetailsLoading: boolean;
   expectedTPDetailsSymbol: string | null;
   showExpectedTPDetailsDialog: boolean;
+  deepLink?: { symbol: string; orderId: string } | null;
   onFetchExpectedTakeProfitSummary: () => Promise<void>;
   onFetchExpectedTakeProfitDetails: (symbol: string) => Promise<void>;
   onCloseDetailsDialog: () => void;
-  // Add other props as needed
+  onDeepLinkHandled?: () => void;
 }
 
 export default function ExpectedTakeProfitTab({
@@ -32,13 +33,17 @@ export default function ExpectedTakeProfitTab({
   expectedTPDetailsLoading,
   expectedTPDetailsSymbol,
   showExpectedTPDetailsDialog,
+  deepLink,
   onFetchExpectedTakeProfitSummary,
   onFetchExpectedTakeProfitDetails,
   onCloseDetailsDialog,
+  onDeepLinkHandled,
 }: ExpectedTakeProfitTabProps) {
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [expandedEntryRows, setExpandedEntryRows] = useState<Set<string>>(new Set());
+  const [highlightOrderId, setHighlightOrderId] = useState<string | null>(null);
+  const deepLinkRequestedRef = useRef(false);
 
   const toggleEntryRow = (rowKey: string) => {
     setExpandedEntryRows((prev) => {
@@ -76,6 +81,9 @@ export default function ExpectedTakeProfitTab({
       ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200'
       : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200';
 
+  const sideLabel = (side: ExpectedTPEntryOrder['side']) =>
+    side === 'BUY' ? 'Compra' : 'Venta';
+
   const statusBadgeClass = (status: string) => {
     if (status === 'FILLED' || status === 'ACTIVE') {
       return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
@@ -95,6 +103,43 @@ export default function ExpectedTakeProfitTab({
     onFetchExpectedTakeProfitSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty deps: only run on mount. onFetchExpectedTakeProfitSummary is passed as prop from parent.
+
+  useEffect(() => {
+    if (!deepLink) {
+      deepLinkRequestedRef.current = false;
+      return;
+    }
+    if (deepLinkRequestedRef.current) return;
+    deepLinkRequestedRef.current = true;
+    onFetchExpectedTakeProfitDetails(deepLink.symbol);
+  }, [deepLink, onFetchExpectedTakeProfitDetails]);
+
+  useEffect(() => {
+    if (!deepLink?.orderId || expectedTPDetailsLoading || !expectedTPDetails || !showExpectedTPDetailsDialog) {
+      return;
+    }
+
+    const targetId = deepLink.orderId;
+    setHighlightOrderId(targetId);
+    setExpandedEntryRows(new Set([targetId]));
+
+    const scrollTimer = window.setTimeout(() => {
+      document.getElementById(`expected-tp-entry-${targetId}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 150);
+
+    const clearTimer = window.setTimeout(() => {
+      setHighlightOrderId(null);
+      onDeepLinkHandled?.();
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(clearTimer);
+    };
+  }, [deepLink, expectedTPDetails, expectedTPDetailsLoading, showExpectedTPDetailsDialog, onDeepLinkHandled]);
 
   // Sort summary items
   const sortedSummary = useMemo(() => {
@@ -469,7 +514,14 @@ export default function ExpectedTakeProfitTab({
 
                             return (
                               <React.Fragment key={rowKey}>
-                                <tr className="hover:bg-gray-50 dark:hover:bg-slate-700">
+                                <tr
+                                  id={`expected-tp-entry-${rowKey}`}
+                                  className={`hover:bg-gray-50 dark:hover:bg-slate-700 ${
+                                    highlightOrderId === rowKey || highlightOrderId === entry.order_id
+                                      ? 'ring-2 ring-blue-500 ring-inset bg-blue-50/50 dark:bg-blue-950/30'
+                                      : ''
+                                  }`}
+                                >
                                   <td className="px-4 py-3 whitespace-nowrap text-sm">
                                     {hasChildren ? (
                                       <button
@@ -490,7 +542,7 @@ export default function ExpectedTakeProfitTab({
                                   </td>
                                   <td className="px-4 py-3 whitespace-nowrap text-sm">
                                     <span className={`px-2 py-1 rounded text-xs font-semibold ${sideBadgeClass(entry.side)}`}>
-                                      {entry.side}
+                                      {sideLabel(entry.side)}
                                     </span>
                                   </td>
                                   <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200">

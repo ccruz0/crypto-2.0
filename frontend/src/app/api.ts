@@ -77,6 +77,10 @@ export type OpenOrder = {
   filled_quantity?: string | null; // Filled quantity for executed orders
   filled_price?: string | null; // Filled price for executed orders
   order_role?: string;  // Order role (STOP_LOSS, TAKE_PROFIT, etc.)
+  parent_order_id?: string | null;
+  has_linked_tp?: boolean | null;
+  has_linked_sl?: boolean | null;
+  is_orphan?: boolean;
   is_trigger?: boolean; // True if from get-trigger-orders / advanced trigger list
   trigger_price?: number | null; // Trigger price for TP/SL orders
 }
