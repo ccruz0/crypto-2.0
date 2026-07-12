@@ -25,12 +25,25 @@ const getSideColorClass = (side: string) => {
   return 'text-gray-600 dark:text-gray-400';
 };
 
+const isFilledEntryOrder = (order: OpenOrder) => {
+  const status = (order.status || '').toUpperCase();
+  const side = (order.side || '').toUpperCase();
+  const role = (order.order_role || '').toUpperCase();
+  if (status !== 'FILLED' || side !== 'BUY') return false;
+  if (role === 'STOP_LOSS' || role === 'TAKE_PROFIT') return false;
+  const orderType = (order.order_type || '').toUpperCase();
+  if (['STOP_LIMIT', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT'].includes(orderType)) {
+    return false;
+  }
+  return true;
+};
+
 interface ExecutedOrdersTabProps {
   orderFilter: { symbol: string; status: string; side: string; startDate: string; endDate: string };
   hideCancelled: boolean;
   onFilterChange: (filter: { symbol: string; status: string; side: string; startDate: string; endDate: string }) => void;
   onToggleHideCancelled: (value: boolean) => void;
-  // Add other props as needed
+  onNavigateToExpectedTP?: (symbol: string, orderId: string) => void;
 }
 
 export default function ExecutedOrdersTab({
@@ -38,6 +51,7 @@ export default function ExecutedOrdersTab({
   hideCancelled,
   onFilterChange,
   onToggleHideCancelled,
+  onNavigateToExpectedTP,
 }: ExecutedOrdersTabProps) {
   const {
     executedOrders,
@@ -381,6 +395,12 @@ export default function ExecutedOrdersTab({
                     Status {sortField === 'status' && (sortDirection === 'asc' ? '↑' : '↓')}
                   </div>
                 </th>
+                <th
+                  scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
+                >
+                  TP/SL
+                </th>
               </tr>
             </thead>
             <tbody className="bg-white dark:bg-slate-900 divide-y divide-gray-200 dark:divide-gray-700">
@@ -422,6 +442,31 @@ export default function ExecutedOrdersTab({
                     </td>
                     <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${getStatusColorClass(order.status || '')}`}>
                       {order.status}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      {isFilledEntryOrder(order) ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {order.is_orphan && (
+                            <span
+                              className="px-2 py-1 rounded text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                              title="Sin TP ni SL vinculados"
+                            >
+                              Huérfano
+                            </span>
+                          )}
+                          {onNavigateToExpectedTP && order.instrument_name && order.order_id && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigateToExpectedTP(order.instrument_name!, order.order_id!)}
+                              className="text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300"
+                            >
+                              Ver TP/SL
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400 dark:text-gray-500">—</span>
+                      )}
                     </td>
                   </tr>
                 );

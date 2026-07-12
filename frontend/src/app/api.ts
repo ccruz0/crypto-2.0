@@ -77,6 +77,10 @@ export type OpenOrder = {
   filled_quantity?: string | null; // Filled quantity for executed orders
   filled_price?: string | null; // Filled price for executed orders
   order_role?: string;  // Order role (STOP_LOSS, TAKE_PROFIT, etc.)
+  parent_order_id?: string | null;
+  has_linked_tp?: boolean | null;
+  has_linked_sl?: boolean | null;
+  is_orphan?: boolean;
   is_trigger?: boolean; // True if from get-trigger-orders / advanced trigger list
   trigger_price?: number | null; // Trigger price for TP/SL orders
 }
@@ -1743,6 +1747,37 @@ export interface ExpectedTPMatchedLot {
   is_grouped?: boolean; // For grouped entries
 }
 
+export interface ExpectedTPProtectionOrder {
+  order_id: string;
+  price: number | null;
+  qty: number;
+  remaining_qty: number;
+  status: string;
+  /** Always positive for take-profit rows */
+  expected_amount_usd: number | null;
+  /** Always positive for take-profit rows */
+  expected_amount_pct: number | null;
+}
+
+export interface ExpectedTPStopLossOrder extends ExpectedTPProtectionOrder {
+  /** Always negative for stop-loss rows */
+  expected_amount_usd: number | null;
+  /** Always negative for stop-loss rows */
+  expected_amount_pct: number | null;
+}
+
+export interface ExpectedTPEntryOrder {
+  order_id: string | null;
+  side: 'BUY' | 'SELL';
+  entry_price: number | null;
+  qty: number;
+  entry_time: string | null;
+  cost_basis_unknown?: boolean;
+  match_origin?: string | null;
+  take_profits: ExpectedTPProtectionOrder[];
+  stop_loss: ExpectedTPStopLossOrder | null;
+}
+
 export interface ExpectedTPDetails {
   symbol: string;
   net_qty: number;
@@ -1752,6 +1787,7 @@ export interface ExpectedTPDetails {
   uncovered_qty: number;
   total_expected_profit: number | null; // null when cost basis is unknown
   matched_lots: ExpectedTPMatchedLot[]; // Backend returns 'matched_lots', not 'lots'
+  entry_orders?: ExpectedTPEntryOrder[];
   current_price?: number;
   has_uncovered?: boolean;
   cost_basis_unknown?: boolean; // true when buy price is the current-price fallback

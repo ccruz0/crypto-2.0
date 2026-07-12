@@ -885,6 +885,138 @@ def calculate_expected_profit(
     return expected_profit, expected_profit_pct
 
 
+def calculate_tp_display_profit(
+    entry_side: OrderSideEnum,
+    entry_price: Decimal,
+    tp_price: Decimal,
+    quantity: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """Calculate TP profit for UI display — always returned as positive."""
+    if entry_price <= 0 or tp_price <= 0 or quantity <= 0:
+        return Decimal("0"), Decimal("0")
+
+    if entry_side == OrderSideEnum.BUY:
+        profit = (tp_price - entry_price) * quantity
+        profit_pct = ((tp_price / entry_price) - Decimal("1")) * Decimal("100")
+    else:
+        profit = (entry_price - tp_price) * quantity
+        profit_pct = ((entry_price - tp_price) / entry_price) * Decimal("100")
+
+    return abs(profit), abs(profit_pct)
+
+
+def calculate_sl_display_loss(
+    entry_side: OrderSideEnum,
+    entry_price: Decimal,
+    sl_price: Decimal,
+    quantity: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """Calculate SL loss for UI display — always returned as negative."""
+    if entry_price <= 0 or sl_price <= 0 or quantity <= 0:
+        return Decimal("0"), Decimal("0")
+
+    if entry_side == OrderSideEnum.BUY:
+        loss = (sl_price - entry_price) * quantity
+        loss_pct = ((sl_price / entry_price) - Decimal("1")) * Decimal("100")
+    else:
+        loss = (entry_price - sl_price) * quantity
+        loss_pct = ((entry_price - sl_price) / entry_price) * Decimal("100")
+
+    return -abs(loss), -abs(loss_pct)
+
+
+def _protection_order_price(order: ExchangeOrder) -> Decimal:
+    for candidate in (order.price, order.trigger_condition, order.avg_price):
+        if candidate is not None and Decimal(str(candidate)) > 0:
+            return Decimal(str(candidate))
+    return Decimal("0")
+
+
+def _protection_order_remaining_qty(order: ExchangeOrder) -> Decimal:
+    tp_qty = Decimal(str(order.quantity))
+    tp_filled = Decimal(str(order.cumulative_quantity or 0))
+    return max(tp_qty - tp_filled, Decimal("0"))
+
+
+def build_entry_orders_details(
+    db: Session,
+    open_lots: List[OpenLot],
+) -> List[Dict]:
+    """Build one expandable row per original entry order with linked TP and SL."""
+    from app.services.sl_tp_protection import get_active_protection_order
+
+    lots_sorted = sorted(
+        open_lots,
+        key=lambda lot: lot.buy_time or datetime.min.replace(tzinfo=timezone.utc),
+    )
+
+    entry_orders: List[Dict] = []
+    for lot in lots_sorted:
+        entry_side = OrderSideEnum.BUY
+        lot_cost_basis_unknown = getattr(lot, "cost_basis_unknown", False)
+
+        take_profits: List[Dict] = []
+        if lot.matched_tp:
+            for tp, lot_qty_for_tp in split_lot_across_tps(lot):
+                tp_price = _protection_order_price(tp)
+                tp_remaining = _protection_order_remaining_qty(tp)
+                if lot_cost_basis_unknown or tp_price <= 0:
+                    expected_amount = None
+                    expected_pct = None
+                else:
+                    expected_amount, expected_pct = calculate_tp_display_profit(
+                        entry_side, lot.buy_price, tp_price, lot_qty_for_tp
+                    )
+
+                take_profits.append({
+                    "order_id": tp.exchange_order_id,
+                    "price": float(tp_price) if tp_price > 0 else None,
+                    "qty": float(lot_qty_for_tp),
+                    "remaining_qty": float(tp_remaining),
+                    "status": tp.status.value,
+                    "expected_amount_usd": None if expected_amount is None else float(expected_amount),
+                    "expected_amount_pct": None if expected_pct is None else float(expected_pct),
+                })
+
+        stop_loss = None
+        if lot.buy_order_id:
+            sl_order = get_active_protection_order(db, lot.buy_order_id, "STOP_LOSS")
+            if sl_order:
+                sl_price = _protection_order_price(sl_order)
+                sl_remaining = _protection_order_remaining_qty(sl_order)
+                if lot_cost_basis_unknown or sl_price <= 0:
+                    expected_amount = None
+                    expected_pct = None
+                else:
+                    expected_amount, expected_pct = calculate_sl_display_loss(
+                        entry_side, lot.buy_price, sl_price, lot.lot_qty
+                    )
+
+                stop_loss = {
+                    "order_id": sl_order.exchange_order_id,
+                    "price": float(sl_price) if sl_price > 0 else None,
+                    "qty": float(lot.lot_qty),
+                    "remaining_qty": float(sl_remaining),
+                    "status": sl_order.status.value,
+                    "expected_amount_usd": None if expected_amount is None else float(expected_amount),
+                    "expected_amount_pct": None if expected_pct is None else float(expected_pct),
+                }
+
+        entry_orders.append({
+            "order_id": lot.buy_order_id,
+            "side": entry_side.value,
+            "entry_price": None if lot_cost_basis_unknown else float(lot.buy_price),
+            "qty": float(lot.lot_qty),
+            "entry_time": lot.buy_time.isoformat() if lot.buy_time else None,
+            "cost_basis_unknown": lot_cost_basis_unknown,
+            "match_origin": lot.match_origin,
+            "take_profits": take_profits,
+            "stop_loss": stop_loss,
+        })
+
+    return entry_orders
+
+
 def split_lot_across_tps(lot: OpenLot) -> List[Tuple[ExchangeOrder, Decimal]]:
     """
     Split a matched lot's quantity proportionally across ALL TP orders matched
@@ -1690,6 +1822,7 @@ def get_expected_take_profit_details(
                 "uncovered_qty": 0,
                 "total_expected_profit": 0,
                 "matched_lots": [],
+                "entry_orders": [],
                 "cost_basis_unknown": False,
             }
     
@@ -1900,7 +2033,8 @@ def get_expected_take_profit_details(
     # the frontend renders "—" instead of a misleading number. Net qty, position
     # value (at current price) and covered/uncovered qty stay real.
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
-    
+    entry_orders = build_entry_orders_details(db, open_lots)
+
     return {
         "symbol": symbol,
         "net_qty": net_qty,
@@ -1911,6 +2045,7 @@ def get_expected_take_profit_details(
         "uncovered_qty": uncovered_qty,
         "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
         "matched_lots": matched_lot_details,
+        "entry_orders": entry_orders,
         "has_uncovered": uncovered_qty > 0,
         "cost_basis_unknown": cost_basis_unknown,
     }

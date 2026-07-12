@@ -986,6 +986,7 @@ function DashboardPageContent() {
   const [expectedTPLastUpdate, setExpectedTPLastUpdate] = useState<Date | null>(null);
   const [expectedTPDetailsSymbol, setExpectedTPDetailsSymbol] = useState<string | null>(null);
   const [showExpectedTPDetailsDialog, setShowExpectedTPDetailsDialog] = useState<boolean>(false);
+  const [expectedTPDeepLink, setExpectedTPDeepLink] = useState<{ symbol: string; orderId: string } | null>(null);
   const [telegramMessages, setTelegramMessages] = useState<TelegramMessage[]>([]);
   const [telegramMessagesLoading, setTelegramMessagesLoading] = useState<boolean>(false);
   const [snapshotStale, setSnapshotStale] = useState<boolean>(false);
@@ -5154,6 +5155,8 @@ function resolveDecisionIndexColor(value: number): string {
               expectedTPDetailsLoading={expectedTPDetailsLoading}
               expectedTPDetailsSymbol={expectedTPDetailsSymbol}
               showExpectedTPDetailsDialog={showExpectedTPDetailsDialog}
+              deepLink={expectedTPDeepLink}
+              onDeepLinkHandled={() => setExpectedTPDeepLink(null)}
               onFetchExpectedTakeProfitSummary={async () => {
                 setExpectedTPLoading(true);
                 try {
@@ -5189,6 +5192,10 @@ function resolveDecisionIndexColor(value: number): string {
               hideCancelled={hideCancelled}
               onFilterChange={setOrderFilter}
               onToggleHideCancelled={setHideCancelled}
+              onNavigateToExpectedTP={(symbol, orderId) => {
+                setExpectedTPDeepLink({ symbol, orderId });
+                setActiveTab('expected-take-profit');
+              }}
             />
           )}
 
