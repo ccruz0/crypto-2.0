@@ -22,3 +22,40 @@ def test_notify_unexpected_block():
         )
         is True
     )
+
+
+def test_trade_block_cooldown_dedupes_repeated_alerts(monkeypatch):
+    from app.utils import trading_guardrails as guardrails
+
+    guardrails._trade_block_alert_times.clear()
+    monkeypatch.setattr(guardrails, "_TRADE_BLOCK_ALERT_COOLDOWN_SECONDS", 1800)
+
+    reason_a = "blocked: MAX_OPEN_ORDERS_TOTAL limit reached (22/10)"
+    reason_b = "blocked: MAX_OPEN_ORDERS_TOTAL limit reached (23/10)"
+
+    assert guardrails.should_send_trade_block_telegram_alert("DOT_USD", "BUY", reason_a) is True
+    guardrails.mark_trade_block_telegram_sent("DOT_USD", "BUY", reason_a)
+
+    assert guardrails.should_send_trade_block_telegram_alert("DOT_USD", "BUY", reason_b) is False
+    assert guardrails.should_send_trade_block_telegram_alert("ETH_USD", "BUY", reason_a) is True
+    assert guardrails.should_send_trade_block_telegram_alert("DOT_USD", "SELL", reason_a) is True
+
+
+def test_trade_block_cooldown_allows_after_window(monkeypatch):
+    from app.utils import trading_guardrails as guardrails
+
+    guardrails._trade_block_alert_times.clear()
+    monkeypatch.setattr(guardrails, "_TRADE_BLOCK_ALERT_COOLDOWN_SECONDS", 60)
+
+    reason = "blocked: MAX_OPEN_ORDERS_TOTAL limit reached (22/10)"
+    now = 1_000_000.0
+    monkeypatch.setattr(guardrails.time, "time", lambda: now)
+
+    assert guardrails.should_send_trade_block_telegram_alert("DOT_USD", "BUY", reason) is True
+    guardrails.mark_trade_block_telegram_sent("DOT_USD", "BUY", reason)
+
+    monkeypatch.setattr(guardrails.time, "time", lambda: now + 30)
+    assert guardrails.should_send_trade_block_telegram_alert("DOT_USD", "BUY", reason) is False
+
+    monkeypatch.setattr(guardrails.time, "time", lambda: now + 61)
+    assert guardrails.should_send_trade_block_telegram_alert("DOT_USD", "BUY", reason) is True

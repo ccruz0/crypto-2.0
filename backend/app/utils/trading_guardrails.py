@@ -9,8 +9,10 @@ This module provides checks for:
 - Optional allowlist: TRADE_ALLOWLIST (if set, restricts to listed symbols)
 """
 import os
+import re
+import time
 import logging
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, or_
@@ -38,6 +40,50 @@ def should_notify_trade_block_to_telegram(*reasons: Optional[str]) -> bool:
     if not haystack:
         return True
     return not any(phrase in haystack for phrase in _EXPECTED_TRADE_BLOCK_TELEGRAM_PHRASES)
+
+
+# Rate-limit repeated identical TRADE BLOCKED Telegram alerts (signal monitor retries every cycle).
+_trade_block_alert_times: Dict[str, float] = {}
+_TRADE_BLOCK_ALERT_COOLDOWN_SECONDS = int(
+    os.getenv("TRADE_BLOCK_ALERT_COOLDOWN_SECONDS", str(30 * 60))
+)
+
+
+def _normalize_trade_block_reason_for_dedup(reason: str) -> str:
+    """Strip volatile counters so (22/10) and (23/10) dedupe to the same key."""
+    normalized = re.sub(r"\(\d+/\d+\)", "", reason)
+    return " ".join(normalized.split()).strip().lower()
+
+
+def _trade_block_alert_dedup_key(symbol: str, side: str, *reasons: Optional[str]) -> str:
+    primary_reason = next((r for r in reasons if r), "")
+    normalized = _normalize_trade_block_reason_for_dedup(primary_reason)
+    return f"{symbol.upper()}:{side.upper()}:{normalized}"
+
+
+def should_send_trade_block_telegram_alert(symbol: str, side: str, *reasons: Optional[str]) -> bool:
+    """Return True when a TRADE BLOCKED Telegram alert should be sent (expected-state + cooldown)."""
+    if not should_notify_trade_block_to_telegram(*reasons):
+        return False
+    key = _trade_block_alert_dedup_key(symbol, side, *reasons)
+    last_sent = _trade_block_alert_times.get(key, 0.0)
+    if time.time() - last_sent < _TRADE_BLOCK_ALERT_COOLDOWN_SECONDS:
+        logger.debug(
+            "TRADE_BLOCKED Telegram suppressed (cooldown): %s %s key=%s elapsed=%.0fs cooldown=%ds",
+            symbol,
+            side,
+            key,
+            time.time() - last_sent,
+            _TRADE_BLOCK_ALERT_COOLDOWN_SECONDS,
+        )
+        return False
+    return True
+
+
+def mark_trade_block_telegram_sent(symbol: str, side: str, *reasons: Optional[str]) -> None:
+    """Record that a TRADE BLOCKED Telegram alert was sent for cooldown deduplication."""
+    key = _trade_block_alert_dedup_key(symbol, side, *reasons)
+    _trade_block_alert_times[key] = time.time()
 
 
 # Environment variables with defaults
