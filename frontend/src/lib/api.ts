@@ -1300,6 +1300,30 @@ export interface ExpectedTPMatchedLot {
   is_grouped?: boolean; // For grouped entries
 }
 
+export interface ExpectedTPProtectionOrder {
+  order_id: string;
+  price: number | null;
+  qty: number;
+  remaining_qty: number;
+  status: string;
+  expected_amount_usd: number | null;
+  expected_amount_pct: number | null;
+}
+
+export interface ExpectedTPStopLossOrder extends ExpectedTPProtectionOrder {}
+
+export interface ExpectedTPEntryOrder {
+  order_id: string | null;
+  side: 'BUY' | 'SELL';
+  entry_price: number | null;
+  qty: number;
+  entry_time: string | null;
+  cost_basis_unknown?: boolean;
+  match_origin?: string | null;
+  take_profits: ExpectedTPProtectionOrder[];
+  stop_loss: ExpectedTPStopLossOrder | null;
+}
+
 export interface ExpectedTPDetails {
   symbol: string;
   net_qty: number;
@@ -1310,6 +1334,7 @@ export interface ExpectedTPDetails {
   uncovered_qty: number;
   total_expected_profit: number;
   matched_lots: ExpectedTPMatchedLot[];
+  entry_orders?: ExpectedTPEntryOrder[];
   has_uncovered?: boolean; // Optional for flexibility
   uncovered_entry?: {
     symbol: string;
