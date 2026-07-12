@@ -406,6 +406,13 @@ export default function ExpectedTakeProfitTab({
               </div>
             ) : expectedTPDetails ? (
               <div className="space-y-6">
+                {expectedTPDetails.orphaned_protection_only && (
+                  <div className="rounded-lg border border-orange-300 bg-orange-50 dark:border-orange-700 dark:bg-orange-900/30 p-3 text-sm text-orange-800 dark:text-orange-200">
+                    Portfolio balance is zero or negative, but active SL/TP protection orders
+                    remain on the exchange. Entry orders below show orphaned protection linked
+                    to prior filled buys — not an open spot position.
+                  </div>
+                )}
                 {expectedTPDetails.cost_basis_unknown && (
                   <div className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/30 p-3 text-sm text-amber-800 dark:text-amber-200">
                     Cost basis not tracked for this position — there are no recorded buy orders,
@@ -745,6 +752,10 @@ export default function ExpectedTakeProfitTab({
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                ) : (expectedTPDetails.covered_qty ?? 0) > 0 || expectedTPDetails.orphaned_protection_only ? (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    Active protection orders are listed under Entry Orders above.
                   </div>
                 ) : (
                   <div className="text-center py-8 text-gray-500 dark:text-gray-400">
