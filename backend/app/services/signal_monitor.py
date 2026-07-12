@@ -7340,7 +7340,7 @@ class SignalMonitorService:
             logger.info(f"📊 ORDER PARAMETERS: symbol={symbol}, side={side_upper}, notional={amount_usd}, is_margin={use_margin}, leverage={leverage_value}")
             
             # Check trading guardrails before order placement
-            from app.utils.trading_guardrails import can_place_real_order, should_notify_trade_block_to_telegram
+            from app.utils.trading_guardrails import can_place_real_order, should_send_trade_block_telegram_alert, mark_trade_block_telegram_sent
             allowed, block_reason = can_place_real_order(
                 db=db,
                 symbol=symbol,
@@ -7378,15 +7378,16 @@ class SignalMonitorService:
                 )
                 # Send Telegram alert only for unexpected blocks (not live toggle / trade off)
                 try:
-                    if self._telegram_send_enabled() and should_notify_trade_block_to_telegram(block_reason):
+                    if self._telegram_send_enabled() and should_send_trade_block_telegram_alert(symbol, "BUY", block_reason):
                         telegram_notifier.send_message(
                             f"🚫 <b>TRADE BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
-                        f"🔄 Side: BUY\n"
-                        f"💵 Value: ${amount_usd:.2f}\n\n"
-                        f"🚫 <b>Reason:</b> {block_reason}",
-                        symbol=symbol,
-                    )
+                            f"🔄 Side: BUY\n"
+                            f"💵 Value: ${amount_usd:.2f}\n\n"
+                            f"🚫 <b>Reason:</b> {block_reason}",
+                            symbol=symbol,
+                        )
+                        mark_trade_block_telegram_sent(symbol, "BUY", block_reason)
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram alert for blocked order: {e}")
                 
