@@ -594,6 +594,19 @@ def match_tp_orders_oco(
     return matched_lots, unmatched_lots, remaining_tps
 
 
+def _fifo_lot_eligible_for_tp(lot: OpenLot, tp: ExchangeOrder, tp_base: str) -> bool:
+    """Return True when a lot can be paired with a TP in FIFO fallback matching."""
+    if lot.matched_tp is not None:
+        return False
+    if _normalize_symbol(lot.symbol) != tp_base:
+        return False
+    if lot.parent_order_id is not None:
+        tp_time = tp.exchange_create_time or tp.created_at
+        if tp_time and lot.buy_time and tp_time < lot.buy_time:
+            return False
+    return True
+
+
 def match_tp_orders_fifo(
     lots: List[OpenLot],
     tp_orders: List[ExchangeOrder]
@@ -602,7 +615,7 @@ def match_tp_orders_fifo(
     Match TP orders to lots using FIFO logic (fallback).
     
     This matches TP orders to lots in FIFO order, allowing:
-    1. Exact match: TP qty = lot qty
+    1. Exact match: TP qty = lot qty (1:1, before any partial accumulation)
     2. Partial match: TP qty matches sum of multiple lots (in FIFO order)
     
     Args:
@@ -620,6 +633,40 @@ def match_tp_orders_fifo(
     # Sort TP orders by creation time (oldest first)
     tp_orders_sorted = sorted(tp_orders, key=lambda tp: tp.exchange_create_time or tp.created_at or datetime.min.replace(tzinfo=timezone.utc))
     
+    # Strategy 0: Exact 1:1 qty matches before partial FIFO accumulation.
+    # Example: BTC TP 0.141020 must pair with the 0.141020 BUY lot, not earlier
+    # partial lots whose sum happens to equal the TP quantity.
+    for tp in tp_orders_sorted:
+        if tp.exchange_order_id in used_tp_ids:
+            continue
+        if tp.status not in ACTIVE_TP_STATUSES:
+            continue
+
+        tp_qty = Decimal(str(tp.quantity))
+        tp_filled = Decimal(str(tp.cumulative_quantity or 0))
+        tp_remaining = tp_qty - tp_filled
+        if tp_remaining <= 0:
+            continue
+
+        tp_base = _normalize_symbol(tp.symbol)
+        exact_lot = None
+        for lot in lots_sorted:
+            if not _fifo_lot_eligible_for_tp(lot, tp, tp_base):
+                continue
+            if abs(lot.lot_qty - tp_remaining) < Decimal("0.00000001"):
+                exact_lot = lot
+                break
+
+        if exact_lot is not None:
+            exact_lot.matched_tp = tp
+            exact_lot.match_origin = "FIFO"
+            used_tp_ids.add(tp.exchange_order_id)
+            logger.info(
+                f"FIFO exact matched TP {tp.exchange_order_id[:15]}... "
+                f"({float(tp_remaining):.8f}) to lot buy_order_id="
+                f"{exact_lot.buy_order_id[:15]}... (qty={float(exact_lot.lot_qty):.8f})"
+            )
+
     # Strategy 1: Match multiple small lots to a single large TP order
     # Try to match each TP order to one or more lots
     for tp in tp_orders_sorted:
@@ -713,6 +760,31 @@ def match_tp_orders_fifo(
         
         lot_base = _normalize_symbol(lot.symbol)
         lot_qty = lot.lot_qty
+
+        # Prefer a single TP with exact qty before accumulating partial TPs.
+        for tp in tp_orders_sorted:
+            if tp.exchange_order_id in used_tp_ids:
+                continue
+            if tp.status not in ACTIVE_TP_STATUSES:
+                continue
+            if not _fifo_lot_eligible_for_tp(lot, tp, lot_base):
+                continue
+            tp_qty = Decimal(str(tp.quantity))
+            tp_filled = Decimal(str(tp.cumulative_quantity or 0))
+            tp_remaining = tp_qty - tp_filled
+            if tp_remaining <= 0:
+                continue
+            if abs(tp_remaining - lot_qty) < Decimal("0.00000001"):
+                lot.matched_tp = tp
+                lot.match_origin = "FIFO"
+                used_tp_ids.add(tp.exchange_order_id)
+                logger.info(
+                    f"FIFO exact matched lot {(lot.buy_order_id or 'VIRTUAL')[:15]}... "
+                    f"(qty={float(lot_qty):.8f}) to TP {tp.exchange_order_id[:15]}..."
+                )
+                break
+        if lot.matched_tp is not None:
+            continue
         
         # Collect matching TP orders that can cover this lot
         matching_tps = []
