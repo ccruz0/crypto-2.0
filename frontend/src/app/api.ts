@@ -1694,6 +1694,7 @@ export interface ExpectedTPSummaryItem {
   current_price?: number;
   coverage_ratio?: number;
   cost_basis_unknown?: boolean; // true when buy price is the current-price fallback (no real BUY orders)
+  orphaned_protection_only?: boolean; // true when SL/TP remain but portfolio balance <= 0
 }
 
 export interface ExpectedTPSummary {
@@ -1796,6 +1797,7 @@ export interface ExpectedTPDetails {
     uncovered_qty: number;
     label: string;
   };
+  orphaned_protection_only?: boolean;
 }
 
 export async function getExpectedTakeProfitDetails(symbol: string): Promise<ExpectedTPDetails> {

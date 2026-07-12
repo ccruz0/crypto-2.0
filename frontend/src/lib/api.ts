@@ -1342,6 +1342,7 @@ export interface ExpectedTPDetails {
     label: string;
     is_uncovered?: true; // Optional for flexibility
   };
+  orphaned_protection_only?: boolean;
 }
 
 export async function getExpectedTakeProfitSummary(): Promise<{

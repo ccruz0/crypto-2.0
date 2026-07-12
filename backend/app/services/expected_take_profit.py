@@ -938,6 +938,259 @@ def _protection_order_remaining_qty(order: ExchangeOrder) -> Decimal:
     return max(tp_qty - tp_filled, Decimal("0"))
 
 
+def _symbol_variants(symbol: str) -> List[str]:
+    """Return symbol and USD/USDT pair variants for DB lookups."""
+    variants = [symbol]
+    if "_" not in symbol:
+        variants.extend([f"{symbol}_USDT", f"{symbol}_USD"])
+    elif symbol.endswith("_USDT"):
+        variants.append(symbol.replace("_USDT", "_USD"))
+    elif symbol.endswith("_USD"):
+        variants.append(symbol.replace("_USD", "_USDT"))
+    return variants
+
+
+def _filled_buy_price(parent: ExchangeOrder) -> Optional[Decimal]:
+    price = parent.avg_price or parent.price
+    if (not price or price == 0) and parent.cumulative_quantity and parent.cumulative_quantity > 0:
+        if parent.cumulative_value and parent.cumulative_value > 0:
+            price = parent.cumulative_value / parent.cumulative_quantity
+    if price and Decimal(str(price)) > 0:
+        return Decimal(str(price))
+    return None
+
+
+def get_active_protection_orders_with_parent(db: Session, symbol: str) -> List[ExchangeOrder]:
+    """Active SL/TP orders for a symbol that retain OTOCO parent_order_id linkage."""
+    variants = _symbol_variants(symbol)
+    base_currency = symbol.split("_")[0] if "_" in symbol else symbol
+
+    orders = db.query(ExchangeOrder).filter(
+        ExchangeOrder.symbol.in_(variants),
+        ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
+        ExchangeOrder.parent_order_id.isnot(None),
+        or_(
+            ExchangeOrder.order_role.in_(["TAKE_PROFIT", "STOP_LOSS"]),
+            ExchangeOrder.order_type.in_([
+                "TAKE_PROFIT",
+                "TAKE_PROFIT_LIMIT",
+                "STOP_LIMIT",
+                "STOP_LOSS",
+                "STOP_LOSS_LIMIT",
+            ]),
+        ),
+    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
+
+    if orders:
+        return orders
+
+    return (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol.like(f"{base_currency}_%"),
+            ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
+            ExchangeOrder.parent_order_id.isnot(None),
+            or_(
+                ExchangeOrder.order_role.in_(["TAKE_PROFIT", "STOP_LOSS"]),
+                ExchangeOrder.order_type.in_([
+                    "TAKE_PROFIT",
+                    "TAKE_PROFIT_LIMIT",
+                    "STOP_LIMIT",
+                    "STOP_LOSS",
+                    "STOP_LOSS_LIMIT",
+                ]),
+            ),
+        )
+        .order_by(ExchangeOrder.exchange_create_time.asc())
+        .all()
+    )
+
+
+def build_orphaned_protection_lots(db: Session, symbol: str) -> List[OpenLot]:
+    """
+    Build display lots from filled parent BUY orders that still have active SL/TP
+    on the exchange after the portfolio position is closed (balance <= 0).
+    """
+    protection_orders = get_active_protection_orders_with_parent(db, symbol)
+    if not protection_orders:
+        return []
+
+    by_parent: Dict[str, List[ExchangeOrder]] = {}
+    for order in protection_orders:
+        parent_id = str(order.parent_order_id)
+        by_parent.setdefault(parent_id, []).append(order)
+
+    lots: List[OpenLot] = []
+    for parent_id, linked in by_parent.items():
+        parent = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == parent_id)
+            .first()
+        )
+        if not parent or parent.side != OrderSideEnum.BUY or parent.status != EXECUTED_STATUS:
+            continue
+
+        buy_price = _filled_buy_price(parent)
+        if buy_price is None:
+            continue
+
+        remaining_qtys = [
+            _protection_order_remaining_qty(o)
+            for o in linked
+            if _protection_order_remaining_qty(o) > 0
+        ]
+        if not remaining_qtys:
+            continue
+
+        lot_qty = max(remaining_qtys)
+        buy_time = parent.exchange_create_time or parent.created_at
+        lots.append(
+            OpenLot(
+                symbol=parent.symbol,
+                buy_order_id=parent.exchange_order_id,
+                buy_time=buy_time,
+                buy_price=buy_price,
+                lot_qty=lot_qty,
+                parent_order_id=parent.parent_order_id,
+                oco_group_id=parent.oco_group_id,
+            )
+        )
+        setattr(lots[-1], "orphaned_protection", True)
+
+    logger.info(
+        "build_orphaned_protection_lots: %s -> %d lot(s) from %d protection order(s)",
+        symbol,
+        len(lots),
+        len(protection_orders),
+    )
+    return lots
+
+
+def discover_symbols_with_orphaned_protection(db: Session) -> List[str]:
+    """Symbols with active parent-linked SL/TP whose filled parent BUY has no open FIFO lot."""
+    protection_orders = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
+            ExchangeOrder.parent_order_id.isnot(None),
+            or_(
+                ExchangeOrder.order_role.in_(["TAKE_PROFIT", "STOP_LOSS"]),
+                ExchangeOrder.order_type.in_([
+                    "TAKE_PROFIT",
+                    "TAKE_PROFIT_LIMIT",
+                    "STOP_LIMIT",
+                    "STOP_LOSS",
+                    "STOP_LOSS_LIMIT",
+                ]),
+            ),
+        )
+        .all()
+    )
+
+    open_lots_cache: Dict[str, List[OpenLot]] = {}
+    symbols: set = set()
+    for order in protection_orders:
+        if _protection_order_remaining_qty(order) <= 0:
+            continue
+        parent = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == str(order.parent_order_id))
+            .first()
+        )
+        if not parent or parent.side != OrderSideEnum.BUY or parent.status != EXECUTED_STATUS:
+            continue
+        base = _normalize_symbol(order.symbol)
+        if base in ("USD", "EUR", "USDT"):
+            continue
+        if order.symbol not in open_lots_cache:
+            open_lots_cache[order.symbol] = rebuild_open_lots(db, order.symbol)
+        if not open_lots_cache[order.symbol]:
+            symbols.add(order.symbol)
+    return sorted(symbols)
+
+
+def _resolve_current_price(
+    symbol: str,
+    balance: Decimal,
+    market_prices: Dict[str, float],
+    asset: Optional[Dict] = None,
+) -> float:
+    current_price = market_prices.get(symbol, 0) or market_prices.get(symbol.split("_")[0], 0)
+    if current_price <= 0 and asset:
+        value_usd = asset.get("value_usd", 0) or asset.get("usd_value", 0) or 0
+        if balance != 0 and value_usd != 0:
+            current_price = abs(float(value_usd) / float(balance))
+    return float(current_price or 0)
+
+
+def _compute_expected_tp_for_lots(
+    db: Session,
+    symbol: str,
+    open_lots: List[OpenLot],
+    balance: Decimal,
+    current_price: float,
+    *,
+    orphaned_protection_only: bool = False,
+) -> Optional[Dict]:
+    """Shared summary computation for normal and orphaned-protection positions."""
+    if not open_lots:
+        return None
+
+    actual_symbol = open_lots[0].symbol
+    symbol_base = _normalize_symbol(actual_symbol)
+    tp_orders = []
+    tp_orders_dict: Dict[str, ExchangeOrder] = {}
+    if symbol_base:
+        for tp in get_active_tp_orders(db, f"{symbol_base}_USD") + get_active_tp_orders(
+            db, f"{symbol_base}_USDT"
+        ):
+            tp_orders_dict[tp.exchange_order_id] = tp
+        tp_orders = list(tp_orders_dict.values())
+    if not tp_orders:
+        tp_orders = get_active_tp_orders(db, actual_symbol)
+
+    all_matched, unmatched = match_all_tp_orders(open_lots, tp_orders)
+    covered_qty = sum(float(lot.lot_qty) for lot in all_matched)
+    uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched)
+    total_lot_qty = sum(float(lot.lot_qty) for lot in open_lots)
+
+    if orphaned_protection_only:
+        net_qty = max(float(balance), 0.0)
+        if net_qty <= 0:
+            net_qty = total_lot_qty
+    else:
+        net_qty = max(float(balance), total_lot_qty)
+
+    total_expected_profit = Decimal("0")
+    actual_position_value = Decimal("0")
+    for lot in all_matched:
+        for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
+            tp_price = Decimal(str(tp.price or 0))
+            if tp_price > 0:
+                profit, _ = calculate_expected_profit(lot.buy_price, tp_price, lot_qty_for_this_tp)
+                total_expected_profit += profit
+        actual_position_value += lot.buy_price * lot.lot_qty
+    for lot in unmatched:
+        actual_position_value += lot.buy_price * lot.lot_qty
+
+    cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
+    position_value = net_qty * current_price if current_price > 0 else 0.0
+
+    return {
+        "symbol": actual_symbol,
+        "net_qty": net_qty,
+        "current_price": current_price,
+        "position_value": position_value,
+        "actual_position_value": None if cost_basis_unknown else float(actual_position_value),
+        "covered_qty": covered_qty,
+        "uncovered_qty": uncovered_qty,
+        "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
+        "coverage_ratio": covered_qty / net_qty if net_qty > 0 else (1.0 if covered_qty > 0 else 0),
+        "cost_basis_unknown": cost_basis_unknown,
+        "orphaned_protection_only": orphaned_protection_only,
+    }
+
+
 def build_entry_orders_details(
     db: Session,
     open_lots: List[OpenLot],
@@ -1094,9 +1347,23 @@ def get_expected_take_profit_summary(
         if base_currency in ['USD', 'EUR', 'USDT']:
             logger.debug(f"Expected TP: Skipping {symbol} - fiat/stablecoin as base currency (we don't trade with these)")
             continue
-        
+
         if balance <= 0:
-            logger.debug(f"Expected TP: Skipping {symbol} - balance <= 0")
+            orphaned_lots = build_orphaned_protection_lots(db, symbol)
+            if not orphaned_lots:
+                logger.debug(f"Expected TP: Skipping {symbol} - balance <= 0 and no orphaned protection")
+                continue
+            current_price = _resolve_current_price(symbol, balance, market_prices, asset)
+            summary_row = _compute_expected_tp_for_lots(
+                db,
+                symbol,
+                orphaned_lots,
+                balance,
+                current_price,
+                orphaned_protection_only=True,
+            )
+            if summary_row:
+                results[summary_row["symbol"]] = summary_row
             continue
         
         # Get current price
@@ -1502,6 +1769,25 @@ def get_expected_take_profit_summary(
             "cost_basis_unknown": cost_basis_unknown,
         }
     
+    for orphan_symbol in discover_symbols_with_orphaned_protection(db):
+        symbol_base = _normalize_symbol(orphan_symbol)
+        if any(_normalize_symbol(k) == symbol_base for k in results):
+            continue
+        orphaned_lots = build_orphaned_protection_lots(db, orphan_symbol)
+        if not orphaned_lots:
+            continue
+        current_price = _resolve_current_price(orphan_symbol, Decimal("0"), market_prices)
+        summary_row = _compute_expected_tp_for_lots(
+            db,
+            orphan_symbol,
+            orphaned_lots,
+            Decimal("0"),
+            current_price,
+            orphaned_protection_only=True,
+        )
+        if summary_row:
+            results[summary_row["symbol"]] = summary_row
+
     return results
 
 
@@ -1529,6 +1815,7 @@ def get_expected_take_profit_details(
     Returns:
         Dict with summary and detailed lot data
     """
+    orphaned_protection_only = False
     # Rebuild open lots
     open_lots = rebuild_open_lots(db, symbol)
     
@@ -1812,22 +2099,43 @@ def get_expected_take_profit_details(
                     logger.info(f"Expected TP Details: Created fallback virtual lot for {symbol}: qty={fallback_balance}, buy_price={virtual_lot.buy_price}, symbol={virtual_lot.symbol}")
 
         if not open_lots:
-            return {
-                "symbol": symbol,
-                "net_qty": 0,
-                "current_price": current_price,
-                "position_value": 0,
-                "actual_position_value": 0,
-                "covered_qty": 0,
-                "uncovered_qty": 0,
-                "total_expected_profit": 0,
-                "matched_lots": [],
-                "entry_orders": [],
-                "cost_basis_unknown": False,
-            }
+            orphaned_lots = build_orphaned_protection_lots(db, symbol)
+            if orphaned_lots:
+                open_lots = orphaned_lots
+                orphaned_protection_only = True
+                logger.info(
+                    "Expected TP Details: Using %d orphaned-protection lot(s) for %s",
+                    len(orphaned_lots),
+                    symbol,
+                )
+            else:
+                return {
+                    "symbol": symbol,
+                    "net_qty": 0,
+                    "current_price": current_price,
+                    "position_value": 0,
+                    "actual_position_value": 0,
+                    "covered_qty": 0,
+                    "uncovered_qty": 0,
+                    "total_expected_profit": 0,
+                    "matched_lots": [],
+                    "entry_orders": [],
+                    "cost_basis_unknown": False,
+                    "orphaned_protection_only": False,
+                }
     
-    # Get active TP orders
-    tp_orders = get_active_tp_orders(db, symbol)
+    # Get active TP orders (USD/USDT variants combined)
+    symbol_base = _normalize_symbol(symbol)
+    tp_orders = []
+    tp_orders_dict: Dict[str, ExchangeOrder] = {}
+    if symbol_base:
+        for tp in get_active_tp_orders(db, f"{symbol_base}_USD") + get_active_tp_orders(
+            db, f"{symbol_base}_USDT"
+        ):
+            tp_orders_dict[tp.exchange_order_id] = tp
+        tp_orders = list(tp_orders_dict.values())
+    if not tp_orders:
+        tp_orders = get_active_tp_orders(db, symbol)
     
     # Match TP orders: real OTOCO parent linkage first, then OCO group, then FIFO
     all_matched, unmatched = match_all_tp_orders(open_lots, tp_orders)
@@ -1984,9 +2292,9 @@ def get_expected_take_profit_details(
     
     # Always use portfolio_balance if provided (it's the source of truth)
     # If not provided, try to get it from portfolio_summary
-    actual_balance = float(portfolio_balance) if portfolio_balance > 0 else 0.0
+    actual_balance = float(portfolio_balance) if portfolio_balance != 0 else 0.0
     
-    if actual_balance <= 0 and portfolio_summary:
+    if actual_balance == 0 and portfolio_summary:
         # Try to get balance from portfolio_summary
         balances = portfolio_summary.get("balances", [])
         assets = portfolio_summary.get("assets", [])
@@ -2004,7 +2312,16 @@ def get_expected_take_profit_details(
                     actual_balance = float(asset.get("balance", 0) or 0)
                     break
     
-    if actual_balance > 0:
+    if orphaned_protection_only:
+        net_qty = total_lot_qty
+        uncovered_qty = uncovered_from_lots
+        logger.info(
+            "Expected TP Details: %s orphaned protection — NetQty=%s CoveredLots=%s",
+            symbol,
+            net_qty,
+            float(total_covered_qty),
+        )
+    elif actual_balance > 0:
         # Use portfolio balance (which includes all holdings, not just lots with TP orders)
         net_qty = max(actual_balance, total_lot_qty)
         # Uncovered quantity = lots without TP + any portfolio balance not in lots
@@ -2048,5 +2365,6 @@ def get_expected_take_profit_details(
         "entry_orders": entry_orders,
         "has_uncovered": uncovered_qty > 0,
         "cost_basis_unknown": cost_basis_unknown,
+        "orphaned_protection_only": orphaned_protection_only,
     }
 
