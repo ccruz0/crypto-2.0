@@ -6,6 +6,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { OpenOrder } from '@/app/api';
 import { formatDateTime, formatNumber } from '@/utils/formatting';
+import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import { useOrders } from '@/hooks/useOrders';
 
 type SortField = 'symbol' | 'side' | 'type' | 'quantity' | 'price' | 'status' | 'created_date' | 'execution_time' | 'total_value';
@@ -25,17 +26,24 @@ const getSideColorClass = (side: string) => {
   return 'text-gray-600 dark:text-gray-400';
 };
 
+const PROTECTION_ROLES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
+const TRIGGER_ORDER_TYPES = new Set([
+  'STOP_LIMIT',
+  'STOP_LOSS',
+  'STOP_LOSS_LIMIT',
+  'TAKE_PROFIT',
+  'TAKE_PROFIT_LIMIT',
+]);
+
 const isFilledEntryOrder = (order: OpenOrder) => {
   const status = (order.status || '').toUpperCase();
   const side = (order.side || '').toUpperCase();
   const role = (order.order_role || '').toUpperCase();
-  if (status !== 'FILLED' || side !== 'BUY') return false;
-  if (role === 'STOP_LOSS' || role === 'TAKE_PROFIT') return false;
+  if (status !== 'FILLED') return false;
+  if (PROTECTION_ROLES.has(role)) return false;
   const orderType = (order.order_type || '').toUpperCase();
-  if (['STOP_LIMIT', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT'].includes(orderType)) {
-    return false;
-  }
-  return true;
+  if (TRIGGER_ORDER_TYPES.has(orderType)) return false;
+  return side === 'BUY' || side === 'SELL';
 };
 
 interface ExecutedOrdersTabProps {
@@ -347,7 +355,7 @@ export default function ExecutedOrdersTab({
                   onClick={() => handleSort('side')}
                 >
                   <div className="flex items-center gap-1">
-                    Side {sortField === 'side' && (sortDirection === 'asc' ? '↑' : '↓')}
+                    Dirección {sortField === 'side' && (sortDirection === 'asc' ? '↑' : '↓')}
                   </div>
                 </th>
                 <th
@@ -425,8 +433,15 @@ export default function ExecutedOrdersTab({
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-200">
                       {order.instrument_name}
                     </td>
-                    <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${getSideColorClass(order.side || '')}`}>
-                      {order.side}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <div className="flex flex-col gap-1">
+                        <span className={`inline-flex w-fit px-2 py-1 rounded text-xs font-semibold ${sideBadgeClass(order.side)}`}>
+                          {sideLabelEs(order.side)}
+                        </span>
+                        <span className={`text-xs font-medium ${getSideColorClass(order.side || '')}`}>
+                          {order.side}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                       {order.order_type}

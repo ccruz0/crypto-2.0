@@ -1685,6 +1685,7 @@ export function dashboardBalancesToPortfolioAssets(balances: DashboardBalance[])
 // Expected Take Profit API
 export interface ExpectedTPSummaryItem {
   symbol: string;
+  position_side?: 'LONG' | 'SHORT';
   net_qty: number;
   position_value: number;
   actual_position_value?: number | null; // Value at buy price (cost basis); null when cost basis unknown
@@ -1769,6 +1770,7 @@ export interface ExpectedTPStopLossOrder extends ExpectedTPProtectionOrder {
 
 export interface ExpectedTPEntryOrder {
   order_id: string | null;
+  symbol?: string;
   side: 'BUY' | 'SELL';
   entry_price: number | null;
   qty: number;
@@ -1781,6 +1783,7 @@ export interface ExpectedTPEntryOrder {
 
 export interface ExpectedTPDetails {
   symbol: string;
+  position_side?: 'LONG' | 'SHORT';
   net_qty: number;
   position_value: number;
   actual_position_value?: number | null;

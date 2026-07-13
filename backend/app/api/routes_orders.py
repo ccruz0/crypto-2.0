@@ -1600,22 +1600,14 @@ def get_order_history(
         # Convert to API format
         orders = []
 
-        PROTECTION_ROLES = {"STOP_LOSS", "TAKE_PROFIT"}
-        TRIGGER_ORDER_TYPES = {
-            "STOP_LIMIT", "STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT",
-        }
         from app.services.sl_tp_protection import ACTIVE_PROTECTION_STATUSES
+        from app.utils.filled_entry_order import (
+            PROTECTION_ROLES,
+            is_filled_entry_exchange_order,
+        )
 
         def _is_filled_entry_order(order_row: ExchangeOrder) -> bool:
-            if order_row.status != OrderStatusEnum.FILLED:
-                return False
-            if order_row.order_role in PROTECTION_ROLES:
-                return False
-            order_type = (order_row.order_type or "").upper()
-            if order_type in TRIGGER_ORDER_TYPES:
-                return False
-            side_val = order_row.side.value if hasattr(order_row.side, "value") else str(order_row.side)
-            return side_val == "BUY"
+            return is_filled_entry_exchange_order(order_row)
 
         entry_order_ids = [
             order.exchange_order_id for order in all_orders if _is_filled_entry_order(order)
