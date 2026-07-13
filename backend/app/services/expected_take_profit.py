@@ -1178,6 +1178,7 @@ def _compute_expected_tp_for_lots(
 
     return {
         "symbol": actual_symbol,
+        "position_side": resolve_position_side(db, open_lots),
         "net_qty": net_qty,
         "current_price": current_price,
         "position_value": position_value,
@@ -1189,6 +1190,44 @@ def _compute_expected_tp_for_lots(
         "cost_basis_unknown": cost_basis_unknown,
         "orphaned_protection_only": orphaned_protection_only,
     }
+
+
+def _entry_side_for_lot(db: Session, lot: OpenLot) -> OrderSideEnum:
+    """Resolve the original entry side (BUY long vs SELL short) for an open lot."""
+    if not lot.buy_order_id:
+        return OrderSideEnum.BUY
+    entry = db.query(ExchangeOrder).filter(
+        ExchangeOrder.exchange_order_id == lot.buy_order_id
+    ).first()
+    if entry and entry.side:
+        return entry.side
+    return OrderSideEnum.BUY
+
+
+def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
+    """Return LONG or SHORT based on qty-weighted dominant entry side."""
+    if not open_lots:
+        return "LONG"
+
+    entry_ids = [lot.buy_order_id for lot in open_lots if lot.buy_order_id]
+    if not entry_ids:
+        return "LONG"
+
+    entries = db.query(ExchangeOrder).filter(
+        ExchangeOrder.exchange_order_id.in_(entry_ids)
+    ).all()
+    side_by_id = {entry.exchange_order_id: entry.side for entry in entries}
+
+    buy_qty = Decimal("0")
+    sell_qty = Decimal("0")
+    for lot in open_lots:
+        side = side_by_id.get(lot.buy_order_id, OrderSideEnum.BUY)
+        if side == OrderSideEnum.SELL:
+            sell_qty += lot.lot_qty
+        else:
+            buy_qty += lot.lot_qty
+
+    return "SHORT" if sell_qty > buy_qty else "LONG"
 
 
 def build_entry_orders_details(
@@ -1205,7 +1244,7 @@ def build_entry_orders_details(
 
     entry_orders: List[Dict] = []
     for lot in lots_sorted:
-        entry_side = OrderSideEnum.BUY
+        entry_side = _entry_side_for_lot(db, lot)
         lot_cost_basis_unknown = getattr(lot, "cost_basis_unknown", False)
 
         take_profits: List[Dict] = []
@@ -1257,6 +1296,7 @@ def build_entry_orders_details(
 
         entry_orders.append({
             "order_id": lot.buy_order_id,
+            "symbol": lot.symbol,
             "side": entry_side.value,
             "entry_price": None if lot_cost_basis_unknown else float(lot.buy_price),
             "qty": float(lot.lot_qty),
@@ -1758,6 +1798,7 @@ def get_expected_take_profit_summary(
         # This ensures consistency with order symbols (e.g., "BTC_USDT" instead of "BTC")
         results[actual_symbol] = {
             "symbol": actual_symbol,  # Use actual symbol from orders
+            "position_side": resolve_position_side(db, open_lots),
             "net_qty": net_qty,
             "current_price": current_price,
             "position_value": position_value,
@@ -2351,9 +2392,11 @@ def get_expected_take_profit_details(
     # value (at current price) and covered/uncovered qty stay real.
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
     entry_orders = build_entry_orders_details(db, open_lots)
+    position_side = resolve_position_side(db, open_lots)
 
     return {
         "symbol": symbol,
+        "position_side": position_side,
         "net_qty": net_qty,
         "current_price": current_price,
         "position_value": position_value,

@@ -6,6 +6,12 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPEntryOrder } from '@/app/api';
 import { formatDateTime, formatNumber } from '@/utils/formatting';
+import {
+  positionBadgeClass,
+  positionDirectionEs,
+  sideBadgeClass,
+  sideLabelEs,
+} from '@/utils/tradeSideLabels';
 
 type SortField = 'symbol' | 'net_qty' | 'position_value' | 'covered_qty' | 'uncovered_qty' | 'total_expected_profit' | 'current_price' | 'coverage_ratio';
 type SortDirection = 'asc' | 'desc';
@@ -76,13 +82,9 @@ export default function ExpectedTakeProfitTab({
     return `${prefix}${displayValue.toFixed(2)}%`;
   };
 
-  const sideBadgeClass = (side: ExpectedTPEntryOrder['side']) =>
-    side === 'BUY'
-      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200'
-      : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200';
+  const sideLabel = (side: ExpectedTPEntryOrder['side']) => sideLabelEs(side);
 
-  const sideLabel = (side: ExpectedTPEntryOrder['side']) =>
-    side === 'BUY' ? 'Compra' : 'Venta';
+  const positionLabel = (positionSide?: string | null) => positionDirectionEs(positionSide);
 
   const statusBadgeClass = (status: string) => {
     if (status === 'FILLED' || status === 'ACTIVE') {
@@ -258,6 +260,12 @@ export default function ExpectedTakeProfitTab({
                 </th>
                 <th
                   scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
+                >
+                  Dirección
+                </th>
+                <th
+                  scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
                   onClick={() => handleSort('net_qty')}
                 >
@@ -333,6 +341,14 @@ export default function ExpectedTakeProfitTab({
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-200">
                     {item.symbol}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <span
+                      className={`px-2 py-1 rounded text-xs font-semibold ${positionBadgeClass(item.position_side)}`}
+                      title={positionDirectionEs(item.position_side)}
+                    >
+                      {positionLabel(item.position_side)}
+                    </span>
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {formatNumber(item.net_qty)}
                   </td>
@@ -388,10 +404,21 @@ export default function ExpectedTakeProfitTab({
       {showExpectedTPDetailsDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={onCloseDetailsDialog}>
           <div className="bg-white dark:bg-slate-800 rounded-lg p-6 max-w-5xl w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                Expected TP Details: {expectedTPDetailsSymbol}
-              </h3>
+            <div className="flex justify-between items-start mb-4 gap-4">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  Expected TP Details: {expectedTPDetailsSymbol}
+                </h3>
+                {expectedTPDetails?.position_side && (
+                  <div className="mt-2">
+                    <span
+                      className={`px-2 py-1 rounded text-sm font-semibold ${positionBadgeClass(expectedTPDetails.position_side)}`}
+                    >
+                      {positionLabel(expectedTPDetails.position_side)}
+                    </span>
+                  </div>
+                )}
+              </div>
               <button
                 onClick={onCloseDetailsDialog}
                 className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl leading-none"
@@ -497,10 +524,13 @@ export default function ExpectedTakeProfitTab({
                               <span className="sr-only">Expand</span>
                             </th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                              Par
+                            </th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Order ID
                             </th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                              Side
+                              Dirección
                             </th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Entry Price
@@ -544,6 +574,9 @@ export default function ExpectedTakeProfitTab({
                                       <span className="inline-block w-6 text-center text-gray-400">·</span>
                                     )}
                                   </td>
+                                  <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-200">
+                                    {entry.symbol || expectedTPDetailsSymbol || '—'}
+                                  </td>
                                   <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-xs text-gray-900 dark:text-gray-200">
                                     {entry.order_id || '—'}
                                   </td>
@@ -574,7 +607,7 @@ export default function ExpectedTakeProfitTab({
                                     {entry.take_profits.map((tp) => (
                                       <tr key={`${rowKey}-tp-${tp.order_id}`} className="bg-green-50/60 dark:bg-green-950/20">
                                         <td className="px-4 py-2" />
-                                        <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-xs pl-8 text-gray-700 dark:text-gray-300" colSpan={2}>
+                                        <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-xs pl-8 text-gray-700 dark:text-gray-300" colSpan={3}>
                                           <span className="font-semibold text-green-700 dark:text-green-400 mr-2">TP</span>
                                           {tp.order_id}
                                         </td>
@@ -603,7 +636,7 @@ export default function ExpectedTakeProfitTab({
                                     {entry.stop_loss && (
                                       <tr key={`${rowKey}-sl-${entry.stop_loss.order_id}`} className="bg-red-50/60 dark:bg-red-950/20">
                                         <td className="px-4 py-2" />
-                                        <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-xs pl-8 text-gray-700 dark:text-gray-300" colSpan={2}>
+                                        <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-xs pl-8 text-gray-700 dark:text-gray-300" colSpan={3}>
                                           <span className="font-semibold text-red-700 dark:text-red-400 mr-2">SL</span>
                                           {entry.stop_loss.order_id}
                                         </td>
