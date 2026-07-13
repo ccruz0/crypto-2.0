@@ -63,6 +63,52 @@ class OpenLot:
         self.cost_basis_unknown = cost_basis_unknown
 
 
+def _order_symbol_scope(symbol: str) -> List[str]:
+    """Return DB symbols to load for executed-order FIFO.
+
+    Explicit pairs (e.g. ETH_USDT) stay on that pair only so USD and USDT books
+    are never mixed. Base-currency inputs (ETH, BTC) still search common quotes.
+    """
+    symbol = (symbol or "").upper()
+    if "_" in symbol:
+        return [symbol]
+    return [symbol, f"{symbol}_USDT", f"{symbol}_USD"]
+
+
+def _symbols_equivalent_for_matching(lot_symbol: str, tp_symbol: str) -> bool:
+    """True when a protection order may attach to a lot's symbol."""
+    lot_symbol = (lot_symbol or "").upper()
+    tp_symbol = (tp_symbol or "").upper()
+    if "_" in lot_symbol:
+        return lot_symbol == tp_symbol
+    return _normalize_symbol(lot_symbol) == _normalize_symbol(tp_symbol)
+
+
+def _entry_side_for_lot(db: Session, lot: OpenLot) -> OrderSideEnum:
+    """Resolve the original entry side (BUY long vs SELL short) for an open lot."""
+    if not lot.buy_order_id:
+        return OrderSideEnum.BUY
+    entry = db.query(ExchangeOrder).filter(
+        ExchangeOrder.exchange_order_id == lot.buy_order_id
+    ).first()
+    if entry and entry.side:
+        return entry.side
+    return OrderSideEnum.BUY
+
+
+def _protection_close_side_for_lot(db: Session, lot: OpenLot) -> OrderSideEnum:
+    """Exchange side of TP/SL that closes this lot (SELL for long, BUY for short)."""
+    entry_side = _entry_side_for_lot(db, lot)
+    return OrderSideEnum.BUY if entry_side == OrderSideEnum.SELL else OrderSideEnum.SELL
+
+
+def _tp_matches_lot_entry(db: Session, lot: OpenLot, tp: ExchangeOrder) -> bool:
+    return (
+        tp.side == _protection_close_side_for_lot(db, lot)
+        and tp.status in ACTIVE_TP_STATUSES
+    )
+
+
 def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     """
     Rebuild open lots from executed orders using FIFO logic.
@@ -74,31 +120,15 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     Returns:
         List of OpenLot objects representing remaining open quantity
     """
-    # Build symbol variants to search for
-    # Portfolio might give us "BTC" but orders are stored as "BTC_USDT"
-    symbol_variants = [symbol]
-    if '_' not in symbol:
-        # If symbol is just the base currency (e.g., "BTC"), try common pairs
-        symbol_variants.extend([
-            f"{symbol}_USDT",
-            f"{symbol}_USD",
-        ])
-    else:
-        # If symbol already has a pair, try variants (USDT <-> USD)
-        if symbol.endswith('_USDT'):
-            symbol_variants.append(symbol.replace('_USDT', '_USD'))
-        elif symbol.endswith('_USD'):
-            symbol_variants.append(symbol.replace('_USD', '_USDT'))
-    
-    # Try exact match first
+    symbol_variants = _order_symbol_scope(symbol)
+
     executed_orders = db.query(ExchangeOrder).filter(
         ExchangeOrder.symbol.in_(symbol_variants),
         ExchangeOrder.status == EXECUTED_STATUS
     ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
-    
-    if not executed_orders:
-        # Try LIKE match for symbols starting with base currency (e.g., "BTC_%")
-        base_currency = symbol.split('_')[0] if '_' in symbol else symbol
+
+    if not executed_orders and "_" not in symbol:
+        base_currency = symbol.split("_")[0] if "_" in symbol else symbol
         executed_orders = db.query(ExchangeOrder).filter(
             ExchangeOrder.symbol.like(f"{base_currency}_%"),
             ExchangeOrder.status == EXECUTED_STATUS
@@ -165,6 +195,44 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
                     oco_group_id=buy.oco_group_id,
                 ))
                 logger.debug(f"rebuild_open_lots: Found open lot - {order_symbol} qty={remaining_qty} price={buy_price} order_id={buy.exchange_order_id[:15]}...")
+
+    # Remaining sell quantity after FIFO => open short lots (SELL entry).
+    for sell in sells:
+        sell_id = sell.exchange_order_id
+        remaining_qty = sell_remaining.get(sell_id, Decimal("0"))
+        if remaining_qty <= 0:
+            continue
+
+        sell_price = Decimal(str(sell.price or sell.avg_price or 0))
+        if (
+            (not sell_price or sell_price == 0)
+            and sell.cumulative_quantity
+            and sell.cumulative_quantity > 0
+            and sell.cumulative_value
+            and sell.cumulative_value > 0
+        ):
+            sell_price = sell.cumulative_value / sell.cumulative_quantity
+
+        sell_time = sell.exchange_create_time or sell.created_at
+        if sell_price > 0:
+            open_lots.append(
+                OpenLot(
+                    symbol=sell.symbol,
+                    buy_order_id=sell.exchange_order_id,
+                    buy_time=sell_time,
+                    buy_price=sell_price,
+                    lot_qty=remaining_qty,
+                    parent_order_id=sell.parent_order_id,
+                    oco_group_id=sell.oco_group_id,
+                )
+            )
+            logger.debug(
+                "rebuild_open_lots: Found open short lot - %s qty=%s price=%s order_id=%s...",
+                sell.symbol,
+                remaining_qty,
+                sell_price,
+                sell.exchange_order_id[:15],
+            )
     
     logger.info(f"rebuild_open_lots: Found {len(open_lots)} open lots for {symbol}")
     return open_lots
@@ -227,24 +295,12 @@ def get_active_tp_orders(db: Session, symbol: str) -> List[ExchangeOrder]:
         List of active TP orders (NEW, ACTIVE, or PARTIALLY_FILLED)
     """
     # Build symbol variants to search for
-    symbol_variants = [symbol]
-    if '_' not in symbol:
-        # If symbol is just the base currency (e.g., "BTC"), try common pairs
-        symbol_variants.extend([
-            f"{symbol}_USDT",
-            f"{symbol}_USD",
-        ])
-    else:
-        # If symbol already has a pair, try variants (USDT <-> USD)
-        if symbol.endswith('_USDT'):
-            symbol_variants.append(symbol.replace('_USDT', '_USD'))
-        elif symbol.endswith('_USD'):
-            symbol_variants.append(symbol.replace('_USD', '_USDT'))
+    symbol_variants = _order_symbol_scope(symbol)
     
-    # Try exact match first
+    # Long TP = SELL; short TP (close) = BUY
     tp_orders = db.query(ExchangeOrder).filter(
         ExchangeOrder.symbol.in_(symbol_variants),
-        ExchangeOrder.side == OrderSideEnum.SELL,
+        ExchangeOrder.side.in_([OrderSideEnum.SELL, OrderSideEnum.BUY]),
         ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
         or_(
             ExchangeOrder.order_role == "TAKE_PROFIT",
@@ -252,12 +308,11 @@ def get_active_tp_orders(db: Session, symbol: str) -> List[ExchangeOrder]:
         )
     ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
     
-    if not tp_orders:
-        # Try LIKE match for symbols starting with base currency (e.g., "BTC_%")
+    if not tp_orders and "_" not in symbol:
         base_currency = symbol.split('_')[0] if '_' in symbol else symbol
         tp_orders = db.query(ExchangeOrder).filter(
             ExchangeOrder.symbol.like(f"{base_currency}_%"),
-            ExchangeOrder.side == OrderSideEnum.SELL,
+            ExchangeOrder.side.in_([OrderSideEnum.SELL, OrderSideEnum.BUY]),
             ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
             or_(
                 ExchangeOrder.order_role == "TAKE_PROFIT",
@@ -285,6 +340,7 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 def match_tp_orders_by_parent(
+    db: Session,
     lots: List[OpenLot],
     tp_orders: List[ExchangeOrder]
 ) -> Tuple[List[OpenLot], List[OpenLot], List[ExchangeOrder]]:
@@ -324,8 +380,7 @@ def match_tp_orders_by_parent(
             if tp.exchange_order_id not in used_tp_ids
             and getattr(tp, "parent_order_id", None)
             and str(tp.parent_order_id) == str(lot.buy_order_id)
-            and tp.side == OrderSideEnum.SELL
-            and tp.status in ACTIVE_TP_STATUSES
+            and _tp_matches_lot_entry(db, lot, tp)
         ]
         if not linked:
             continue
@@ -353,6 +408,7 @@ def match_tp_orders_by_parent(
 
 
 def match_tp_orders_by_cocreation(
+    db: Session,
     lots: List[OpenLot],
     tp_orders: List[ExchangeOrder],
 ) -> Tuple[List[OpenLot], List[OpenLot], List[ExchangeOrder]]:
@@ -374,15 +430,15 @@ def match_tp_orders_by_cocreation(
     for lot in lots:
         if not lot.buy_time or not lot.buy_order_id:
             continue
-        lot_base = _normalize_symbol(lot.symbol)
+        close_side = _protection_close_side_for_lot(db, lot)
         for tp in tp_orders:
             if getattr(tp, "parent_order_id", None):
                 continue
             if tp.exchange_order_id in used_tp_ids:
                 continue
-            if tp.side != OrderSideEnum.SELL or tp.status not in ACTIVE_TP_STATUSES:
+            if tp.side != close_side or tp.status not in ACTIVE_TP_STATUSES:
                 continue
-            if _normalize_symbol(tp.symbol) != lot_base:
+            if not _symbols_equivalent_for_matching(lot.symbol, tp.symbol):
                 continue
 
             tp_time = tp.exchange_create_time or tp.created_at
@@ -430,6 +486,7 @@ def match_tp_orders_by_cocreation(
 
 
 def match_all_tp_orders(
+    db: Session,
     open_lots: List[OpenLot],
     tp_orders: List[ExchangeOrder]
 ) -> Tuple[List[OpenLot], List[OpenLot]]:
@@ -446,11 +503,11 @@ def match_all_tp_orders(
     Returns:
         Tuple of (all_matched_lots, unmatched_lots)
     """
-    parent_matched, unmatched_lots, remaining_tps = match_tp_orders_by_parent(open_lots, tp_orders)
+    parent_matched, unmatched_lots, remaining_tps = match_tp_orders_by_parent(db, open_lots, tp_orders)
     cocreation_matched, unmatched_lots, remaining_tps = match_tp_orders_by_cocreation(
-        unmatched_lots, remaining_tps
+        db, unmatched_lots, remaining_tps
     )
-    oco_matched, unmatched_lots, remaining_tps = match_tp_orders_oco(unmatched_lots, remaining_tps)
+    oco_matched, unmatched_lots, remaining_tps = match_tp_orders_oco(db, unmatched_lots, remaining_tps)
     fifo_lots = match_tp_orders_fifo(unmatched_lots, remaining_tps)
 
     all_matched = (
@@ -464,6 +521,7 @@ def match_all_tp_orders(
 
 
 def match_tp_orders_oco(
+    db: Session,
     lots: List[OpenLot],
     tp_orders: List[ExchangeOrder]
 ) -> Tuple[List[OpenLot], List[OpenLot], List[ExchangeOrder]]:
@@ -491,19 +549,18 @@ def match_tp_orders_oco(
             continue
         
         lot_base = _normalize_symbol(lot.symbol)
+        close_side = _protection_close_side_for_lot(db, lot)
         
-        # Find all TP orders in the same OCO group with matching symbol base
+        # Find all TP orders in the same OCO group with matching symbol
         matching_tps = []
         for tp in tp_orders:
             if tp.exchange_order_id in used_tp_ids:
                 continue
             
-            tp_base = _normalize_symbol(tp.symbol)
-            
-            # Check OCO match conditions (including symbol base match - USD/USDT are equivalent)
+            # Check OCO match conditions (symbol: exact pair or equivalent base)
             if (tp.oco_group_id == lot.oco_group_id and
-                tp_base == lot_base and
-                tp.side == OrderSideEnum.SELL and
+                _symbols_equivalent_for_matching(lot.symbol, tp.symbol) and
+                tp.side == close_side and
                 tp.status in ACTIVE_TP_STATUSES):
                 
                 # Check that TP was created after or close to buy time
@@ -598,7 +655,7 @@ def _fifo_lot_eligible_for_tp(lot: OpenLot, tp: ExchangeOrder, tp_base: str) -> 
     """Return True when a lot can be paired with a TP in FIFO fallback matching."""
     if lot.matched_tp is not None:
         return False
-    if _normalize_symbol(lot.symbol) != tp_base:
+    if not _symbols_equivalent_for_matching(lot.symbol, tp.symbol):
         return False
     if lot.parent_order_id is not None:
         tp_time = tp.exchange_create_time or tp.created_at
@@ -697,10 +754,8 @@ def match_tp_orders_fifo(
             if lot.matched_tp is not None:
                 continue  # Already matched via OCO or another TP
             
-            # Check if symbol bases match (USD/USDT are equivalent)
-            lot_base = _normalize_symbol(lot.symbol)
-            if lot_base != tp_base:
-                continue  # Different base currency, skip
+            if not _symbols_equivalent_for_matching(lot.symbol, tp.symbol):
+                continue  # Different pair/base, skip
             
             # Check if TP was created after buy time
             # Skip this check for virtual lots (lots without parent_order_id are virtual)
@@ -939,15 +994,8 @@ def _protection_order_remaining_qty(order: ExchangeOrder) -> Decimal:
 
 
 def _symbol_variants(symbol: str) -> List[str]:
-    """Return symbol and USD/USDT pair variants for DB lookups."""
-    variants = [symbol]
-    if "_" not in symbol:
-        variants.extend([f"{symbol}_USDT", f"{symbol}_USD"])
-    elif symbol.endswith("_USDT"):
-        variants.append(symbol.replace("_USDT", "_USD"))
-    elif symbol.endswith("_USD"):
-        variants.append(symbol.replace("_USD", "_USDT"))
-    return variants
+    """Return symbol scope for protection-order DB lookups."""
+    return _order_symbol_scope(symbol)
 
 
 def _filled_buy_price(parent: ExchangeOrder) -> Optional[Decimal]:
@@ -1027,11 +1075,13 @@ def build_orphaned_protection_lots(db: Session, symbol: str) -> List[OpenLot]:
             .filter(ExchangeOrder.exchange_order_id == parent_id)
             .first()
         )
-        if not parent or parent.side != OrderSideEnum.BUY or parent.status != EXECUTED_STATUS:
+        if not parent or parent.status != EXECUTED_STATUS:
+            continue
+        if parent.side not in (OrderSideEnum.BUY, OrderSideEnum.SELL):
             continue
 
-        buy_price = _filled_buy_price(parent)
-        if buy_price is None:
+        entry_price = _filled_buy_price(parent)
+        if entry_price is None:
             continue
 
         remaining_qtys = [
@@ -1049,7 +1099,7 @@ def build_orphaned_protection_lots(db: Session, symbol: str) -> List[OpenLot]:
                 symbol=parent.symbol,
                 buy_order_id=parent.exchange_order_id,
                 buy_time=buy_time,
-                buy_price=buy_price,
+                buy_price=entry_price,
                 lot_qty=lot_qty,
                 parent_order_id=parent.parent_order_id,
                 oco_group_id=parent.oco_group_id,
@@ -1097,7 +1147,9 @@ def discover_symbols_with_orphaned_protection(db: Session) -> List[str]:
             .filter(ExchangeOrder.exchange_order_id == str(order.parent_order_id))
             .first()
         )
-        if not parent or parent.side != OrderSideEnum.BUY or parent.status != EXECUTED_STATUS:
+        if not parent or parent.status != EXECUTED_STATUS:
+            continue
+        if parent.side not in (OrderSideEnum.BUY, OrderSideEnum.SELL):
             continue
         base = _normalize_symbol(order.symbol)
         if base in ("USD", "EUR", "USDT"):
@@ -1137,19 +1189,9 @@ def _compute_expected_tp_for_lots(
         return None
 
     actual_symbol = open_lots[0].symbol
-    symbol_base = _normalize_symbol(actual_symbol)
-    tp_orders = []
-    tp_orders_dict: Dict[str, ExchangeOrder] = {}
-    if symbol_base:
-        for tp in get_active_tp_orders(db, f"{symbol_base}_USD") + get_active_tp_orders(
-            db, f"{symbol_base}_USDT"
-        ):
-            tp_orders_dict[tp.exchange_order_id] = tp
-        tp_orders = list(tp_orders_dict.values())
-    if not tp_orders:
-        tp_orders = get_active_tp_orders(db, actual_symbol)
+    tp_orders = get_active_tp_orders(db, actual_symbol)
 
-    all_matched, unmatched = match_all_tp_orders(open_lots, tp_orders)
+    all_matched, unmatched = match_all_tp_orders(db, open_lots, tp_orders)
     covered_qty = sum(float(lot.lot_qty) for lot in all_matched)
     uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched)
     total_lot_qty = sum(float(lot.lot_qty) for lot in open_lots)
@@ -1164,10 +1206,13 @@ def _compute_expected_tp_for_lots(
     total_expected_profit = Decimal("0")
     actual_position_value = Decimal("0")
     for lot in all_matched:
+        entry_side = _entry_side_for_lot(db, lot)
         for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
             tp_price = Decimal(str(tp.price or 0))
             if tp_price > 0:
-                profit, _ = calculate_expected_profit(lot.buy_price, tp_price, lot_qty_for_this_tp)
+                profit, _ = calculate_tp_display_profit(
+                    entry_side, lot.buy_price, tp_price, lot_qty_for_this_tp
+                )
                 total_expected_profit += profit
         actual_position_value += lot.buy_price * lot.lot_qty
     for lot in unmatched:
@@ -1190,18 +1235,6 @@ def _compute_expected_tp_for_lots(
         "cost_basis_unknown": cost_basis_unknown,
         "orphaned_protection_only": orphaned_protection_only,
     }
-
-
-def _entry_side_for_lot(db: Session, lot: OpenLot) -> OrderSideEnum:
-    """Resolve the original entry side (BUY long vs SELL short) for an open lot."""
-    if not lot.buy_order_id:
-        return OrderSideEnum.BUY
-    entry = db.query(ExchangeOrder).filter(
-        ExchangeOrder.exchange_order_id == lot.buy_order_id
-    ).first()
-    if entry and entry.side:
-        return entry.side
-    return OrderSideEnum.BUY
 
 
 def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
@@ -1388,7 +1421,41 @@ def get_expected_take_profit_summary(
             logger.debug(f"Expected TP: Skipping {symbol} - fiat/stablecoin as base currency (we don't trade with these)")
             continue
 
-        if balance <= 0:
+        if balance < 0:
+            current_price = _resolve_current_price(symbol, balance, market_prices, asset)
+            if current_price <= 0:
+                logger.debug(
+                    "Expected TP: Skipping %s short - no price (balance=%s)",
+                    symbol,
+                    balance,
+                )
+                continue
+
+            open_lots = rebuild_open_lots(db, symbol)
+            short_lots = [
+                lot
+                for lot in open_lots
+                if _entry_side_for_lot(db, lot) == OrderSideEnum.SELL
+            ]
+            if not short_lots:
+                logger.debug(
+                    "Expected TP: Skipping %s - negative balance but no open short lots",
+                    symbol,
+                )
+                continue
+
+            summary_row = _compute_expected_tp_for_lots(
+                db,
+                short_lots[0].symbol,
+                short_lots,
+                abs(balance),
+                current_price,
+            )
+            if summary_row:
+                results[summary_row["symbol"]] = summary_row
+            continue
+
+        if balance == 0:
             orphaned_lots = build_orphaned_protection_lots(db, symbol)
             if not orphaned_lots:
                 logger.debug(f"Expected TP: Skipping {symbol} - balance <= 0 and no orphaned protection")
@@ -1733,30 +1800,11 @@ def get_expected_take_profit_summary(
         actual_symbol = open_lots[0].symbol
         logger.info(f"Expected TP: Found {len(open_lots)} open lots for {symbol} (actual symbol: {actual_symbol})")
         
-        # Get active TP orders - search for both USD and USDT variants since they're equivalent
-        # Normalize symbol base (treat USD/USDT as equivalent)
-        symbol_base = _normalize_symbol(actual_symbol)
-        tp_orders = []
-        tp_orders_dict = {}
-        
-        if symbol_base:
-            # Get TP orders for both USD and USDT variants (they're the same currency)
-            tp_usd = get_active_tp_orders(db, f"{symbol_base}_USD")
-            tp_usdt = get_active_tp_orders(db, f"{symbol_base}_USDT")
-            
-            # Combine and deduplicate by order ID
-            for tp in tp_usd + tp_usdt:
-                tp_orders_dict[tp.exchange_order_id] = tp
-            tp_orders = list(tp_orders_dict.values())
-        
-        # If still no TP orders, try using actual_symbol directly
-        if not tp_orders:
-            tp_orders = get_active_tp_orders(db, actual_symbol)
-        
-        logger.info(f"Expected TP: Found {len(tp_orders)} active TP orders for {symbol} (base: {symbol_base}, actual: {actual_symbol}) - USD/USDT combined")
+        tp_orders = get_active_tp_orders(db, actual_symbol)
+        logger.info(f"Expected TP: Found {len(tp_orders)} active TP orders for {actual_symbol}")
         
         # Match TP orders: real OTOCO parent linkage first, then OCO group, then FIFO
-        all_matched, unmatched = match_all_tp_orders(open_lots, tp_orders)
+        all_matched, unmatched = match_all_tp_orders(db, open_lots, tp_orders)
         
         # Calculate totals
         covered_qty = sum(float(lot.lot_qty) for lot in all_matched)
@@ -1771,12 +1819,13 @@ def get_expected_take_profit_summary(
         actual_position_value = Decimal("0")
         
         for lot in all_matched:
-            # Split the lot proportionally across ALL matched TP orders (same
-            # logic as the details endpoint) so the summary total matches details.
+            entry_side = _entry_side_for_lot(db, lot)
             for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
                 tp_price = Decimal(str(tp.price or 0))
                 if tp_price > 0:
-                    profit, _ = calculate_expected_profit(lot.buy_price, tp_price, lot_qty_for_this_tp)
+                    profit, _ = calculate_tp_display_profit(
+                        entry_side, lot.buy_price, tp_price, lot_qty_for_this_tp
+                    )
                     total_expected_profit += profit
             # Add to actual position value (at buy price)
             actual_position_value += lot.buy_price * lot.lot_qty
@@ -2165,21 +2214,13 @@ def get_expected_take_profit_details(
                     "orphaned_protection_only": False,
                 }
     
-    # Get active TP orders (USD/USDT variants combined)
-    symbol_base = _normalize_symbol(symbol)
-    tp_orders = []
-    tp_orders_dict: Dict[str, ExchangeOrder] = {}
-    if symbol_base:
-        for tp in get_active_tp_orders(db, f"{symbol_base}_USD") + get_active_tp_orders(
-            db, f"{symbol_base}_USDT"
-        ):
-            tp_orders_dict[tp.exchange_order_id] = tp
-        tp_orders = list(tp_orders_dict.values())
-    if not tp_orders:
+    lot_symbol = open_lots[0].symbol if open_lots else symbol
+    tp_orders = get_active_tp_orders(db, lot_symbol)
+    if not tp_orders and lot_symbol != symbol:
         tp_orders = get_active_tp_orders(db, symbol)
     
     # Match TP orders: real OTOCO parent linkage first, then OCO group, then FIFO
-    all_matched, unmatched = match_all_tp_orders(open_lots, tp_orders)
+    all_matched, unmatched = match_all_tp_orders(db, open_lots, tp_orders)
     
     # Build matched lot details (with grouping of orders executed at same time)
     matched_lot_details_raw = []
@@ -2200,8 +2241,11 @@ def get_expected_take_profit_details(
             tp_filled = Decimal(str(tp.cumulative_quantity or 0))
             tp_remaining = tp_qty - tp_filled
             
-            # Calculate profit for this portion
-            profit, profit_pct = calculate_expected_profit(lot.buy_price, tp_price, lot_qty_for_this_tp)
+            # Calculate profit for this portion (long and short)
+            entry_side = _entry_side_for_lot(db, lot)
+            profit, profit_pct = calculate_tp_display_profit(
+                entry_side, lot.buy_price, tp_price, lot_qty_for_this_tp
+            )
             
             total_covered_qty += lot_qty_for_this_tp
             # When the cost basis is unknown (buy price is the current-price
@@ -2342,14 +2386,30 @@ def get_expected_take_profit_details(
         
         for bal in balances:
             currency = bal.get("currency", "").upper()
-            if currency == symbol or currency == symbol.split('_')[0]:
+            if currency == symbol:
                 actual_balance = float(bal.get("balance", 0) or 0)
                 break
+
+        if actual_balance == 0 and "_" in symbol:
+            base = symbol.split("_")[0]
+            for bal in balances:
+                currency = bal.get("currency", "").upper()
+                if currency == base:
+                    actual_balance = float(bal.get("balance", 0) or 0)
+                    break
         
-        if actual_balance <= 0:
+        if actual_balance == 0:
             for asset in assets:
                 coin = asset.get("coin", "").upper()
-                if coin == symbol or coin == symbol.split('_')[0]:
+                if coin == symbol:
+                    actual_balance = float(asset.get("balance", 0) or 0)
+                    break
+
+        if actual_balance == 0 and "_" in symbol:
+            base = symbol.split("_")[0]
+            for asset in assets:
+                coin = asset.get("coin", "").upper()
+                if coin == base:
                     actual_balance = float(asset.get("balance", 0) or 0)
                     break
     
@@ -2361,6 +2421,16 @@ def get_expected_take_profit_details(
             symbol,
             net_qty,
             float(total_covered_qty),
+        )
+    elif actual_balance < 0:
+        net_qty = max(abs(actual_balance), total_lot_qty)
+        uncovered_qty = uncovered_from_lots + max(0, net_qty - total_lot_qty)
+        logger.info(
+            "Expected TP Details: %s short - Balance=%s, TotalLots=%s, NetQty=%s",
+            symbol,
+            actual_balance,
+            total_lot_qty,
+            net_qty,
         )
     elif actual_balance > 0:
         # Use portfolio balance (which includes all holdings, not just lots with TP orders)
