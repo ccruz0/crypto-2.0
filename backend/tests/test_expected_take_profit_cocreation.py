@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from app.models.exchange_order import OrderSideEnum, OrderStatusEnum
 from app.services.expected_take_profit import (
@@ -10,6 +11,10 @@ from app.services.expected_take_profit import (
     match_all_tp_orders,
     match_tp_orders_by_cocreation,
 )
+
+
+def _mock_db():
+    return MagicMock()
 
 
 def _tp(
@@ -60,7 +65,7 @@ def test_cocreation_matches_tp_to_co_created_buy_with_same_qty():
     ]
     tp = _tp("tp-133", "DOGE_USD", "133", create_time=tp_time)
 
-    matched, unmatched, remaining = match_tp_orders_by_cocreation(lots, [tp])
+    matched, unmatched, remaining = match_tp_orders_by_cocreation(_mock_db(), lots, [tp])
 
     assert len(matched) == 1
     assert matched[0].buy_order_id == "buy-133"
@@ -82,7 +87,7 @@ def test_cocreation_skips_when_parent_order_id_already_set():
         create_time=t_tp,
     )
 
-    matched, unmatched, remaining = match_tp_orders_by_cocreation([lot], [tp])
+    matched, unmatched, remaining = match_tp_orders_by_cocreation(_mock_db(), [lot], [tp])
 
     assert matched == []
     assert unmatched == [lot]
@@ -101,7 +106,7 @@ def test_match_all_prefers_explicit_parent_over_cocreation():
         create_time=t_tp,
     )
 
-    matched, unmatched = match_all_tp_orders([lot], [tp])
+    matched, unmatched = match_all_tp_orders(_mock_db(), [lot], [tp])
 
     assert len(matched) == 1
     assert matched[0].buy_order_id == "buy-explicit"

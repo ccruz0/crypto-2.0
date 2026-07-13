@@ -3241,11 +3241,22 @@ def get_expected_take_profit_details_endpoint(symbol: str, db: Session = Depends
         
         for bal in portfolio_balances:
             currency = bal.get("currency", "").upper()
-            if currency == symbol or currency == symbol.split('_')[0]:
+            if currency == symbol:
                 balance = bal.get("balance", 0)
                 value_usd = bal.get("usd_value", 0) or bal.get("value_usd", 0)
                 if balance != 0 and value_usd != 0:
-                    current_price = float(value_usd) / float(balance)
+                    current_price = abs(float(value_usd) / float(balance))
+                break
+
+        if balance == 0 and "_" in symbol:
+            base = symbol.split("_")[0]
+            for bal in portfolio_balances:
+                currency = bal.get("currency", "").upper()
+                if currency == base:
+                    balance = bal.get("balance", 0)
+                    value_usd = bal.get("usd_value", 0) or bal.get("value_usd", 0)
+                    if balance != 0 and value_usd != 0:
+                        current_price = abs(float(value_usd) / float(balance))
                     break
         
         # Get detailed data (pass balance and portfolio_summary for virtual lot creation)
