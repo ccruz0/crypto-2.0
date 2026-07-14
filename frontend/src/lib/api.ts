@@ -1302,6 +1302,7 @@ export interface ExpectedTPMatchedLot {
 
 export interface ExpectedTPProtectionOrder {
   order_id: string;
+  side?: 'BUY' | 'SELL' | null;
   price: number | null;
   qty: number;
   remaining_qty: number;
