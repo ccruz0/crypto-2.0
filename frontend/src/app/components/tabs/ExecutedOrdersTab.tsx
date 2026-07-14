@@ -26,6 +26,26 @@ const getSideColorClass = (side: string) => {
   return 'text-gray-600 dark:text-gray-400';
 };
 
+const getExecutionOriginBadgeClass = (origin?: string, typeDisplay?: string) => {
+  const label = (typeDisplay || origin || '').toLowerCase();
+  if (label.includes('sl ejecutado') || origin === 'STOP_LOSS') {
+    return 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200';
+  }
+  if (label.includes('tp ejecutado') || origin === 'TAKE_PROFIT') {
+    return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200';
+  }
+  if (label.includes('alerta') || origin === 'ALERT') {
+    return 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200';
+  }
+  if (label.includes('manual') || origin === 'MANUAL') {
+    return 'bg-gray-100 text-gray-700 dark:bg-slate-700 dark:text-gray-200';
+  }
+  return 'text-gray-500 dark:text-gray-400';
+};
+
+const getOrderTypeLabel = (order: OpenOrder) =>
+  order.type_display || order.execution_origin_label || order.order_type;
+
 const PROTECTION_ROLES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
 const TRIGGER_ORDER_TYPES = new Set([
   'STOP_LIMIT',
@@ -164,8 +184,8 @@ export default function ExecutedOrdersTab({
           bVal = b.side || '';
           break;
         case 'type':
-          aVal = a.order_type || '';
-          bVal = b.order_type || '';
+          aVal = getOrderTypeLabel(a);
+          bVal = getOrderTypeLabel(b);
           break;
         case 'quantity':
           aVal = parseFloat(a.quantity || '0');
@@ -443,8 +463,18 @@ export default function ExecutedOrdersTab({
                         </span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      {order.order_type}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <div className="flex flex-col gap-1">
+                        <span
+                          className={`inline-flex w-fit px-2 py-1 rounded text-xs font-semibold ${getExecutionOriginBadgeClass(order.execution_origin, getOrderTypeLabel(order))}`}
+                          title={order.execution_origin ? `Origen: ${order.execution_origin}` : undefined}
+                        >
+                          {getOrderTypeLabel(order)}
+                        </span>
+                        {getOrderTypeLabel(order) !== order.order_type && (
+                          <span className="text-xs text-gray-400 dark:text-gray-500">{order.order_type}</span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                       {formatNumber(parseFloat(order.quantity || '0'))}

@@ -1609,6 +1609,30 @@ def get_order_history(
         def _is_filled_entry_order(order_row: ExchangeOrder) -> bool:
             return is_filled_entry_exchange_order(order_row)
 
+        from app.models.order_intent import OrderIntent
+        from app.models.trade_signal import TradeSignal
+        from app.utils.execution_origin import format_type_display, resolve_execution_origin
+
+        order_ids = [order.exchange_order_id for order in all_orders]
+        intent_order_ids: set[str] = set()
+        signal_order_ids: set[str] = set()
+        if order_ids:
+            intent_order_ids = {
+                row[0]
+                for row in db.query(OrderIntent.order_id)
+                .filter(OrderIntent.order_id.in_(order_ids), OrderIntent.order_id.isnot(None))
+                .all()
+            }
+            signal_order_ids = {
+                row[0]
+                for row in db.query(TradeSignal.exchange_order_id)
+                .filter(
+                    TradeSignal.exchange_order_id.in_(order_ids),
+                    TradeSignal.exchange_order_id.isnot(None),
+                )
+                .all()
+            }
+
         entry_order_ids = [
             order.exchange_order_id for order in all_orders if _is_filled_entry_order(order)
         ]
@@ -1661,12 +1685,29 @@ def get_order_history(
             has_linked_sl = order.exchange_order_id in parents_with_sl if is_entry else None
             is_orphan = bool(is_entry and not has_linked_tp and not has_linked_sl)
 
+            oid = order.exchange_order_id
+            execution_origin = resolve_execution_origin(
+                order_role=order.order_role,
+                order_type=order.order_type,
+                parent_order_id=order.parent_order_id,
+                trade_signal_id=order.trade_signal_id,
+                has_order_intent=oid in intent_order_ids,
+                has_trade_signal_link=oid in signal_order_ids,
+            )
+            type_display = format_type_display(
+                order_type=order.order_type,
+                execution_origin=execution_origin,
+            )
+
             orders.append({
                 "order_id": order.exchange_order_id,
                 "client_oid": order.client_oid,
                 "instrument_name": order.symbol,
                 "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
                 "order_type": order.order_type or "LIMIT",
+                "execution_origin": execution_origin,
+                "execution_origin_label": type_display,
+                "type_display": type_display,
                 "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
                 "order_role": order.order_role,  # Include order_role for SL/TP identification
                 "parent_order_id": order.parent_order_id,
