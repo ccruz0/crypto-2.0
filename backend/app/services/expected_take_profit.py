@@ -147,11 +147,23 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
         if o.side == OrderSideEnum.SELL and (o.cumulative_quantity or o.quantity)
     ]
     
-    # Track remaining sell quantities (don't modify original objects)
-    sell_remaining = {
+    protected_entry_ids = _filled_entry_ids_with_active_protection(db, symbol_variants)
+    protected_sell_qty = {
         sell.exchange_order_id: Decimal(str(sell.cumulative_quantity or sell.quantity))
         for sell in sells
+        if sell.exchange_order_id in protected_entry_ids
     }
+
+    # Track remaining sell quantities (don't modify original objects).
+    # Margin shorts with active OTOCO SL/TP must not FIFO-net against long buys.
+    sell_remaining = {}
+    for sell in sells:
+        sell_id = sell.exchange_order_id
+        qty = Decimal(str(sell.cumulative_quantity or sell.quantity))
+        if sell_id in protected_entry_ids:
+            sell_remaining[sell_id] = Decimal("0")
+        else:
+            sell_remaining[sell_id] = qty
     
     # Apply FIFO: track remaining quantity on each buy
     open_lots: List[OpenLot] = []
@@ -165,6 +177,8 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
         for sell in sells:
             if remaining_qty <= 0:
                 break
+            if sell.exchange_order_id in protected_entry_ids:
+                continue
             
             sell_id = sell.exchange_order_id
             sell_qty = sell_remaining.get(sell_id, Decimal("0"))
@@ -199,7 +213,10 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     # Remaining sell quantity after FIFO => open short lots (SELL entry).
     for sell in sells:
         sell_id = sell.exchange_order_id
-        remaining_qty = sell_remaining.get(sell_id, Decimal("0"))
+        if sell_id in protected_entry_ids:
+            remaining_qty = protected_sell_qty.get(sell_id, Decimal("0"))
+        else:
+            remaining_qty = sell_remaining.get(sell_id, Decimal("0"))
         if remaining_qty <= 0:
             continue
 
@@ -1005,6 +1022,41 @@ def _protection_order_remaining_qty(order: ExchangeOrder) -> Decimal:
     return max(tp_qty - tp_filled, Decimal("0"))
 
 
+def _filled_entry_ids_with_active_protection(
+    db: Session, symbol_variants: List[str]
+) -> set:
+    """Filled entry order IDs (BUY or SELL) that still have active parent-linked SL/TP."""
+    protection_orders = db.query(ExchangeOrder).filter(
+        ExchangeOrder.symbol.in_(symbol_variants),
+        ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
+        ExchangeOrder.parent_order_id.isnot(None),
+        or_(
+            ExchangeOrder.order_role.in_(["TAKE_PROFIT", "STOP_LOSS"]),
+            ExchangeOrder.order_type.in_([
+                "TAKE_PROFIT",
+                "TAKE_PROFIT_LIMIT",
+                "STOP_LIMIT",
+                "STOP_LOSS",
+                "STOP_LOSS_LIMIT",
+            ]),
+        ),
+    ).all()
+
+    protected: set = set()
+    for order in protection_orders:
+        if _protection_order_remaining_qty(order) <= 0:
+            continue
+        parent_id = str(order.parent_order_id)
+        parent = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == parent_id)
+            .first()
+        )
+        if parent and parent.status == EXECUTED_STATUS:
+            protected.add(parent_id)
+    return protected
+
+
 def _symbol_variants(symbol: str) -> List[str]:
     """Return symbol scope for protection-order DB lookups."""
     return _order_symbol_scope(symbol)
@@ -1126,6 +1178,77 @@ def build_orphaned_protection_lots(db: Session, symbol: str) -> List[OpenLot]:
         len(protection_orders),
     )
     return lots
+
+
+def _append_protected_short_summary_rows(
+    db: Session,
+    results: Dict[str, Dict],
+    market_prices: Dict[str, float],
+) -> None:
+    """Add summary rows for margin shorts with OTOCO even when net balance is long."""
+    existing = {
+        (row.get("symbol"), row.get("position_side"))
+        for row in results.values()
+    }
+
+    protection_orders = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
+            ExchangeOrder.parent_order_id.isnot(None),
+            or_(
+                ExchangeOrder.order_role.in_(["TAKE_PROFIT", "STOP_LOSS"]),
+                ExchangeOrder.order_type.in_([
+                    "TAKE_PROFIT",
+                    "TAKE_PROFIT_LIMIT",
+                    "STOP_LIMIT",
+                    "STOP_LOSS",
+                    "STOP_LOSS_LIMIT",
+                ]),
+            ),
+        )
+        .all()
+    )
+
+    short_pairs: set = set()
+    for order in protection_orders:
+        if _protection_order_remaining_qty(order) <= 0:
+            continue
+        parent = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == str(order.parent_order_id))
+            .first()
+        )
+        if (
+            parent
+            and parent.status == EXECUTED_STATUS
+            and parent.side == OrderSideEnum.SELL
+        ):
+            short_pairs.add(parent.symbol)
+
+    for pair in sorted(short_pairs):
+        if (pair, "SHORT") in existing:
+            continue
+        open_lots = rebuild_open_lots(db, pair)
+        short_lots = [
+            lot
+            for lot in open_lots
+            if _entry_side_for_lot(db, lot) == OrderSideEnum.SELL
+        ]
+        if not short_lots:
+            continue
+        net_short_qty = sum((lot.lot_qty for lot in short_lots), Decimal("0"))
+        current_price = _resolve_current_price(pair, net_short_qty, market_prices)
+        summary_row = _compute_expected_tp_for_lots(
+            db,
+            pair,
+            short_lots,
+            net_short_qty,
+            current_price,
+        )
+        if summary_row:
+            results[f"{pair}|SHORT"] = summary_row
+            existing.add((pair, "SHORT"))
 
 
 def discover_symbols_with_orphaned_protection(db: Session) -> List[str]:
@@ -1872,6 +1995,8 @@ def get_expected_take_profit_summary(
             "cost_basis_unknown": cost_basis_unknown,
         }
     
+    _append_protected_short_summary_rows(db, results, market_prices)
+
     for orphan_symbol in discover_symbols_with_orphaned_protection(db):
         symbol_base = _normalize_symbol(orphan_symbol)
         if any(_normalize_symbol(k) == symbol_base for k in results):

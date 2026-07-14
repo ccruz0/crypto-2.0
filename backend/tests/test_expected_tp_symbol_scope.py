@@ -238,3 +238,83 @@ def test_cocreation_tests_use_db_mock():
     )
     matched, unmatched = match_all_tp_orders(mock_db, [lot], [tp])
     assert len(matched) == 1
+
+
+def test_protected_margin_sell_not_fifo_net_against_long_buys(db_session):
+    """Margin SELL with OTOCO must stay a short lot even when long buys exist on the pair."""
+    t_buy = datetime(2026, 5, 28, 5, 3, 14, tzinfo=timezone.utc)
+    t_sell = datetime(2026, 7, 14, 11, 18, 26, tzinfo=timezone.utc)
+    t_tp = datetime(2026, 7, 14, 11, 18, 27, tzinfo=timezone.utc)
+
+    _add_order(
+        db_session,
+        exchange_order_id="5755600489289088548",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="71100",
+        quantity="0.30",
+        exchange_create_time=t_buy,
+    )
+    sell = _add_order(
+        db_session,
+        exchange_order_id="5755600491774711109",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="MARKET",
+        price="62722.11",
+        quantity="0.00015",
+        exchange_create_time=t_sell,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490101973692",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="62094.89",
+        quantity="0.00015",
+        cumulative_quantity="0",
+        parent_order_id=sell.exchange_order_id,
+        exchange_create_time=t_tp,
+    )
+
+    lots = rebuild_open_lots(db_session, "BTC_USD")
+    short_lots = [lot for lot in lots if lot.buy_order_id == sell.exchange_order_id]
+    assert len(short_lots) == 1
+    assert short_lots[0].lot_qty == Decimal("0.00015")
+
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[
+            {
+                "coin": "BTC",
+                "balance": 2.49,
+                "value_usd": 156000.0,
+            }
+        ],
+        market_prices={"BTC": 62722.0, "BTC_USD": 62722.0},
+    )
+
+    short_rows = [
+        row for row in summary.values()
+        if row.get("symbol") == "BTC_USD" and row.get("position_side") == "SHORT"
+    ]
+    assert len(short_rows) == 1
+    assert short_rows[0]["net_qty"] == pytest.approx(0.00015)
+
+    details = get_expected_take_profit_details(
+        db_session,
+        "BTC_USD",
+        current_price=62722.0,
+        portfolio_balance=2.49,
+    )
+    sell_entries = [
+        entry
+        for entry in details["entry_orders"]
+        if entry["order_id"] == sell.exchange_order_id
+    ]
+    assert len(sell_entries) == 1
+    assert sell_entries[0]["side"] == "SELL"
+    assert sell_entries[0]["take_profits"]
