@@ -832,9 +832,14 @@ class SLTPCheckerService:
             # Get SL/TP prices from watchlist
             sl_price = watchlist_item.sl_price
             tp_price = watchlist_item.tp_price
+            prefer_tp_from_pct = (
+                create_tp
+                and watchlist_item.tp_percentage is not None
+                and watchlist_item.tp_percentage > 0
+            )
             
-            # Calculate from percentages if prices not available
-            if (create_sl and not sl_price) or (create_tp and not tp_price):
+            # Calculate from percentages if prices not available, or when tp_percentage is set
+            if (create_sl and not sl_price) or (create_tp and (not tp_price or prefer_tp_from_pct)):
                 entry_price = None
                 entry_side = "BUY"
                 recent_order = _find_recent_entry_order(db, symbol)
@@ -933,9 +938,13 @@ class SLTPCheckerService:
                     sl_price, _ = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
                     logger.info(f"Calculated SL price for {symbol}: {sl_price} (entry: {entry_price}, side={entry_side}, {sl_percentage}%)")
                 
-                if create_tp and not tp_price:
+                if create_tp and (not tp_price or prefer_tp_from_pct):
                     _, tp_price = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
-                    logger.info(f"Calculated TP price for {symbol}: {tp_price} (entry: {entry_price}, side={entry_side}, {tp_percentage}%)")
+                    logger.info(
+                        f"Calculated TP price for {symbol}: {tp_price} "
+                        f"(entry: {entry_price}, side={entry_side}, {tp_percentage}%, "
+                        f"prefer_pct={prefer_tp_from_pct})"
+                    )
             
             # Round prices to reasonable precision before passing to exchange
             # The exchange will further format according to instrument tick size
