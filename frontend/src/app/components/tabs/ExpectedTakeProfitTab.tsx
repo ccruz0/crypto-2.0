@@ -609,6 +609,11 @@ export default function ExpectedTakeProfitTab({
                                         <td className="px-4 py-2" />
                                         <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-xs pl-8 text-gray-700 dark:text-gray-300" colSpan={3}>
                                           <span className="font-semibold text-green-700 dark:text-green-400 mr-2">TP</span>
+                                          {tp.side && (
+                                            <span className={`px-2 py-0.5 rounded text-xs font-semibold mr-2 ${sideBadgeClass(tp.side)}`}>
+                                              {sideLabel(tp.side)}
+                                            </span>
+                                          )}
                                           {tp.order_id}
                                         </td>
                                         <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200">

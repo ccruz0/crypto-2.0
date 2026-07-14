@@ -508,7 +508,7 @@ def match_all_tp_orders(
         db, unmatched_lots, remaining_tps
     )
     oco_matched, unmatched_lots, remaining_tps = match_tp_orders_oco(db, unmatched_lots, remaining_tps)
-    fifo_lots = match_tp_orders_fifo(unmatched_lots, remaining_tps)
+    fifo_lots = match_tp_orders_fifo(db, unmatched_lots, remaining_tps)
 
     all_matched = (
         parent_matched
@@ -651,11 +651,18 @@ def match_tp_orders_oco(
     return matched_lots, unmatched_lots, remaining_tps
 
 
-def _fifo_lot_eligible_for_tp(lot: OpenLot, tp: ExchangeOrder, tp_base: str) -> bool:
+def _fifo_lot_eligible_for_tp(
+    db: Session,
+    lot: OpenLot,
+    tp: ExchangeOrder,
+    tp_base: str,
+) -> bool:
     """Return True when a lot can be paired with a TP in FIFO fallback matching."""
     if lot.matched_tp is not None:
         return False
     if not _symbols_equivalent_for_matching(lot.symbol, tp.symbol):
+        return False
+    if not _tp_matches_lot_entry(db, lot, tp):
         return False
     if lot.parent_order_id is not None:
         tp_time = tp.exchange_create_time or tp.created_at
@@ -665,6 +672,7 @@ def _fifo_lot_eligible_for_tp(lot: OpenLot, tp: ExchangeOrder, tp_base: str) -> 
 
 
 def match_tp_orders_fifo(
+    db: Session,
     lots: List[OpenLot],
     tp_orders: List[ExchangeOrder]
 ) -> List[OpenLot]:
@@ -708,7 +716,7 @@ def match_tp_orders_fifo(
         tp_base = _normalize_symbol(tp.symbol)
         exact_lot = None
         for lot in lots_sorted:
-            if not _fifo_lot_eligible_for_tp(lot, tp, tp_base):
+            if not _fifo_lot_eligible_for_tp(db, lot, tp, tp_base):
                 continue
             if abs(lot.lot_qty - tp_remaining) < Decimal("0.00000001"):
                 exact_lot = lot
@@ -754,8 +762,8 @@ def match_tp_orders_fifo(
             if lot.matched_tp is not None:
                 continue  # Already matched via OCO or another TP
             
-            if not _symbols_equivalent_for_matching(lot.symbol, tp.symbol):
-                continue  # Different pair/base, skip
+            if not _fifo_lot_eligible_for_tp(db, lot, tp, tp_base):
+                continue
             
             # Check if TP was created after buy time
             # Skip this check for virtual lots (lots without parent_order_id are virtual)
@@ -822,7 +830,7 @@ def match_tp_orders_fifo(
                 continue
             if tp.status not in ACTIVE_TP_STATUSES:
                 continue
-            if not _fifo_lot_eligible_for_tp(lot, tp, lot_base):
+            if not _fifo_lot_eligible_for_tp(db, lot, tp, lot_base):
                 continue
             tp_qty = Decimal(str(tp.quantity))
             tp_filled = Decimal(str(tp.cumulative_quantity or 0))
@@ -844,6 +852,7 @@ def match_tp_orders_fifo(
         # Collect matching TP orders that can cover this lot
         matching_tps = []
         accumulated_tp_qty = Decimal("0")
+        close_side = _protection_close_side_for_lot(db, lot)
         
         for tp in tp_orders_sorted:
             if tp.exchange_order_id in used_tp_ids:
@@ -855,6 +864,9 @@ def match_tp_orders_fifo(
             tp_base = _normalize_symbol(tp.symbol)
             if tp_base != lot_base:
                 continue  # Different base currency
+            
+            if tp.side != close_side:
+                continue
             
             # Check if TP was created after buy time
             # Skip this check for virtual lots (lots without parent_order_id are virtual)
@@ -1295,6 +1307,7 @@ def build_entry_orders_details(
 
                 take_profits.append({
                     "order_id": tp.exchange_order_id,
+                    "side": tp.side.value if tp.side else None,
                     "price": float(tp_price) if tp_price > 0 else None,
                     "qty": float(lot_qty_for_tp),
                     "remaining_qty": float(tp_remaining),

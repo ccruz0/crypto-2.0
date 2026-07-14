@@ -3,9 +3,16 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from app.models.exchange_order import OrderSideEnum, OrderStatusEnum
 from app.services.expected_take_profit import OpenLot, match_tp_orders_fifo
+
+
+def _mock_db():
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+    return mock_db
 
 
 def _tp(order_id: str, symbol: str, quantity: str, *, create_time: datetime):
@@ -52,7 +59,7 @@ def test_fifo_prefers_exact_qty_lot_over_partial_accumulation():
     ]
     tp = _tp("73817490101969014", "BTC_USD", "0.141020", create_time=tp_time)
 
-    result = match_tp_orders_fifo(lots, [tp])
+    result = match_tp_orders_fifo(_mock_db(), lots, [tp])
 
     matched = [lot for lot in result if lot.matched_tp is not None]
     assert len(matched) == 1
