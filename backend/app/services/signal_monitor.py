@@ -9875,6 +9875,71 @@ class SignalMonitorService:
             raise ValueError(error_message)
         
         amount_usd = _trade_amount_usd
+
+        # Check trading guardrails before SELL order placement (same as legacy BUY path)
+        from app.utils.trading_guardrails import (
+            can_place_real_order,
+            should_send_trade_block_telegram_alert,
+            mark_trade_block_telegram_sent,
+        )
+        allowed, block_reason = can_place_real_order(
+            db=db,
+            symbol=symbol,
+            order_usd_value=amount_usd,
+            side="SELL",
+        )
+        if not allowed:
+            from app.utils.decision_reason import make_skip, ReasonCode
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            decision_reason = make_skip(
+                reason_code=ReasonCode.GUARDRAIL_BLOCKED.value,
+                message=f"Trading guardrail blocked SELL order for {symbol}: {block_reason}",
+                context={
+                    "symbol": symbol,
+                    "price": current_price,
+                    "amount_usd": amount_usd,
+                    "guardrail_reason": block_reason,
+                },
+                source="guardrail",
+                correlation_id=correlation_id,
+            )
+            logger.info(
+                f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} "
+                f"context={decision_reason.context}"
+            )
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="SELL",
+                price=current_price,
+                event_type="TRADE_BLOCKED",
+                event_reason=block_reason or "blocked",
+                decision_reason=decision_reason,
+            )
+            try:
+                if self._telegram_send_enabled() and should_send_trade_block_telegram_alert(
+                    symbol, "SELL", block_reason
+                ):
+                    telegram_notifier.send_message(
+                        f"🚫 <b>TRADE BLOCKED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔄 Side: SELL\n"
+                        f"💵 Value: ${amount_usd:.2f}\n\n"
+                        f"🚫 <b>Reason:</b> {block_reason}",
+                        symbol=symbol,
+                    )
+                    mark_trade_block_telegram_sent(symbol, "SELL", block_reason)
+            except Exception as e:
+                logger.warning(f"Failed to send Telegram alert for blocked SELL order: {e}")
+            logger.warning(f"🚫 TRADE_BLOCKED: {symbol} SELL - {block_reason}")
+            return {
+                "error": "guardrail_blocked",
+                "error_type": "guardrail_blocked",
+                "message": block_reason,
+                "blocked": True,
+            }
         
         # Read trade_on_margin from database FIRST - CRITICAL for margin trading
         # This must be read BEFORE balance check to avoid blocking margin orders
