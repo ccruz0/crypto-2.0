@@ -576,6 +576,18 @@ def _apply_watchlist_updates(item: WatchlistItem, data: Dict[str, Any]) -> None:
         if field in ("trade_amount_usd", "trade_on_margin"):
             old_val = getattr(item, field, None)
             log.info(f"[_apply_watchlist_updates] {getattr(item, 'symbol', 'UNKNOWN')}.{field}: {old_val} → {value}")
+        if field == "tp_percentage":
+            old_tp_pct = getattr(item, "tp_percentage", None)
+            setattr(item, field, value)
+            if value is not None and value != old_tp_pct:
+                setattr(item, "tp_price", None)
+                if hasattr(item, "set_field_updated_at"):
+                    item.set_field_updated_at("tp_price")
+                log.info(
+                    f"[_apply_watchlist_updates] Cleared tp_price for {getattr(item, 'symbol', 'UNKNOWN')} "
+                    f"after tp_percentage change ({old_tp_pct} → {value})"
+                )
+            continue
         setattr(item, field, value)
 
 @router.get("/dashboard/snapshot")
@@ -1889,6 +1901,14 @@ def create_watchlist_item(
                     log.info(f"[WATCHLIST_UPDATE] {symbol}.{field}: {old_value} → {new_value}")
                 
                 setattr(existing_item, field, payload[field])
+                if field == "tp_percentage" and new_value is not None and old_value != new_value:
+                    existing_item.tp_price = None
+                    if hasattr(existing_item, "set_field_updated_at"):
+                        existing_item.set_field_updated_at("tp_price")
+                    log.info(
+                        f"[WATCHLIST_UPDATE] Cleared tp_price for {symbol} after tp_percentage change "
+                        f"({old_value} → {new_value})"
+                    )
         
         # CRITICAL: Also update watchlist_master table (source of truth)
         try:

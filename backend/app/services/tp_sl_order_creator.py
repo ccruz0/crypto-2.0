@@ -141,13 +141,38 @@ def create_take_profit_order(
                                 f"Adjusted to {tp_price:.4f} (0.5% above current price) to ensure order validity."
                             )
                         elif tp_side == "BUY" and tp_price >= current_price:
-                            # TP price is above or equal to current price - adjust it
-                            # Subtract 0.5% margin below current price to ensure it's valid
-                            tp_price = current_price * 0.995
-                            logger.warning(
-                                f"⚠️ TP price ({original_tp_price:.4f}) was above current market price ({current_price:.4f}). "
-                                f"Adjusted to {tp_price:.4f} (0.5% below current price) to ensure order validity."
-                            )
+                            # Short close (BUY TP): market at/below watchlist target.
+                            # Never widen TP beyond the calculated watchlist price (e.g. 1% -> 6.5%).
+                            capped_price = current_price * 0.995
+                            if capped_price >= original_tp_price:
+                                tp_price = capped_price
+                                logger.warning(
+                                    f"⚠️ TP price ({original_tp_price:.4f}) was above current market price "
+                                    f"({current_price:.4f}). Adjusted to {tp_price:.4f} (0.5% below current "
+                                    f"price) without widening beyond watchlist target."
+                                )
+                            else:
+                                error_msg = (
+                                    f"TP target already reached for {symbol}: calculated TP "
+                                    f"${original_tp_price:.4f} is above market ${current_price:.4f}. "
+                                    f"Refusing to widen TP beyond watchlist %."
+                                )
+                                logger.warning(f"⚠️ {error_msg}")
+                                try:
+                                    telegram_notifier.send_message(
+                                        f"⚠️ <b>SHORT TP NOT WIDENED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"🎯 Calculated TP: ${original_tp_price:.4f}\n"
+                                        f"💹 Market: ${current_price:.4f}\n\n"
+                                        f"Market is already at/below the watchlist TP target. "
+                                        f"Auto TP was not placed with a wider target.",
+                                        symbol=symbol,
+                                    )
+                                except Exception as telegram_err:
+                                    logger.warning(
+                                        f"Failed to send Telegram alert for short TP cap: {telegram_err}"
+                                    )
+                                return {"order_id": None, "error": error_msg}
         except Exception as price_check_err:
             logger.warning(f"Could not verify TP price against current market: {price_check_err}. Proceeding with calculated TP price.")
     
