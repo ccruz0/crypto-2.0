@@ -1759,6 +1759,165 @@ class SignalMonitorService:
         except ZeroDivisionError:
             return None
         return f"{change_pct:+.2f}%"
+
+    @staticmethod
+    def _build_strategy_alert_reason(
+        signals: Optional[Dict[str, Any]],
+        side: str,
+        strategy_display: str,
+        risk_display: str,
+        *,
+        rsi: Optional[float] = None,
+        current_price: Optional[float] = None,
+        ma50: Optional[float] = None,
+        ema10: Optional[float] = None,
+        ma200: Optional[float] = None,
+    ) -> str:
+        """Build Telegram alert reason from full strategy evaluation (not RSI alone)."""
+        side_upper = (side or "").upper()
+        header = f"{strategy_display}/{risk_display}"
+
+        if signals and isinstance(signals.get("rationale"), list):
+            for entry in signals["rationale"]:
+                if not isinstance(entry, str):
+                    continue
+                if side_upper == "BUY" and ("✅ BUY" in entry or "BUY (" in entry):
+                    cleaned = entry.split("): ", 1)[-1] if "): " in entry else entry
+                    return f"{header} | {cleaned}"
+                if side_upper == "SELL" and ("🔴 SELL" in entry or "SELL (" in entry):
+                    cleaned = entry.split("): ", 1)[-1] if "): " in entry else entry
+                    return f"{header} | {cleaned}"
+
+        reasons: Dict[str, Any] = {}
+        if signals and isinstance(signals.get("strategy"), dict):
+            reasons = signals.get("strategy", {}).get("reasons") or {}
+
+        if side_upper == "BUY":
+            flag_specs = [
+                ("buy_rsi_ok", "RSI"),
+                ("buy_volume_ok", "Volume"),
+                ("buy_ma_ok", "MA50/EMA"),
+                ("buy_target_ok", "Target"),
+                ("buy_price_ok", "Price"),
+            ]
+        else:
+            flag_specs = [
+                ("sell_rsi_ok", "RSI"),
+                ("sell_trend_ok", "Trend/MA"),
+                ("sell_volume_ok", "Volume"),
+            ]
+
+        criteria_parts = []
+        for key, label in flag_specs:
+            val = reasons.get(key)
+            if val is True:
+                criteria_parts.append(f"✅ {label}")
+            elif val is False:
+                criteria_parts.append(f"❌ {label}")
+
+        criteria_text = " | ".join(criteria_parts) if criteria_parts else "All conditions met"
+        volume_ratio = signals.get("volume_ratio") if signals else None
+        min_volume_ratio = signals.get("min_volume_ratio") if signals else None
+
+        rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
+        price_text = f"{current_price:.4f}" if current_price is not None else "N/A"
+        ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+        ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+        ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+        vol_suffix = ""
+        if volume_ratio is not None and min_volume_ratio is not None:
+            vol_suffix = f", Vol={volume_ratio:.2f}x (min {min_volume_ratio}x)"
+
+        return (
+            f"{header} | {criteria_text} | "
+            f"RSI={rsi_text}, Price={price_text}, MA50={ma50_text}, EMA10={ema10_text}, "
+            f"MA200={ma200_text}{vol_suffix}"
+        )
+
+    def _orchestrator_order_guard(
+        self,
+        db: Session,
+        symbol: str,
+        side: str,
+        watchlist_item: WatchlistItem,
+    ) -> Tuple[bool, Optional[str]]:
+        """Apply trading guardrails before orchestrator order placement."""
+        from app.utils.trading_guardrails import can_place_real_order
+
+        amount_usd = float(getattr(watchlist_item, "trade_amount_usd", None) or 0.0)
+        return can_place_real_order(
+            db=db,
+            symbol=symbol,
+            order_usd_value=amount_usd,
+            side=side,
+        )
+
+    def _block_orchestrator_order(
+        self,
+        db: Session,
+        *,
+        symbol: str,
+        normalized_symbol: str,
+        side: str,
+        order_intent: Any,
+        block_reason: str,
+        signal_id: Optional[int],
+        strategy_key: str,
+        current_price: float,
+        evaluation_id: str,
+        now_utc: datetime,
+    ) -> None:
+        """Record guardrail block for an orchestrator order intent."""
+        from app.api.routes_monitoring import update_telegram_message_decision_trace
+        from app.services.signal_order_orchestrator import update_order_intent_status
+        from app.utils.decision_reason import make_skip, ReasonCode
+        import uuid as uuid_module
+
+        logger.info(
+            f"[ORCHESTRATOR] {symbol} {side} blocked by guardrails before placement: {block_reason}"
+        )
+        self._upsert_watchlist_signal_state(
+            db,
+            symbol=normalized_symbol,
+            trade_status="BLOCKED",
+            trade_block_reason="GUARDRAIL_BLOCKED",
+            last_trade_at_utc=now_utc,
+            correlation_id=evaluation_id,
+        )
+        stage = f"{side}_BLOCKED"
+        self._log_pipeline_stage(
+            stage=stage,
+            symbol=normalized_symbol,
+            strategy_key=strategy_key,
+            decision=side,
+            last_price=current_price,
+            timestamp=now_utc.isoformat(),
+            correlation_id=evaluation_id,
+            signal_id=str(signal_id) if signal_id is not None else None,
+            reason=block_reason,
+        )
+        update_order_intent_status(
+            db=db,
+            order_intent_id=order_intent.id,
+            status="ORDER_FAILED",
+            error_message=block_reason,
+        )
+        decision_reason = make_skip(
+            reason_code=ReasonCode.GUARDRAIL_BLOCKED.value,
+            message=f"Order blocked for {symbol} {side}: {block_reason}",
+            context={"symbol": symbol, "side": side, "guardrail_reason": block_reason},
+            source="orchestrator",
+        )
+        update_telegram_message_decision_trace(
+            db=db,
+            symbol=symbol,
+            message_pattern=f"{side} SIGNAL",
+            decision_type="SKIPPED",
+            reason_code=decision_reason.reason_code,
+            reason_message=decision_reason.reason_message,
+            context_json=decision_reason.context,
+            correlation_id=str(uuid_module.uuid4()),
+        )
     
     def _log_startup_alert_configuration(self, db: Session, watchlist_items: list) -> None:
         """Log alert configuration summary on startup.
@@ -3843,12 +4002,16 @@ class SignalMonitorService:
                             ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
                             ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
                             ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
-                            reason_text = (
-                                f"{strategy_display}/{risk_display} | "
-                                f"RSI={rsi:.1f}, Price={current_price:.4f}, "
-                                f"MA50={ma50_text}, "
-                                f"EMA10={ema10_text}, "
-                                f"MA200={ma200_text}"
+                            reason_text = self._build_strategy_alert_reason(
+                                signals,
+                                "BUY",
+                                strategy_display,
+                                risk_display,
+                                rsi=rsi,
+                                current_price=current_price,
+                                ma50=ma50,
+                                ema10=ema10,
+                                ma200=ma200,
                             )
                             alert_origin = get_runtime_origin()
                             # Explicitly pass origin to ensure alerts are sent
@@ -4077,64 +4240,227 @@ class SignalMonitorService:
                                         correlation_id=str(uuid_module.uuid4()),
                                     )
                                 elif intent_status == "PENDING" and order_intent:
-                                    # Order intent created - attempt order placement (bypassing eligibility checks)
-                                    logger.info(f"[ORCHESTRATOR] {symbol} BUY Order intent created (id={order_intent.id}) - Attempting order placement")
-                                    self._upsert_watchlist_signal_state(
-                                        db,
-                                        symbol=normalized_symbol,
-                                        trade_status="SUBMITTED",
-                                        trade_block_reason=None,
-                                        last_trade_at_utc=now_utc,
-                                        correlation_id=evaluation_id,
+                                    allowed, block_reason = self._orchestrator_order_guard(
+                                        db, normalized_symbol, "BUY", watchlist_item
                                     )
-                                    self._log_pipeline_stage(
-                                        stage="BUY_ELIGIBLE_CHECK",
-                                        symbol=normalized_symbol,
-                                        strategy_key=strategy_key,
-                                        decision="BUY",
-                                        last_price=current_price,
-                                        timestamp=now_utc.isoformat(),
-                                        correlation_id=evaluation_id,
-                                        signal_id=str(signal_id) if signal_id is not None else None,
-                                        reason="OK",
-                                    )
-                                    self._log_pipeline_stage(
-                                        stage="BUY_ORDER_SUBMITTED",
-                                        symbol=normalized_symbol,
-                                        strategy_key=strategy_key,
-                                        decision="BUY",
-                                        last_price=current_price,
-                                        timestamp=now_utc.isoformat(),
-                                        correlation_id=evaluation_id,
-                                        signal_id=str(signal_id) if signal_id is not None else None,
-                                    )
-                                    
-                                    # Call minimal order placement function (NO eligibility checks)
-                                    # Note: Running async function from sync context using new event loop
-                                    try:
-                                        loop = asyncio.new_event_loop()
-                                        asyncio.set_event_loop(loop)
-                                        try:
-                                            order_result = loop.run_until_complete(
-                                                self._place_order_from_signal(
-                                                    db=db,
-                                                    symbol=normalized_symbol,
-                                                    side="BUY",
-                                                    watchlist_item=watchlist_item,
-                                                    current_price=current_price,
-                                                    source="orchestrator",
-                                                    correlation_id=evaluation_id,
-                                                    rsi=rsi,
-                                                    ma200=ma200,
-                                                )
-                                            )
-                                        finally:
-                                            loop.close()
+                                    if not allowed:
+                                        self._block_orchestrator_order(
+                                            db,
+                                            symbol=symbol,
+                                            normalized_symbol=normalized_symbol,
+                                            side="BUY",
+                                            order_intent=order_intent,
+                                            block_reason=block_reason or "blocked by guardrails",
+                                            signal_id=signal_id,
+                                            strategy_key=strategy_key,
+                                            current_price=current_price,
+                                            evaluation_id=evaluation_id,
+                                            now_utc=now_utc,
+                                        )
+                                    else:
+                                        # Order intent created - attempt order placement after guardrails
+                                        logger.info(f"[ORCHESTRATOR] {symbol} BUY Order intent created (id={order_intent.id}) - Attempting order placement")
+                                        self._upsert_watchlist_signal_state(
+                                            db,
+                                            symbol=normalized_symbol,
+                                            trade_status="SUBMITTED",
+                                            trade_block_reason=None,
+                                            last_trade_at_utc=now_utc,
+                                            correlation_id=evaluation_id,
+                                        )
+                                        self._log_pipeline_stage(
+                                            stage="BUY_ELIGIBLE_CHECK",
+                                            symbol=normalized_symbol,
+                                            strategy_key=strategy_key,
+                                            decision="BUY",
+                                            last_price=current_price,
+                                            timestamp=now_utc.isoformat(),
+                                            correlation_id=evaluation_id,
+                                            signal_id=str(signal_id) if signal_id is not None else None,
+                                            reason="OK",
+                                        )
+                                        self._log_pipeline_stage(
+                                            stage="BUY_ORDER_SUBMITTED",
+                                            symbol=normalized_symbol,
+                                            strategy_key=strategy_key,
+                                            decision="BUY",
+                                            last_price=current_price,
+                                            timestamp=now_utc.isoformat(),
+                                            correlation_id=evaluation_id,
+                                            signal_id=str(signal_id) if signal_id is not None else None,
+                                        )
                                         
-                                        if "error" in order_result:
-                                            # Order creation failed - strict failure reporting (Step 4)
-                                            error_msg = order_result.get("message") or order_result.get("error", "Unknown error")
-                                            logger.error(f"[ORCHESTRATOR] {symbol} BUY Order creation failed: {error_msg}")
+                                        # Call order placement (guardrails already verified above)
+                                        # Note: Running async function from sync context using new event loop
+                                        try:
+                                            loop = asyncio.new_event_loop()
+                                            asyncio.set_event_loop(loop)
+                                            try:
+                                                order_result = loop.run_until_complete(
+                                                    self._place_order_from_signal(
+                                                        db=db,
+                                                        symbol=normalized_symbol,
+                                                        side="BUY",
+                                                        watchlist_item=watchlist_item,
+                                                        current_price=current_price,
+                                                        source="orchestrator",
+                                                        correlation_id=evaluation_id,
+                                                        rsi=rsi,
+                                                        ma200=ma200,
+                                                    )
+                                                )
+                                            finally:
+                                                loop.close()
+                                        
+                                            if "error" in order_result:
+                                                # Order creation failed - strict failure reporting (Step 4)
+                                                error_msg = order_result.get("message") or order_result.get("error", "Unknown error")
+                                                logger.error(f"[ORCHESTRATOR] {symbol} BUY Order creation failed: {error_msg}")
+                                                self._upsert_watchlist_signal_state(
+                                                    db,
+                                                    symbol=normalized_symbol,
+                                                    trade_status="BLOCKED",
+                                                    trade_block_reason="EXCHANGE_ERROR",
+                                                    last_trade_at_utc=now_utc,
+                                                    correlation_id=evaluation_id,
+                                                )
+                                                self._log_pipeline_stage(
+                                                    stage="BUY_ORDER_RESPONSE",
+                                                    symbol=normalized_symbol,
+                                                    strategy_key=strategy_key,
+                                                    decision="BUY",
+                                                    last_price=current_price,
+                                                    timestamp=now_utc.isoformat(),
+                                                    correlation_id=evaluation_id,
+                                                    signal_id=str(signal_id) if signal_id is not None else None,
+                                                    reason=f"FAILED:{error_msg}",
+                                                )
+                                                update_order_intent_status(
+                                                    db=db,
+                                                    order_intent_id=order_intent.id,
+                                                    status="ORDER_FAILED",
+                                                    error_message=error_msg,
+                                                )
+                                            
+                                                # Classify error for strict reporting (Step 4)
+                                                from app.utils.decision_reason import classify_exchange_error
+                                                reason_code = classify_exchange_error(error_msg)
+                                            
+                                                decision_reason = make_fail(
+                                                    reason_code=reason_code,
+                                                    message=f"Order creation failed for {symbol} BUY: {error_msg}",
+                                                    context={
+                                                        "symbol": symbol,
+                                                        "error": error_msg,
+                                                        "error_type": order_result.get("error_type", "exchange_rejected"),
+                                                    },
+                                                    source="orchestrator",
+                                                    exchange_error=error_msg,
+                                                )
+                                                update_telegram_message_decision_trace(
+                                                    db=db,
+                                                    symbol=symbol,
+                                                    message_pattern="BUY SIGNAL",
+                                                    decision_type="FAILED",
+                                                    reason_code=decision_reason.reason_code,
+                                                    reason_message=decision_reason.reason_message,
+                                                    context_json=decision_reason.context,
+                                                    exchange_error_snippet=decision_reason.exchange_error,
+                                                    correlation_id=str(uuid_module.uuid4()),
+                                                )
+                                            
+                                                # Send Telegram failure message (required - Step 4)
+                                                try:
+                                                    if self._telegram_send_enabled():
+                                                        telegram_notifier.send_message(
+                                                            f"❌ <b>ORDER FAILED</b>\n\n"
+                                                            f"📊 Symbol: <b>{symbol}</b>\n"
+                                                            f"🔄 Side: BUY\n"
+                                                            f"❌ Error: {error_msg}\n"
+                                                            f"📋 Reason Code: {reason_code}\n\n"
+                                                            f"<i>Signal was sent but order creation failed.</i>"
+                                                        )
+                                                    else:
+                                                        logger.debug("Telegram notifier is disabled - skipping failure message")
+                                                except Exception as telegram_err:
+                                                    logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
+                                                try:
+                                                    from app.api.routes_monitoring import add_telegram_message
+                                                    add_telegram_message(
+                                                        f"❌ ORDER FAILED | {symbol} BUY | {error_msg} | reason_code={reason_code}",
+                                                        symbol=symbol,
+                                                        blocked=False,
+                                                        decision_type="FAILED",
+                                                        reason_code=reason_code,
+                                                        reason_message=error_msg,
+                                                        db=db,
+                                                    )
+                                                except Exception as store_err:
+                                                    logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
+                                                try:
+                                                    from app.services.notion_tasks import create_bug_task
+                                                    create_bug_task(
+                                                        title="Order placement system failure",
+                                                        project="Crypto Trading",
+                                                        details=f"symbol={symbol} side=BUY error={error_msg[:300]}.",
+                                                    )
+                                                    logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY)")
+                                                except Exception as notion_err:
+                                                    logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
+                                            else:
+                                                # Order created successfully
+                                                order_id = order_result.get("order_id")
+                                                exchange_order_id = order_result.get("exchange_order_id")
+                                                self._upsert_watchlist_signal_state(
+                                                    db,
+                                                    symbol=normalized_symbol,
+                                                    trade_status="SUBMITTED",
+                                                    trade_block_reason=None,
+                                                    last_trade_at_utc=now_utc,
+                                                    correlation_id=evaluation_id,
+                                                )
+                                                logger.info(f"[ORCHESTRATOR] {symbol} BUY Order created successfully: order_id={order_id}, exchange_order_id={exchange_order_id}")
+                                                self._log_pipeline_stage(
+                                                    stage="BUY_ORDER_RESPONSE",
+                                                    symbol=normalized_symbol,
+                                                    strategy_key=strategy_key,
+                                                    decision="BUY",
+                                                    last_price=current_price,
+                                                    timestamp=now_utc.isoformat(),
+                                                    correlation_id=evaluation_id,
+                                                    signal_id=str(signal_id) if signal_id is not None else None,
+                                                    reason="SUCCESS",
+                                                )
+                                                update_order_intent_status(
+                                                    db=db,
+                                                    order_intent_id=order_intent.id,
+                                                    status="ORDER_PLACED",
+                                                    order_id=exchange_order_id or order_id,
+                                                )
+                                                decision_reason = make_execute(
+                                                    reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
+                                                    message=f"Order created successfully for {symbol}. order_id={exchange_order_id or order_id}",
+                                                    context={
+                                                        "symbol": symbol,
+                                                        "order_id": order_id,
+                                                        "exchange_order_id": exchange_order_id,
+                                                    },
+                                                    source="orchestrator",
+                                                )
+                                                update_telegram_message_decision_trace(
+                                                    db=db,
+                                                    symbol=symbol,
+                                                    message_pattern="BUY SIGNAL",
+                                                    decision_type="EXECUTED",
+                                                    reason_code=decision_reason.reason_code,
+                                                    reason_message=decision_reason.reason_message,
+                                                    context_json=decision_reason.context,
+                                                    correlation_id=str(uuid_module.uuid4()),
+                                                )
+                                        except Exception as order_err:
+                                            # Order creation exception - strict failure reporting (Step 4)
+                                            error_msg = str(order_err)[:500]
+                                            logger.error(f"[ORCHESTRATOR] {symbol} BUY Order creation exception: {order_err}", exc_info=True)
                                             self._upsert_watchlist_signal_state(
                                                 db,
                                                 symbol=normalized_symbol,
@@ -4160,18 +4486,18 @@ class SignalMonitorService:
                                                 status="ORDER_FAILED",
                                                 error_message=error_msg,
                                             )
-                                            
+                                        
                                             # Classify error for strict reporting (Step 4)
                                             from app.utils.decision_reason import classify_exchange_error
                                             reason_code = classify_exchange_error(error_msg)
-                                            
+                                        
                                             decision_reason = make_fail(
                                                 reason_code=reason_code,
                                                 message=f"Order creation failed for {symbol} BUY: {error_msg}",
                                                 context={
                                                     "symbol": symbol,
                                                     "error": error_msg,
-                                                    "error_type": order_result.get("error_type", "exchange_rejected"),
+                                                    "error_type": "exception",
                                                 },
                                                 source="orchestrator",
                                                 exchange_error=error_msg,
@@ -4187,7 +4513,7 @@ class SignalMonitorService:
                                                 exchange_error_snippet=decision_reason.exchange_error,
                                                 correlation_id=str(uuid_module.uuid4()),
                                             )
-                                            
+                                        
                                             # Send Telegram failure message (required - Step 4)
                                             try:
                                                 if self._telegram_send_enabled():
@@ -4221,156 +4547,11 @@ class SignalMonitorService:
                                                 create_bug_task(
                                                     title="Order placement system failure",
                                                     project="Crypto Trading",
-                                                    details=f"symbol={symbol} side=BUY error={error_msg[:300]}.",
+                                                    details=f"symbol={symbol} side=BUY exception: {error_msg[:300]}.",
                                                 )
-                                                logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY)")
+                                                logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY exception)")
                                             except Exception as notion_err:
                                                 logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
-                                        else:
-                                            # Order created successfully
-                                            order_id = order_result.get("order_id")
-                                            exchange_order_id = order_result.get("exchange_order_id")
-                                            self._upsert_watchlist_signal_state(
-                                                db,
-                                                symbol=normalized_symbol,
-                                                trade_status="SUBMITTED",
-                                                trade_block_reason=None,
-                                                last_trade_at_utc=now_utc,
-                                                correlation_id=evaluation_id,
-                                            )
-                                            logger.info(f"[ORCHESTRATOR] {symbol} BUY Order created successfully: order_id={order_id}, exchange_order_id={exchange_order_id}")
-                                            self._log_pipeline_stage(
-                                                stage="BUY_ORDER_RESPONSE",
-                                                symbol=normalized_symbol,
-                                                strategy_key=strategy_key,
-                                                decision="BUY",
-                                                last_price=current_price,
-                                                timestamp=now_utc.isoformat(),
-                                                correlation_id=evaluation_id,
-                                                signal_id=str(signal_id) if signal_id is not None else None,
-                                                reason="SUCCESS",
-                                            )
-                                            update_order_intent_status(
-                                                db=db,
-                                                order_intent_id=order_intent.id,
-                                                status="ORDER_PLACED",
-                                                order_id=exchange_order_id or order_id,
-                                            )
-                                            decision_reason = make_execute(
-                                                reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
-                                                message=f"Order created successfully for {symbol}. order_id={exchange_order_id or order_id}",
-                                                context={
-                                                    "symbol": symbol,
-                                                    "order_id": order_id,
-                                                    "exchange_order_id": exchange_order_id,
-                                                },
-                                                source="orchestrator",
-                                            )
-                                            update_telegram_message_decision_trace(
-                                                db=db,
-                                                symbol=symbol,
-                                                message_pattern="BUY SIGNAL",
-                                                decision_type="EXECUTED",
-                                                reason_code=decision_reason.reason_code,
-                                                reason_message=decision_reason.reason_message,
-                                                context_json=decision_reason.context,
-                                                correlation_id=str(uuid_module.uuid4()),
-                                            )
-                                    except Exception as order_err:
-                                        # Order creation exception - strict failure reporting (Step 4)
-                                        error_msg = str(order_err)[:500]
-                                        logger.error(f"[ORCHESTRATOR] {symbol} BUY Order creation exception: {order_err}", exc_info=True)
-                                        self._upsert_watchlist_signal_state(
-                                            db,
-                                            symbol=normalized_symbol,
-                                            trade_status="BLOCKED",
-                                            trade_block_reason="EXCHANGE_ERROR",
-                                            last_trade_at_utc=now_utc,
-                                            correlation_id=evaluation_id,
-                                        )
-                                        self._log_pipeline_stage(
-                                            stage="BUY_ORDER_RESPONSE",
-                                            symbol=normalized_symbol,
-                                            strategy_key=strategy_key,
-                                            decision="BUY",
-                                            last_price=current_price,
-                                            timestamp=now_utc.isoformat(),
-                                            correlation_id=evaluation_id,
-                                            signal_id=str(signal_id) if signal_id is not None else None,
-                                            reason=f"FAILED:{error_msg}",
-                                        )
-                                        update_order_intent_status(
-                                            db=db,
-                                            order_intent_id=order_intent.id,
-                                            status="ORDER_FAILED",
-                                            error_message=error_msg,
-                                        )
-                                        
-                                        # Classify error for strict reporting (Step 4)
-                                        from app.utils.decision_reason import classify_exchange_error
-                                        reason_code = classify_exchange_error(error_msg)
-                                        
-                                        decision_reason = make_fail(
-                                            reason_code=reason_code,
-                                            message=f"Order creation failed for {symbol} BUY: {error_msg}",
-                                            context={
-                                                "symbol": symbol,
-                                                "error": error_msg,
-                                                "error_type": "exception",
-                                            },
-                                            source="orchestrator",
-                                            exchange_error=error_msg,
-                                        )
-                                        update_telegram_message_decision_trace(
-                                            db=db,
-                                            symbol=symbol,
-                                            message_pattern="BUY SIGNAL",
-                                            decision_type="FAILED",
-                                            reason_code=decision_reason.reason_code,
-                                            reason_message=decision_reason.reason_message,
-                                            context_json=decision_reason.context,
-                                            exchange_error_snippet=decision_reason.exchange_error,
-                                            correlation_id=str(uuid_module.uuid4()),
-                                        )
-                                        
-                                        # Send Telegram failure message (required - Step 4)
-                                        try:
-                                            if self._telegram_send_enabled():
-                                                telegram_notifier.send_message(
-                                                    f"❌ <b>ORDER FAILED</b>\n\n"
-                                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                                    f"🔄 Side: BUY\n"
-                                                    f"❌ Error: {error_msg}\n"
-                                                    f"📋 Reason Code: {reason_code}\n\n"
-                                                    f"<i>Signal was sent but order creation failed.</i>"
-                                                )
-                                            else:
-                                                logger.debug("Telegram notifier is disabled - skipping failure message")
-                                        except Exception as telegram_err:
-                                            logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
-                                        try:
-                                            from app.api.routes_monitoring import add_telegram_message
-                                            add_telegram_message(
-                                                f"❌ ORDER FAILED | {symbol} BUY | {error_msg} | reason_code={reason_code}",
-                                                symbol=symbol,
-                                                blocked=False,
-                                                decision_type="FAILED",
-                                                reason_code=reason_code,
-                                                reason_message=error_msg,
-                                                db=db,
-                                            )
-                                        except Exception as store_err:
-                                            logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
-                                        try:
-                                            from app.services.notion_tasks import create_bug_task
-                                            create_bug_task(
-                                                title="Order placement system failure",
-                                                project="Crypto Trading",
-                                                details=f"symbol={symbol} side=BUY exception: {error_msg[:300]}.",
-                                            )
-                                            logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY exception)")
-                                        except Exception as notion_err:
-                                            logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
                             except Exception as orchestrator_err:
                                 # Orchestrator error - log but don't fail the signal
                                 logger.error(f"[ORCHESTRATOR] {symbol} BUY Orchestrator error: {orchestrator_err}", exc_info=True)
@@ -5946,12 +6127,16 @@ class SignalMonitorService:
                         ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
                         ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
                         ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
-                        reason_text = (
-                            f"{strategy_display}/{risk_display} | "
-                            f"RSI={rsi:.1f}, Price={current_price:.4f}, "
-                            f"MA50={ma50_text}, "
-                            f"EMA10={ema10_text}, "
-                            f"MA200={ma200_text}"
+                        reason_text = self._build_strategy_alert_reason(
+                            signals,
+                            "SELL",
+                            strategy_display,
+                            risk_display,
+                            rsi=rsi,
+                            current_price=current_price,
+                            ma50=ma50,
+                            ema10=ema10,
+                            ma200=ma200,
                         )
                         # NOTE: Only send telegram if should_emit_telegram_sell is True
                         # If throttled, event was already recorded as BLOCKED above
@@ -6196,41 +6381,176 @@ class SignalMonitorService:
                                         correlation_id=str(uuid_module.uuid4()),
                                     )
                                 elif intent_status == "PENDING" and order_intent:
-                                    # Order intent created - attempt order placement (bypassing eligibility checks)
-                                    logger.info(f"[ORCHESTRATOR] {symbol} SELL Order intent created (id={order_intent.id}) - Attempting order placement")
-                                    self._upsert_watchlist_signal_state(
-                                        db,
-                                        symbol=normalized_symbol,
-                                        trade_status="SUBMITTED",
-                                        trade_block_reason=None,
-                                        last_trade_at_utc=now_utc,
-                                        correlation_id=evaluation_id,
+                                    allowed, block_reason = self._orchestrator_order_guard(
+                                        db, normalize_symbol_for_exchange(symbol), "SELL", watchlist_item
                                     )
+                                    if not allowed:
+                                        self._block_orchestrator_order(
+                                            db,
+                                            symbol=symbol,
+                                            normalized_symbol=normalized_symbol,
+                                            side="SELL",
+                                            order_intent=order_intent,
+                                            block_reason=block_reason or "blocked by guardrails",
+                                            signal_id=signal_id,
+                                            strategy_key=strategy_key,
+                                            current_price=current_price,
+                                            evaluation_id=evaluation_id,
+                                            now_utc=now_utc,
+                                        )
+                                    else:
+                                        logger.info(f"[ORCHESTRATOR] {symbol} SELL Order intent created (id={order_intent.id}) - Attempting order placement")
+                                        self._upsert_watchlist_signal_state(
+                                            db,
+                                            symbol=normalized_symbol,
+                                            trade_status="SUBMITTED",
+                                            trade_block_reason=None,
+                                            last_trade_at_utc=now_utc,
+                                            correlation_id=evaluation_id,
+                                        )
                                 
-                                    # Call minimal order placement function (NO eligibility checks)
-                                    # Note: Running async function from sync context using new event loop
-                                    try:
-                                        loop = asyncio.new_event_loop()
-                                        asyncio.set_event_loop(loop)
+                                        # Call order placement (guardrails already verified above)
+                                        # Note: Running async function from sync context using new event loop
                                         try:
-                                            order_result = loop.run_until_complete(
-                                                self._place_order_from_signal(
-                                                    db=db,
-                                                    symbol=symbol,
-                                                    side="SELL",
-                                                    watchlist_item=watchlist_item,
-                                                    current_price=current_price,
-                                                    source="orchestrator",
+                                            loop = asyncio.new_event_loop()
+                                            asyncio.set_event_loop(loop)
+                                            try:
+                                                order_result = loop.run_until_complete(
+                                                    self._place_order_from_signal(
+                                                        db=db,
+                                                        symbol=symbol,
+                                                        side="SELL",
+                                                        watchlist_item=watchlist_item,
+                                                        current_price=current_price,
+                                                        source="orchestrator",
+                                                        correlation_id=evaluation_id,
+                                                    )
+                                                )
+                                            finally:
+                                                loop.close()
+                                        
+                                            if "error" in order_result:
+                                                # Order creation failed
+                                                error_msg = order_result.get("message") or order_result.get("error", "Unknown error")
+                                                logger.error(f"[ORCHESTRATOR] {symbol} SELL Order creation failed: {error_msg}")
+                                                self._upsert_watchlist_signal_state(
+                                                    db,
+                                                    symbol=normalized_symbol,
+                                                    trade_status="BLOCKED",
+                                                    trade_block_reason="EXCHANGE_ERROR",
+                                                    last_trade_at_utc=now_utc,
                                                     correlation_id=evaluation_id,
                                                 )
-                                            )
-                                        finally:
-                                            loop.close()
-                                        
-                                        if "error" in order_result:
-                                            # Order creation failed
-                                            error_msg = order_result.get("message") or order_result.get("error", "Unknown error")
-                                            logger.error(f"[ORCHESTRATOR] {symbol} SELL Order creation failed: {error_msg}")
+                                                update_order_intent_status(
+                                                    db=db,
+                                                    order_intent_id=order_intent.id,
+                                                    status="ORDER_FAILED",
+                                                    error_message=error_msg,
+                                                )
+                                            
+                                                # Classify error for strict reporting
+                                                from app.utils.decision_reason import classify_exchange_error
+                                                reason_code = classify_exchange_error(error_msg)
+                                            
+                                                decision_reason = make_fail(
+                                                    reason_code=reason_code,
+                                                    message=f"Order creation failed for {symbol} SELL: {error_msg}",
+                                                    context={"symbol": symbol, "error": error_msg},
+                                                    source="orchestrator",
+                                                    exchange_error=error_msg,
+                                                )
+                                                update_telegram_message_decision_trace(
+                                                    db=db,
+                                                    symbol=symbol,
+                                                    message_pattern="SELL SIGNAL",
+                                                    decision_type="FAILED",
+                                                    reason_code=decision_reason.reason_code,
+                                                    reason_message=decision_reason.reason_message,
+                                                    context_json=decision_reason.context,
+                                                    exchange_error_snippet=decision_reason.exchange_error,
+                                                    correlation_id=str(uuid_module.uuid4()),
+                                                )
+                                            
+                                                # Send Telegram failure message (required)
+                                                try:
+                                                    if self._telegram_send_enabled():
+                                                        telegram_notifier.send_message(
+                                                            f"❌ <b>ORDER FAILED</b>\n\n"
+                                                            f"📊 Symbol: <b>{symbol}</b>\n"
+                                                            f"🔄 Side: SELL\n"
+                                                            f"❌ Error: {error_msg}\n\n"
+                                                            f"<i>Signal was sent but order creation failed.</i>"
+                                                        )
+                                                    else:
+                                                        logger.debug("Telegram notifier is disabled - skipping failure message")
+                                                except Exception as telegram_err:
+                                                    logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
+                                                try:
+                                                    from app.api.routes_monitoring import add_telegram_message
+                                                    add_telegram_message(
+                                                        f"❌ ORDER FAILED | {symbol} SELL | {error_msg}",
+                                                        symbol=symbol,
+                                                        blocked=False,
+                                                        decision_type="FAILED",
+                                                        reason_code=reason_code,
+                                                        reason_message=error_msg,
+                                                        db=db,
+                                                    )
+                                                except Exception as store_err:
+                                                    logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
+                                                try:
+                                                    from app.services.notion_tasks import create_bug_task
+                                                    create_bug_task(
+                                                        title="Order placement system failure",
+                                                        project="Crypto Trading",
+                                                        details=f"symbol={symbol} side=SELL error={error_msg[:300]}.",
+                                                    )
+                                                    logger.info("Trading failure triggered Notion bug task: Order placement system failure (SELL)")
+                                                except Exception as notion_err:
+                                                    logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
+                                            else:
+                                                # Order created successfully
+                                                order_id = order_result.get("order_id")
+                                                exchange_order_id = order_result.get("exchange_order_id")
+                                                self._upsert_watchlist_signal_state(
+                                                    db,
+                                                    symbol=normalized_symbol,
+                                                    trade_status="SUBMITTED",
+                                                    trade_block_reason=None,
+                                                    last_trade_at_utc=now_utc,
+                                                    correlation_id=evaluation_id,
+                                                )
+                                                logger.info(f"[ORCHESTRATOR] {symbol} SELL Order created successfully: order_id={order_id}, exchange_order_id={exchange_order_id}")
+                                                update_order_intent_status(
+                                                    db=db,
+                                                    order_intent_id=order_intent.id,
+                                                    status="ORDER_PLACED",
+                                                    order_id=exchange_order_id or order_id,
+                                                )
+                                                decision_reason = make_execute(
+                                                    reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
+                                                    message=f"Order created successfully for {symbol}. order_id={exchange_order_id or order_id}",
+                                                    context={
+                                                        "symbol": symbol,
+                                                        "order_id": order_id,
+                                                        "exchange_order_id": exchange_order_id,
+                                                    },
+                                                    source="orchestrator",
+                                                )
+                                                update_telegram_message_decision_trace(
+                                                    db=db,
+                                                    symbol=symbol,
+                                                    message_pattern="SELL SIGNAL",
+                                                    decision_type="EXECUTED",
+                                                    reason_code=decision_reason.reason_code,
+                                                    reason_message=decision_reason.reason_message,
+                                                    context_json=decision_reason.context,
+                                                    correlation_id=str(uuid_module.uuid4()),
+                                                )
+                                        except Exception as order_err:
+                                            # Order creation exception
+                                            error_msg = str(order_err)[:500]
+                                            logger.error(f"[ORCHESTRATOR] {symbol} SELL Order creation exception: {order_err}", exc_info=True)
                                             self._upsert_watchlist_signal_state(
                                                 db,
                                                 symbol=normalized_symbol,
@@ -6245,11 +6565,11 @@ class SignalMonitorService:
                                                 status="ORDER_FAILED",
                                                 error_message=error_msg,
                                             )
-                                            
+                                        
                                             # Classify error for strict reporting
                                             from app.utils.decision_reason import classify_exchange_error
                                             reason_code = classify_exchange_error(error_msg)
-                                            
+                                        
                                             decision_reason = make_fail(
                                                 reason_code=reason_code,
                                                 message=f"Order creation failed for {symbol} SELL: {error_msg}",
@@ -6268,7 +6588,7 @@ class SignalMonitorService:
                                                 exchange_error_snippet=decision_reason.exchange_error,
                                                 correlation_id=str(uuid_module.uuid4()),
                                             )
-                                            
+                                        
                                             # Send Telegram failure message (required)
                                             try:
                                                 if self._telegram_send_enabled():
@@ -6296,124 +6616,6 @@ class SignalMonitorService:
                                                 )
                                             except Exception as store_err:
                                                 logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
-                                            try:
-                                                from app.services.notion_tasks import create_bug_task
-                                                create_bug_task(
-                                                    title="Order placement system failure",
-                                                    project="Crypto Trading",
-                                                    details=f"symbol={symbol} side=SELL error={error_msg[:300]}.",
-                                                )
-                                                logger.info("Trading failure triggered Notion bug task: Order placement system failure (SELL)")
-                                            except Exception as notion_err:
-                                                logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
-                                        else:
-                                            # Order created successfully
-                                            order_id = order_result.get("order_id")
-                                            exchange_order_id = order_result.get("exchange_order_id")
-                                            self._upsert_watchlist_signal_state(
-                                                db,
-                                                symbol=normalized_symbol,
-                                                trade_status="SUBMITTED",
-                                                trade_block_reason=None,
-                                                last_trade_at_utc=now_utc,
-                                                correlation_id=evaluation_id,
-                                            )
-                                            logger.info(f"[ORCHESTRATOR] {symbol} SELL Order created successfully: order_id={order_id}, exchange_order_id={exchange_order_id}")
-                                            update_order_intent_status(
-                                                db=db,
-                                                order_intent_id=order_intent.id,
-                                                status="ORDER_PLACED",
-                                                order_id=exchange_order_id or order_id,
-                                            )
-                                            decision_reason = make_execute(
-                                                reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
-                                                message=f"Order created successfully for {symbol}. order_id={exchange_order_id or order_id}",
-                                                context={
-                                                    "symbol": symbol,
-                                                    "order_id": order_id,
-                                                    "exchange_order_id": exchange_order_id,
-                                                },
-                                                source="orchestrator",
-                                            )
-                                            update_telegram_message_decision_trace(
-                                                db=db,
-                                                symbol=symbol,
-                                                message_pattern="SELL SIGNAL",
-                                                decision_type="EXECUTED",
-                                                reason_code=decision_reason.reason_code,
-                                                reason_message=decision_reason.reason_message,
-                                                context_json=decision_reason.context,
-                                                correlation_id=str(uuid_module.uuid4()),
-                                            )
-                                    except Exception as order_err:
-                                        # Order creation exception
-                                        error_msg = str(order_err)[:500]
-                                        logger.error(f"[ORCHESTRATOR] {symbol} SELL Order creation exception: {order_err}", exc_info=True)
-                                        self._upsert_watchlist_signal_state(
-                                            db,
-                                            symbol=normalized_symbol,
-                                            trade_status="BLOCKED",
-                                            trade_block_reason="EXCHANGE_ERROR",
-                                            last_trade_at_utc=now_utc,
-                                            correlation_id=evaluation_id,
-                                        )
-                                        update_order_intent_status(
-                                            db=db,
-                                            order_intent_id=order_intent.id,
-                                            status="ORDER_FAILED",
-                                            error_message=error_msg,
-                                        )
-                                        
-                                        # Classify error for strict reporting
-                                        from app.utils.decision_reason import classify_exchange_error
-                                        reason_code = classify_exchange_error(error_msg)
-                                        
-                                        decision_reason = make_fail(
-                                            reason_code=reason_code,
-                                            message=f"Order creation failed for {symbol} SELL: {error_msg}",
-                                            context={"symbol": symbol, "error": error_msg},
-                                            source="orchestrator",
-                                            exchange_error=error_msg,
-                                        )
-                                        update_telegram_message_decision_trace(
-                                            db=db,
-                                            symbol=symbol,
-                                            message_pattern="SELL SIGNAL",
-                                            decision_type="FAILED",
-                                            reason_code=decision_reason.reason_code,
-                                            reason_message=decision_reason.reason_message,
-                                            context_json=decision_reason.context,
-                                            exchange_error_snippet=decision_reason.exchange_error,
-                                            correlation_id=str(uuid_module.uuid4()),
-                                        )
-                                        
-                                        # Send Telegram failure message (required)
-                                        try:
-                                            if self._telegram_send_enabled():
-                                                telegram_notifier.send_message(
-                                                    f"❌ <b>ORDER FAILED</b>\n\n"
-                                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                                    f"🔄 Side: SELL\n"
-                                                    f"❌ Error: {error_msg}\n\n"
-                                                    f"<i>Signal was sent but order creation failed.</i>"
-                                                )
-                                            else:
-                                                logger.debug("Telegram notifier is disabled - skipping failure message")
-                                        except Exception as telegram_err:
-                                            logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
-                                        try:
-                                            from app.api.routes_monitoring import add_telegram_message
-                                            add_telegram_message(
-                                                f"❌ ORDER FAILED | {symbol} SELL | {error_msg}",
-                                                symbol=symbol,
-                                                blocked=False,
-                                                decision_type="FAILED",
-                                                reason_code=reason_code,
-                                                reason_message=error_msg,
-                                                db=db,
-                                            )
-                                        except Exception as store_err:
-                                            logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                             except Exception as orchestrator_err:
                                 # Orchestrator error - log but don't fail the signal
                                 logger.error(f"[ORCHESTRATOR] {symbol} SELL Orchestrator error: {orchestrator_err}", exc_info=True)
