@@ -64,6 +64,9 @@ export type OpenOrder = {
   instrument_name: string;
   side: string;
   order_type: string;
+  execution_origin?: string;
+  execution_origin_label?: string;
+  type_display?: string;
   quantity: string;
   price: string;
   status: string;
