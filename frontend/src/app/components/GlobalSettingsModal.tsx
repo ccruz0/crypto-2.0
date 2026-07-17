@@ -172,7 +172,7 @@ export default function GlobalSettingsModal({
                     id="settings-max-usd-per-order"
                     type="number"
                     min="0.01"
-                    step="1"
+                    step="0.01"
                     value={limitsData.maxUsdPerOrder}
                     onChange={(e) =>
                       handleLimitsChange('maxUsdPerOrder', e.target.value, 0.01)
