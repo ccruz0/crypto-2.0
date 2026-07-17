@@ -9,6 +9,22 @@ if [ "$(id -u)" = "0" ]; then
   mkdir -p /app/docs/agents/generated-notes
   chown -R appuser:appuser /app/docs/agents/generated-notes 2>/dev/null || true
   chmod 775 /app/docs/agents/generated-notes 2>/dev/null || true
+
+  # Persist trading_config on the compose volume (TRADING_CONFIG_PATH=/data/...).
+  # Docker named volumes are often root-owned; appuser must read/write the file.
+  if [ -n "${TRADING_CONFIG_PATH:-}" ]; then
+    _tc_dir=$(dirname "$TRADING_CONFIG_PATH")
+    mkdir -p "$_tc_dir" 2>/dev/null || true
+    # Seed volume from baked image config when missing (keeps coin presets across recreates).
+    if [ ! -f "$TRADING_CONFIG_PATH" ] && [ -f /app/trading_config.json ]; then
+      cp -a /app/trading_config.json "$TRADING_CONFIG_PATH" 2>/dev/null || true
+    fi
+    chown -R appuser:appuser "$_tc_dir" 2>/dev/null || true
+    if [ -f "$TRADING_CONFIG_PATH" ]; then
+      chown appuser:appuser "$TRADING_CONFIG_PATH" 2>/dev/null || true
+      chmod 664 "$TRADING_CONFIG_PATH" 2>/dev/null || true
+    fi
+  fi
 fi
 
 if [ -f /app/secrets/runtime.env ]; then
