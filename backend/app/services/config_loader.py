@@ -13,8 +13,9 @@ from typing import Dict, Any, Optional, Tuple
 # Without (1), dashboard strategy edits write to the image layer (/app/...) and are
 # wiped on every backend recreate — strategies appear to "change by themselves".
 _app_root = Path(__file__).parent.parent.parent  # backend/app/services -> backend/
+_APP_FALLBACK_PATH = Path("/app/trading_config.json")
 _SEED_CANDIDATES = [
-    Path("/app/trading_config.json"),  # Baked image copy
+    _APP_FALLBACK_PATH,  # Baked image copy
     _app_root / "trading_config.json",  # Local / repo copy
     Path("trading_config.json"),
 ]
@@ -29,15 +30,32 @@ def _resolve_config_path() -> Path:
         if path.exists():
             return path
     if Path("/app").exists():
-        return Path("/app/trading_config.json")
+        return _APP_FALLBACK_PATH
     return _app_root / "trading_config.json"
+
+
+def _path_or_ancestor_writable(path: Path) -> bool:
+    """True if path exists and is writable, or an ancestor is writable (can mkdir)."""
+    current = path
+    while True:
+        try:
+            if current.exists():
+                return os.access(current, os.W_OK)
+        except OSError:
+            return False
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
 
 
 def get_config_path() -> Path:
     """Return the active trading config path (honors TRADING_CONFIG_PATH).
 
-    If TRADING_CONFIG_PATH is set but not writable (e.g. root-owned volume before
-    entrypoint chown), fall back to /app/trading_config.json so the API stays up.
+    Prefer the volume path whenever it is readable (live persisted config) or
+    can still be created under a writable ancestor. Fall back to
+    /app/trading_config.json only when the volume path is unreadable and not
+    creatable (e.g. root-owned /data before entrypoint chown).
     """
     path = _resolve_config_path()
     env_path = (os.environ.get("TRADING_CONFIG_PATH") or "").strip()
@@ -45,20 +63,18 @@ def get_config_path() -> Path:
         return path
     try:
         if path.exists():
-            # Probe write access without truncating content.
-            with open(path, "a", encoding="utf-8"):
+            # Prefer volume when readable so we do not silently serve stale /app.
+            with open(path, "r", encoding="utf-8"):
                 pass
             return path
-        # Parent must be creatable/writable for first save/seed.
-        parent = path.parent
-        if parent.exists() and os.access(parent, os.W_OK):
+        if _path_or_ancestor_writable(path.parent):
             return path
     except OSError:
         pass
-    fallback = Path("/app/trading_config.json")
+    fallback = _APP_FALLBACK_PATH
     if fallback.exists() or Path("/app").exists():
         logging.getLogger(__name__).warning(
-            "TRADING_CONFIG_PATH=%s is not writable; falling back to %s",
+            "TRADING_CONFIG_PATH=%s is not readable/creatable; falling back to %s",
             path,
             fallback,
         )

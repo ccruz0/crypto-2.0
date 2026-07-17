@@ -107,36 +107,39 @@ def test_strategy_change_survives_reload(config_loader_mod, monkeypatch):
     assert again["coins"]["DOT_USD"]["preset"] == "swing-aggressive"
 
 
-def test_get_config_path_falls_back_when_volume_not_writable(monkeypatch, tmp_path):
-    """Root-owned /data must not take down strategy resolution."""
+def test_get_config_path_keeps_readable_volume_even_if_not_writable(config_loader_mod):
+    """Readable volume config must win over /app (avoid stale baked presets)."""
+    cl, volume_cfg, _ = config_loader_mod
+    volume_cfg.parent.mkdir(parents=True, exist_ok=True)
+    volume_cfg.write_text('{"version":1,"coins":{"ETH_USD":{"preset":"scalp-aggressive"}}}')
+    volume_cfg.chmod(0o444)
+    try:
+        assert cl.get_config_path() == volume_cfg
+        assert cl.load_config()["coins"]["ETH_USD"]["preset"] == "scalp-aggressive"
+    finally:
+        volume_cfg.chmod(0o644)
+
+
+def test_get_config_path_falls_back_when_volume_unreadable(monkeypatch, tmp_path):
+    """Unreadable /data must not take down Global Settings / strategy APIs."""
     volume_cfg = tmp_path / "data" / "trading_config.json"
     volume_cfg.parent.mkdir(parents=True)
     volume_cfg.write_text('{"version":1,"coins":{}}')
-    volume_cfg.chmod(0o444)
-    volume_cfg.parent.chmod(0o555)
 
-    baked = tmp_path / "app" / "trading_config.json"
+    baked = tmp_path / "baked" / "trading_config.json"
     baked.parent.mkdir(parents=True)
-    baked.write_text('{"version":1,"coins":{"BTC_USD":{"preset":"swing-conservative"}}}')
+    baked.write_text(
+        '{"version":1,"coins":{"BTC_USD":{"preset":"swing-conservative"}}}'
+    )
 
     monkeypatch.setenv("TRADING_CONFIG_PATH", str(volume_cfg))
+    # Load while path is still usable, then lock the volume directory.
     mod = _load_config_loader(monkeypatch, volume_cfg)
-    # Point fallback at our temp baked file by patching Path("/app/...") via chdir-less override:
-    # get_config_path checks Path("/app/trading_config.json"); monkeypatch the method path check.
-    real_get = mod.get_config_path
-
-    def _get_with_temp_fallback():
-        path = mod._resolve_config_path()
-        try:
-            with open(path, "a", encoding="utf-8"):
-                pass
-            return path
-        except OSError:
-            return baked
-
-    monkeypatch.setattr(mod, "get_config_path", _get_with_temp_fallback)
-    assert mod.get_config_path() == baked
-    # restore chmod so tmp cleanup works
-    volume_cfg.parent.chmod(0o755)
-    volume_cfg.chmod(0o644)
-    assert real_get  # keep fixture import side-effect quiet
+    monkeypatch.setattr(mod, "_APP_FALLBACK_PATH", baked)
+    volume_cfg.chmod(0o000)
+    volume_cfg.parent.chmod(0o000)
+    try:
+        assert mod.get_config_path() == baked
+    finally:
+        volume_cfg.parent.chmod(0o755)
+        volume_cfg.chmod(0o644)
