@@ -983,6 +983,10 @@ function DashboardPageContent() {
   /** Positions counted toward MAX_OPEN_ORDERS_TOTAL (trade guardrail / TRADE BLOCKED). */
   const [openOrdersLimitCount, setOpenOrdersLimitCount] = useState<number | null>(null);
   const [maxOpenOrdersLimit, setMaxOpenOrdersLimit] = useState<number | null>(null);
+  /** Per-base-symbol open position counts from dashboard (TP legs). */
+  const [openPositionCounts, setOpenPositionCounts] = useState<Record<string, number>>({});
+  /** Per-coin cap from Signal Monitor (default 3). */
+  const [maxOpenOrdersPerCoin, setMaxOpenOrdersPerCoin] = useState<number>(3);
   const [expectedTPSummary, setExpectedTPSummary] = useState<ExpectedTPSummaryItem[]>([]);
   const [expectedTPDetails, setExpectedTPDetails] = useState<ExpectedTPDetails | null>(null);
   const [expectedTPLoading, setExpectedTPLoading] = useState<boolean>(false);
@@ -3219,6 +3223,10 @@ function resolveDecisionIndexColor(value: number): string {
       } catch {
         // Ignore if window is not available (e.g., during SSR)
       }
+
+      if (dashboardState.open_position_counts && typeof dashboardState.open_position_counts === 'object') {
+        setOpenPositionCounts(dashboardState.open_position_counts);
+      }
       
       // Set bot status - only update if we have valid status data
       // Preserve last known status on transient errors (don't immediately mark as stopped)
@@ -4541,11 +4549,15 @@ function resolveDecisionIndexColor(value: number): string {
         if (cancelled) return;
         const open = health?.trade_system?.open_orders;
         const max = health?.trade_system?.max_open_orders;
+        const perCoin = health?.trade_system?.max_open_orders_per_symbol;
         if (typeof open === 'number') {
           setOpenOrdersLimitCount(open);
         }
         if (typeof max === 'number' && max > 0) {
           setMaxOpenOrdersLimit(max);
+        }
+        if (typeof perCoin === 'number' && perCoin > 0) {
+          setMaxOpenOrdersPerCoin(perCoin);
         }
       } catch (err) {
         logger.warn('Failed to refresh open-order limit status:', err);
@@ -4861,6 +4873,8 @@ function resolveDecisionIndexColor(value: number): string {
               }}
               openOrdersCount={openOrdersLimitCount}
               maxOpenOrders={maxOpenOrdersLimit ?? tradingLimits.maxOpenOrdersTotal}
+              openPositionCounts={openPositionCounts}
+              maxOpenOrdersPerCoin={maxOpenOrdersPerCoin}
               onCoinUpdated={(symbol, updates) => {
                 // Update the coin in topCoins array immediately after mutation
                 updateSingleCoin(symbol, updates);

@@ -2657,6 +2657,8 @@ export interface SystemHealth {
     status: 'PASS' | 'WARN' | 'FAIL';
     open_orders: number;
     max_open_orders: number | null;
+    /** Per-coin open-order cap (Signal Monitor MAX_OPEN_ORDERS_PER_SYMBOL). */
+    max_open_orders_per_symbol?: number | null;
     last_check_ok: boolean | null;
   };
 }
