@@ -144,7 +144,9 @@ def place_order(
             try:
                 from app.utils.trading_guardrails import should_send_trade_block_telegram_alert, mark_trade_block_telegram_sent
 
-                if should_send_trade_block_telegram_alert(request.symbol, request.side.value, block_reason):
+                if should_send_trade_block_telegram_alert(
+                    request.symbol, request.side.value, block_reason, db=db
+                ):
                     value_text = f"💵 Value: ${order_usd_value:.2f}\n" if order_usd_value else ""
                     telegram_notifier.send_message(
                         f"🚫 <b>TRADE BLOCKED</b>\n\n"

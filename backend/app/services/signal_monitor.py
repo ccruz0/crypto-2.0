@@ -7627,7 +7627,9 @@ class SignalMonitorService:
                 )
                 # Send Telegram alert only for unexpected blocks (not live toggle / trade off)
                 try:
-                    if self._telegram_send_enabled() and should_send_trade_block_telegram_alert(symbol, "BUY", block_reason):
+                    if self._telegram_send_enabled() and should_send_trade_block_telegram_alert(
+                        symbol, "BUY", block_reason, db=db
+                    ):
                         telegram_notifier.send_message(
                             f"🚫 <b>TRADE BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
@@ -9969,7 +9971,7 @@ class SignalMonitorService:
             )
             try:
                 if self._telegram_send_enabled() and should_send_trade_block_telegram_alert(
-                    symbol, "SELL", block_reason
+                    symbol, "SELL", block_reason, db=db
                 ):
                     telegram_notifier.send_message(
                         f"🚫 <b>TRADE BLOCKED</b>\n\n"
