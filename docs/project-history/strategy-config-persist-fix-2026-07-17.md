@@ -27,19 +27,27 @@ Not caused by Jarvis auto-assigning strategies.
 Honor `TRADING_CONFIG_PATH` in `config_loader` / strategy profile cache; seed
 `/data` from `/app` when the volume file is missing.
 
-## Deploy migration (one-time, before recreate)
+## Deploy migration / permissions
 
-While the current container is still up (so `/app/trading_config.json` still has
-live edits):
+After #179, prod briefly returned
+`Permission denied: '/data/trading_config.json'` because the Docker volume is
+root-owned and the app runs as `appuser`. Follow-up: entrypoint `chown` +
+read-only fallback to `/app` when `/data` is not writable.
+
+On the host (if needed once):
 
 ```bash
-docker exec backend-aws sh -c \
-  'mkdir -p /data && cp -a /app/trading_config.json /data/trading_config.json && ls -la /data/trading_config.json'
+docker exec -u 0 backend-aws sh -c \
+  'mkdir -p /data && chown -R appuser:appuser /data && \
+   if [ ! -f /data/trading_config.json ] && [ -f /app/trading_config.json ]; then \
+     cp -a /app/trading_config.json /data/trading_config.json; \
+   fi && ls -la /data/trading_config.json'
 ```
 
-Then deploy/recreate backend. Verify:
+Verify:
 
 ```bash
-docker exec backend-aws sh -c 'echo TRADING_CONFIG_PATH=$TRADING_CONFIG_PATH; python -c "from app.services.config_loader import get_config_path; print(get_config_path())"'
+docker exec backend-aws python -c "from app.services.config_loader import get_config_path; print(get_config_path())"
+# expect: /data/trading_config.json
 curl -sS http://127.0.0.1:8002/api/diagnostics/strategy-consistency | python3 -m json.tool | head -40
 ```

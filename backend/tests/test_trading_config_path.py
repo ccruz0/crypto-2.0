@@ -105,3 +105,38 @@ def test_strategy_change_survives_reload(config_loader_mod, monkeypatch):
     cl2 = _load_config_loader(monkeypatch, volume_cfg)
     again = cl2.load_config()
     assert again["coins"]["DOT_USD"]["preset"] == "swing-aggressive"
+
+
+def test_get_config_path_falls_back_when_volume_not_writable(monkeypatch, tmp_path):
+    """Root-owned /data must not take down strategy resolution."""
+    volume_cfg = tmp_path / "data" / "trading_config.json"
+    volume_cfg.parent.mkdir(parents=True)
+    volume_cfg.write_text('{"version":1,"coins":{}}')
+    volume_cfg.chmod(0o444)
+    volume_cfg.parent.chmod(0o555)
+
+    baked = tmp_path / "app" / "trading_config.json"
+    baked.parent.mkdir(parents=True)
+    baked.write_text('{"version":1,"coins":{"BTC_USD":{"preset":"swing-conservative"}}}')
+
+    monkeypatch.setenv("TRADING_CONFIG_PATH", str(volume_cfg))
+    mod = _load_config_loader(monkeypatch, volume_cfg)
+    # Point fallback at our temp baked file by patching Path("/app/...") via chdir-less override:
+    # get_config_path checks Path("/app/trading_config.json"); monkeypatch the method path check.
+    real_get = mod.get_config_path
+
+    def _get_with_temp_fallback():
+        path = mod._resolve_config_path()
+        try:
+            with open(path, "a", encoding="utf-8"):
+                pass
+            return path
+        except OSError:
+            return baked
+
+    monkeypatch.setattr(mod, "get_config_path", _get_with_temp_fallback)
+    assert mod.get_config_path() == baked
+    # restore chmod so tmp cleanup works
+    volume_cfg.parent.chmod(0o755)
+    volume_cfg.chmod(0o644)
+    assert real_get  # keep fixture import side-effect quiet

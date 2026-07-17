@@ -34,8 +34,36 @@ def _resolve_config_path() -> Path:
 
 
 def get_config_path() -> Path:
-    """Return the active trading config path (honors TRADING_CONFIG_PATH)."""
-    return _resolve_config_path()
+    """Return the active trading config path (honors TRADING_CONFIG_PATH).
+
+    If TRADING_CONFIG_PATH is set but not writable (e.g. root-owned volume before
+    entrypoint chown), fall back to /app/trading_config.json so the API stays up.
+    """
+    path = _resolve_config_path()
+    env_path = (os.environ.get("TRADING_CONFIG_PATH") or "").strip()
+    if not env_path:
+        return path
+    try:
+        if path.exists():
+            # Probe write access without truncating content.
+            with open(path, "a", encoding="utf-8"):
+                pass
+            return path
+        # Parent must be creatable/writable for first save/seed.
+        parent = path.parent
+        if parent.exists() and os.access(parent, os.W_OK):
+            return path
+    except OSError:
+        pass
+    fallback = Path("/app/trading_config.json")
+    if fallback.exists() or Path("/app").exists():
+        logging.getLogger(__name__).warning(
+            "TRADING_CONFIG_PATH=%s is not writable; falling back to %s",
+            path,
+            fallback,
+        )
+        return fallback
+    return path
 
 
 CONFIG_PATH = _resolve_config_path()
