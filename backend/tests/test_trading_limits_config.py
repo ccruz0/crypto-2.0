@@ -60,14 +60,15 @@ class TestGetTradingLimits:
         assert limits["minSecondsBetweenOrders"] == 120
         assert limits["maxOrdersPerSymbolPerDay"] == 5
 
-    def test_env_ceiling_caps_max_open_orders_total(self):
+    def test_saved_max_open_orders_total_wins_over_env(self):
+        """Global Settings save must not be silently capped by MAX_OPEN_ORDERS_TOTAL env."""
         with patch(
             "app.services.config_loader.load_config",
-            return_value={"trading_limits": {"maxOpenOrdersTotal": 15}},
+            return_value={"trading_limits": {"maxOpenOrdersTotal": 30}},
         ):
             with patch.dict(os.environ, {"MAX_OPEN_ORDERS_TOTAL": "10"}, clear=False):
                 limits = get_trading_limits()
-        assert limits["maxOpenOrdersTotal"] == 10
+        assert limits["maxOpenOrdersTotal"] == 30
 
     def test_env_fallback_when_config_missing_fields(self):
         with patch(

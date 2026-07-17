@@ -737,16 +737,12 @@ def _resolve_limit_int(
     default: int,
     *,
     min_value: int = 0,
-    env_ceiling: bool = False,
 ) -> int:
     """Resolve an integer trading limit from config, env, and defaults."""
     env_value = int(os.getenv(env_var, str(default)))
     raw = limits.get(config_key)
     if isinstance(raw, (int, float)) and raw >= min_value:
-        resolved = int(raw)
-        if env_ceiling:
-            return min(resolved, env_value)
-        return resolved
+        return int(raw)
     return env_value
 
 
@@ -771,7 +767,8 @@ def get_trading_limits() -> Dict[str, Any]:
     Global trading guardrails (strategy-agnostic).
 
     Resolution order: trading_config.json trading_limits -> env vars -> hard defaults.
-    maxOpenOrdersTotal uses env MAX_OPEN_ORDERS_TOTAL as fallback and ceiling.
+    A value saved in Global Settings (trading_limits) wins over the env fallback —
+    including maxOpenOrdersTotal — so the dashboard limit is what the guardrail uses.
     """
     cfg = load_config()
     limits = cfg.get("trading_limits") or {}
@@ -782,7 +779,7 @@ def get_trading_limits() -> Dict[str, Any]:
             "maxOpenOrdersTotal",
             "MAX_OPEN_ORDERS_TOTAL",
             10,
-            env_ceiling=True,
+            min_value=1,
         ),
         "maxOpenOrdersPerCoin": _resolve_limit_int(
             limits,
