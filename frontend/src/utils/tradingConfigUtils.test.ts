@@ -38,9 +38,20 @@ describe('parseTradingLimits', () => {
   });
 
   it('parses valid limits from config', () => {
-    expect(parseTradingLimits({ maxOpenOrdersTotal: 8, maxOpenOrdersPerCoin: 2 })).toEqual({
+    expect(
+      parseTradingLimits({
+        maxOpenOrdersTotal: 8,
+        maxOpenOrdersPerCoin: 2,
+        maxUsdPerOrder: 150,
+        minSecondsBetweenOrders: 300,
+        maxOrdersPerSymbolPerDay: 4,
+      })
+    ).toEqual({
       maxOpenOrdersTotal: 8,
       maxOpenOrdersPerCoin: 2,
+      maxUsdPerOrder: 150,
+      minSecondsBetweenOrders: 300,
+      maxOrdersPerSymbolPerDay: 4,
     });
   });
 });

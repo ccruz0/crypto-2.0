@@ -414,7 +414,6 @@ class SignalMonitorService:
         self.processed_orders: set = set()  # Track orders we've created to avoid duplicates
         self.order_creation_locks: Dict[str, float] = {}  # Track when we're creating orders: {symbol: timestamp} and {symbol:side: timestamp} (atomic dedup)
         self._order_dedup_lock = threading.Lock()  # Guards check-and-set on order_creation_locks for the in-memory (symbol, side) dedup
-        self.MAX_OPEN_ORDERS_PER_SYMBOL = 3  # Maximum open orders per symbol
         self.MIN_PRICE_CHANGE_PCT = 1.0  # Minimum 1% price change to create another order
         self.ORDER_CREATION_LOCK_SECONDS = 10  # Lock for 10 seconds after creating an order
         # Alert throttling state: {symbol: {side: {last_alert_time: datetime, last_alert_price: float}}}
@@ -449,6 +448,16 @@ class SignalMonitorService:
         self.status_file_path = Path(os.getenv("SIGNAL_MONITOR_STATUS_FILE", "/tmp/signal_monitor_status.json"))
         self._latest_status_snapshot: Dict[str, str] = {}
         self._load_persisted_status()
+
+    @property
+    def MAX_OPEN_ORDERS_PER_SYMBOL(self) -> int:
+        """Per-coin open-order cap from trading_config.json (lazy read)."""
+        try:
+            from app.services.config_loader import get_trading_limits
+
+            return int(get_trading_limits()["maxOpenOrdersPerCoin"])
+        except Exception:
+            return int(os.getenv("MAX_OPEN_ORDERS_PER_SYMBOL", "3"))
 
     def _get_telegram_runtime_config(self, refresh: bool = False) -> Dict[str, Any]:
         """

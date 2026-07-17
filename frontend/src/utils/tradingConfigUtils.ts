@@ -11,24 +11,55 @@ const PRESET_KEY_MAP: Record<string, Preset> = {
 };
 
 export const DEFAULT_TRADING_LIMITS: TradingLimits = {
-  maxOpenOrdersTotal: 5,
-  maxOpenOrdersPerCoin: 1,
+  maxOpenOrdersTotal: 10,
+  maxOpenOrdersPerCoin: 3,
+  maxUsdPerOrder: 100,
+  minSecondsBetweenOrders: 600,
+  maxOrdersPerSymbolPerDay: 2,
 };
+
+function parseLimitNumber(
+  raw: unknown,
+  fallback: number,
+  minValue: number
+): number {
+  if (typeof raw === 'number' && !Number.isNaN(raw) && raw >= minValue) {
+    return raw;
+  }
+  return fallback;
+}
 
 export function parseTradingLimits(raw: unknown): TradingLimits {
   if (!raw || typeof raw !== 'object') {
     return { ...DEFAULT_TRADING_LIMITS };
   }
   const limits = raw as Record<string, unknown>;
-  const total = limits.maxOpenOrdersTotal;
-  const perCoin = limits.maxOpenOrdersPerCoin;
   return {
-    maxOpenOrdersTotal:
-      typeof total === 'number' && total >= 0 ? total : DEFAULT_TRADING_LIMITS.maxOpenOrdersTotal,
-    maxOpenOrdersPerCoin:
-      typeof perCoin === 'number' && perCoin >= 1
-        ? perCoin
-        : DEFAULT_TRADING_LIMITS.maxOpenOrdersPerCoin,
+    maxOpenOrdersTotal: parseLimitNumber(
+      limits.maxOpenOrdersTotal,
+      DEFAULT_TRADING_LIMITS.maxOpenOrdersTotal,
+      0
+    ),
+    maxOpenOrdersPerCoin: parseLimitNumber(
+      limits.maxOpenOrdersPerCoin,
+      DEFAULT_TRADING_LIMITS.maxOpenOrdersPerCoin,
+      1
+    ),
+    maxUsdPerOrder: parseLimitNumber(
+      limits.maxUsdPerOrder,
+      DEFAULT_TRADING_LIMITS.maxUsdPerOrder,
+      0.01
+    ),
+    minSecondsBetweenOrders: parseLimitNumber(
+      limits.minSecondsBetweenOrders,
+      DEFAULT_TRADING_LIMITS.minSecondsBetweenOrders,
+      0
+    ),
+    maxOrdersPerSymbolPerDay: parseLimitNumber(
+      limits.maxOrdersPerSymbolPerDay,
+      DEFAULT_TRADING_LIMITS.maxOrdersPerSymbolPerDay,
+      0
+    ),
   };
 }
 
@@ -78,4 +109,14 @@ export function strategyRulesToPresetConfig(
   }
 
   return result;
+}
+
+export function tradingLimitsToConfigPayload(limits: TradingLimits): Record<string, number> {
+  return {
+    maxOpenOrdersTotal: limits.maxOpenOrdersTotal,
+    maxOpenOrdersPerCoin: limits.maxOpenOrdersPerCoin,
+    maxUsdPerOrder: limits.maxUsdPerOrder,
+    minSecondsBetweenOrders: limits.minSecondsBetweenOrders,
+    maxOrdersPerSymbolPerDay: limits.maxOrdersPerSymbolPerDay,
+  };
 }

@@ -702,32 +702,86 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
     }
 
 
-def get_trading_limits() -> Dict[str, int]:
+def _resolve_limit_int(
+    limits: Dict[str, Any],
+    config_key: str,
+    env_var: str,
+    default: int,
+    *,
+    min_value: int = 0,
+    env_ceiling: bool = False,
+) -> int:
+    """Resolve an integer trading limit from config, env, and defaults."""
+    env_value = int(os.getenv(env_var, str(default)))
+    raw = limits.get(config_key)
+    if isinstance(raw, (int, float)) and raw >= min_value:
+        resolved = int(raw)
+        if env_ceiling:
+            return min(resolved, env_value)
+        return resolved
+    return env_value
+
+
+def _resolve_limit_float(
+    limits: Dict[str, Any],
+    config_key: str,
+    env_var: str,
+    default: float,
+    *,
+    min_value: float = 0,
+) -> float:
+    """Resolve a float trading limit from config, env, and defaults."""
+    env_value = float(os.getenv(env_var, str(default)))
+    raw = limits.get(config_key)
+    if isinstance(raw, (int, float)) and raw >= min_value:
+        return float(raw)
+    return env_value
+
+
+def get_trading_limits() -> Dict[str, Any]:
     """
-    Global open-order limits for system_core trade guards.
+    Global trading guardrails (strategy-agnostic).
 
     Resolution order: trading_config.json trading_limits -> env vars -> hard defaults.
-    Defaults preserve legacy behavior: 5 total positions, 1 per coin.
+    maxOpenOrdersTotal uses env MAX_OPEN_ORDERS_TOTAL as fallback and ceiling.
     """
     cfg = load_config()
     limits = cfg.get("trading_limits") or {}
 
-    env_max_total = int(os.getenv("SYSTEM_CORE_MAX_OPEN_TRADES", "5"))
-    env_max_per_coin = int(os.getenv("SYSTEM_CORE_MAX_OPEN_PER_COIN", "1"))
-
-    config_total = limits.get("maxOpenOrdersTotal")
-    if isinstance(config_total, (int, float)) and config_total >= 0:
-        max_total = int(config_total)
-    else:
-        max_total = env_max_total
-
-    config_per_coin = limits.get("maxOpenOrdersPerCoin")
-    if isinstance(config_per_coin, (int, float)) and config_per_coin >= 1:
-        max_per_coin = int(config_per_coin)
-    else:
-        max_per_coin = env_max_per_coin
-
     return {
-        "maxOpenOrdersTotal": max_total,
-        "maxOpenOrdersPerCoin": max_per_coin,
+        "maxOpenOrdersTotal": _resolve_limit_int(
+            limits,
+            "maxOpenOrdersTotal",
+            "MAX_OPEN_ORDERS_TOTAL",
+            10,
+            env_ceiling=True,
+        ),
+        "maxOpenOrdersPerCoin": _resolve_limit_int(
+            limits,
+            "maxOpenOrdersPerCoin",
+            "MAX_OPEN_ORDERS_PER_SYMBOL",
+            3,
+            min_value=1,
+        ),
+        "maxUsdPerOrder": _resolve_limit_float(
+            limits,
+            "maxUsdPerOrder",
+            "MAX_USD_PER_ORDER",
+            100.0,
+            min_value=0.01,
+        ),
+        "minSecondsBetweenOrders": _resolve_limit_int(
+            limits,
+            "minSecondsBetweenOrders",
+            "MIN_SECONDS_BETWEEN_ORDERS",
+            600,
+            min_value=0,
+        ),
+        "maxOrdersPerSymbolPerDay": _resolve_limit_int(
+            limits,
+            "maxOrdersPerSymbolPerDay",
+            "MAX_ORDERS_PER_SYMBOL_PER_DAY",
+            2,
+            min_value=0,
+        ),
     }

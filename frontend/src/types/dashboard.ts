@@ -9,10 +9,13 @@ export type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-t
 export type Preset = 'Swing' | 'Intraday' | 'Scalp';
 export type RiskMode = 'Conservative' | 'Aggressive';
 
-/** Global open-order guardrails (not per-preset). */
+/** Global trading guardrails (strategy-agnostic). */
 export interface TradingLimits {
   maxOpenOrdersTotal: number;
   maxOpenOrdersPerCoin: number;
+  maxUsdPerOrder: number;
+  minSecondsBetweenOrders: number;
+  maxOrdersPerSymbolPerDay: number;
 }
 
 export interface StrategyRules {

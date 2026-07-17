@@ -86,11 +86,44 @@ def mark_trade_block_telegram_sent(symbol: str, side: str, *reasons: Optional[st
     _trade_block_alert_times[key] = time.time()
 
 
-# Environment variables with defaults
-MAX_OPEN_ORDERS_TOTAL = int(os.getenv("MAX_OPEN_ORDERS_TOTAL", "3"))
+# Environment variables with defaults (import-time fallbacks; prefer get_trading_limits() at runtime)
+MAX_OPEN_ORDERS_TOTAL = int(os.getenv("MAX_OPEN_ORDERS_TOTAL", "10"))
 MAX_ORDERS_PER_SYMBOL_PER_DAY = int(os.getenv("MAX_ORDERS_PER_SYMBOL_PER_DAY", "2"))
 MAX_USD_PER_ORDER = float(os.getenv("MAX_USD_PER_ORDER", "100"))
 MIN_SECONDS_BETWEEN_ORDERS = int(os.getenv("MIN_SECONDS_BETWEEN_ORDERS", "600"))
+
+
+def _get_runtime_trading_limits() -> Dict[str, float]:
+    """Lazy read of dashboard-configurable trading limits."""
+    try:
+        from app.services.config_loader import get_trading_limits
+
+        return get_trading_limits()
+    except Exception as e:
+        logger.debug("Could not load trading limits from config: %s", e)
+        return {
+            "maxOpenOrdersTotal": MAX_OPEN_ORDERS_TOTAL,
+            "maxOpenOrdersPerCoin": int(os.getenv("MAX_OPEN_ORDERS_PER_SYMBOL", "3")),
+            "maxUsdPerOrder": MAX_USD_PER_ORDER,
+            "minSecondsBetweenOrders": MIN_SECONDS_BETWEEN_ORDERS,
+            "maxOrdersPerSymbolPerDay": MAX_ORDERS_PER_SYMBOL_PER_DAY,
+        }
+
+
+def resolve_max_open_orders_total() -> int:
+    return int(_get_runtime_trading_limits()["maxOpenOrdersTotal"])
+
+
+def resolve_max_usd_per_order() -> float:
+    return float(_get_runtime_trading_limits()["maxUsdPerOrder"])
+
+
+def resolve_min_seconds_between_orders() -> int:
+    return int(_get_runtime_trading_limits()["minSecondsBetweenOrders"])
+
+
+def resolve_max_orders_per_symbol_per_day_default() -> int:
+    return int(_get_runtime_trading_limits()["maxOrdersPerSymbolPerDay"])
 
 
 def _resolve_max_orders_per_symbol_per_day(db: Session, symbol: str) -> int:
@@ -98,7 +131,7 @@ def _resolve_max_orders_per_symbol_per_day(db: Session, symbol: str) -> int:
     Resolve per-symbol daily order limit from strategy rules.
     Falls back to MAX_ORDERS_PER_SYMBOL_PER_DAY env default when not configured.
     """
-    limit = MAX_ORDERS_PER_SYMBOL_PER_DAY
+    limit = resolve_max_orders_per_symbol_per_day_default()
     try:
         watchlist_item = (
             db.query(WatchlistItem)
@@ -335,9 +368,13 @@ def _check_risk_limits(
         )
     else:
         try:
+            max_open_orders_total = resolve_max_open_orders_total()
             total_open = count_total_open_positions(db)
-            if total_open >= MAX_OPEN_ORDERS_TOTAL:
-                reason = f"blocked: MAX_OPEN_ORDERS_TOTAL limit reached ({total_open}/{MAX_OPEN_ORDERS_TOTAL})"
+            if total_open >= max_open_orders_total:
+                reason = (
+                    "blocked: MAX_OPEN_ORDERS_TOTAL limit reached "
+                    f"({total_open}/{max_open_orders_total})"
+                )
                 logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
                 return False, reason
         except Exception as e:
@@ -380,8 +417,12 @@ def _check_risk_limits(
     
     # MAX_USD_PER_ORDER check (optional skip for protective orders)
     if not ignore_usd_limit:
-        if order_usd_value > MAX_USD_PER_ORDER:
-            reason = f"blocked: MAX_USD_PER_ORDER limit exceeded (${order_usd_value:.2f} > ${MAX_USD_PER_ORDER:.2f})"
+        max_usd_per_order = resolve_max_usd_per_order()
+        if order_usd_value > max_usd_per_order:
+            reason = (
+                "blocked: MAX_USD_PER_ORDER limit exceeded "
+                f"(${order_usd_value:.2f} > ${max_usd_per_order:.2f})"
+            )
             logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
             return False, reason
     
@@ -419,9 +460,10 @@ def _check_risk_limits(
                     recent_time = recent_time.replace(tzinfo=timezone.utc)
                 now_utc = datetime.now(timezone.utc)
                 seconds_since_last = (now_utc - recent_time).total_seconds()
-                
-                if seconds_since_last < MIN_SECONDS_BETWEEN_ORDERS:
-                    seconds_remaining = MIN_SECONDS_BETWEEN_ORDERS - seconds_since_last
+                min_seconds_between_orders = resolve_min_seconds_between_orders()
+
+                if seconds_since_last < min_seconds_between_orders:
+                    seconds_remaining = min_seconds_between_orders - seconds_since_last
                     reason = f"blocked: MIN_SECONDS_BETWEEN_ORDERS cooldown active ({seconds_remaining:.0f}s remaining)"
                     logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
                     return False, reason
