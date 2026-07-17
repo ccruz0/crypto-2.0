@@ -2218,12 +2218,13 @@ def update_watchlist_item(
     try:
         from app.services.strategy_profiles import resolve_strategy_profile
         from app.services.signal_throttle import build_strategy_key
-        from app.services.config_loader import CONFIG_PATH
+        from app.services.config_loader import get_config_path
         import os
         
         # Check config file modification time before update
-        if CONFIG_PATH and CONFIG_PATH.exists():
-            config_file_mtime_before = os.path.getmtime(CONFIG_PATH)
+        config_path = get_config_path()
+        if config_path and config_path.exists():
+            config_file_mtime_before = os.path.getmtime(config_path)
         
         old_strategy_profile = resolve_strategy_profile(_symbol_str(item), db=db, watchlist_item=item)
         old_strategy_key = build_strategy_key(old_strategy_profile[0], old_strategy_profile[1])
@@ -2643,13 +2644,14 @@ def update_watchlist_item(
     try:
         from app.services.strategy_profiles import resolve_strategy_profile
         from app.services.signal_throttle import build_strategy_key
-        from app.services.config_loader import CONFIG_PATH
+        from app.services.config_loader import get_config_path
         import os
         
         # Check if config file was modified (indicates strategy might have changed)
         config_file_modified = False
-        if config_file_mtime_before and CONFIG_PATH and CONFIG_PATH.exists():
-            config_file_mtime_after = os.path.getmtime(CONFIG_PATH)
+        config_path = get_config_path()
+        if config_file_mtime_before and config_path and config_path.exists():
+            config_file_mtime_after = os.path.getmtime(config_path)
             if config_file_mtime_after > config_file_mtime_before:
                 config_file_modified = True
                 log.info(f"🔄 [STRATEGY] Config file modified for {item.symbol} - strategy may have changed")

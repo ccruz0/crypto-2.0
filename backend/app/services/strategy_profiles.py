@@ -8,7 +8,7 @@ from typing import Any, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.services.config_loader import load_config, CONFIG_PATH
+from app.services.config_loader import load_config, get_config_path
 
 try:
     from app.models.trade_signal import TradeSignal
@@ -48,8 +48,8 @@ def invalidate_config_cache() -> None:
 def _load_config_cached() -> dict[str, Any]:
     """Load config with caching based on file modification time."""
     global _CONFIG_CACHE, _CONFIG_MTIME
-    # Use the same CONFIG_PATH as config_loader to ensure consistency
-    config_path = CONFIG_PATH
+    # Honor TRADING_CONFIG_PATH via get_config_path() (same as config_loader).
+    config_path = get_config_path()
     try:
         if config_path and config_path.exists():
             mtime = config_path.stat().st_mtime
