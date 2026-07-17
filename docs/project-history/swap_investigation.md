@@ -1,10 +1,13 @@
 # Investigación: HostSwapHigh — Resolución de la causa raíz
 
-> **Estado:** CERRADA y RESUELTA (investigación CPU completada 2026-07-06).
+> **Estado (episodio CPU 2026-07-06):** RESUELTO — orphaned `docker compose logs` killed.
+> **Estado (capacidad estructural):** ABIERTO — ver `host-swap-status-2026-07-17.md`
+>   y ADR-0002 (snapshot 2026-07-10 aún ~50% swap tras el kill de dockerd).
 > **Hallazgo 2026-06-26:** sobreaprovisionamiento de RAM — recomendó upgrade/split (pendiente aprobación).
-> **Hallazgo 2026-07-06:** CPU dockerd (no RAM) — causa raíz confirmada y RESUELTA ($0, matar 2 procesos).
+> **Hallazgo 2026-07-06:** CPU dockerd — causa aguda confirmada y resuelta ($0, matar 2 procesos).
 > **Acción ejecutada:** 2026-07-06 09:38 UTC — matar PIDs 2712707 y 3552257 (dockerd CPU 183% → 0%).
-> **Resultado:** `HostSwapHigh` crónico era síntoma downstream de CPU saturada, no déficit de RAM.
+> **Nota:** ese fix cerró el hot-loop de CPU; **no** cierra por sí solo el oversubscription
+>   single-host ni garantiza `HostSwapHigh` &lt;25% de forma sostenida.
 
 ---
 
@@ -258,3 +261,6 @@ LAB se puede pausar cuando no esté en uso, o splitear si la presión vuelve.
 | 2026-06-XX | Carlos / agente | Apertura del documento | Plantilla creada |
 | 2026-06-26 | Cursor agent | Runbook read-only ejecutado en i-087953603011543c5 | Datos pegados; causa raíz confirmada |
 | 2026-06-26 | Cursor agent | Cierre investigación + ADR-0002 actualizado | Recomendación: split LAB (B) |
+| 2026-07-06 | Cursor agent | Kill orphaned compose-logs PIDs | dockerd CPU 183%→0%; episodio agudo cerrado |
+| 2026-07-10 | Cursor agent | Snapshot post-fix | Swap aún ~50% → capacidad estructural abierta |
+| 2026-07-17 | Cursor agent | `host-swap-status-2026-07-17.md` + ADR-0002 | Split = Builder off PROD; OpenClaw LAB intacto |
