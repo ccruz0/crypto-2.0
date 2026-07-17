@@ -37,6 +37,9 @@ interface WatchlistTabProps {
   onCoinPresetChange?: (symbol: string, preset: string) => void;
   onAmountSaved?: (symbol: string) => void; // Callback to mark amount as recently saved
   onCoinUpdated?: (symbol: string, updates: Partial<TopCoin>) => void; // Callback to update coin in parent's topCoins array
+  /** Global open-order count toward MAX_OPEN_ORDERS_TOTAL (trade guardrail). */
+  openOrdersCount?: number | null;
+  maxOpenOrders?: number | null;
 }
 
 type SortField = 'symbol' | 'last_price' | 'rsi' | 'ema10' | 'ma50' | 'ma200' | 'volume' | 'amount_usd';
@@ -68,6 +71,8 @@ export default function WatchlistTab({
   onCoinPresetChange,
   onAmountSaved,
   onCoinUpdated,
+  openOrdersCount = null,
+  maxOpenOrders = null,
 }: WatchlistTabProps) {
   const { getPrice: getLivePrice, connected: priceStreamConnected } = usePriceStream();
   const {
@@ -204,6 +209,12 @@ export default function WatchlistTab({
     
     return sorted;
   }, [filteredCoins, sortField, sortDirection, signals, coinAmounts]);
+
+  const atOrderLimit =
+    openOrdersCount != null &&
+    maxOpenOrders != null &&
+    maxOpenOrders > 0 &&
+    openOrdersCount >= maxOpenOrders;
 
   const handleSort = useCallback((field: SortField) => {
     if (sortField === field) {
@@ -1102,6 +1113,17 @@ export default function WatchlistTab({
         />
       </div>
 
+      {atOrderLimit && (
+        <div
+          className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
+          role="status"
+        >
+          Order limit reached
+          {maxOpenOrders != null ? ` (${openOrdersCount}/${maxOpenOrders})` : ''}.
+          New watchlist orders will not execute until open positions drop below the limit.
+        </div>
+      )}
+
       {sortedCoins.length === 0 ? (
         <div className="text-center py-12">
           <div className="text-gray-500 text-lg mb-2">No watchlist data available</div>
@@ -1137,6 +1159,8 @@ export default function WatchlistTab({
                 const buyAlertEnabled = coinBuyAlertStatus[symbolKey] || false;
                 const sellAlertEnabled = coinSellAlertStatus[symbolKey] || false;
                 const isCoinUpdating = updatingCoins.has(coin?.instrument_name);
+                // Global trade limit blocks new entries for every symbol.
+                const rowAtOrderLimit = atOrderLimit;
                 
                 // Determine if buy or sell criteria are met
                 const buyCriteriaMet = isBuyCriteriaMet(signal);
@@ -1150,11 +1174,35 @@ export default function WatchlistTab({
                     : 'font-medium';
                 
                 return (
-                  <tr key={coin?.instrument_name} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                  <tr
+                    key={coin?.instrument_name}
+                    className={`relative ${
+                      rowAtOrderLimit
+                        ? 'bg-amber-50/90 dark:bg-amber-950/35'
+                        : 'hover:bg-gray-50 dark:hover:bg-gray-700'
+                    }`}
+                    title={
+                      rowAtOrderLimit
+                        ? `Order limit reached (${openOrdersCount}/${maxOpenOrders}). New orders will not execute.`
+                        : undefined
+                    }
+                  >
                     <td 
-                      className={`px-4 py-2 ${symbolColorClass}`}
+                      className={`relative px-4 py-2 ${symbolColorClass}`}
                       title={buildStrategyTooltip(coin, signal)}
                     >
+                      {rowAtOrderLimit && (
+                        <div
+                          aria-hidden
+                          className="pointer-events-none absolute inset-y-0 left-0 z-[1] flex items-center overflow-hidden"
+                          style={{ width: 'min(1100px, 92vw)' }}
+                        >
+                          <span className="select-none whitespace-nowrap pl-24 text-xl font-black uppercase tracking-[0.35em] text-amber-600/25 dark:text-amber-200/20 -rotate-6 sm:text-2xl">
+                            Limit — no new orders
+                          </span>
+                        </div>
+                      )}
+                      <span className="relative z-[2]">
                       <a
                         href={getCryptoPageUrl(coin?.instrument_name)}
                         target="_blank"
@@ -1164,6 +1212,7 @@ export default function WatchlistTab({
                       >
                         {coin?.instrument_name}
                       </a>
+                      </span>
                     </td>
                     <td className="px-4 py-2">
                       {(() => {
