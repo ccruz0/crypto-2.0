@@ -23,6 +23,9 @@ interface PortfolioTabProps {
   togglingLiveTrading: boolean;
   isUpdating: boolean;
   topCoinsLoading: boolean;
+  /** Open positions counted toward MAX_OPEN_ORDERS_TOTAL (same as trade guardrail). */
+  openOrdersCount?: number | null;
+  maxOpenOrders?: number | null;
   onToggleLiveTrading: () => Promise<void>;
   onRefreshPortfolio: () => Promise<void>;
 }
@@ -39,6 +42,8 @@ export default function PortfolioTab({
   togglingLiveTrading,
   isUpdating,
   topCoinsLoading,
+  openOrdersCount = null,
+  maxOpenOrders = null,
   onToggleLiveTrading,
   onRefreshPortfolio,
 }: PortfolioTabProps) {
@@ -173,7 +178,7 @@ export default function PortfolioTab({
         <>
           <div className="mb-4">
             <h2 className="text-xl font-semibold mb-2">Portfolio Summary</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
               <div className="bg-white dark:bg-gray-800 p-4 rounded shadow">
                 <div className="text-sm text-gray-500">Total Value</div>
                 <div className="text-xs text-gray-400 mb-1">Wallet Balance (after haircut)</div>
@@ -214,6 +219,41 @@ export default function PortfolioTab({
                   </div>
                 ) : null;
               })()}
+              {openOrdersCount !== null && openOrdersCount !== undefined && (
+                <div
+                  className={`p-4 rounded shadow ${
+                    maxOpenOrders != null && openOrdersCount >= maxOpenOrders
+                      ? 'bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700'
+                      : 'bg-white dark:bg-gray-800'
+                  }`}
+                  title={
+                    maxOpenOrders != null
+                      ? `Open positions counted toward the trade limit (${openOrdersCount}/${maxOpenOrders}). New entries are blocked at the limit.`
+                      : 'Open positions counted toward the trade limit.'
+                  }
+                >
+                  <div className="text-sm text-gray-500">Open Orders</div>
+                  <div className="text-xs text-gray-400 mb-1">
+                    {maxOpenOrders != null ? `limit ${maxOpenOrders}` : 'toward trade limit'}
+                  </div>
+                  <div
+                    className={`text-2xl font-bold ${
+                      maxOpenOrders != null && openOrdersCount >= maxOpenOrders
+                        ? 'text-amber-700 dark:text-amber-300'
+                        : 'text-indigo-600'
+                    }`}
+                  >
+                    {maxOpenOrders != null
+                      ? `${openOrdersCount} / ${maxOpenOrders}`
+                      : openOrdersCount}
+                  </div>
+                  {maxOpenOrders != null && openOrdersCount >= maxOpenOrders && (
+                    <div className="text-xs font-medium text-amber-700 dark:text-amber-300 mt-1">
+                      Limit reached — no new orders
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

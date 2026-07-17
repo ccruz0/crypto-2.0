@@ -439,12 +439,21 @@ def _check_trade_system_health(db: Session) -> Dict:
 
     max_open_orders = None
     try:
-        from app.services.config_loader import get_trading_config
-        config = get_trading_config()
-        if config and "max_open_orders" in config:
-            max_open_orders = config.get("max_open_orders")
+        from app.services.config_loader import get_trading_limits
+
+        limits = get_trading_limits()
+        if limits and limits.get("maxOpenOrdersTotal") is not None:
+            max_open_orders = int(limits["maxOpenOrdersTotal"])
     except Exception:
         pass
+    if max_open_orders is None:
+        try:
+            # Same env the trade guardrail uses (can_place_real_order / TRADE BLOCKED).
+            from app.utils.trading_guardrails import MAX_OPEN_ORDERS_TOTAL
+
+            max_open_orders = int(MAX_OPEN_ORDERS_TOTAL)
+        except Exception:
+            pass
 
     status = "PASS"
     if not order_intents_table_exists:

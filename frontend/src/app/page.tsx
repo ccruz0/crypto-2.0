@@ -23,6 +23,7 @@ import JarvisDailyReportsTab from '@/app/components/tabs/JarvisDailyReportsTab';
 import JarvisAnalyticsTab from '@/app/components/tabs/JarvisAnalyticsTab';
 import JarvisImprovementTab from '@/app/components/tabs/JarvisImprovementTab';
 import SystemHealthPanel from '@/components/SystemHealth';
+import { getSystemHealth } from '@/lib/api';
 import { palette } from '@/theme/palette';
 import { logger } from '@/utils/logger';
 import {
@@ -979,6 +980,9 @@ function DashboardPageContent() {
   const [openOrdersPositions, setOpenOrdersPositions] = useState<OpenPosition[]>([]);
   const [_openOrdersSummaryLoading, setOpenOrdersSummaryLoading] = useState(true);
   const [_openOrdersSummaryLastUpdate, setOpenOrdersSummaryLastUpdate] = useState<Date | null>(null);
+  /** Positions counted toward MAX_OPEN_ORDERS_TOTAL (trade guardrail / TRADE BLOCKED). */
+  const [openOrdersLimitCount, setOpenOrdersLimitCount] = useState<number | null>(null);
+  const [maxOpenOrdersLimit, setMaxOpenOrdersLimit] = useState<number | null>(null);
   const [expectedTPSummary, setExpectedTPSummary] = useState<ExpectedTPSummaryItem[]>([]);
   const [expectedTPDetails, setExpectedTPDetails] = useState<ExpectedTPDetails | null>(null);
   const [expectedTPLoading, setExpectedTPLoading] = useState<boolean>(false);
@@ -4505,6 +4509,10 @@ function resolveDecisionIndexColor(value: number): string {
             ));
           }
           setTradingLimits(parseTradingLimits(config.trading_limits));
+          const cfgMax = config.trading_limits?.maxOpenOrdersTotal;
+          if (typeof cfgMax === 'number' && cfgMax > 0) {
+            setMaxOpenOrdersLimit((prev) => prev ?? cfgMax);
+          }
           // Extract coin presets from trading config
           if (config.coins) {
             const presets: Record<string, string> = {};
@@ -4522,6 +4530,33 @@ function resolveDecisionIndexColor(value: number): string {
       }
     };
     loadTradingConfig();
+  }, []);
+
+  // Open-order limit status (same numbers used by TRADE BLOCKED / System Health)
+  useEffect(() => {
+    let cancelled = false;
+    const refreshOpenOrderLimits = async () => {
+      try {
+        const health = await getSystemHealth();
+        if (cancelled) return;
+        const open = health?.trade_system?.open_orders;
+        const max = health?.trade_system?.max_open_orders;
+        if (typeof open === 'number') {
+          setOpenOrdersLimitCount(open);
+        }
+        if (typeof max === 'number' && max > 0) {
+          setMaxOpenOrdersLimit(max);
+        }
+      } catch (err) {
+        logger.warn('Failed to refresh open-order limit status:', err);
+      }
+    };
+    refreshOpenOrderLimits();
+    const interval = setInterval(refreshOpenOrderLimits, 60000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   // Initial data load on mount
@@ -4754,6 +4789,8 @@ function resolveDecisionIndexColor(value: number): string {
               togglingLiveTrading={togglingLiveTrading}
               isUpdating={isUpdating}
               topCoinsLoading={topCoinsLoading}
+              openOrdersCount={openOrdersLimitCount}
+              maxOpenOrders={maxOpenOrdersLimit ?? tradingLimits.maxOpenOrdersTotal}
               onToggleLiveTrading={async () => {
                 setTogglingLiveTrading(true);
                 try {
@@ -4822,6 +4859,8 @@ function resolveDecisionIndexColor(value: number): string {
                 // Mark amount as recently saved to prevent overwriting with stale backend data
                 recentlySavedAmounts.current[symbol] = Date.now();
               }}
+              openOrdersCount={openOrdersLimitCount}
+              maxOpenOrders={maxOpenOrdersLimit ?? tradingLimits.maxOpenOrdersTotal}
               onCoinUpdated={(symbol, updates) => {
                 // Update the coin in topCoins array immediately after mutation
                 updateSingleCoin(symbol, updates);
