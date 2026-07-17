@@ -158,21 +158,68 @@ def create_take_profit_order(
                                     f"Refusing to widen TP beyond watchlist %."
                                 )
                                 logger.warning(f"⚠️ {error_msg}")
+                                # Once-per-parent notification: exchange sync retries every ~5s and
+                                # previously flooded Telegram with identical SHORT TP NOT WIDENED.
                                 try:
-                                    telegram_notifier.send_message(
-                                        f"⚠️ <b>SHORT TP NOT WIDENED</b>\n\n"
-                                        f"📊 Symbol: <b>{symbol}</b>\n"
-                                        f"🎯 Calculated TP: ${original_tp_price:.4f}\n"
-                                        f"💹 Market: ${current_price:.4f}\n\n"
-                                        f"Market is already at/below the watchlist TP target. "
-                                        f"Auto TP was not placed with a wider target.",
-                                        symbol=symbol,
+                                    from app.services.telegram_event_dedup import claim_telegram_event
+
+                                    dedup_key = (
+                                        f"short_tp_not_widened:{parent_order_id}"
+                                        if parent_order_id
+                                        else f"short_tp_not_widened:{symbol}"
                                     )
+                                    if claim_telegram_event(
+                                        db,
+                                        dedup_key,
+                                        symbol=symbol,
+                                        ttl_minutes=24 * 60,
+                                        action="short_tp_skip",
+                                    ):
+                                        telegram_notifier.send_message(
+                                            f"⚠️ <b>SHORT TP NOT WIDENED</b>\n\n"
+                                            f"📊 Symbol: <b>{symbol}</b>\n"
+                                            f"🎯 Calculated TP: ${original_tp_price:.4f}\n"
+                                            f"💹 Market: ${current_price:.4f}\n\n"
+                                            f"Market is already at/below the watchlist TP target. "
+                                            f"Auto TP was not placed with a wider target.\n"
+                                            f"Further retries for this entry are silent until the "
+                                            f"market moves back above the TP target.",
+                                            symbol=symbol,
+                                        )
+                                    else:
+                                        logger.info(
+                                            "SHORT TP NOT WIDENED Telegram suppressed (dedup) "
+                                            "symbol=%s parent=%s",
+                                            symbol,
+                                            parent_order_id,
+                                        )
                                 except Exception as telegram_err:
                                     logger.warning(
                                         f"Failed to send Telegram alert for short TP cap: {telegram_err}"
                                     )
-                                return {"order_id": None, "error": error_msg}
+                                # Mark parent so exchange_sync stops retrying TP every cycle.
+                                if parent_order_id:
+                                    try:
+                                        from app.services.telegram_event_dedup import claim_telegram_event
+
+                                        claim_telegram_event(
+                                            db,
+                                            f"tp_unreachable:{parent_order_id}",
+                                            symbol=symbol,
+                                            ttl_minutes=24 * 60,
+                                            action="tp_unreachable",
+                                        )
+                                    except Exception as mark_err:
+                                        logger.debug(
+                                            "Failed to mark tp_unreachable for %s: %s",
+                                            parent_order_id,
+                                            mark_err,
+                                        )
+                                return {
+                                    "order_id": None,
+                                    "error": error_msg,
+                                    "error_code": "TP_TARGET_ALREADY_REACHED",
+                                }
         except Exception as price_check_err:
             logger.warning(f"Could not verify TP price against current market: {price_check_err}. Proceeding with calculated TP price.")
     
