@@ -9,6 +9,7 @@ import { PriceStreamProvider } from '@/app/context/PriceStreamContext';
 import MonitoringPanel from '@/app/components/MonitoringPanel';
 import ErrorBoundary from '@/app/components/ErrorBoundary';
 import StrategyConfigModal from '@/app/components/StrategyConfigModal';
+import GlobalSettingsModal from '@/app/components/GlobalSettingsModal';
 import ExchangeCredentialsModal from '@/app/components/ExchangeCredentialsModal';
 import PortfolioTab from '@/app/components/tabs/PortfolioTab';
 import WatchlistTab from '@/app/components/tabs/WatchlistTab';
@@ -30,6 +31,7 @@ import {
   DEFAULT_TRADING_LIMITS,
   parseTradingLimits,
   strategyRulesToPresetConfig,
+  tradingLimitsToConfigPayload,
 } from '@/utils/tradingConfigUtils';
 
 const TELEGRAM_REFRESH_INTERVAL_MS = 20000;
@@ -1038,6 +1040,7 @@ function DashboardPageContent() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [signals, setSignals] = useState<Record<string, TradingSignals | null>>({});
   const [showSignalConfig, setShowSignalConfig] = useState(false);
+  const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showExchangeCredentialsModal, setShowExchangeCredentialsModal] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [dataSourceStatus, setDataSourceStatus] = useState<DataSourceStatus | null>(null);
@@ -4627,11 +4630,9 @@ function resolveDecisionIndexColor(value: number): string {
   const handleSaveStrategyConfig = useCallback(async (
     preset: Preset,
     riskMode: RiskMode,
-    updatedRules: StrategyRules,
-    updatedTradingLimits: typeof DEFAULT_TRADING_LIMITS
+    updatedRules: StrategyRules
   ) => {
     try {
-      // Update local state first (optimistic update)
       setPresetsConfig(prev => ({
         ...prev,
         [preset]: {
@@ -4642,26 +4643,16 @@ function resolveDecisionIndexColor(value: number): string {
           }
         }
       }));
-      setTradingLimits(updatedTradingLimits);
       
       logger.info(`Strategy config saved for ${preset} - ${riskMode}`, updatedRules);
       
-      // Save to backend - convert PresetConfig format to backend strategy_rules format
       try {
-        // Get current trading config to preserve other settings
         const currentConfig = await getTradingConfig() || {};
-        
-        // Convert preset name to lowercase (backend expects "swing", not "Swing")
         const presetLower = preset.toLowerCase();
-        
-        // Build strategy_rules structure matching backend format
         const strategyRules: Record<string, any> = currentConfig.strategy_rules || {};
-        
-        // Get notification profile from current preset config
         const currentPresetConfig = presetsConfig[preset] || PRESET_CONFIG[preset];
         const notificationProfile = currentPresetConfig?.notificationProfile || presetLower;
         
-        // Update or create preset entry
         if (!strategyRules[presetLower]) {
           strategyRules[presetLower] = {
             notificationProfile: notificationProfile,
@@ -4669,28 +4660,19 @@ function resolveDecisionIndexColor(value: number): string {
           };
         }
         
-        // Update the specific risk mode rules
         strategyRules[presetLower].rules[riskMode] = updatedRules;
         
-        // Build the config payload
         const configPayload: TradingConfig = {
           ...currentConfig,
           strategy_rules: strategyRules,
-          trading_limits: {
-            maxOpenOrdersTotal: updatedTradingLimits.maxOpenOrdersTotal,
-            maxOpenOrdersPerCoin: updatedTradingLimits.maxOpenOrdersPerCoin,
-          },
         };
         
-        // Save to backend
         const result = await saveTradingConfig(configPayload);
         
         if (result.ok) {
           logger.info(`✅ Strategy config saved to backend for ${preset} - ${riskMode}`);
           
-          // Update local state with backend response if available
           if (result.config) {
-            // Reload config to ensure sync
             const updatedConfig = await getTradingConfig();
             if (updatedConfig) {
               setTradingConfig(updatedConfig);
@@ -4700,16 +4682,13 @@ function resolveDecisionIndexColor(value: number): string {
                   PRESET_CONFIG
                 ));
               }
-              setTradingLimits(parseTradingLimits(updatedConfig.trading_limits));
             }
           }
         } else {
           logger.warn('Backend save returned ok=false');
         }
       } catch (backendError) {
-        // Log error but don't fail the UI update (optimistic update already applied)
         logger.error('Failed to save strategy config to backend:', backendError);
-        // Show user-friendly error message
         throw new Error('Failed to save to backend. Local changes saved, but may not persist after reload.');
       }
     } catch (error) {
@@ -4717,6 +4696,34 @@ function resolveDecisionIndexColor(value: number): string {
       throw error;
     }
   }, [presetsConfig]);
+
+  const handleSaveGlobalSettings = useCallback(async (
+    updatedTradingLimits: typeof DEFAULT_TRADING_LIMITS
+  ) => {
+    setTradingLimits(updatedTradingLimits);
+    setMaxOpenOrdersLimit(updatedTradingLimits.maxOpenOrdersTotal);
+    setMaxOpenOrdersPerCoin(updatedTradingLimits.maxOpenOrdersPerCoin);
+
+    const currentConfig = await getTradingConfig() || {};
+    const configPayload: TradingConfig = {
+      ...currentConfig,
+      trading_limits: tradingLimitsToConfigPayload(updatedTradingLimits),
+    };
+
+    const result = await saveTradingConfig(configPayload);
+    if (!result.ok) {
+      throw new Error('Backend rejected global settings save');
+    }
+
+    const updatedConfig = await getTradingConfig();
+    if (updatedConfig) {
+      setTradingConfig(updatedConfig);
+      const parsed = parseTradingLimits(updatedConfig.trading_limits);
+      setTradingLimits(parsed);
+      setMaxOpenOrdersLimit(parsed.maxOpenOrdersTotal);
+      setMaxOpenOrdersPerCoin(parsed.maxOpenOrdersPerCoin);
+    }
+  }, []);
 
   // Get current rules for the selected preset and risk mode
   const currentRules = presetsConfig[selectedConfigPreset]?.rules[selectedConfigRisk] || PRESET_CONFIG[selectedConfigPreset].rules[selectedConfigRisk];
@@ -4746,12 +4753,20 @@ function resolveDecisionIndexColor(value: number): string {
         {/* Header */}
         <div className="mb-4 flex justify-between items-center">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Crypto Trading Dashboard</h1>
-          <button
-            onClick={() => setShowSignalConfig(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-          >
-            ⚙️ Configure Strategy
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowGlobalSettings(true)}
+              className="px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 transition-colors"
+            >
+              ⚙️ Settings
+            </button>
+            <button
+              onClick={() => setShowSignalConfig(true)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+            >
+              📊 Configure Strategy
+            </button>
+          </div>
         </div>
 
         {/* System Health Panel */}
@@ -5302,12 +5317,18 @@ function resolveDecisionIndexColor(value: number): string {
         rules={currentRules}
         presetsConfig={presetsConfig}
         defaultPresetConfig={PRESET_CONFIG}
-        tradingLimits={tradingLimits}
         onActiveStrategyChange={(preset, riskMode) => {
           setSelectedConfigPreset(preset);
           setSelectedConfigRisk(riskMode);
         }}
         onSave={handleSaveStrategyConfig}
+      />
+
+      <GlobalSettingsModal
+        isOpen={showGlobalSettings}
+        onClose={() => setShowGlobalSettings(false)}
+        tradingLimits={tradingLimits}
+        onSave={handleSaveGlobalSettings}
       />
 
       {/* Exchange credentials: persisted to runtime.env; backend restart required for portfolio sync */}

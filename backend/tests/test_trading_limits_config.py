@@ -1,4 +1,4 @@
-"""Tests for trading limits config resolution and system_core guard wiring."""
+"""Tests for trading limits config resolution and guardrail wiring."""
 
 import os
 from unittest.mock import MagicMock, patch
@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.services import system_core_trade_guards as scg
 from app.services.config_loader import get_trading_limits
+from app.utils import trading_guardrails as tg
 
 
 @pytest.fixture
@@ -18,20 +19,55 @@ def mock_db():
 class TestGetTradingLimits:
     def test_defaults_when_config_empty(self):
         with patch("app.services.config_loader.load_config", return_value={}):
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("SYSTEM_CORE_MAX_OPEN_TRADES", None)
-                os.environ.pop("SYSTEM_CORE_MAX_OPEN_PER_COIN", None)
+            with patch.dict(
+                os.environ,
+                {
+                    "MAX_OPEN_ORDERS_TOTAL": "10",
+                    "MAX_OPEN_ORDERS_PER_SYMBOL": "3",
+                    "MAX_USD_PER_ORDER": "100",
+                    "MIN_SECONDS_BETWEEN_ORDERS": "600",
+                    "MAX_ORDERS_PER_SYMBOL_PER_DAY": "2",
+                },
+                clear=False,
+            ):
                 limits = get_trading_limits()
-        assert limits == {"maxOpenOrdersTotal": 5, "maxOpenOrdersPerCoin": 1}
+        assert limits == {
+            "maxOpenOrdersTotal": 10,
+            "maxOpenOrdersPerCoin": 3,
+            "maxUsdPerOrder": 100.0,
+            "minSecondsBetweenOrders": 600,
+            "maxOrdersPerSymbolPerDay": 2,
+        }
 
-    def test_config_overrides_env(self):
+    def test_config_overrides_env_for_per_coin(self):
         with patch(
             "app.services.config_loader.load_config",
-            return_value={"trading_limits": {"maxOpenOrdersTotal": 8, "maxOpenOrdersPerCoin": 2}},
+            return_value={
+                "trading_limits": {
+                    "maxOpenOrdersTotal": 8,
+                    "maxOpenOrdersPerCoin": 2,
+                    "maxUsdPerOrder": 250,
+                    "minSecondsBetweenOrders": 120,
+                    "maxOrdersPerSymbolPerDay": 5,
+                }
+            },
         ):
-            with patch.dict(os.environ, {"SYSTEM_CORE_MAX_OPEN_TRADES": "3"}, clear=False):
+            with patch.dict(os.environ, {"MAX_OPEN_ORDERS_TOTAL": "10"}, clear=False):
                 limits = get_trading_limits()
-        assert limits == {"maxOpenOrdersTotal": 8, "maxOpenOrdersPerCoin": 2}
+        assert limits["maxOpenOrdersTotal"] == 8
+        assert limits["maxOpenOrdersPerCoin"] == 2
+        assert limits["maxUsdPerOrder"] == 250.0
+        assert limits["minSecondsBetweenOrders"] == 120
+        assert limits["maxOrdersPerSymbolPerDay"] == 5
+
+    def test_env_ceiling_caps_max_open_orders_total(self):
+        with patch(
+            "app.services.config_loader.load_config",
+            return_value={"trading_limits": {"maxOpenOrdersTotal": 15}},
+        ):
+            with patch.dict(os.environ, {"MAX_OPEN_ORDERS_TOTAL": "10"}, clear=False):
+                limits = get_trading_limits()
+        assert limits["maxOpenOrdersTotal"] == 10
 
     def test_env_fallback_when_config_missing_fields(self):
         with patch(
@@ -40,11 +76,41 @@ class TestGetTradingLimits:
         ):
             with patch.dict(
                 os.environ,
-                {"SYSTEM_CORE_MAX_OPEN_TRADES": "7", "SYSTEM_CORE_MAX_OPEN_PER_COIN": "3"},
+                {
+                    "MAX_OPEN_ORDERS_TOTAL": "7",
+                    "MAX_OPEN_ORDERS_PER_SYMBOL": "4",
+                },
                 clear=False,
             ):
                 limits = get_trading_limits()
-        assert limits == {"maxOpenOrdersTotal": 7, "maxOpenOrdersPerCoin": 3}
+        assert limits["maxOpenOrdersTotal"] == 7
+        assert limits["maxOpenOrdersPerCoin"] == 4
+
+
+class TestTradingGuardrailsReadConfig:
+    def test_resolve_max_open_orders_total_from_config(self):
+        with patch(
+            "app.services.config_loader.get_trading_limits",
+            return_value={"maxOpenOrdersTotal": 12, "maxOpenOrdersPerCoin": 3},
+        ):
+            assert tg.resolve_max_open_orders_total() == 12
+
+    def test_blocks_at_configured_total(self, mock_db):
+        with patch.object(tg, "resolve_max_open_orders_total", return_value=3):
+            with patch(
+                "app.utils.trading_guardrails.count_total_open_positions",
+                return_value=3,
+            ):
+                allowed, reason = tg._check_risk_limits(
+                    mock_db,
+                    "ETH_USDT",
+                    50.0,
+                    "BUY",
+                    ignore_daily_limit=True,
+                    ignore_cooldown=True,
+                )
+        assert allowed is False
+        assert "MAX_OPEN_ORDERS_TOTAL" in (reason or "")
 
 
 class TestMaxOpenTradesFromConfig:

@@ -438,31 +438,33 @@ def _check_trade_system_health(db: Session) -> Dict:
         open_orders = 0
 
     max_open_orders = None
+    max_open_orders_per_symbol = None
     try:
         from app.services.config_loader import get_trading_limits
 
         limits = get_trading_limits()
-        if limits and limits.get("maxOpenOrdersTotal") is not None:
+        if limits.get("maxOpenOrdersTotal") is not None:
             max_open_orders = int(limits["maxOpenOrdersTotal"])
+        if limits.get("maxOpenOrdersPerCoin") is not None:
+            max_open_orders_per_symbol = int(limits["maxOpenOrdersPerCoin"])
     except Exception:
         pass
     if max_open_orders is None:
         try:
-            # Same env the trade guardrail uses (can_place_real_order / TRADE BLOCKED).
-            from app.utils.trading_guardrails import MAX_OPEN_ORDERS_TOTAL
+            from app.utils.trading_guardrails import resolve_max_open_orders_total
 
-            max_open_orders = int(MAX_OPEN_ORDERS_TOTAL)
+            max_open_orders = resolve_max_open_orders_total()
         except Exception:
             pass
+
+    if max_open_orders_per_symbol is None:
+        max_open_orders_per_symbol = int(os.getenv("MAX_OPEN_ORDERS_PER_SYMBOL", "3"))
 
     status = "PASS"
     if not order_intents_table_exists:
         status = "FAIL"  # Critical table missing
     elif max_open_orders is not None and open_orders > max_open_orders:
         status = "WARN"
-
-    # Keep in sync with SignalMonitorService.__init__ MAX_OPEN_ORDERS_PER_SYMBOL.
-    max_open_orders_per_symbol = 3
 
     return {
         "status": status,

@@ -1142,6 +1142,9 @@ export interface TradingConfig {
   trading_limits?: {
     maxOpenOrdersTotal?: number;
     maxOpenOrdersPerCoin?: number;
+    maxUsdPerOrder?: number;
+    minSecondsBetweenOrders?: number;
+    maxOrdersPerSymbolPerDay?: number;
   };
   strategy_rules?: Record<string, unknown>;
   [key: string]: unknown;
