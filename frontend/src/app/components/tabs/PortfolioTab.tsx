@@ -214,10 +214,11 @@ export default function PortfolioTab({
     }
   };
 
-  const renderTradeSection = (assetCoin: string) => {
+  const renderTradeSection = (assetCoin: string, isShortPosition: boolean) => {
     const cache = tradeCache[assetCoin];
     const trades = cache?.orders ?? filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
     const currentPrice = getCurrentPriceForAsset(assetCoin);
+    const positionHint = isShortPosition ? 'SHORT' : 'LONG';
 
     if (cache?.loading && trades.length === 0) {
       return (
@@ -255,10 +256,13 @@ export default function PortfolioTab({
             const value = qty * price;
             const executionTime = getOrderExecutionTime(order);
             const executionDate = executionTime ? new Date(executionTime) : null;
-            const pnlData = calculateOrderProfitLoss(order, trades, currentPrice);
-            const hasPnl = pnlData.pnl !== 0 || pnlData.pnlPercent !== 0 || order.side?.toUpperCase() === 'BUY';
+            const pnlData = calculateOrderProfitLoss(order, trades, currentPrice, { positionHint });
+            const hasPnl = pnlData.available;
             const pnlPositive = pnlData.pnl >= 0;
             const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
+            const unrealizedTitle = isShortPosition
+              ? 'P&L no realizado del short vs precio actual'
+              : 'P&L no realizado vs precio actual';
 
             return (
               <tr key={order.order_id} className="border-t border-gray-200 dark:border-gray-700">
@@ -278,7 +282,7 @@ export default function PortfolioTab({
                     <span className={`font-medium ${pnlColorClass}`}>
                       {pnlPositive ? '+' : ''}{pnlData.pnlPercent.toFixed(2)}%
                       {!pnlData.isRealized && (
-                        <span className="ml-1 text-gray-400 font-normal" title="P&L no realizado vs precio actual">
+                        <span className="ml-1 text-gray-400 font-normal" title={unrealizedTitle}>
                           (no realizado)
                         </span>
                       )}
@@ -569,7 +573,7 @@ export default function PortfolioTab({
                                   <span className="ml-2 font-normal normal-case text-gray-400">(actualizando...)</span>
                                 )}
                               </div>
-                              {renderTradeSection(asset.coin)}
+                              {renderTradeSection(asset.coin, isShort)}
                               {cache?.error && (
                                 <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">
                                   {cache.error}
