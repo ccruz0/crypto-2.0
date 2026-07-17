@@ -1,32 +1,71 @@
 import json
 import os
+import logging
 from pathlib import Path
 from copy import deepcopy
 from typing import Dict, Any, Optional, Tuple
 
 # Determine config file path: use absolute path based on app root
-# In container: /app/trading_config.json
-# In local dev: backend/trading_config.json (relative to project root)
-# Try multiple locations for robustness
+# Priority:
+#   1. TRADING_CONFIG_PATH env (compose mounts persistent volume at /data/trading_config.json)
+#   2. Existing file in well-known locations
+#   3. Container / local defaults
+# Without (1), dashboard strategy edits write to the image layer (/app/...) and are
+# wiped on every backend recreate — strategies appear to "change by themselves".
 _app_root = Path(__file__).parent.parent.parent  # backend/app/services -> backend/
-_possible_paths = [
-    Path("/app/trading_config.json"),  # Container absolute path
-    _app_root / "trading_config.json",  # Local dev: backend/trading_config.json
-    Path("trading_config.json"),  # Current working directory (fallback)
+_SEED_CANDIDATES = [
+    Path("/app/trading_config.json"),  # Baked image copy
+    _app_root / "trading_config.json",  # Local / repo copy
+    Path("trading_config.json"),
 ]
+_FALLBACK_CANDIDATES = list(_SEED_CANDIDATES)
 
-CONFIG_PATH = None
-for path in _possible_paths:
-    if path.exists():
-        CONFIG_PATH = path
-        break
 
-if CONFIG_PATH is None:
-    # Default to app root if file doesn't exist yet
-    CONFIG_PATH = _app_root / "trading_config.json"
-    # But if we're in container, prefer /app
+def _resolve_config_path() -> Path:
+    env_path = (os.environ.get("TRADING_CONFIG_PATH") or "").strip()
+    if env_path:
+        return Path(env_path)
+    for path in _FALLBACK_CANDIDATES:
+        if path.exists():
+            return path
     if Path("/app").exists():
-        CONFIG_PATH = Path("/app/trading_config.json")
+        return Path("/app/trading_config.json")
+    return _app_root / "trading_config.json"
+
+
+def get_config_path() -> Path:
+    """Return the active trading config path (honors TRADING_CONFIG_PATH)."""
+    return _resolve_config_path()
+
+
+CONFIG_PATH = _resolve_config_path()
+
+
+def _seed_config_file(target: Path) -> bool:
+    """Copy baked/repo config into target when the persistent path is empty."""
+    logger = logging.getLogger(__name__)
+    try:
+        target_resolved = target.resolve() if target.exists() else target.absolute()
+    except OSError:
+        target_resolved = target.absolute()
+    for seed in _SEED_CANDIDATES:
+        try:
+            if not seed.exists():
+                continue
+            if seed.resolve() == target_resolved:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(seed.read_text())
+            logger.info(
+                "Seeded trading config at %s from %s",
+                target,
+                seed,
+            )
+            return True
+        except OSError as exc:
+            logger.warning("Could not seed trading config from %s: %s", seed, exc)
+    return False
+
 
 _DEFAULT_CONFIG = {
     "version": 1,
@@ -393,24 +432,31 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_config() -> Dict[str, Any]:
-    import logging
     logger = logging.getLogger(__name__)
-    
+    config_path = get_config_path()
+    # Keep module-level CONFIG_PATH aligned for callers/tests that import it.
+    global CONFIG_PATH
+    CONFIG_PATH = config_path
+
     # Log config path at first load
     if not hasattr(load_config, "_path_logged"):
-        logger.info(f"Config file path: {CONFIG_PATH.absolute()}")
+        logger.info(f"Config file path: {config_path.absolute()}")
         load_config._path_logged = True
-    
-    if not CONFIG_PATH.exists():
-        # Create default config and normalize it
-        normalized = _normalize_config(deepcopy(_DEFAULT_CONFIG))
-        # Write the normalized version to disk to ensure consistency
-        # This prevents repeated migrations on subsequent loads
-        CONFIG_PATH.write_text(json.dumps(normalized, indent=2))
-        logger.info("Created new config file with normalized structure (including strategy_rules)")
-        return normalized
-    
-    cfg = json.loads(CONFIG_PATH.read_text())
+
+    if not config_path.exists():
+        seeded = _seed_config_file(config_path)
+        if not seeded:
+            # Create default config and normalize it
+            normalized = _normalize_config(deepcopy(_DEFAULT_CONFIG))
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(normalized, indent=2))
+            logger.info(
+                "Created new config file with normalized structure at %s",
+                config_path,
+            )
+            return normalized
+
+    cfg = json.loads(config_path.read_text())
     normalized = _normalize_config(cfg)
     return normalized
 
@@ -436,14 +482,14 @@ def save_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         This ensures callers can use the returned value to get the exact
         structure that was persisted, including any fields added by normalization.
     """
-    import logging
+    global CONFIG_PATH
     logger = logging.getLogger(__name__)
-    
+
     try:
         # Normalize config before saving to ensure strategy_rules exists
         # Make a copy to avoid modifying the input dict
         normalized_cfg = _normalize_config(deepcopy(cfg))
-        
+
         # Ensure strategy_rules is always present
         if "strategy_rules" not in normalized_cfg or not normalized_cfg["strategy_rules"]:
             logger.warning("save_config: No strategy_rules after normalization, this should not happen")
@@ -454,7 +500,7 @@ def save_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 # If still missing after re-normalization, this is a critical error
                 logger.error("save_config: strategy_rules still missing after re-normalization - this is a critical error")
                 raise ValueError("strategy_rules is missing and could not be created")
-        
+
         # Log volumeMinRatio values for each preset/riskMode
         strategy_rules = normalized_cfg.get("strategy_rules", {})
         if strategy_rules:
@@ -464,22 +510,28 @@ def save_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                         if isinstance(rules, dict):
                             vol_ratio = rules.get("volumeMinRatio")
                             logger.info(f"[VOLUME] Saving {preset_name}/{risk_mode} volumeMinRatio={vol_ratio}")
-        
-        # Write config to file
+
+        # Write config to file (persistent volume when TRADING_CONFIG_PATH is set)
         try:
+            config_path = get_config_path()
+            CONFIG_PATH = config_path
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             config_json = json.dumps(normalized_cfg, indent=2)
-            CONFIG_PATH.write_text(config_json)
-            logger.debug(f"Config saved to {CONFIG_PATH.absolute()}")
+            config_path.write_text(config_json)
+            logger.debug(f"Config saved to {config_path.absolute()}")
         except (IOError, OSError, PermissionError) as e:
-            logger.error(f"Failed to write config file to {CONFIG_PATH.absolute()}: {e}", exc_info=True)
+            logger.error(
+                f"Failed to write config file to {get_config_path().absolute()}: {e}",
+                exc_info=True,
+            )
             raise
         except (TypeError, ValueError) as e:
             logger.error(f"Failed to serialize config to JSON: {e}", exc_info=True)
             raise
-        
+
         # Return the normalized config that was actually saved
         return normalized_cfg
-    
+
     except Exception as e:
         logger.error(f"save_config failed: {e}", exc_info=True)
         raise
