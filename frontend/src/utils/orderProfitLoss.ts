@@ -4,6 +4,18 @@ export interface OrderProfitLoss {
   pnl: number;
   pnlPercent: number;
   isRealized: boolean;
+  /** False when P/L could not be computed (UI should show —). */
+  available: boolean;
+}
+
+export type PositionHint = 'LONG' | 'SHORT';
+
+export interface CalculateOrderProfitLossOptions {
+  /**
+   * When SHORT, use short-open / short-cover semantics.
+   * Portfolio rows with negative balance should pass SHORT.
+   */
+  positionHint?: PositionHint | null;
 }
 
 const PROTECTION_ROLES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
@@ -14,6 +26,16 @@ const TRIGGER_ORDER_TYPES = new Set([
   'TAKE_PROFIT',
   'TAKE_PROFIT_LIMIT',
 ]);
+
+const TIME_WINDOW_MS = 5 * 60 * 1000;
+const VOLUME_TOLERANCE = 0.20;
+
+const UNAVAILABLE_PNL: OrderProfitLoss = {
+  pnl: 0,
+  pnlPercent: 0,
+  isRealized: false,
+  available: false,
+};
 
 export function getAssetBaseSymbol(coin: string | null | undefined): string {
   if (!coin) return '';
@@ -64,82 +86,164 @@ export function getOrderExecutionTime(order: OpenOrder): number {
   return typeof raw === 'number' ? raw : new Date(raw).getTime();
 }
 
+function filterFilledSideOrders(
+  orders: OpenOrder[],
+  symbol: string,
+  side: 'BUY' | 'SELL'
+): OpenOrder[] {
+  return orders.filter(
+    (o) =>
+      o.instrument_name === symbol &&
+      o.side?.toUpperCase() === side &&
+      (o.status || '').toUpperCase() === 'FILLED'
+  );
+}
+
+/**
+ * Match a counterpart order by creation-time proximity, else similar volume.
+ * Prefer counterparts executed before `orderTime`.
+ */
+function findMatchedCounterpart(
+  order: OpenOrder,
+  counterparts: OpenOrder[]
+): OpenOrder | null {
+  if (counterparts.length === 0) return null;
+
+  const orderQuantity = getOrderQuantity(order);
+  const orderTime = getOrderExecutionTime(order);
+  const orderCreateTime = order.create_time || orderTime;
+
+  const paired = counterparts.filter((candidate) => {
+    const candidateCreateTime = candidate.create_time || candidate.update_time || 0;
+    return Math.abs(orderCreateTime - candidateCreateTime) <= TIME_WINDOW_MS;
+  });
+
+  if (paired.length > 0) {
+    return paired.reduce((best, current) => {
+      const bestQty = getOrderQuantity(best);
+      const currentQty = getOrderQuantity(current);
+      return Math.abs(currentQty - orderQuantity) < Math.abs(bestQty - orderQuantity)
+        ? current
+        : best;
+    });
+  }
+
+  const similarVolume = counterparts
+    .filter((candidate) => {
+      const qty = getOrderQuantity(candidate);
+      if (qty <= 0 || orderQuantity <= 0) return false;
+      return Math.abs(qty - orderQuantity) / orderQuantity <= VOLUME_TOLERANCE;
+    })
+    .sort((a, b) => {
+      const aTime = getOrderExecutionTime(a);
+      const bTime = getOrderExecutionTime(b);
+      if (aTime < orderTime && bTime >= orderTime) return -1;
+      if (bTime < orderTime && aTime >= orderTime) return 1;
+      if (aTime < orderTime && bTime < orderTime) return bTime - aTime;
+      return aTime - bTime;
+    });
+
+  return similarVolume[0] ?? null;
+}
+
+function unrealizedShortPnl(
+  sellPrice: number,
+  quantity: number,
+  currentPrice: number
+): OrderProfitLoss {
+  const pnl = (sellPrice - currentPrice) * quantity;
+  const pnlPercent = ((sellPrice - currentPrice) / sellPrice) * 100;
+  return { pnl, pnlPercent, isRealized: false, available: true };
+}
+
+function realizedShortCoverPnl(
+  sellPrice: number,
+  buyPrice: number,
+  quantity: number
+): OrderProfitLoss {
+  const pnl = (sellPrice - buyPrice) * quantity;
+  const pnlPercent = ((sellPrice - buyPrice) / sellPrice) * 100;
+  return { pnl, pnlPercent, isRealized: true, available: true };
+}
+
+function realizedLongExitPnl(
+  sellPrice: number,
+  buyPrice: number,
+  quantity: number
+): OrderProfitLoss {
+  const pnl = (sellPrice - buyPrice) * quantity;
+  const pnlPercent = ((sellPrice - buyPrice) / buyPrice) * 100;
+  return { pnl, pnlPercent, isRealized: true, available: true };
+}
+
+function unrealizedLongPnl(
+  buyPrice: number,
+  quantity: number,
+  currentPrice: number
+): OrderProfitLoss {
+  const pnl = (currentPrice - buyPrice) * quantity;
+  const pnlPercent = ((currentPrice - buyPrice) / buyPrice) * 100;
+  return { pnl, pnlPercent, isRealized: false, available: true };
+}
+
 export function calculateOrderProfitLoss(
   order: OpenOrder,
   allOrders: OpenOrder[],
-  currentPrice?: number | null
+  currentPrice?: number | null,
+  options?: CalculateOrderProfitLossOptions
 ): OrderProfitLoss {
   const orderSymbol = order.instrument_name;
   const orderSide = order.side?.toUpperCase();
   const orderPrice = getOrderPrice(order);
   const orderQuantity = getOrderQuantity(order);
-  const orderTime = getOrderExecutionTime(order);
+  const positionHint = options?.positionHint ?? null;
+  const isShortContext = positionHint === 'SHORT';
 
   if (orderSide === 'SELL' && orderPrice > 0 && orderQuantity > 0) {
-    const TIME_WINDOW_MS = 5 * 60 * 1000;
-    const VOLUME_TOLERANCE = 0.20;
-    const orderCreateTime = order.create_time || orderTime;
-
-    const allBuyOrders = allOrders.filter(
-      (o) =>
-        o.instrument_name === orderSymbol &&
-        o.side?.toUpperCase() === 'BUY' &&
-        o.status === 'FILLED'
-    );
-
-    if (allBuyOrders.length > 0) {
-      let matchedBuyOrder: OpenOrder | null = null;
-
-      const pairedBuyOrders = allBuyOrders.filter((buyOrder) => {
-        const buyCreateTime = buyOrder.create_time || buyOrder.update_time || 0;
-        return Math.abs(orderCreateTime - buyCreateTime) <= TIME_WINDOW_MS;
-      });
-
-      if (pairedBuyOrders.length > 0) {
-        matchedBuyOrder = pairedBuyOrders.reduce((best, current) => {
-          const bestQty = getOrderQuantity(best);
-          const currentQty = getOrderQuantity(current);
-          return Math.abs(currentQty - orderQuantity) < Math.abs(bestQty - orderQuantity)
-            ? current
-            : best;
-        });
-      } else {
-        const similarVolumeBuyOrders = allBuyOrders
-          .filter((buyOrder) => {
-            const buyQty = getOrderQuantity(buyOrder);
-            if (buyQty <= 0) return false;
-            return Math.abs(buyQty - orderQuantity) / orderQuantity <= VOLUME_TOLERANCE;
-          })
-          .sort((a, b) => {
-            const aTime = getOrderExecutionTime(a);
-            const bTime = getOrderExecutionTime(b);
-            if (aTime < orderTime && bTime >= orderTime) return -1;
-            if (bTime < orderTime && aTime >= orderTime) return 1;
-            if (aTime < orderTime && bTime < orderTime) return bTime - aTime;
-            return aTime - bTime;
-          });
-
-        if (similarVolumeBuyOrders.length > 0) {
-          matchedBuyOrder = similarVolumeBuyOrders[0];
-        }
+    if (isShortContext) {
+      // Open / add short: mark-to-market vs current price.
+      if (currentPrice && currentPrice > 0) {
+        return unrealizedShortPnl(orderPrice, orderQuantity, currentPrice);
       }
+      return UNAVAILABLE_PNL;
+    }
 
-      if (matchedBuyOrder) {
-        const buyPrice = getOrderPrice(matchedBuyOrder);
-        if (buyPrice > 0) {
-          const pnl = orderPrice * orderQuantity - buyPrice * orderQuantity;
-          const pnlPercent = ((orderPrice - buyPrice) / buyPrice) * 100;
-          return { pnl, pnlPercent, isRealized: true };
-        }
+    const matchedBuy = findMatchedCounterpart(
+      order,
+      filterFilledSideOrders(allOrders, orderSymbol, 'BUY')
+    );
+    if (matchedBuy) {
+      const buyPrice = getOrderPrice(matchedBuy);
+      if (buyPrice > 0) {
+        return realizedLongExitPnl(orderPrice, buyPrice, orderQuantity);
       }
     }
-  } else if (orderSide === 'BUY' && orderPrice > 0 && orderQuantity > 0 && currentPrice && currentPrice > 0) {
-    const pnl = (currentPrice - orderPrice) * orderQuantity;
-    const pnlPercent = ((currentPrice - orderPrice) / orderPrice) * 100;
-    return { pnl, pnlPercent, isRealized: false };
+
+    return UNAVAILABLE_PNL;
   }
 
-  return { pnl: 0, pnlPercent: 0, isRealized: false };
+  if (orderSide === 'BUY' && orderPrice > 0 && orderQuantity > 0) {
+    if (isShortContext) {
+      // Cover short: pair with a prior/similar SELL.
+      const matchedSell = findMatchedCounterpart(
+        order,
+        filterFilledSideOrders(allOrders, orderSymbol, 'SELL')
+      );
+      if (matchedSell) {
+        const sellPrice = getOrderPrice(matchedSell);
+        if (sellPrice > 0) {
+          return realizedShortCoverPnl(sellPrice, orderPrice, orderQuantity);
+        }
+      }
+      return UNAVAILABLE_PNL;
+    }
+
+    if (currentPrice && currentPrice > 0) {
+      return unrealizedLongPnl(orderPrice, orderQuantity, currentPrice);
+    }
+  }
+
+  return UNAVAILABLE_PNL;
 }
 
 export function filterFilledEntryOrdersForAsset(
