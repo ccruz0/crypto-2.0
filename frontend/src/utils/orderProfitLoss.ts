@@ -16,6 +16,15 @@ export interface CalculateOrderProfitLossOptions {
    * Portfolio rows with negative balance should pass SHORT.
    */
   positionHint?: PositionHint | null;
+  /** When set, use this qty for P/L instead of the order's full filled qty. */
+  openQty?: number | null;
+}
+
+/** One still-open inventory lot after FIFO netting of buys vs sells. */
+export interface OpenPositionLot {
+  order: OpenOrder;
+  remainingQty: number;
+  side: 'BUY' | 'SELL';
 }
 
 const PROTECTION_ROLES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
@@ -29,6 +38,7 @@ const TRIGGER_ORDER_TYPES = new Set([
 
 const TIME_WINDOW_MS = 5 * 60 * 1000;
 const VOLUME_TOLERANCE = 0.20;
+const QTY_EPS = 1e-12;
 
 const UNAVAILABLE_PNL: OrderProfitLoss = {
   pnl: 0,
@@ -186,6 +196,116 @@ function unrealizedLongPnl(
   return { pnl, pnlPercent, isRealized: false, available: true };
 }
 
+/**
+ * Rebuild still-open lots with the same FIFO buy/sell netting used by the
+ * backend Expected Take Profit path. Fully liquidated rounds drop out.
+ */
+export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
+  const chronological = [...orders]
+    .filter(isFilledEntryOrder)
+    .sort((a, b) => getOrderExecutionTime(a) - getOrderExecutionTime(b));
+
+  const buys = chronological.filter((o) => (o.side || '').toUpperCase() === 'BUY');
+  const sells = chronological.filter((o) => (o.side || '').toUpperCase() === 'SELL');
+
+  const sellRemaining = new Map<string, number>();
+  sells.forEach((sell, index) => {
+    const key = sell.order_id || `sell-${index}`;
+    sellRemaining.set(key, getOrderQuantity(sell));
+  });
+
+  const openLots: OpenPositionLot[] = [];
+
+  for (const buy of buys) {
+    let remaining = getOrderQuantity(buy);
+    for (let i = 0; i < sells.length; i++) {
+      if (remaining <= QTY_EPS) break;
+      const sell = sells[i];
+      const key = sell.order_id || `sell-${i}`;
+      const sellQty = sellRemaining.get(key) ?? 0;
+      if (sellQty <= QTY_EPS) continue;
+      const applied = Math.min(remaining, sellQty);
+      remaining -= applied;
+      sellRemaining.set(key, sellQty - applied);
+    }
+    if (remaining > QTY_EPS && getOrderPrice(buy) > 0) {
+      openLots.push({ order: buy, remainingQty: remaining, side: 'BUY' });
+    }
+  }
+
+  for (let i = 0; i < sells.length; i++) {
+    const sell = sells[i];
+    const key = sell.order_id || `sell-${i}`;
+    const remaining = sellRemaining.get(key) ?? 0;
+    if (remaining > QTY_EPS && getOrderPrice(sell) > 0) {
+      openLots.push({ order: sell, remainingQty: remaining, side: 'SELL' });
+    }
+  }
+
+  return openLots.sort(
+    (a, b) => getOrderExecutionTime(b.order) - getOrderExecutionTime(a.order)
+  );
+}
+
+/**
+ * Cap open lots so their remaining qty matches |balance|. Extra unmatched
+ * history (incomplete sync / dust) is trimmed oldest-first.
+ */
+export function trimOpenLotsToBalance(
+  lots: OpenPositionLot[],
+  balance: number
+): OpenPositionLot[] {
+  const target = Math.abs(balance);
+  if (!(target > QTY_EPS)) return [];
+
+  const wantShort = balance < 0;
+  const relevant = lots.filter((lot) => (wantShort ? lot.side === 'SELL' : lot.side === 'BUY'));
+  // Oldest first so we keep the lots that FIFO would still consider open vs balance.
+  const oldestFirst = [...relevant].sort(
+    (a, b) => getOrderExecutionTime(a.order) - getOrderExecutionTime(b.order)
+  );
+
+  let need = target;
+  const kept: OpenPositionLot[] = [];
+  for (const lot of oldestFirst) {
+    if (need <= QTY_EPS) break;
+    const take = Math.min(lot.remainingQty, need);
+    if (take > QTY_EPS) {
+      kept.push({ ...lot, remainingQty: take });
+      need -= take;
+    }
+  }
+
+  return kept.sort(
+    (a, b) => getOrderExecutionTime(b.order) - getOrderExecutionTime(a.order)
+  );
+}
+
+export function getOpenPositionLotsForAsset(
+  orders: OpenOrder[],
+  assetCoin: string,
+  balance: number
+): OpenPositionLot[] {
+  const filled = filterFilledEntryOrdersForAsset(orders, assetCoin);
+  const openLots = rebuildOpenLots(filled);
+  return trimOpenLotsToBalance(openLots, balance);
+}
+
+/** Unrealized P/L for a still-open lot vs mark price. */
+export function calculateOpenLotProfitLoss(
+  lot: OpenPositionLot,
+  currentPrice?: number | null
+): OrderProfitLoss {
+  const entryPrice = getOrderPrice(lot.order);
+  if (!(lot.remainingQty > QTY_EPS) || !(entryPrice > 0) || !(currentPrice && currentPrice > 0)) {
+    return UNAVAILABLE_PNL;
+  }
+  if (lot.side === 'SELL') {
+    return unrealizedShortPnl(entryPrice, lot.remainingQty, currentPrice);
+  }
+  return unrealizedLongPnl(entryPrice, lot.remainingQty, currentPrice);
+}
+
 export function calculateOrderProfitLoss(
   order: OpenOrder,
   allOrders: OpenOrder[],
@@ -195,13 +315,15 @@ export function calculateOrderProfitLoss(
   const orderSymbol = order.instrument_name;
   const orderSide = order.side?.toUpperCase();
   const orderPrice = getOrderPrice(order);
-  const orderQuantity = getOrderQuantity(order);
+  const orderQuantity =
+    options?.openQty != null && options.openQty > 0
+      ? options.openQty
+      : getOrderQuantity(order);
   const positionHint = options?.positionHint ?? null;
   const isShortContext = positionHint === 'SHORT';
 
   if (orderSide === 'SELL' && orderPrice > 0 && orderQuantity > 0) {
     if (isShortContext) {
-      // Open / add short: mark-to-market vs current price.
       if (currentPrice && currentPrice > 0) {
         return unrealizedShortPnl(orderPrice, orderQuantity, currentPrice);
       }
@@ -224,7 +346,6 @@ export function calculateOrderProfitLoss(
 
   if (orderSide === 'BUY' && orderPrice > 0 && orderQuantity > 0) {
     if (isShortContext) {
-      // Cover short: pair with a prior/similar SELL.
       const matchedSell = findMatchedCounterpart(
         order,
         filterFilledSideOrders(allOrders, orderSymbol, 'SELL')
