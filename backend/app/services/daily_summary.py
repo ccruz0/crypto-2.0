@@ -1,8 +1,11 @@
 import os
 import logging
+import re
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import pytz
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.services.telegram_notifier import telegram_notifier
 from app.services.brokers.crypto_com_trade import trade_client
@@ -16,6 +19,30 @@ logger = logging.getLogger(__name__)
 
 # Bali timezone (UTC+8)
 BALI_TZ = pytz.timezone('Asia/Makassar')  # Makassar is the same timezone as Bali (WITA)
+
+# Friendly labels for decision reason codes in the daily rollup.
+_REASON_CODE_LABELS = {
+    "GUARDRAIL_BLOCKED": "Bloqueado por guardrail",
+    "INVALID_TRADE_AMOUNT": "Amount USD no configurado",
+    "TRADE_DISABLED": "Trade desactivado",
+    "ALERTS_DISABLED": "Alertas desactivadas",
+    "ALERT_DISABLED": "Alertas desactivadas",
+    "COOLDOWN_ACTIVE": "Cooldown activo",
+    "RECENT_ORDERS_COOLDOWN": "Cooldown de órdenes recientes",
+    "ALREADY_HAS_OPEN_ORDER": "Ya hay orden abierta",
+    "MAX_OPEN_TRADES_REACHED": "Máx. trades abiertos",
+    "INSUFFICIENT_AVAILABLE_BALANCE": "Balance insuficiente",
+    "INSUFFICIENT_FUNDS": "Fondos insuficientes",
+    "MIN_NOTIONAL_NOT_MET": "Notional mínimo no cumplido",
+    "EXCHANGE_REJECTED": "Rechazado por el exchange",
+    "AUTHENTICATION_ERROR": "Error de autenticación",
+    "EXCHANGE_ERROR_UNKNOWN": "Error del exchange",
+    "RATE_LIMIT": "Rate limit",
+    "TIMEOUT": "Timeout",
+    "SAFETY_GUARD": "Safety guard",
+    "ORDER_CREATION_LOCK": "Lock de creación de orden",
+    "IDEMPOTENCY_BLOCKED": "Bloqueo de idempotencia",
+}
 
 class DailySummaryService:
     """Daily summary service for portfolio and trading activity"""
@@ -193,6 +220,171 @@ class DailySummaryService:
                 summary += f"... y {len(recent_orders) - 3} más\n"
         
         return summary
+
+    @staticmethod
+    def _normalize_block_detail(text: Optional[str]) -> str:
+        """Collapse volatile counters so (27/10) and (28/10) roll up together."""
+        if not text:
+            return ""
+        normalized = re.sub(r"\(\d+/\d+\)", "", text)
+        return " ".join(normalized.split()).strip()
+
+    @classmethod
+    def _non_executed_bucket_key(cls, row: Any) -> Tuple[str, str]:
+        """Return (group_key, display_label) for a monitoring row."""
+        reason_code = (getattr(row, "reason_code", None) or "").strip() or "UNKNOWN"
+        detail = cls._normalize_block_detail(
+            getattr(row, "throttle_reason", None) or getattr(row, "reason_message", None)
+        )
+        detail_upper = detail.upper()
+
+        if "MAX_OPEN_ORDERS_TOTAL" in detail_upper:
+            return ("MAX_OPEN_ORDERS_TOTAL", "Tope global de órdenes abiertas")
+        if "MAX_ORDERS_PER_SYMBOL" in detail_upper:
+            return ("MAX_ORDERS_PER_SYMBOL", "Tope por símbolo / día")
+        if "MAX_USD_PER_ORDER" in detail_upper:
+            return ("MAX_USD_PER_ORDER", "Tope USD por orden")
+        if "AMOUNT USD" in detail_upper or "TRADE_AMOUNT" in detail_upper:
+            return ("INVALID_TRADE_AMOUNT", "Amount USD no configurado")
+        if "MIN_SECONDS_BETWEEN" in detail_upper:
+            return ("MIN_SECONDS_BETWEEN_ORDERS", "Cooldown entre órdenes")
+
+        label = _REASON_CODE_LABELS.get(reason_code, reason_code.replace("_", " ").title())
+        if reason_code == "GUARDRAIL_BLOCKED" and detail:
+            short = detail
+            if short.lower().startswith("blocked:"):
+                short = short[8:].strip()
+            if len(short) > 60:
+                short = short[:57] + "..."
+            return (f"GUARDRAIL:{detail.lower()}", f"Guardrail: {short}")
+        return (reason_code, label)
+
+    def get_non_executed_orders_summary(
+        self,
+        db: Optional[Session] = None,
+        *,
+        hours: int = 24,
+    ) -> Dict[str, Any]:
+        """
+        Roll up order attempts that did not execute in the last `hours`.
+
+        Source: telegram_messages decision tracing / TRADE_BLOCKED / ORDER_FAILED /
+        order_skipped rows written by the signal monitor lifecycle path.
+        """
+        from app.models.telegram_message import TelegramMessage
+
+        owns_session = db is None
+        if owns_session:
+            db = SessionLocal()
+
+        try:
+            since = datetime.now(timezone.utc) - timedelta(hours=hours)
+            rows = (
+                db.query(TelegramMessage)
+                .filter(
+                    TelegramMessage.timestamp >= since,
+                    or_(
+                        TelegramMessage.decision_type.in_(("SKIPPED", "FAILED")),
+                        TelegramMessage.order_skipped.is_(True),
+                        TelegramMessage.throttle_status.in_(
+                            ("TRADE_BLOCKED", "ORDER_FAILED")
+                        ),
+                    ),
+                )
+                .order_by(TelegramMessage.timestamp.desc())
+                .limit(5000)
+                .all()
+            )
+
+            buckets: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                key, label = self._non_executed_bucket_key(row)
+                bucket = buckets.setdefault(
+                    key,
+                    {
+                        "key": key,
+                        "label": label,
+                        "count": 0,
+                        "symbols": defaultdict(int),
+                        "decision_types": defaultdict(int),
+                    },
+                )
+                bucket["count"] += 1
+                symbol = (getattr(row, "symbol", None) or "UNKNOWN").upper()
+                bucket["symbols"][symbol] += 1
+                dtype = getattr(row, "decision_type", None) or "SKIPPED"
+                bucket["decision_types"][dtype] += 1
+
+            ranked = sorted(buckets.values(), key=lambda b: b["count"], reverse=True)
+            total = sum(b["count"] for b in ranked)
+            symbols_affected = {
+                sym for b in ranked for sym in b["symbols"].keys() if sym != "UNKNOWN"
+            }
+
+            return {
+                "hours": hours,
+                "total_events": total,
+                "unique_symbols": len(symbols_affected),
+                "buckets": ranked,
+            }
+        except Exception as exc:
+            logger.error("Failed to build non-executed orders summary: %s", exc, exc_info=True)
+            return {
+                "hours": hours,
+                "total_events": 0,
+                "unique_symbols": 0,
+                "buckets": [],
+                "error": str(exc),
+            }
+        finally:
+            if owns_session and db is not None:
+                db.close()
+
+    def format_non_executed_orders_summary(self, rollup: Optional[Dict[str, Any]]) -> str:
+        """Format non-executed order rollup for the daily Telegram message."""
+        if not rollup:
+            return ""
+
+        hours = int(rollup.get("hours") or 24)
+        total = int(rollup.get("total_events") or 0)
+        if rollup.get("error") and total == 0:
+            return (
+                f"🚫 **Órdenes no ejecutadas ({hours}h)**\n"
+                f"⚠️ No se pudo generar el resumen: {str(rollup['error'])[:120]}\n"
+            )
+
+        if total == 0:
+            return (
+                f"🚫 **Órdenes no ejecutadas ({hours}h)**\n"
+                "✅ Ningún intento de orden bloqueado o fallido\n"
+            )
+
+        unique_symbols = int(rollup.get("unique_symbols") or 0)
+        lines = [
+            f"🚫 **Órdenes no ejecutadas ({hours}h):** {total} intento(s)",
+            f"📊 Símbolos afectados: {unique_symbols}",
+            "",
+        ]
+
+        for bucket in (rollup.get("buckets") or [])[:8]:
+            count = bucket["count"]
+            label = bucket["label"]
+            symbol_counts = sorted(
+                bucket["symbols"].items(), key=lambda item: item[1], reverse=True
+            )
+            top_symbols = [sym for sym, _ in symbol_counts[:3]]
+            extra = len(symbol_counts) - len(top_symbols)
+            symbols_text = ", ".join(top_symbols) if top_symbols else "N/A"
+            if extra > 0:
+                symbols_text += f" +{extra}"
+            lines.append(f"• {label} — {count}× ({symbols_text})")
+
+        remaining = len(rollup.get("buckets") or []) - 8
+        if remaining > 0:
+            lines.append(f"... y {remaining} motivo(s) más")
+
+        lines.append("")
+        return "\n".join(lines)
     
     def send_daily_summary(self):
         """Send daily summary to Telegram"""
@@ -204,6 +396,7 @@ class DailySummaryService:
             
             # Check if there were errors but we still have some data
             errors = portfolio_data.get('errors', []) if portfolio_data else []
+            non_executed = self.get_non_executed_orders_summary(hours=24)
             
             # Create summary message
             message = f"🌅 **Resumen Diario - {datetime.now().strftime('%d/%m/%Y')}**\n\n"
@@ -215,7 +408,8 @@ class DailySummaryService:
                 message += "• Problemas de conexión con el exchange\n"
                 message += "• Error de autenticación\n"
                 message += "• El servicio de trading no está disponible\n\n"
-                message += f"⏰ Generado: {datetime.now().strftime('%H:%M:%S')}\n"
+                message += self.format_non_executed_orders_summary(non_executed)
+                message += f"\n⏰ Generado: {datetime.now().strftime('%H:%M:%S')}\n"
                 message += "🤖 Trading Bot Automático"
                 
                 logger.warning("Daily summary: No portfolio data available, sending minimal summary")
@@ -244,6 +438,9 @@ class DailySummaryService:
             else:
                 message += "📋 **Órdenes**\n"
                 message += "ℹ️ No hay órdenes activas o recientes para mostrar\n"
+
+            message += "\n"
+            message += self.format_non_executed_orders_summary(non_executed)
             
             # Add footer
             message += f"\n⏰ Generado: {datetime.now().strftime('%H:%M:%S')}"

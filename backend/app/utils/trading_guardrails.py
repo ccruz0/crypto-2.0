@@ -56,7 +56,7 @@ def _normalize_trade_block_reason_for_dedup(reason: str) -> str:
 
 
 def _is_max_open_orders_total_block(*reasons: Optional[str]) -> bool:
-    """Host-wide open-order cap — one incident, not one per symbol."""
+    """Host-wide open-order cap — chronic while over limit; covered by daily summary."""
     haystack = " ".join(r for r in reasons if r).upper()
     return "MAX_OPEN_ORDERS_TOTAL" in haystack
 
@@ -64,9 +64,6 @@ def _is_max_open_orders_total_block(*reasons: Optional[str]) -> bool:
 def _trade_block_alert_dedup_key(symbol: str, side: str, *reasons: Optional[str]) -> str:
     primary_reason = next((r for r in reasons if r), "")
     normalized = _normalize_trade_block_reason_for_dedup(primary_reason)
-    # Global cap is host-wide: collapse all symbols/sides into one cooldown key.
-    if "max_open_orders_total" in normalized:
-        return f"GLOBAL:{normalized}"
     return f"{symbol.upper()}:{side.upper()}:{normalized}"
 
 
@@ -76,39 +73,24 @@ def should_send_trade_block_telegram_alert(
     *reasons: Optional[str],
     db: Optional[Session] = None,
 ) -> bool:
-    """Return True when a TRADE BLOCKED Telegram alert should be sent (expected-state + cooldown)."""
+    """Return True when a TRADE BLOCKED Telegram alert should be sent (expected-state + cooldown).
+
+    MAX_OPEN_ORDERS_TOTAL is never sent live — it is rolled into the daily summary.
+    Lifecycle events are still persisted for that rollup.
+    """
     if not should_notify_trade_block_to_telegram(*reasons):
         return False
 
-    key = _trade_block_alert_dedup_key(symbol, side, *reasons)
-
-    # Durable claim so redeploys do not re-page every symbol while still over cap.
+    # Chronic host-wide cap: audit via telegram_messages + daily summary only.
     if _is_max_open_orders_total_block(*reasons):
-        ttl_minutes = max(1, _TRADE_BLOCK_ALERT_COOLDOWN_SECONDS // 60)
-        try:
-            from app.services.telegram_event_dedup import claim_telegram_event
+        logger.debug(
+            "TRADE_BLOCKED Telegram suppressed (daily summary): %s %s — MAX_OPEN_ORDERS_TOTAL",
+            symbol,
+            side,
+        )
+        return False
 
-            allowed = claim_telegram_event(
-                db,
-                "trade_block:max_open_orders_total",
-                ttl_minutes=ttl_minutes,
-                action="trade_block",
-            )
-            if allowed:
-                _trade_block_alert_times[key] = time.time()
-            else:
-                logger.debug(
-                    "TRADE_BLOCKED Telegram suppressed (global cap claim): %s %s",
-                    symbol,
-                    side,
-                )
-            return allowed
-        except Exception as exc:
-            logger.warning(
-                "TRADE_BLOCKED global claim failed (%s); falling back to memory cooldown",
-                exc,
-            )
-
+    key = _trade_block_alert_dedup_key(symbol, side, *reasons)
     last_sent = _trade_block_alert_times.get(key, 0.0)
     if time.time() - last_sent < _TRADE_BLOCK_ALERT_COOLDOWN_SECONDS:
         logger.debug(
