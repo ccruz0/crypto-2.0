@@ -59,3 +59,20 @@ def test_trade_block_cooldown_allows_after_window(monkeypatch):
 
     monkeypatch.setattr(guardrails.time, "time", lambda: now + 61)
     assert guardrails.should_send_trade_block_telegram_alert("DOT_USD", "BUY", reason) is True
+
+
+def test_suppress_live_max_open_orders_total_for_daily_summary():
+    from app.services.trade_block_telegram_policy import suppress_live_trade_block_telegram
+
+    assert (
+        suppress_live_trade_block_telegram(
+            "blocked: MAX_OPEN_ORDERS_TOTAL limit reached (27/10)"
+        )
+        is True
+    )
+    assert (
+        suppress_live_trade_block_telegram(
+            "blocked: MAX_ORDERS_PER_SYMBOL_PER_DAY limit reached (2/2)"
+        )
+        is False
+    )

@@ -7625,9 +7625,18 @@ class SignalMonitorService:
                     event_reason=block_reason or "blocked",
                     decision_reason=decision_reason,
                 )
-                # Send Telegram alert only for unexpected blocks (not live toggle / trade off)
+                # Send Telegram alert only for unexpected blocks (not live toggle / trade off).
+                # MAX_OPEN_ORDERS_TOTAL is daily-summary only (chronic while over cap).
                 try:
-                    if self._telegram_send_enabled() and should_send_trade_block_telegram_alert(symbol, "BUY", block_reason):
+                    from app.services.trade_block_telegram_policy import (
+                        suppress_live_trade_block_telegram,
+                    )
+
+                    if (
+                        self._telegram_send_enabled()
+                        and not suppress_live_trade_block_telegram(block_reason)
+                        and should_send_trade_block_telegram_alert(symbol, "BUY", block_reason)
+                    ):
                         telegram_notifier.send_message(
                             f"🚫 <b>TRADE BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
@@ -9968,8 +9977,14 @@ class SignalMonitorService:
                 decision_reason=decision_reason,
             )
             try:
-                if self._telegram_send_enabled() and should_send_trade_block_telegram_alert(
-                    symbol, "SELL", block_reason
+                from app.services.trade_block_telegram_policy import (
+                    suppress_live_trade_block_telegram,
+                )
+
+                if (
+                    self._telegram_send_enabled()
+                    and not suppress_live_trade_block_telegram(block_reason)
+                    and should_send_trade_block_telegram_alert(symbol, "SELL", block_reason)
                 ):
                     telegram_notifier.send_message(
                         f"🚫 <b>TRADE BLOCKED</b>\n\n"
