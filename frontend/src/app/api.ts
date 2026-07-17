@@ -782,7 +782,8 @@ export async function getTPSLOrderValues(): Promise<TPSLOrderValues> {
 export async function getOrderHistory(
   limit: number = 100,
   offset: number = 0,
-  sync: boolean = false
+  sync: boolean = false,
+  symbol?: string
 ): Promise<{
   orders: OpenOrder[];
   count: number;
@@ -795,6 +796,9 @@ export async function getOrderHistory(
   });
   if (sync) {
     params.set('sync', 'true');
+  }
+  if (symbol) {
+    params.set('symbol', symbol);
   }
   const data = await fetchAPI<{
     orders?: OpenOrder[];
@@ -1142,6 +1146,9 @@ export interface TradingConfig {
   trading_limits?: {
     maxOpenOrdersTotal?: number;
     maxOpenOrdersPerCoin?: number;
+    maxUsdPerOrder?: number;
+    minSecondsBetweenOrders?: number;
+    maxOrdersPerSymbolPerDay?: number;
   };
   strategy_rules?: Record<string, unknown>;
   [key: string]: unknown;

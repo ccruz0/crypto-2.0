@@ -3,13 +3,28 @@
  * Extracted from page.tsx for better organization
  */
 
-import React, { useState, useMemo } from 'react';
-import { PortfolioAsset } from '@/app/api';
+import React, { useState, useMemo, useCallback } from 'react';
+import { getOrderHistory, OpenOrder, PortfolioAsset, TopCoin } from '@/app/api';
 import { formatNumber, formatDateTime } from '@/utils/formatting';
+import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
+import {
+  calculateOrderProfitLoss,
+  filterFilledEntryOrdersForAsset,
+  getOrderExecutionTime,
+  getOrderPrice,
+  getOrderQuantity,
+  resolveInstrumentName,
+} from '@/utils/orderProfitLoss';
 import { logger } from '@/utils/logger';
 
 type SortField = 'coin' | 'balance' | 'value';
 type SortDirection = 'asc' | 'desc';
+
+interface TradeCacheEntry {
+  orders: OpenOrder[];
+  loading: boolean;
+  error: string | null;
+}
 
 interface PortfolioTabProps {
   portfolio: { assets: PortfolioAsset[]; total_value_usd: number; total_assets_usd?: number; total_collateral_usd?: number; total_borrowed_usd?: number; portfolio_value_source?: string } | null;
@@ -26,6 +41,8 @@ interface PortfolioTabProps {
   /** Open positions counted toward MAX_OPEN_ORDERS_TOTAL (same as trade guardrail). */
   openOrdersCount?: number | null;
   maxOpenOrders?: number | null;
+  executedOrders?: OpenOrder[];
+  topCoins?: TopCoin[];
   onToggleLiveTrading: () => Promise<void>;
   onRefreshPortfolio: () => Promise<void>;
 }
@@ -44,11 +61,106 @@ export default function PortfolioTab({
   topCoinsLoading,
   openOrdersCount = null,
   maxOpenOrders = null,
+  executedOrders = [],
+  topCoins = [],
   onToggleLiveTrading,
   onRefreshPortfolio,
 }: PortfolioTabProps) {
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  const [expandedCoins, setExpandedCoins] = useState<Set<string>>(new Set());
+  const [tradeCache, setTradeCache] = useState<Record<string, TradeCacheEntry>>({});
+
+  const currentPriceByCoin = useMemo(() => {
+    const map = new Map<string, number>();
+    topCoins.forEach((coin) => {
+      if (!coin.instrument_name || !coin.current_price) return;
+      const base = coin.instrument_name.split('_')[0].toUpperCase();
+      map.set(coin.instrument_name.toUpperCase(), coin.current_price);
+      if (!map.has(base)) {
+        map.set(base, coin.current_price);
+      }
+    });
+    return map;
+  }, [topCoins]);
+
+  const getCurrentPriceForAsset = useCallback(
+    (assetCoin: string): number | null => {
+      const upper = assetCoin.toUpperCase();
+      return currentPriceByCoin.get(upper) ?? currentPriceByCoin.get(upper.split('_')[0]) ?? null;
+    },
+    [currentPriceByCoin]
+  );
+
+  const loadTradesForAsset = useCallback(
+    async (assetCoin: string) => {
+      const instrumentName = resolveInstrumentName(assetCoin, topCoins);
+      const fallbackOrders = filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
+
+      setTradeCache((prev) => ({
+        ...prev,
+        [assetCoin]: {
+          orders: fallbackOrders,
+          loading: Boolean(instrumentName),
+          error: null,
+        },
+      }));
+
+      if (!instrumentName) {
+        return;
+      }
+
+      try {
+        const response = await getOrderHistory(200, 0, false, instrumentName);
+        const fetchedOrders = filterFilledEntryOrdersForAsset(response.orders || [], assetCoin);
+        const mergedById = new Map<string, OpenOrder>();
+        [...fallbackOrders, ...fetchedOrders].forEach((order) => {
+          if (order.order_id) mergedById.set(order.order_id, order);
+        });
+        const mergedOrders = Array.from(mergedById.values()).sort(
+          (a, b) => getOrderExecutionTime(b) - getOrderExecutionTime(a)
+        );
+
+        setTradeCache((prev) => ({
+          ...prev,
+          [assetCoin]: {
+            orders: mergedOrders,
+            loading: false,
+            error: null,
+          },
+        }));
+      } catch (err) {
+        logger.warn(`Failed to load trade history for ${assetCoin}:`, err);
+        setTradeCache((prev) => ({
+          ...prev,
+          [assetCoin]: {
+            orders: fallbackOrders,
+            loading: false,
+            error: 'Could not load full trade history. Showing cached orders only.',
+          },
+        }));
+      }
+    },
+    [executedOrders, topCoins]
+  );
+
+  const toggleAssetExpanded = useCallback(
+    (assetCoin: string) => {
+      setExpandedCoins((prev) => {
+        const next = new Set(prev);
+        if (next.has(assetCoin)) {
+          next.delete(assetCoin);
+        } else {
+          next.add(assetCoin);
+          if (!tradeCache[assetCoin]) {
+            void loadTradesForAsset(assetCoin);
+          }
+        }
+        return next;
+      });
+    },
+    [loadTradesForAsset, tradeCache]
+  );
 
   // Sort assets
   const sortedAssets = useMemo(() => {
@@ -100,6 +212,96 @@ export default function PortfolioTab({
       setSortField(field);
       setSortDirection('desc');
     }
+  };
+
+  const renderTradeSection = (assetCoin: string) => {
+    const cache = tradeCache[assetCoin];
+    const trades = cache?.orders ?? filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
+    const currentPrice = getCurrentPriceForAsset(assetCoin);
+
+    if (cache?.loading && trades.length === 0) {
+      return (
+        <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+          Cargando historial de operaciones...
+        </div>
+      );
+    }
+
+    if (trades.length === 0) {
+      return (
+        <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+          No hay operaciones ejecutadas registradas para esta moneda.
+        </div>
+      );
+    }
+
+    return (
+      <table className="min-w-full text-xs">
+        <thead>
+          <tr className="text-gray-500 dark:text-gray-400">
+            <th className="px-3 py-1 text-left font-medium">Fecha</th>
+            <th className="px-3 py-1 text-left font-medium">Lado</th>
+            <th className="px-3 py-1 text-left font-medium">Cantidad</th>
+            <th className="px-3 py-1 text-left font-medium">Precio</th>
+            <th className="px-3 py-1 text-left font-medium">Valor</th>
+            <th className="px-3 py-1 text-left font-medium">P&amp;L %</th>
+            <th className="px-3 py-1 text-left font-medium">Beneficio neto</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map((order) => {
+            const qty = getOrderQuantity(order);
+            const price = getOrderPrice(order);
+            const value = qty * price;
+            const executionTime = getOrderExecutionTime(order);
+            const executionDate = executionTime ? new Date(executionTime) : null;
+            const pnlData = calculateOrderProfitLoss(order, trades, currentPrice);
+            const hasPnl = pnlData.pnl !== 0 || pnlData.pnlPercent !== 0 || order.side?.toUpperCase() === 'BUY';
+            const pnlPositive = pnlData.pnl >= 0;
+            const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
+
+            return (
+              <tr key={order.order_id} className="border-t border-gray-200 dark:border-gray-700">
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+                  {executionDate ? formatDateTime(executionDate) : '—'}
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  <span className={`px-2 py-0.5 rounded font-medium ${sideBadgeClass(order.side)}`}>
+                    {sideLabelEs(order.side)}
+                  </span>
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(qty)}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(price)}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(value)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {hasPnl ? (
+                    <span className={`font-medium ${pnlColorClass}`}>
+                      {pnlPositive ? '+' : ''}{pnlData.pnlPercent.toFixed(2)}%
+                      {!pnlData.isRealized && (
+                        <span className="ml-1 text-gray-400 font-normal" title="P&L no realizado vs precio actual">
+                          (no realizado)
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-gray-400" title="No se pudo calcular el P&L para esta operación">—</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {hasPnl ? (
+                    <span className={`font-medium ${pnlColorClass}`}>
+                      {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(pnlData.pnl))}
+                    </span>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    );
   };
 
   if (portfolioLoading) {
@@ -259,10 +461,14 @@ export default function PortfolioTab({
 
           <div>
             <h2 className="text-xl font-semibold mb-2">Assets</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Haz clic en una fila para ver el rendimiento de cada compra/venta ejecutada.
+            </p>
             <div className="overflow-x-auto">
               <table className="min-w-full bg-white dark:bg-gray-800 rounded shadow">
                 <thead className="bg-gray-50 dark:bg-gray-700">
                   <tr>
+                    <th className="w-8 px-2 py-3" aria-label="Expand" />
                     <th
                       className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
                       onClick={() => handleSort('coin')}
@@ -311,37 +517,68 @@ export default function PortfolioTab({
                     const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
                     const isShort = (asset.balance ?? 0) < 0;
                     const balanceColorClass = isShort ? 'text-red-600 font-medium' : 'text-gray-500 dark:text-gray-300';
+                    const isExpanded = expandedCoins.has(asset.coin);
+                    const cache = tradeCache[asset.coin];
+
                     return (
-                      <tr key={asset.coin} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
-                          {asset.coin}
-                          {isShort && (
-                            <span className="ml-2 text-xs font-semibold uppercase text-red-600 bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded">
-                              Short
+                      <React.Fragment key={asset.coin}>
+                        <tr
+                          className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+                          onClick={() => toggleAssetExpanded(asset.coin)}
+                        >
+                          <td className="px-2 py-3 text-gray-500 dark:text-gray-400">
+                            <span className="inline-block w-4 text-center" aria-hidden="true">
+                              {isExpanded ? '▾' : '▸'}
                             </span>
-                          )}
-                        </td>
-                        <td className={`px-4 py-3 whitespace-nowrap text-sm ${balanceColorClass}`}>{formatNumber(asset.balance)}</td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-white">{formatNumber(asset.value_usd)}</td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm">
-                          {hasCostBasis ? (
-                            <span className={`font-medium ${pnlColorClass}`}>
-                              {pnlPositive ? '+' : ''}{(asset.pnl_pct as number).toFixed(2)}%
-                            </span>
-                          ) : (
-                            <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm">
-                          {hasCostBasis ? (
-                            <span className={`font-medium ${pnlColorClass}`}>
-                              {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(asset.net_profit_usd as number))}
-                            </span>
-                          ) : (
-                            <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
-                          )}
-                        </td>
-                      </tr>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                            {asset.coin}
+                            {isShort && (
+                              <span className="ml-2 text-xs font-semibold uppercase text-red-600 bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded">
+                                Short
+                              </span>
+                            )}
+                          </td>
+                          <td className={`px-4 py-3 whitespace-nowrap text-sm ${balanceColorClass}`}>{formatNumber(asset.balance)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-white">{formatNumber(asset.value_usd)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm">
+                            {hasCostBasis ? (
+                              <span className={`font-medium ${pnlColorClass}`}>
+                                {pnlPositive ? '+' : ''}{(asset.pnl_pct as number).toFixed(2)}%
+                              </span>
+                            ) : (
+                              <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm">
+                            {hasCostBasis ? (
+                              <span className={`font-medium ${pnlColorClass}`}>
+                                {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(asset.net_profit_usd as number))}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
+                            )}
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr className="bg-gray-50 dark:bg-gray-900/40">
+                            <td colSpan={6} className="px-4 py-3">
+                              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
+                                Rendimiento por operación
+                                {cache?.loading && (
+                                  <span className="ml-2 font-normal normal-case text-gray-400">(actualizando...)</span>
+                                )}
+                              </div>
+                              {renderTradeSection(asset.coin)}
+                              {cache?.error && (
+                                <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                                  {cache.error}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -353,6 +590,4 @@ export default function PortfolioTab({
     </div>
   );
 }
-
-
 
