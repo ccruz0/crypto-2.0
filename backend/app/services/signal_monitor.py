@@ -475,6 +475,39 @@ class SignalMonitorService:
     def _telegram_send_enabled(self) -> bool:
         return bool(self._get_telegram_runtime_config().get("enabled"))
 
+    def _claim_config_failure_telegram(
+        self,
+        db: Session,
+        symbol: str,
+        failure_kind: str,
+        *,
+        ttl_minutes: int = 6 * 60,
+    ) -> bool:
+        """
+        Claim once-per-incident Telegram for configuration failures.
+
+        Signal monitor retries every ~30s; missing Amount USD / auth errors must not
+        re-page the operator every cycle. Returns True when a Telegram send is allowed.
+        """
+        try:
+            from app.services.telegram_event_dedup import claim_telegram_event
+
+            return claim_telegram_event(
+                db,
+                f"config_fail:{failure_kind}:{symbol.upper()}",
+                symbol=symbol,
+                ttl_minutes=ttl_minutes,
+                action="config_fail",
+            )
+        except Exception as exc:
+            logger.warning(
+                "config_fail telegram claim failed symbol=%s kind=%s error=%s",
+                symbol,
+                failure_kind,
+                exc,
+            )
+            return True
+
     def _validate_trade_enabled_from_db(self, db: Session, symbol: str) -> bool:
         """
         Validate that trade_enabled=true in the database for a symbol.
@@ -5732,6 +5765,9 @@ class SignalMonitorService:
                                 and not is_guardrail_block
                                 and live_trading_active
                                 and watchlist_item.trade_enabled
+                                and self._claim_config_failure_telegram(
+                                    db, symbol, "amount_usd_missing"
+                                )
                             ):
                                 telegram_notifier.send_message(
                                     f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
@@ -7240,9 +7276,11 @@ class SignalMonitorService:
                 decision_reason=decision_reason,
             )
             
-            # Send error notification to Telegram
+            # Send error notification to Telegram (once per symbol until Amount USD is fixed)
             try:
-                if self._telegram_send_enabled():
+                if self._telegram_send_enabled() and self._claim_config_failure_telegram(
+                    db, symbol, "amount_usd_missing"
+                ):
                     telegram_notifier.send_message(
                         f"❌ <b>ORDER CREATION FAILED</b>\n\n"
                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7250,7 +7288,7 @@ class SignalMonitorService:
                         f"❌ Error: {error_message}"
                     )
                 else:
-                    logger.debug("Telegram notifier is disabled - skipping error notification")
+                    logger.debug("Telegram notifier is disabled or deduped - skipping error notification")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram error notification: {e}")
             
@@ -7692,9 +7730,11 @@ class SignalMonitorService:
                         f"🔐 AUTHENTICATION ERROR detected for {symbol}: {error_msg}. "
                         f"This is a configuration issue (API keys, IP whitelist) and cannot be fixed by fallbacks."
                     )
-                    # Send specific authentication error notification
+                    # Send specific authentication error notification (once per symbol / 6h)
                     try:
-                        if self._telegram_send_enabled():
+                        if self._telegram_send_enabled() and self._claim_config_failure_telegram(
+                            db, symbol, "authentication"
+                        ):
                             telegram_notifier.send_message(
                                 f"🔐 <b>AUTOMATIC ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
