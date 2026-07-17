@@ -280,6 +280,18 @@ def should_auto_create_sl_tp_on_sync(
     has_sl = get_active_protection_order(db, parent_id, "STOP_LOSS") is not None
     has_tp = get_active_protection_order(db, parent_id, "TAKE_PROFIT") is not None
     if has_sl ^ has_tp:
+        # If SL exists but TP was proven unreachable (short TP already past market),
+        # do not keep scheduling half-protected backfill every sync cycle.
+        if has_sl and not has_tp:
+            try:
+                from app.services.telegram_event_dedup import is_telegram_event_claimed
+
+                if is_telegram_event_claimed(
+                    db, f"tp_unreachable:{parent_id}", ttl_minutes=24 * 60
+                ):
+                    return False, "tp_unreachable_skip"
+            except Exception:
+                pass
         return True, "half_protected_backfill"
 
     filled_at = order_filled_time
@@ -1732,6 +1744,9 @@ class ExchangeSyncService:
         sl_order_error = (sl_result or {}).get("error")
         tp_order_error = (tp_result or {}).get("error")
 
+        sl_newly_created = bool(impl_result.get("sl_newly_created"))
+        tp_newly_created = bool(impl_result.get("tp_newly_created"))
+
         # Idempotent path: another process already created SL/TP — do not re-notify Telegram.
         if impl_result.get("status") == "already_protected":
             logger.info(
@@ -1762,31 +1777,38 @@ class ExchangeSyncService:
         effective_sl_pct = abs(float(_sl_pct)) if (_sl_pct is not None and float(_sl_pct) > 0) else 3.0
         effective_tp_pct = abs(float(_tp_pct)) if (_tp_pct is not None and float(_tp_pct) > 0) else 3.0
 
-        # Send Telegram notification when SL/TP orders are created (ALWAYS, even if orders failed)
-        # Always send Telegram notifications (even if alert_enabled is false for that coin)
-        # CRITICAL: Check if notification was already sent for this order to avoid duplicates
-        # This prevents duplicate notifications when _create_sl_tp_for_filled_order is called multiple times
+        # Send Telegram only when a protection leg was newly created this call.
+        # Reusing an existing SL while TP retries fail was re-announcing the same SL every
+        # few minutes (production evidence: identical SL order IDs ~every 5–6 minutes).
         try:
             from app.services.telegram_notifier import telegram_notifier
-            
-            # Check if we already sent a notification for this order (within last 5 minutes)
-            # This prevents duplicate notifications when the function is called multiple times
+            from app.services.telegram_event_dedup import claim_telegram_event
+
             notification_sent_key = f"sl_tp_notification_sent_{order_id}"
-            if hasattr(self, '_sl_tp_notification_sent'):
-                if notification_sent_key in self._sl_tp_notification_sent:
-                    notification_timestamp = self._sl_tp_notification_sent[notification_sent_key]
-                    time_since_notification = time.time() - notification_timestamp
-                    if time_since_notification < 300:  # 5 minutes
-                        logger.info(
-                            f"📢 Notification already sent for order {order_id} ({symbol}) "
-                            f"{time_since_notification:.1f}s ago. Skipping duplicate notification."
-                        )
-                        return
-            else:
+            if not hasattr(self, '_sl_tp_notification_sent'):
                 self._sl_tp_notification_sent = {}
-            
-            # Also check if SL/TP orders already exist in database (double-check before sending notification)
-            # This catches cases where orders were created but notification wasn't tracked
+            if notification_sent_key in self._sl_tp_notification_sent:
+                notification_timestamp = self._sl_tp_notification_sent[notification_sent_key]
+                time_since_notification = time.time() - notification_timestamp
+                if time_since_notification < 300:  # 5 minutes in-process guard
+                    logger.info(
+                        f"📢 Notification already sent for order {order_id} ({symbol}) "
+                        f"{time_since_notification:.1f}s ago. Skipping duplicate notification."
+                    )
+                    return {
+                        "symbol": symbol,
+                        "order_id": order_id,
+                        "source": source,
+                        "live_trading": bool(live_trading),
+                        "oco_group_id": oco_group_id,
+                        "sl_price": float(sl_price) if sl_price is not None else None,
+                        "tp_price": float(tp_price) if tp_price is not None else None,
+                        "sl_result": sl_result,
+                        "tp_result": tp_result,
+                        "skip_tp_creation": bool(skip_tp_creation),
+                        "skip_tp_reason": skip_tp_reason,
+                    }
+
             db.expire_all()  # Force refresh to see latest orders
             existing_sl_check = db.query(ExchangeOrder).filter(
                 ExchangeOrder.parent_order_id == order_id,
@@ -1798,14 +1820,32 @@ class ExchangeSyncService:
                 ExchangeOrder.order_role == "TAKE_PROFIT",
                 ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
             ).first()
-            
-            # If both SL and TP already exist and we're not creating new ones, skip notification
-            if existing_sl_check and existing_tp_check and not sl_order_id and not tp_order_id:
+
+            # No new protection legs this call → never re-announce existing SL/TP.
+            if not sl_newly_created and not tp_newly_created:
                 logger.info(
-                    f"📢 SL/TP orders already exist for order {order_id} ({symbol}) and no new orders created. "
-                    f"Skipping duplicate notification."
+                    "📢 Skipping SL/TP Telegram for order %s (%s): no newly created protection "
+                    "(sl_id=%s tp_id=%s skip_tp=%s).",
+                    order_id,
+                    symbol,
+                    sl_order_id,
+                    tp_order_id,
+                    skip_tp_reason,
                 )
-                return default_result
+                return {
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "source": source,
+                    "status": "already_protected" if (existing_sl_check or existing_tp_check) else "no_new_protection",
+                    "live_trading": bool(live_trading),
+                    "oco_group_id": oco_group_id,
+                    "sl_price": float(sl_price) if sl_price is not None else None,
+                    "tp_price": float(tp_price) if tp_price is not None else None,
+                    "sl_result": sl_result,
+                    "tp_result": tp_result,
+                    "skip_tp_creation": bool(skip_tp_creation),
+                    "skip_tp_reason": skip_tp_reason,
+                }
 
             # If orders failed, send error notification with detailed error messages
             if not sl_order_id and not tp_order_id and live_trading:
@@ -1824,19 +1864,35 @@ class ExchangeSyncService:
                     price_fmt = "{:.6f}"
                 else:
                     price_fmt = "{:.8f}"
-                
-                telegram_notifier.send_message(
-                    f"⚠️ <b>SL/TP ORDER CREATION FAILED</b>\n\n"
-                    f"📊 Symbol: <b>{symbol}</b>\n"
-                    f"📋 Order ID: {order_id}\n"
-                    f"💵 Filled Price: ${price_fmt.format(filled_price)}\n"
-                    f"📦 Quantity: {filled_qty}\n"
-                    f"🔴 SL Price: ${price_fmt.format(sl_price)}\n"
-                    f"🟢 TP Price: ${price_fmt.format(tp_price)}\n"
-                    f"❌ Error: {error_summary}\n\n"
-                    f"Por favor revisa los logs del backend para más detalles."
-                )
-                logger.warning(f"SL/TP orders failed for {symbol} order {order_id} - sent error notification to Telegram: {error_summary}")
+
+                if claim_telegram_event(
+                    db,
+                    f"sl_tp_failed:{order_id}",
+                    symbol=symbol,
+                    ttl_minutes=6 * 60,
+                    action="sl_tp_failed",
+                ):
+                    telegram_notifier.send_message(
+                        f"⚠️ <b>SL/TP ORDER CREATION FAILED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"📋 Order ID: {order_id}\n"
+                        f"💵 Filled Price: ${price_fmt.format(filled_price)}\n"
+                        f"📦 Quantity: {filled_qty}\n"
+                        f"🔴 SL Price: ${price_fmt.format(sl_price)}\n"
+                        f"🟢 TP Price: ${price_fmt.format(tp_price)}\n"
+                        f"❌ Error: {error_summary}\n\n"
+                        f"Por favor revisa los logs del backend para más detalles."
+                    )
+                    logger.warning(
+                        f"SL/TP orders failed for {symbol} order {order_id} - "
+                        f"sent error notification to Telegram: {error_summary}"
+                    )
+                else:
+                    logger.info(
+                        "SL/TP failure Telegram suppressed (dedup) order=%s symbol=%s",
+                        order_id,
+                        symbol,
+                    )
             else:
                 # Send normal notification if at least one order succeeded or in DRY_RUN mode
                 # Determine SL/TP sides for clarity in Telegram message
@@ -1869,6 +1925,32 @@ class ExchangeSyncService:
                         "symbol": symbol,
                         "order_id": order_id,
                         "source": source,
+                        "live_trading": bool(live_trading),
+                        "oco_group_id": oco_group_id,
+                        "sl_price": sl_price_f if sl_price_f > 0 else None,
+                        "tp_price": tp_price_f if tp_price_f > 0 else None,
+                        "sl_result": sl_result,
+                        "tp_result": tp_result,
+                        "skip_tp_creation": bool(skip_tp_creation),
+                        "skip_tp_reason": skip_tp_reason,
+                    }
+                if not claim_telegram_event(
+                    db,
+                    f"sl_tp_created:{order_id}",
+                    symbol=symbol,
+                    ttl_minutes=7 * 24 * 60,
+                    action="sl_tp_created",
+                ):
+                    logger.info(
+                        "📢 Skipping SL/TP Telegram for order %s (%s): already claimed sl_tp_created.",
+                        order_id,
+                        symbol,
+                    )
+                    return {
+                        "symbol": symbol,
+                        "order_id": order_id,
+                        "source": source,
+                        "status": "already_notified",
                         "live_trading": bool(live_trading),
                         "oco_group_id": oco_group_id,
                         "sl_price": sl_price_f if sl_price_f > 0 else None,
@@ -1993,6 +2075,10 @@ class ExchangeSyncService:
         sl_price = round(sl_price, 2) if sl_price >= 100 else round(sl_price, 4)
         tp_price = round(tp_price, 2) if tp_price >= 100 else round(tp_price, 4)
         oco_group_id = f"oco_{order_id}_{int(time.time())}"
+        sl_newly_created = False
+        tp_newly_created = False
+        skip_tp_creation = False
+        skip_tp_reason = None
         if existing_sl:
             sl_result = {"order_id": existing_sl.exchange_order_id, "error": None}
             logger.info(
@@ -2013,6 +2099,7 @@ class ExchangeSyncService:
                 dry_run=False,
                 source=source,
             )
+            sl_newly_created = bool(sl_result.get("order_id")) and not sl_result.get("error")
         if existing_tp:
             tp_result = {"order_id": existing_tp.exchange_order_id, "error": None}
             logger.info(
@@ -2021,26 +2108,60 @@ class ExchangeSyncService:
                 order_id,
             )
         else:
-            tp_result = create_take_profit_order(
-                db=db,
-                symbol=symbol,
-                side=side_upper,
-                tp_price=tp_price,
-                quantity=filled_qty,
-                entry_price=filled_price_f,
-                parent_order_id=order_id,
-                oco_group_id=oco_group_id,
-                dry_run=False,
-                source=source,
-            )
+            # Stop retry storm when prior attempt proved TP target is already past market.
+            from app.services.telegram_event_dedup import is_telegram_event_claimed
+
+            if is_telegram_event_claimed(
+                db, f"tp_unreachable:{order_id}", ttl_minutes=24 * 60
+            ):
+                skip_tp_creation = True
+                skip_tp_reason = "TP_TARGET_ALREADY_REACHED"
+                tp_result = {
+                    "order_id": None,
+                    "error": "TP target already reached (cached skip)",
+                    "error_code": "TP_TARGET_ALREADY_REACHED",
+                }
+                logger.info(
+                    "[SLTP_IDEMPOTENCY] Skipping TP create for parent %s (%s): "
+                    "tp_unreachable claim active",
+                    order_id,
+                    symbol,
+                )
+            else:
+                tp_result = create_take_profit_order(
+                    db=db,
+                    symbol=symbol,
+                    side=side_upper,
+                    tp_price=tp_price,
+                    quantity=filled_qty,
+                    entry_price=filled_price_f,
+                    parent_order_id=order_id,
+                    oco_group_id=oco_group_id,
+                    dry_run=False,
+                    source=source,
+                )
+                tp_newly_created = bool(tp_result.get("order_id")) and not tp_result.get("error")
+                if (tp_result.get("error_code") == "TP_TARGET_ALREADY_REACHED") or (
+                    "TP target already reached" in str(tp_result.get("error") or "")
+                ):
+                    skip_tp_creation = True
+                    skip_tp_reason = "TP_TARGET_ALREADY_REACHED"
+        # When SL already exists and nothing new was created, treat as idempotent
+        # so callers do not re-send "SL/TP ORDERS CREATED".
+        status = None
+        if existing_sl and (existing_tp or skip_tp_creation) and not sl_newly_created and not tp_newly_created:
+            status = "already_protected"
         return {
             "sl_result": sl_result,
             "tp_result": tp_result,
             "oco_group_id": oco_group_id,
             "sl_price": sl_price,
             "tp_price": tp_price,
-            "skip_tp_creation": False,
-            "skip_tp_reason": None,
+            "skip_tp_creation": skip_tp_creation,
+            "skip_tp_reason": skip_tp_reason,
+            "sl_newly_created": sl_newly_created,
+            "tp_newly_created": tp_newly_created,
+            **({"status": status} if status else {}),
         }
 
     def _cancel_remaining_sl_tp(self, db: Session, symbol: str, executed_order_type: str, executed_order_id: str):
