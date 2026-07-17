@@ -461,10 +461,14 @@ def _check_trade_system_health(db: Session) -> Dict:
     elif max_open_orders is not None and open_orders > max_open_orders:
         status = "WARN"
 
+    # Keep in sync with SignalMonitorService.__init__ MAX_OPEN_ORDERS_PER_SYMBOL.
+    max_open_orders_per_symbol = 3
+
     return {
         "status": status,
         "open_orders": open_orders,
         "max_open_orders": max_open_orders,
+        "max_open_orders_per_symbol": max_open_orders_per_symbol,
         "order_intents_table_exists": order_intents_table_exists,
         "last_check_ok": True,
     }

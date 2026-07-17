@@ -228,13 +228,13 @@ export default function PortfolioTab({
                   }`}
                   title={
                     maxOpenOrders != null
-                      ? `Open positions counted toward the trade limit (${openOrdersCount}/${maxOpenOrders}). New entries are blocked at the limit.`
-                      : 'Open positions counted toward the trade limit.'
+                      ? `Global open-position limit (${openOrdersCount}/${maxOpenOrders}). Separate from the per-coin limit of 3 on Watchlist.`
+                      : 'Global open-position limit (MAX_OPEN_ORDERS_TOTAL).'
                   }
                 >
-                  <div className="text-sm text-gray-500">Open Orders</div>
+                  <div className="text-sm text-gray-500">Open Orders (global)</div>
                   <div className="text-xs text-gray-400 mb-1">
-                    {maxOpenOrders != null ? `limit ${maxOpenOrders}` : 'toward trade limit'}
+                    {maxOpenOrders != null ? `global limit ${maxOpenOrders}` : 'global trade limit'}
                   </div>
                   <div
                     className={`text-2xl font-bold ${

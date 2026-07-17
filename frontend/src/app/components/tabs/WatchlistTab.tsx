@@ -40,6 +40,10 @@ interface WatchlistTabProps {
   /** Global open-order count toward MAX_OPEN_ORDERS_TOTAL (trade guardrail). */
   openOrdersCount?: number | null;
   maxOpenOrders?: number | null;
+  /** Per-base-symbol open position counts (e.g. ETH: 8). */
+  openPositionCounts?: Record<string, number>;
+  /** Per-coin open-order cap (Signal Monitor default: 3). */
+  maxOpenOrdersPerCoin?: number | null;
 }
 
 type SortField = 'symbol' | 'last_price' | 'rsi' | 'ema10' | 'ma50' | 'ma200' | 'volume' | 'amount_usd';
@@ -73,6 +77,8 @@ export default function WatchlistTab({
   onCoinUpdated,
   openOrdersCount = null,
   maxOpenOrders = null,
+  openPositionCounts = {},
+  maxOpenOrdersPerCoin = 3,
 }: WatchlistTabProps) {
   const { getPrice: getLivePrice, connected: priceStreamConnected } = usePriceStream();
   const {
@@ -210,7 +216,23 @@ export default function WatchlistTab({
     return sorted;
   }, [filteredCoins, sortField, sortDirection, signals, coinAmounts]);
 
-  const atOrderLimit =
+  const perCoinLimit =
+    typeof maxOpenOrdersPerCoin === 'number' && maxOpenOrdersPerCoin > 0
+      ? maxOpenOrdersPerCoin
+      : 3;
+
+  const getBaseSymbol = (instrumentName?: string | null): string => {
+    if (!instrumentName) return '';
+    return String(instrumentName).split('_')[0].toUpperCase();
+  };
+
+  const getOpenCountForCoin = (instrumentName?: string | null): number => {
+    const base = getBaseSymbol(instrumentName);
+    if (!base) return 0;
+    return openPositionCounts[base] ?? openPositionCounts[instrumentName || ''] ?? 0;
+  };
+
+  const globalAtOrderLimit =
     openOrdersCount != null &&
     maxOpenOrders != null &&
     maxOpenOrders > 0 &&
@@ -1113,16 +1135,20 @@ export default function WatchlistTab({
         />
       </div>
 
-      {atOrderLimit && (
+      {globalAtOrderLimit && (
         <div
           className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
           role="status"
         >
-          Order limit reached
+          Global order limit reached
           {maxOpenOrders != null ? ` (${openOrdersCount}/${maxOpenOrders})` : ''}.
-          New watchlist orders will not execute until open positions drop below the limit.
+          No new entries will execute for any coin until global open positions drop.
         </div>
       )}
+      <div className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+        Per-coin open-order limit: <span className="font-semibold">{perCoinLimit}</span>
+        {' '}(rows at limit show watermark — that coin will not open new orders).
+      </div>
 
       {sortedCoins.length === 0 ? (
         <div className="text-center py-12">
@@ -1143,6 +1169,12 @@ export default function WatchlistTab({
                 <SortableHeader field="ma200">MA200</SortableHeader>
                 <SortableHeader field="volume">Volume</SortableHeader>
                 <SortableHeader field="amount_usd">Amount USD</SortableHeader>
+                <th
+                  className="px-4 py-2 text-left"
+                  title={`Open positions for this coin vs per-coin limit (${perCoinLimit})`}
+                >
+                  Orders
+                </th>
                 <th className="px-4 py-2 text-left">SL%</th>
                 <th className="px-4 py-2 text-left">TP%</th>
                 <th className="px-4 py-2 text-left">Trade</th>
@@ -1159,8 +1191,15 @@ export default function WatchlistTab({
                 const buyAlertEnabled = coinBuyAlertStatus[symbolKey] || false;
                 const sellAlertEnabled = coinSellAlertStatus[symbolKey] || false;
                 const isCoinUpdating = updatingCoins.has(coin?.instrument_name);
-                // Global trade limit blocks new entries for every symbol.
-                const rowAtOrderLimit = atOrderLimit;
+                const coinOpenCount = getOpenCountForCoin(coin?.instrument_name);
+                // Per-coin limit (Signal Monitor = 3). Also watermark if global limit blocks all.
+                const rowAtOrderLimit =
+                  coinOpenCount >= perCoinLimit || globalAtOrderLimit;
+                const limitReason = globalAtOrderLimit
+                  ? `Global limit reached (${openOrdersCount}/${maxOpenOrders}).`
+                  : coinOpenCount >= perCoinLimit
+                    ? `Per-coin limit reached (${coinOpenCount}/${perCoinLimit}).`
+                    : undefined;
                 
                 // Determine if buy or sell criteria are met
                 const buyCriteriaMet = isBuyCriteriaMet(signal);
@@ -1182,8 +1221,8 @@ export default function WatchlistTab({
                         : 'hover:bg-gray-50 dark:hover:bg-gray-700'
                     }`}
                     title={
-                      rowAtOrderLimit
-                        ? `Order limit reached (${openOrdersCount}/${maxOpenOrders}). New orders will not execute.`
+                      limitReason
+                        ? `${limitReason} New orders will not execute for this coin.`
                         : undefined
                     }
                   >
@@ -1198,7 +1237,9 @@ export default function WatchlistTab({
                           style={{ width: 'min(1100px, 92vw)' }}
                         >
                           <span className="select-none whitespace-nowrap pl-24 text-xl font-black uppercase tracking-[0.35em] text-amber-600/25 dark:text-amber-200/20 -rotate-6 sm:text-2xl">
-                            Limit — no new orders
+                            {globalAtOrderLimit && coinOpenCount < perCoinLimit
+                              ? 'Global limit — no new orders'
+                              : 'Coin limit — no new orders'}
                           </span>
                         </div>
                       )}
@@ -1313,6 +1354,20 @@ export default function WatchlistTab({
                           {coinAmounts[symbolKey] ? `$${coinAmounts[symbolKey]}` : '-'}
                         </span>
                       )}
+                    </td>
+                    <td
+                      className={`relative z-[2] px-4 py-2 font-medium ${
+                        coinOpenCount >= perCoinLimit
+                          ? 'text-amber-700 dark:text-amber-300'
+                          : 'text-gray-700 dark:text-gray-200'
+                      }`}
+                      title={
+                        coinOpenCount >= perCoinLimit
+                          ? `Per-coin limit reached (${coinOpenCount}/${perCoinLimit}). New orders blocked for this coin.`
+                          : `Open positions for ${getBaseSymbol(coin?.instrument_name) || coin?.instrument_name}: ${coinOpenCount}/${perCoinLimit}`
+                      }
+                    >
+                      {coinOpenCount}/{perCoinLimit}
                     </td>
                     <td className="px-4 py-2">
                       {editingSLPercent[coin?.instrument_name] !== undefined ? (
