@@ -8,8 +8,9 @@ import { getOrderHistory, OpenOrder, PortfolioAsset, TopCoin } from '@/app/api';
 import { formatNumber, formatDateTime } from '@/utils/formatting';
 import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import {
-  calculateOrderProfitLoss,
+  calculateOpenLotProfitLoss,
   filterFilledEntryOrdersForAsset,
+  getOpenPositionLotsForAsset,
   getOrderExecutionTime,
   getOrderPrice,
   getOrderQuantity,
@@ -214,11 +215,14 @@ export default function PortfolioTab({
     }
   };
 
-  const renderTradeSection = (assetCoin: string, isShortPosition: boolean) => {
+  const renderTradeSection = (asset: PortfolioAsset) => {
+    const assetCoin = asset.coin;
+    const balance = asset.balance ?? 0;
+    const isShortPosition = balance < 0;
     const cache = tradeCache[assetCoin];
     const trades = cache?.orders ?? filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
     const currentPrice = getCurrentPriceForAsset(assetCoin);
-    const positionHint = isShortPosition ? 'SHORT' : 'LONG';
+    const openLots = getOpenPositionLotsForAsset(trades, assetCoin, balance);
 
     if (cache?.loading && trades.length === 0) {
       return (
@@ -232,6 +236,19 @@ export default function PortfolioTab({
       return (
         <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
           No hay operaciones ejecutadas registradas para esta moneda.
+          {Math.abs(balance) > 0 && (
+            <span className="block mt-1 text-xs">
+              El saldo en cartera puede venir de depósitos, transferencias o historial no sincronizado.
+            </span>
+          )}
+        </div>
+      );
+    }
+
+    if (openLots.length === 0) {
+      return (
+        <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+          No hay lots abiertos: el historial está liquidado o no encaja con el saldo actual.
         </div>
       );
     }
@@ -242,7 +259,7 @@ export default function PortfolioTab({
           <tr className="text-gray-500 dark:text-gray-400">
             <th className="px-3 py-1 text-left font-medium">Fecha</th>
             <th className="px-3 py-1 text-left font-medium">Lado</th>
-            <th className="px-3 py-1 text-left font-medium">Cantidad</th>
+            <th className="px-3 py-1 text-left font-medium">Cantidad abierta</th>
             <th className="px-3 py-1 text-left font-medium">Precio</th>
             <th className="px-3 py-1 text-left font-medium">Valor</th>
             <th className="px-3 py-1 text-left font-medium">P&amp;L %</th>
@@ -250,22 +267,25 @@ export default function PortfolioTab({
           </tr>
         </thead>
         <tbody>
-          {trades.map((order) => {
-            const qty = getOrderQuantity(order);
+          {openLots.map((lot) => {
+            const order = lot.order;
+            const qty = lot.remainingQty;
             const price = getOrderPrice(order);
             const value = qty * price;
+            const filledQty = getOrderQuantity(order);
             const executionTime = getOrderExecutionTime(order);
             const executionDate = executionTime ? new Date(executionTime) : null;
-            const pnlData = calculateOrderProfitLoss(order, trades, currentPrice, { positionHint });
+            const pnlData = calculateOpenLotProfitLoss(lot, currentPrice);
             const hasPnl = pnlData.available;
             const pnlPositive = pnlData.pnl >= 0;
             const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
             const unrealizedTitle = isShortPosition
-              ? 'P&L no realizado del short vs precio actual'
-              : 'P&L no realizado vs precio actual';
+              ? 'P&L no realizado del short abierto vs precio actual'
+              : 'P&L no realizado del long abierto vs precio actual';
+            const rowKey = `${order.order_id || 'order'}-${lot.side}-${qty}`;
 
             return (
-              <tr key={order.order_id} className="border-t border-gray-200 dark:border-gray-700">
+              <tr key={rowKey} className="border-t border-gray-200 dark:border-gray-700">
                 <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
                   {executionDate ? formatDateTime(executionDate) : '—'}
                 </td>
@@ -274,18 +294,25 @@ export default function PortfolioTab({
                     {sideLabelEs(order.side)}
                   </span>
                 </td>
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(qty)}</td>
+                <td
+                  className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300"
+                  title={
+                    Math.abs(filledQty - qty) > 1e-12
+                      ? `Cantidad original ejecutada: ${formatNumber(filledQty)}`
+                      : undefined
+                  }
+                >
+                  {formatNumber(qty)}
+                </td>
                 <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(price)}</td>
                 <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(value)}</td>
                 <td className="px-3 py-2 whitespace-nowrap">
                   {hasPnl ? (
                     <span className={`font-medium ${pnlColorClass}`}>
                       {pnlPositive ? '+' : ''}{pnlData.pnlPercent.toFixed(2)}%
-                      {!pnlData.isRealized && (
-                        <span className="ml-1 text-gray-400 font-normal" title={unrealizedTitle}>
-                          (no realizado)
-                        </span>
-                      )}
+                      <span className="ml-1 text-gray-400 font-normal" title={unrealizedTitle}>
+                        (no realizado)
+                      </span>
                     </span>
                   ) : (
                     <span className="text-gray-400" title="No se pudo calcular el P&L para esta operación">—</span>
@@ -466,7 +493,7 @@ export default function PortfolioTab({
           <div>
             <h2 className="text-xl font-semibold mb-2">Assets</h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              Haz clic en una fila para ver el rendimiento de cada compra/venta ejecutada.
+              Haz clic en una fila para ver solo los lots abiertos (FIFO) de la posición actual; las operaciones ya liquidadas no se listan.
             </p>
             <div className="overflow-x-auto">
               <table className="min-w-full bg-white dark:bg-gray-800 rounded shadow">
@@ -568,12 +595,12 @@ export default function PortfolioTab({
                           <tr className="bg-gray-50 dark:bg-gray-900/40">
                             <td colSpan={6} className="px-4 py-3">
                               <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
-                                Rendimiento por operación
+                                Rendimiento por lot abierto
                                 {cache?.loading && (
                                   <span className="ml-2 font-normal normal-case text-gray-400">(actualizando...)</span>
                                 )}
                               </div>
-                              {renderTradeSection(asset.coin, isShort)}
+                              {renderTradeSection(asset)}
                               {cache?.error && (
                                 <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">
                                   {cache.error}
