@@ -1,11 +1,19 @@
 import { OpenOrder, TopCoin } from '@/app/api';
 
+/** Why UI shows — when available is false. */
+export type PnlUnavailableReason =
+  | 'missing_mark_price'
+  | 'closed_without_counterpart'
+  | 'invalid_order';
+
 export interface OrderProfitLoss {
   pnl: number;
   pnlPercent: number;
   isRealized: boolean;
   /** False when P/L could not be computed (UI should show —). */
   available: boolean;
+  /** Set when available is false; drives Executed Orders tooltip copy. */
+  unavailableReason?: PnlUnavailableReason;
 }
 
 export type PositionHint = 'LONG' | 'SHORT';
@@ -40,12 +48,15 @@ const TIME_WINDOW_MS = 5 * 60 * 1000;
 const VOLUME_TOLERANCE = 0.20;
 const QTY_EPS = 1e-12;
 
-const UNAVAILABLE_PNL: OrderProfitLoss = {
-  pnl: 0,
-  pnlPercent: 0,
-  isRealized: false,
-  available: false,
-};
+function unavailable(reason: PnlUnavailableReason): OrderProfitLoss {
+  return {
+    pnl: 0,
+    pnlPercent: 0,
+    isRealized: false,
+    available: false,
+    unavailableReason: reason,
+  };
+}
 
 export function getAssetBaseSymbol(coin: string | null | undefined): string {
   if (!coin) return '';
@@ -297,8 +308,11 @@ export function calculateOpenLotProfitLoss(
   currentPrice?: number | null
 ): OrderProfitLoss {
   const entryPrice = getOrderPrice(lot.order);
-  if (!(lot.remainingQty > QTY_EPS) || !(entryPrice > 0) || !(currentPrice && currentPrice > 0)) {
-    return UNAVAILABLE_PNL;
+  if (!(lot.remainingQty > QTY_EPS) || !(entryPrice > 0)) {
+    return unavailable('invalid_order');
+  }
+  if (!(currentPrice && currentPrice > 0)) {
+    return unavailable('missing_mark_price');
   }
   if (lot.side === 'SELL') {
     return unrealizedShortPnl(entryPrice, lot.remainingQty, currentPrice);
@@ -327,7 +341,7 @@ export function calculateOrderProfitLoss(
       if (currentPrice && currentPrice > 0) {
         return unrealizedShortPnl(orderPrice, orderQuantity, currentPrice);
       }
-      return UNAVAILABLE_PNL;
+      return unavailable('missing_mark_price');
     }
 
     const matchedBuy = findMatchedCounterpart(
@@ -341,7 +355,7 @@ export function calculateOrderProfitLoss(
       }
     }
 
-    return UNAVAILABLE_PNL;
+    return unavailable('closed_without_counterpart');
   }
 
   if (orderSide === 'BUY' && orderPrice > 0 && orderQuantity > 0) {
@@ -356,15 +370,16 @@ export function calculateOrderProfitLoss(
           return realizedShortCoverPnl(sellPrice, orderPrice, orderQuantity);
         }
       }
-      return UNAVAILABLE_PNL;
+      return unavailable('closed_without_counterpart');
     }
 
     if (currentPrice && currentPrice > 0) {
       return unrealizedLongPnl(orderPrice, orderQuantity, currentPrice);
     }
+    return unavailable('missing_mark_price');
   }
 
-  return UNAVAILABLE_PNL;
+  return unavailable('invalid_order');
 }
 
 export function filterFilledEntryOrdersForAsset(
@@ -448,6 +463,8 @@ export function getExecutedOrderDisplayPnl(
 
   const side = (order.side || '').toUpperCase();
   if (side === 'SELL') {
+    // Not in open inventory (FIFO-closed or trimmed to exchange balance).
+    // Fall back to realized long-exit P/L when a BUY counterpart matches.
     return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'LONG' });
   }
   if (side === 'BUY') {
@@ -461,10 +478,28 @@ export function getExecutedOrderDisplayPnl(
         (o.status || '').toUpperCase() === 'FILLED' &&
         getOrderExecutionTime(o) < buyTime
     );
-    if (!hasPriorSell) return UNAVAILABLE_PNL;
+    if (!hasPriorSell) return unavailable('closed_without_counterpart');
     return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'SHORT' });
   }
-  return UNAVAILABLE_PNL;
+  return unavailable('invalid_order');
+}
+
+/** Spanish tooltip when Executed Orders shows — for P&L. */
+export function getPnlUnavailableTooltip(reason?: PnlUnavailableReason): string {
+  switch (reason) {
+    case 'missing_mark_price':
+      return 'Sin precio de mercado actual para calcular el P&L no realizado';
+    case 'closed_without_counterpart':
+      return (
+        'Sin P&L: esta orden no forma parte del inventario abierto actual ' +
+        '(ya cubierta o recortada por el balance del exchange) y no hay orden ' +
+        'contraparte para calcular el P&L realizado'
+      );
+    case 'invalid_order':
+      return 'No se pudo calcular el P&L (cantidad o precio inválidos)';
+    default:
+      return 'No se pudo calcular el P&L';
+  }
 }
 
 /** Resolve mark price from watchlist/topCoins by instrument or base asset. */
