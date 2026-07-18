@@ -5262,6 +5262,8 @@ function resolveDecisionIndexColor(value: number): string {
               hideCancelled={hideCancelled}
               onFilterChange={setOrderFilter}
               onToggleHideCancelled={setHideCancelled}
+              topCoins={topCoins}
+              portfolioAssets={portfolio?.assets}
               onNavigateToExpectedTP={(symbol, orderId) => {
                 setExpectedTPDeepLink({ symbol, orderId });
                 setActiveTab('expected-take-profit');

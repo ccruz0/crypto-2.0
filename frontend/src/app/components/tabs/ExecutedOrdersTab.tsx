@@ -4,12 +4,28 @@
  */
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { OpenOrder } from '@/app/api';
+import { OpenOrder, PortfolioAsset, TopCoin } from '@/app/api';
 import { formatDateTime, formatNumber } from '@/utils/formatting';
 import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import { useOrders } from '@/hooks/useOrders';
+import {
+  buildOpenLotsByOrderId,
+  getExecutedOrderDisplayPnl,
+  resolveCurrentPrice,
+} from '@/utils/orderProfitLoss';
 
-type SortField = 'symbol' | 'side' | 'type' | 'quantity' | 'price' | 'status' | 'created_date' | 'execution_time' | 'total_value';
+type SortField =
+  | 'symbol'
+  | 'side'
+  | 'type'
+  | 'quantity'
+  | 'price'
+  | 'status'
+  | 'created_date'
+  | 'execution_time'
+  | 'total_value'
+  | 'pnl'
+  | 'pnl_percent';
 type SortDirection = 'asc' | 'desc';
 
 const getStatusColorClass = (status: string) => {
@@ -72,6 +88,10 @@ interface ExecutedOrdersTabProps {
   onFilterChange: (filter: { symbol: string; status: string; side: string; startDate: string; endDate: string }) => void;
   onToggleHideCancelled: (value: boolean) => void;
   onNavigateToExpectedTP?: (symbol: string, orderId: string) => void;
+  /** Mark prices for unrealized P/L (same source as Portfolio / Watchlist). */
+  topCoins?: TopCoin[];
+  /** Optional balances to trim open lots to exchange inventory. */
+  portfolioAssets?: PortfolioAsset[];
 }
 
 export default function ExecutedOrdersTab({
@@ -80,6 +100,8 @@ export default function ExecutedOrdersTab({
   onFilterChange,
   onToggleHideCancelled,
   onNavigateToExpectedTP,
+  topCoins = [],
+  portfolioAssets,
 }: ExecutedOrdersTabProps) {
   const {
     executedOrders,
@@ -91,6 +113,11 @@ export default function ExecutedOrdersTab({
 
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+
+  const openLotsByOrderId = useMemo(
+    () => buildOpenLotsByOrderId(executedOrders, portfolioAssets),
+    [executedOrders, portfolioAssets]
+  );
 
   // Fetch executed orders on mount (Strict Mode safe)
   const didFetchRef = useRef(false);
@@ -215,6 +242,16 @@ export default function ExecutedOrdersTab({
           aVal = parseFloat(a.quantity || '0') * parseFloat(a.price || '0');
           bVal = parseFloat(b.quantity || '0') * parseFloat(b.price || '0');
           break;
+        case 'pnl':
+        case 'pnl_percent': {
+          const aPrice = resolveCurrentPrice(a.instrument_name, topCoins);
+          const bPrice = resolveCurrentPrice(b.instrument_name, topCoins);
+          const aPnl = getExecutedOrderDisplayPnl(a, executedOrders, aPrice, openLotsByOrderId);
+          const bPnl = getExecutedOrderDisplayPnl(b, executedOrders, bPrice, openLotsByOrderId);
+          aVal = aPnl.available ? (sortField === 'pnl' ? aPnl.pnl : aPnl.pnlPercent) : Number.NEGATIVE_INFINITY;
+          bVal = bPnl.available ? (sortField === 'pnl' ? bPnl.pnl : bPnl.pnlPercent) : Number.NEGATIVE_INFINITY;
+          break;
+        }
       }
 
       if (typeof aVal === 'string' && typeof bVal === 'string') {
@@ -233,7 +270,7 @@ export default function ExecutedOrdersTab({
 
       return 0;
     });
-  }, [filteredOrders, sortField, sortDirection]);
+  }, [filteredOrders, sortField, sortDirection, topCoins, executedOrders, openLotsByOrderId]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -417,6 +454,26 @@ export default function ExecutedOrdersTab({
                 <th
                   scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
+                  onClick={() => handleSort('pnl_percent')}
+                  title="Ganancia/pérdida % vs precio actual (abiertas) o vs contraparte (cerradas)"
+                >
+                  <div className="flex items-center gap-1">
+                    P&amp;L % {sortField === 'pnl_percent' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th
+                  scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
+                  onClick={() => handleSort('pnl')}
+                  title="Beneficio neto en USD: long gana si sube el precio; short gana si baja"
+                >
+                  <div className="flex items-center gap-1">
+                    Beneficio neto {sortField === 'pnl' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th
+                  scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
                   onClick={() => handleSort('status')}
                 >
                   <div className="flex items-center gap-1">
@@ -441,6 +498,22 @@ export default function ExecutedOrdersTab({
                   : null;
                 const createDatetime = createTime ? formatDateTime(createTime) : 'N/A';
                 const updateDatetime = updateTime ? formatDateTime(updateTime) : createDatetime;
+                const markPrice = resolveCurrentPrice(order.instrument_name, topCoins);
+                const pnlData = getExecutedOrderDisplayPnl(
+                  order,
+                  executedOrders,
+                  markPrice,
+                  openLotsByOrderId
+                );
+                const hasPnl = pnlData.available;
+                const pnlPositive = pnlData.pnl >= 0;
+                const pnlColorClass = pnlPositive
+                  ? 'text-green-600 dark:text-green-400'
+                  : 'text-red-600 dark:text-red-400';
+                const realizationLabel = pnlData.isRealized ? 'realizado' : 'no realizado';
+                const realizationTitle = pnlData.isRealized
+                  ? 'P&L realizado vs orden contraparte'
+                  : 'P&L no realizado vs precio actual (long gana si sube; short si baja)';
                 
                 return (
                   <tr key={order.order_id} className="hover:bg-gray-50 dark:hover:bg-slate-800">
@@ -484,6 +557,32 @@ export default function ExecutedOrdersTab({
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                       {formatNumber(parseFloat(order.quantity || '0') * parseFloat(order.price || '0'), '$')}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      {hasPnl ? (
+                        <span className={`font-medium ${pnlColorClass}`} title={realizationTitle}>
+                          {pnlPositive ? '+' : ''}
+                          {pnlData.pnlPercent.toFixed(2)}%
+                          <span className="ml-1 text-gray-400 font-normal">({realizationLabel})</span>
+                        </span>
+                      ) : (
+                        <span
+                          className="text-gray-400 dark:text-gray-500"
+                          title="No se pudo calcular el P&L (sin precio actual o sin contraparte)"
+                        >
+                          —
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      {hasPnl ? (
+                        <span className={`font-medium ${pnlColorClass}`} title={realizationTitle}>
+                          {pnlPositive ? '+' : '-'}
+                          {formatNumber(Math.abs(pnlData.pnl), '$')}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 dark:text-gray-500">—</span>
+                      )}
                     </td>
                     <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${getStatusColorClass(order.status || '')}`}>
                       {order.status}
