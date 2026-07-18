@@ -1388,41 +1388,69 @@ export async function getExpectedTakeProfitDetails(symbol: string): Promise<Expe
   }
 }
 
-export async function getOrderHistory(limit: number = 100, offset: number = 0, sync: boolean = false): Promise<{ 
-  orders: OpenOrder[], 
-  count: number,
-  total?: number,
-  has_more?: boolean
+export type GetOrderHistoryOptions = {
+  limit?: number;
+  offset?: number;
+  sync?: boolean;
+  symbol?: string;
+  status?: string;
+  excludeCancelled?: boolean;
+};
+
+export async function getOrderHistory(
+  limitOrOptions: number | GetOrderHistoryOptions = 100,
+  offset: number = 0,
+  sync: boolean = false,
+  symbol?: string
+): Promise<{
+  orders: OpenOrder[];
+  count: number;
+  total?: number;
+  has_more?: boolean;
 }> {
   try {
+    const options: GetOrderHistoryOptions =
+      typeof limitOrOptions === 'object' && limitOrOptions !== null
+        ? limitOrOptions
+        : { limit: limitOrOptions, offset, sync, symbol };
+
     const params = new URLSearchParams({
-      limit: limit.toString(),
-      offset: offset.toString()
+      limit: String(options.limit ?? 100),
+      offset: String(options.offset ?? 0),
     });
-    if (sync) {
+    if (options.sync) {
       params.set('sync', 'true');
     }
-    const data = await fetchAPI<{ 
-      orders?: OpenOrder[]; 
+    if (options.symbol) {
+      params.set('symbol', options.symbol);
+    }
+    if (options.status) {
+      params.set('status', options.status);
+    }
+    if (options.excludeCancelled) {
+      params.set('exclude_cancelled', 'true');
+    }
+    const data = await fetchAPI<{
+      orders?: OpenOrder[];
       count?: number;
       total?: number;
       has_more?: boolean;
-  }>(`/orders/history?${params.toString()}`);
-  return { 
-    orders: data.orders || [], 
-    count: data.count || 0,
-    total: data.total,
-    has_more: data.has_more
-  };
-} catch (error) {
-  logRequestIssue(
-    'getOrderHistory',
-    'Handled order history fetch failure (returning empty list)',
-    error,
-    'warn'
-  );
-  return { orders: [], count: 0 };
-}
+    }>(`/orders/history?${params.toString()}`);
+    return {
+      orders: data.orders || [],
+      count: data.count || 0,
+      total: data.total,
+      has_more: data.has_more,
+    };
+  } catch (error) {
+    logRequestIssue(
+      'getOrderHistory',
+      'Handled order history fetch failure (returning empty list)',
+      error,
+      'warn'
+    );
+    return { orders: [], count: 0 };
+  }
 }
 
 export async function syncOrderHistory(): Promise<{ ok: boolean; message?: string }> {

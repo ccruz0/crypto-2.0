@@ -1484,6 +1484,14 @@ def get_order_history(
     offset: int = 0,   # Default to start from beginning
     sync: bool = Query(False, description="If true, sync latest history from Crypto.com before returning"),
     symbol: Optional[str] = Query(None, description="Filter by symbol (e.g. BCH_USDT). When set with sync=true, fetches history for this instrument only (required when exchange returns empty for global history)."),
+    status: Optional[str] = Query(
+        None,
+        description="Filter by terminal status (e.g. FILLED). Comma-separated values allowed.",
+    ),
+    exclude_cancelled: bool = Query(
+        False,
+        description="If true, exclude CANCELLED/REJECTED/EXPIRED so pagination returns FILLED rows (dashboard Hide Cancelled).",
+    ),
     db: Session = Depends(get_db),
     # Temporarily disable authentication for local testing
     # current_user = None if _should_disable_auth() else Depends(get_current_user)
@@ -1522,7 +1530,8 @@ def get_order_history(
                 "count": 0,
                 "total": 0,
                 "limit": limit,
-                "offset": offset
+                "offset": offset,
+                "has_more": False,
             }
         
         # Limit maximum page size to prevent very large responses
@@ -1530,14 +1539,50 @@ def get_order_history(
         limit = max(limit, 1)    # Min 1 order per request
         offset = max(offset, 0)  # Ensure non-negative offset
         
-        logger.info(f"get_order_history called - fetching from database (limit={limit}, offset={offset})")
+        logger.info(
+            "get_order_history called - fetching from database "
+            "(limit=%s, offset=%s, status=%s, exclude_cancelled=%s)",
+            limit,
+            offset,
+            status,
+            exclude_cancelled,
+        )
         
         # RESTORED v4.0: Get completed/terminal orders (all order states that are no longer active)
         # Includes: FILLED (executed), CANCELLED, REJECTED (not executed - exchange rejected the order), EXPIRED
         # Note: REJECTED orders have 0 filled amounts and were never executed - they appear for audit purposes
         # Use COALESCE to handle NULL exchange_update_time (fallback to updated_at)
         # This ensures ALL completed orders are returned, even if exchange_update_time is NULL
-        executed_statuses = [OrderStatusEnum.FILLED, OrderStatusEnum.CANCELLED, OrderStatusEnum.REJECTED, OrderStatusEnum.EXPIRED]
+        executed_statuses = [
+            OrderStatusEnum.FILLED,
+            OrderStatusEnum.CANCELLED,
+            OrderStatusEnum.REJECTED,
+            OrderStatusEnum.EXPIRED,
+        ]
+        status_by_name = {s.value.upper(): s for s in executed_statuses}
+
+        if status:
+            requested = []
+            for part in status.split(","):
+                key = part.strip().upper()
+                if not key:
+                    continue
+                if key == "CANCELED":
+                    key = "CANCELLED"
+                if key in status_by_name:
+                    requested.append(status_by_name[key])
+            if requested:
+                executed_statuses = requested
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status filter: {status}. Allowed: {', '.join(status_by_name)}",
+                )
+        elif exclude_cancelled:
+            # Dashboard "Hide Cancelled" must filter at DB level so FILLED rows outside the
+            # first mixed-status page are not silently dropped by client-side filtering.
+            executed_statuses = [OrderStatusEnum.FILLED]
+
         from sqlalchemy import func
         query = db.query(ExchangeOrder).filter(ExchangeOrder.status.in_(executed_statuses)).order_by(
             func.coalesce(ExchangeOrder.exchange_update_time, ExchangeOrder.updated_at).desc()

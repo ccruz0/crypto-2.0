@@ -5261,7 +5261,12 @@ function resolveDecisionIndexColor(value: number): string {
               orderFilter={orderFilter}
               hideCancelled={hideCancelled}
               onFilterChange={setOrderFilter}
-              onToggleHideCancelled={setHideCancelled}
+              onToggleHideCancelled={(value) => {
+                setHideCancelled(value);
+                if (typeof window !== 'undefined') {
+                  window.localStorage.setItem('executedOrdersHideCancelled', String(value));
+                }
+              }}
               topCoins={topCoins}
               onNavigateToExpectedTP={(symbol, orderId) => {
                 setExpectedTPDeepLink({ symbol, orderId });
