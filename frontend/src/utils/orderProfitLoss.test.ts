@@ -4,6 +4,7 @@ import {
   buildOpenLotsByOrderId,
   buildRealizedPnlByOrderId,
   calculateOpenLotProfitLoss,
+  calculateOpenLotsAggregateProfitLoss,
   calculateOrderProfitLoss,
   getExecutedOrderDisplayPnl,
   getOpenPositionLotsForAsset,
@@ -273,6 +274,92 @@ describe('rebuildOpenLots / open-position filter', () => {
     expect(result.isRealized).toBe(false);
     expect(result.pnl).toBeCloseTo(2.5);
     expect(result.pnlPercent).toBeCloseTo(10);
+  });
+
+  it('aggregate asset P/L equals the sum of open-lot P/Ls (same mark)', () => {
+    const mark = 64110;
+    const lots = [
+      {
+        order: makeOrder({
+          order_id: 'btc-1',
+          side: 'BUY',
+          quantity: '1.3',
+          price: '58100',
+          instrument_name: 'BTC_USD',
+        }),
+        remainingQty: 1.3,
+        side: 'BUY' as const,
+      },
+      {
+        order: makeOrder({
+          order_id: 'btc-2',
+          side: 'BUY',
+          quantity: '0.3',
+          price: '60500',
+          instrument_name: 'BTC_USD',
+        }),
+        remainingQty: 0.3,
+        side: 'BUY' as const,
+      },
+      {
+        order: makeOrder({
+          order_id: 'btc-3',
+          side: 'BUY',
+          quantity: '0.3',
+          price: '63244.37',
+          instrument_name: 'BTC_USD',
+        }),
+        remainingQty: 0.3,
+        side: 'BUY' as const,
+      },
+      {
+        order: makeOrder({
+          order_id: 'btc-4',
+          side: 'BUY',
+          quantity: '0.297960',
+          price: '71100',
+          instrument_name: 'BTC_USD',
+        }),
+        remainingQty: 0.29796,
+        side: 'BUY' as const,
+      },
+    ];
+
+    const perLot = lots.map((lot) => calculateOpenLotProfitLoss(lot, mark));
+    const sumPnl = perLot.reduce((acc, row) => acc + row.pnl, 0);
+    const sumBasis = lots.reduce(
+      (acc, lot) => acc + Number(lot.order.price) * lot.remainingQty,
+      0
+    );
+    const aggregate = calculateOpenLotsAggregateProfitLoss(lots, mark);
+
+    expect(aggregate.available).toBe(true);
+    expect(aggregate.pnl).toBeCloseTo(sumPnl, 6);
+    expect(aggregate.pnlPercent).toBeCloseTo((sumPnl / sumBasis) * 100, 6);
+    // Must NOT collapse to a wrong backend-style avg that ignores lot entries.
+    expect(aggregate.pnl).toBeGreaterThan(5000);
+  });
+
+  it('aggregate short P/L equals sum of open short lots', () => {
+    const lots = [
+      {
+        order: makeOrder({ order_id: 's1', side: 'SELL', quantity: '2', price: '100' }),
+        remainingQty: 1,
+        side: 'SELL' as const,
+      },
+      {
+        order: makeOrder({ order_id: 's2', side: 'SELL', quantity: '1', price: '110' }),
+        remainingQty: 0.5,
+        side: 'SELL' as const,
+      },
+    ];
+    const mark = 90;
+    const aggregate = calculateOpenLotsAggregateProfitLoss(lots, mark);
+    const sum = lots.reduce((acc, lot) => acc + calculateOpenLotProfitLoss(lot, mark).pnl, 0);
+
+    expect(aggregate.available).toBe(true);
+    expect(aggregate.pnl).toBeCloseTo(sum);
+    expect(aggregate.pnl).toBeCloseTo(20); // (100-90)*1 + (110-90)*0.5
   });
 });
 

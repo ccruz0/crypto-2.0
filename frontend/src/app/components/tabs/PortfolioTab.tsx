@@ -9,12 +9,14 @@ import { formatNumber, formatDateTime } from '@/utils/formatting';
 import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import {
   calculateOpenLotProfitLoss,
+  calculateOpenLotsAggregateProfitLoss,
   filterFilledEntryOrdersForAsset,
   getOpenPositionLotsForAsset,
   getOrderExecutionTime,
   getOrderPrice,
   getOrderQuantity,
   resolveInstrumentName,
+  type OrderProfitLoss,
 } from '@/utils/orderProfitLoss';
 import { logger } from '@/utils/logger';
 
@@ -91,6 +93,22 @@ export default function PortfolioTab({
       return currentPriceByCoin.get(upper) ?? currentPriceByCoin.get(upper.split('_')[0]) ?? null;
     },
     [currentPriceByCoin]
+  );
+
+  /** Same open lots + mark used by the expanded lot breakdown. */
+  const getAssetOpenLotsPnl = useCallback(
+    (asset: PortfolioAsset): OrderProfitLoss | null => {
+      const assetCoin = asset.coin;
+      const balance = asset.balance ?? 0;
+      const cache = tradeCache[assetCoin];
+      const trades = cache?.orders ?? filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
+      const currentPrice = getCurrentPriceForAsset(assetCoin);
+      const openLots = getOpenPositionLotsForAsset(trades, assetCoin, balance);
+      if (openLots.length === 0) return null;
+      const aggregate = calculateOpenLotsAggregateProfitLoss(openLots, currentPrice);
+      return aggregate.available ? aggregate : null;
+    },
+    [executedOrders, getCurrentPriceForAsset, tradeCache]
   );
 
   const loadTradesForAsset = useCallback(
@@ -260,8 +278,18 @@ export default function PortfolioTab({
             <th className="px-3 py-1 text-left font-medium">Fecha</th>
             <th className="px-3 py-1 text-left font-medium">Lado</th>
             <th className="px-3 py-1 text-left font-medium">Cantidad abierta</th>
-            <th className="px-3 py-1 text-left font-medium">Precio</th>
-            <th className="px-3 py-1 text-left font-medium">Valor</th>
+            <th className="px-3 py-1 text-left font-medium" title="Precio de entrada del lot">
+              Precio entrada
+            </th>
+            <th className="px-3 py-1 text-left font-medium" title="Valor a precio de entrada (coste)">
+              Valor entrada
+            </th>
+            <th className="px-3 py-1 text-left font-medium" title="Precio de mercado actual">
+              Precio actual
+            </th>
+            <th className="px-3 py-1 text-left font-medium" title="Valor a precio de mercado (qty × mark)">
+              Valor actual
+            </th>
             <th className="px-3 py-1 text-left font-medium">P&amp;L %</th>
             <th className="px-3 py-1 text-left font-medium">Beneficio neto</th>
           </tr>
@@ -270,8 +298,10 @@ export default function PortfolioTab({
           {openLots.map((lot) => {
             const order = lot.order;
             const qty = lot.remainingQty;
-            const price = getOrderPrice(order);
-            const value = qty * price;
+            const entryPrice = getOrderPrice(order);
+            const entryValue = qty * entryPrice;
+            const hasMark = !!(currentPrice && currentPrice > 0);
+            const markValue = hasMark ? qty * (currentPrice as number) : null;
             const filledQty = getOrderQuantity(order);
             const executionTime = getOrderExecutionTime(order);
             const executionDate = executionTime ? new Date(executionTime) : null;
@@ -304,8 +334,22 @@ export default function PortfolioTab({
                 >
                   {formatNumber(qty)}
                 </td>
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(price)}</td>
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatNumber(value)}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+                  {formatNumber(entryPrice)}
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+                  {formatNumber(entryValue)}
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+                  {hasMark ? formatNumber(currentPrice as number) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+                  {markValue !== null ? formatNumber(markValue) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-2 whitespace-nowrap">
                   {hasPnl ? (
                     <span className={`font-medium ${pnlColorClass}`}>
@@ -526,13 +570,13 @@ export default function PortfolioTab({
                     </th>
                     <th
                       className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      title="Unrealized profit/loss vs weighted-average buy price. Shows — when no tracked buy orders exist."
+                      title="Unrealized P&L % = sum of open-lot P&L / entry notional. Matches the lot breakdown."
                     >
                       <div className="flex items-center gap-1">P&amp;L %</div>
                     </th>
                     <th
                       className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      title="Unrealized net profit in USD vs cost basis. Shows — when no tracked buy orders exist."
+                      title="Unrealized net profit = sum of open-lot (mark − entry) × qty. Matches the lot breakdown."
                     >
                       <div className="flex items-center gap-1">Net Profit (USD)</div>
                     </th>
@@ -540,16 +584,25 @@ export default function PortfolioTab({
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                   {sortedAssets.map((asset) => {
-                    const hasCostBasis =
+                    // Prefer Σ open-lot MTM (same lots + mark as the expansion). Backend
+                    // avg_buy can diverge (no balance trim / different FIFO history).
+                    const lotsPnl = getAssetOpenLotsPnl(asset);
+                    const backendPnlAvailable =
                       !asset.cost_basis_unknown &&
                       asset.pnl_pct !== null && asset.pnl_pct !== undefined &&
                       asset.net_profit_usd !== null && asset.net_profit_usd !== undefined;
-                    const pnlPositive = hasCostBasis && (asset.pnl_pct as number) >= 0;
+                    const displayPnlPct = lotsPnl?.pnlPercent ?? (backendPnlAvailable ? (asset.pnl_pct as number) : null);
+                    const displayNetProfit = lotsPnl?.pnl ?? (backendPnlAvailable ? (asset.net_profit_usd as number) : null);
+                    const hasCostBasis = displayPnlPct !== null && displayNetProfit !== null;
+                    const pnlPositive = hasCostBasis && (displayPnlPct as number) >= 0;
                     const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
                     const isShort = (asset.balance ?? 0) < 0;
                     const balanceColorClass = isShort ? 'text-red-600 font-medium' : 'text-gray-500 dark:text-gray-300';
                     const isExpanded = expandedCoins.has(asset.coin);
                     const cache = tradeCache[asset.coin];
+                    const pnlTitle = lotsPnl
+                      ? 'P&L no realizado = suma de lots abiertos vs precio de mercado'
+                      : 'No tracked buy orders — cost basis unknown';
 
                     return (
                       <React.Fragment key={asset.coin}>
@@ -574,20 +627,20 @@ export default function PortfolioTab({
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-white">{formatNumber(asset.value_usd)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm">
                             {hasCostBasis ? (
-                              <span className={`font-medium ${pnlColorClass}`}>
-                                {pnlPositive ? '+' : ''}{(asset.pnl_pct as number).toFixed(2)}%
+                              <span className={`font-medium ${pnlColorClass}`} title={pnlTitle}>
+                                {pnlPositive ? '+' : ''}{(displayPnlPct as number).toFixed(2)}%
                               </span>
                             ) : (
-                              <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
+                              <span className="text-gray-400" title={pnlTitle}>—</span>
                             )}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm">
                             {hasCostBasis ? (
-                              <span className={`font-medium ${pnlColorClass}`}>
-                                {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(asset.net_profit_usd as number))}
+                              <span className={`font-medium ${pnlColorClass}`} title={pnlTitle}>
+                                {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(displayNetProfit as number))}
                               </span>
                             ) : (
-                              <span className="text-gray-400" title="No tracked buy orders — cost basis unknown">—</span>
+                              <span className="text-gray-400" title={pnlTitle}>—</span>
                             )}
                           </td>
                         </tr>

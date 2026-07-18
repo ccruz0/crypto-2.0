@@ -320,6 +320,51 @@ export function calculateOpenLotProfitLoss(
   return unrealizedLongPnl(entryPrice, lot.remainingQty, currentPrice);
 }
 
+/**
+ * Aggregate unrealized P/L across open lots — same formula and mark as each lot row.
+ * Asset-level Net Profit / P&L % in Portfolio MUST equal this sum.
+ *
+ * Long:  Σ (mark − entry) * qty
+ * Short: Σ (entry − mark) * qty
+ * %:     total_pnl / Σ(entry * qty) * 100
+ */
+export function calculateOpenLotsAggregateProfitLoss(
+  lots: OpenPositionLot[],
+  currentPrice?: number | null
+): OrderProfitLoss {
+  if (!lots.length) {
+    return unavailable('invalid_order');
+  }
+  if (!(currentPrice && currentPrice > 0)) {
+    return unavailable('missing_mark_price');
+  }
+
+  let totalPnl = 0;
+  let totalBasis = 0;
+  let anyAvailable = false;
+
+  for (const lot of lots) {
+    const lotPnl = calculateOpenLotProfitLoss(lot, currentPrice);
+    if (!lotPnl.available) continue;
+    const entryPrice = getOrderPrice(lot.order);
+    if (!(entryPrice > 0) || !(lot.remainingQty > QTY_EPS)) continue;
+    totalPnl += lotPnl.pnl;
+    totalBasis += entryPrice * lot.remainingQty;
+    anyAvailable = true;
+  }
+
+  if (!anyAvailable || !(totalBasis > 0)) {
+    return unavailable('invalid_order');
+  }
+
+  return {
+    pnl: totalPnl,
+    pnlPercent: (totalPnl / totalBasis) * 100,
+    isRealized: false,
+    available: true,
+  };
+}
+
 export function calculateOrderProfitLoss(
   order: OpenOrder,
   allOrders: OpenOrder[],
