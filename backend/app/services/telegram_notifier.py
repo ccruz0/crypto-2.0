@@ -1106,9 +1106,19 @@ class TelegramNotifier:
                          tp_ref_price: Optional[float] = None,
                          sl_percentage: Optional[float] = None,
                          tp_percentage: Optional[float] = None,
-                         original_order_side: Optional[str] = None):
+                         original_order_side: Optional[str] = None,
+                         sl_newly_created: bool = True,
+                         tp_newly_created: bool = True):
         """Send SL/TP orders notification with profit/loss calculations and order details"""
         mode_emoji = "🛡️" if mode == "conservative" else "⚡"
+        if tp_newly_created and not sl_newly_created and sl_order_id:
+            headline = "TP ORDER RECREATED (SL reused)"
+        elif sl_newly_created and not tp_newly_created and tp_order_id:
+            headline = "SL ORDER RECREATED (TP reused)"
+        elif sl_newly_created and tp_newly_created:
+            headline = "SL/TP ORDERS CREATED"
+        else:
+            headline = "SL/TP ORDERS UPDATED"
         entry_side = (original_order_side or "").upper()
         if not entry_side:
             if sl_side == "SELL" or tp_side == "SELL":
@@ -1210,7 +1220,8 @@ class TelegramNotifier:
         
         sl_order_details = ""
         if sl_order_id:
-            sl_order_details = f"\n{sl_emoji} <b>SL Order (exit):</b>"
+            sl_reuse_note = " (reused)" if not sl_newly_created else ""
+            sl_order_details = f"\n{sl_emoji} <b>SL Order (exit){sl_reuse_note}:</b>"
             sl_order_details += f"\n   🆔 Order ID: {sl_order_id}"
             sl_order_details += f"\n   📊 Type: STOP_LIMIT{sl_side_text}"
             sl_order_details += f"\n   💵 Price: ${sl_price:,.4f}"
@@ -1231,7 +1242,8 @@ class TelegramNotifier:
         
         tp_order_details = ""
         if tp_order_id:
-            tp_order_details = f"\n{tp_emoji} <b>TP Order (exit):</b>"
+            tp_reuse_note = " (reused)" if not tp_newly_created else ""
+            tp_order_details = f"\n{tp_emoji} <b>TP Order (exit){tp_reuse_note}:</b>"
             tp_order_details += f"\n   🆔 Order ID: {tp_order_id}"
             tp_order_details += f"\n   📊 Type: TAKE_PROFIT_LIMIT{tp_side_text}"
             tp_order_details += f"\n   💵 Execution Price: ${tp_price:,.4f}"
@@ -1257,7 +1269,7 @@ class TelegramNotifier:
         
         timestamp = self._format_timestamp()
         message = f"""
-{mode_emoji} <b>SL/TP ORDERS CREATED</b>
+{mode_emoji} <b>{headline}</b>
 
 📊 Symbol: <b>{symbol}</b>{context_text}
 📦 Quantity: {quantity:,.6f}{profit_loss_text}
