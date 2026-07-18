@@ -396,6 +396,19 @@ export interface PortfolioBalanceHint {
   balance: number;
 }
 
+function groupFilledEntryOrdersBySymbol(orders: OpenOrder[]): Map<string, OpenOrder[]> {
+  const bySymbol = new Map<string, OpenOrder[]>();
+  for (const order of orders) {
+    if (!isFilledEntryOrder(order)) continue;
+    const symbol = (order.instrument_name || '').toUpperCase();
+    if (!symbol) continue;
+    const list = bySymbol.get(symbol) ?? [];
+    list.push(order);
+    bySymbol.set(symbol, list);
+  }
+  return bySymbol;
+}
+
 /**
  * Index still-open FIFO lots by order_id across all symbols.
  * When portfolio balances are provided, lots are trimmed to match |balance|
@@ -405,17 +418,7 @@ export function buildOpenLotsByOrderId(
   orders: OpenOrder[],
   portfolioAssets?: PortfolioBalanceHint[] | null
 ): Map<string, OpenPositionLot> {
-  const bySymbol = new Map<string, OpenOrder[]>();
-
-  for (const order of orders) {
-    if (!isFilledEntryOrder(order)) continue;
-    const symbol = (order.instrument_name || '').toUpperCase();
-    if (!symbol) continue;
-    const list = bySymbol.get(symbol) ?? [];
-    list.push(order);
-    bySymbol.set(symbol, list);
-  }
-
+  const bySymbol = groupFilledEntryOrdersBySymbol(orders);
   const map = new Map<string, OpenPositionLot>();
 
   for (const [symbol, symbolOrders] of bySymbol) {
@@ -441,18 +444,109 @@ export function buildOpenLotsByOrderId(
   return map;
 }
 
+interface RealizedAccum {
+  pnl: number;
+  /** Notional used for % (buy notional for long exits; sell notional for short covers). */
+  basis: number;
+}
+
+function addRealized(accum: Map<string, RealizedAccum>, orderId: string, pnl: number, basis: number) {
+  if (!orderId || !(basis > 0)) return;
+  const prev = accum.get(orderId) ?? { pnl: 0, basis: 0 };
+  prev.pnl += pnl;
+  prev.basis += basis;
+  accum.set(orderId, prev);
+}
+
+/**
+ * FIFO buy↔sell pairing for realized P/L (same netting as rebuildOpenLots).
+ * Attributes matched quantity to both legs so closed entries and exits both
+ * show realized P/L — including partial fills and matches outside the 5‑min window.
+ * SL/TP protection orders are excluded via isFilledEntryOrder.
+ */
+export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, OrderProfitLoss> {
+  const bySymbol = groupFilledEntryOrdersBySymbol(orders);
+  const result = new Map<string, OrderProfitLoss>();
+
+  for (const symbolOrders of bySymbol.values()) {
+    const chronological = [...symbolOrders].sort(
+      (a, b) => getOrderExecutionTime(a) - getOrderExecutionTime(b)
+    );
+    const buys = chronological.filter((o) => (o.side || '').toUpperCase() === 'BUY');
+    const sells = chronological.filter((o) => (o.side || '').toUpperCase() === 'SELL');
+
+    const sellRemaining = new Map<string, number>();
+    sells.forEach((sell, index) => {
+      const key = sell.order_id || `sell-${index}`;
+      sellRemaining.set(key, getOrderQuantity(sell));
+    });
+
+    const accum = new Map<string, RealizedAccum>();
+
+    for (const buy of buys) {
+      let remaining = getOrderQuantity(buy);
+      const buyPrice = getOrderPrice(buy);
+      const buyId = buy.order_id || '';
+      const buyTime = getOrderExecutionTime(buy);
+
+      for (let i = 0; i < sells.length; i++) {
+        if (remaining <= QTY_EPS) break;
+        const sell = sells[i];
+        const key = sell.order_id || `sell-${i}`;
+        const sellQty = sellRemaining.get(key) ?? 0;
+        if (sellQty <= QTY_EPS) continue;
+
+        const sellPrice = getOrderPrice(sell);
+        const applied = Math.min(remaining, sellQty);
+        remaining -= applied;
+        sellRemaining.set(key, sellQty - applied);
+
+        if (!(applied > QTY_EPS) || !(buyPrice > 0) || !(sellPrice > 0)) continue;
+
+        const matchPnl = (sellPrice - buyPrice) * applied;
+        const sellTime = getOrderExecutionTime(sell);
+        const sellId = sell.order_id || '';
+        // Short cover: sell opened before buy. Long exit: buy first (or same time).
+        const isShortCover = sellTime < buyTime;
+        const basis = (isShortCover ? sellPrice : buyPrice) * applied;
+
+        addRealized(accum, buyId, matchPnl, basis);
+        addRealized(accum, sellId, matchPnl, basis);
+      }
+    }
+
+    for (const [orderId, { pnl, basis }] of accum) {
+      if (!(basis > 0)) continue;
+      result.set(orderId, {
+        pnl,
+        pnlPercent: (pnl / basis) * 100,
+        isRealized: true,
+        available: true,
+      });
+    }
+  }
+
+  return result;
+}
+
 /**
  * P/L for a row on the Executed Orders tab:
  * - Still-open lots → unrealized long/short vs mark price
- * - Closed SELL → realized long exit when a BUY counterpart matches
- * - Closed BUY cover → realized short cover when a SELL counterpart matches
+ * - Closed (not in open lots) → FIFO realized buy↔sell when a counterpart exists
+ * - Otherwise — (trimmed inventory / missing history)
  */
 export function getExecutedOrderDisplayPnl(
   order: OpenOrder,
   allOrders: OpenOrder[],
   currentPrice: number | null | undefined,
-  openLotsByOrderId: Map<string, OpenPositionLot>
+  openLotsByOrderId: Map<string, OpenPositionLot>,
+  realizedByOrderId?: Map<string, OrderProfitLoss>
 ): OrderProfitLoss {
+  // SL/TP and other non-entry fills: never treat as open-lot / orden cerrada P/L.
+  if (!isFilledEntryOrder(order)) {
+    return unavailable('invalid_order');
+  }
+
   const orderId = order.order_id;
   if (orderId) {
     const openLot = openLotsByOrderId.get(orderId);
@@ -461,27 +555,42 @@ export function getExecutedOrderDisplayPnl(
     }
   }
 
+  const realizedMap = realizedByOrderId ?? buildRealizedPnlByOrderId(allOrders);
+  if (orderId) {
+    const realized = realizedMap.get(orderId);
+    if (realized) return realized;
+  }
+
+  // Legacy proximity/volume match as last resort (same-symbol history gaps).
   const side = (order.side || '').toUpperCase();
   if (side === 'SELL') {
-    // Not in open inventory (FIFO-closed or trimmed to exchange balance).
-    // Fall back to realized long-exit P/L when a BUY counterpart matches.
     return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'LONG' });
   }
   if (side === 'BUY') {
-    // Short cover only when a filled SELL exists before this BUY.
-    // Avoid treating a later long-exit SELL as a cover for a closed long entry.
     const buyTime = getOrderExecutionTime(order);
     const hasPriorSell = allOrders.some(
       (o) =>
         o.instrument_name === order.instrument_name &&
         (o.side || '').toUpperCase() === 'SELL' &&
         (o.status || '').toUpperCase() === 'FILLED' &&
+        !PROTECTION_ROLES.has((o.order_role || '').toUpperCase()) &&
         getOrderExecutionTime(o) < buyTime
     );
     if (!hasPriorSell) return unavailable('closed_without_counterpart');
     return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'SHORT' });
   }
   return unavailable('invalid_order');
+}
+
+/** True when a filled entry is no longer in open inventory (FIFO-closed or balance-trimmed). */
+export function isClosedExecutedEntryOrder(
+  order: OpenOrder,
+  openLotsByOrderId: Map<string, OpenPositionLot>
+): boolean {
+  if (!isFilledEntryOrder(order)) return false;
+  const orderId = order.order_id;
+  if (!orderId) return true;
+  return !openLotsByOrderId.has(orderId);
 }
 
 /** Spanish tooltip when Executed Orders shows — for P&L. */
@@ -491,12 +600,13 @@ export function getPnlUnavailableTooltip(reason?: PnlUnavailableReason): string 
       return 'Sin precio de mercado actual para calcular el P&L no realizado';
     case 'closed_without_counterpart':
       return (
-        'Sin P&L: esta orden no forma parte del inventario abierto actual ' +
-        '(ya cubierta o recortada por el balance del exchange) y no hay orden ' +
-        'contraparte para calcular el P&L realizado'
+        'Orden cerrada respecto al inventario abierto, pero sin contraparte ' +
+        'compra/venta en el historial para calcular el P&L realizado ' +
+        '(p. ej. solo ventas en corto recortadas por el balance del exchange, ' +
+        'o historial incompleto)'
       );
     case 'invalid_order':
-      return 'No se pudo calcular el P&L (cantidad o precio inválidos)';
+      return 'No se pudo calcular el P&L (cantidad o precio inválidos, o orden de protección SL/TP)';
     default:
       return 'No se pudo calcular el P&L';
   }
