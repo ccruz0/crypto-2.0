@@ -6,6 +6,7 @@ import {
   calculateOrderProfitLoss,
   getExecutedOrderDisplayPnl,
   getOpenPositionLotsForAsset,
+  getPnlUnavailableTooltip,
   rebuildOpenLots,
   resolveCurrentPrice,
   trimOpenLotsToBalance,
@@ -79,6 +80,7 @@ describe('calculateOrderProfitLoss', () => {
     const result = calculateOrderProfitLoss(sell, [sell], 100, { positionHint: 'LONG' });
 
     expect(result.available).toBe(false);
+    expect(result.unavailableReason).toBe('closed_without_counterpart');
   });
 
   it('computes unrealized short P/L for SELL vs current price', () => {
@@ -392,6 +394,60 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     const result = getExecutedOrderDisplayPnl(sellA, [sellA, sellB], 90, openLots);
     expect(result.available).toBe(true);
     expect(result.pnl).toBeCloseTo(2.5);
+  });
+
+  it('shows — for newer shorts trimmed by balance when no BUY counterpart exists', () => {
+    // Mirrors DOGE_USD: older sells stay open vs short balance; newer sells are
+    // trimmed out and have no matching BUY → unavailable (not a missing mark price).
+    const sellOldA = makeOrder({
+      order_id: 'doge-sell-old-a',
+      side: 'SELL',
+      quantity: '135',
+      price: '0.074',
+      instrument_name: 'DOGE_USD',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sellOldB = makeOrder({
+      order_id: 'doge-sell-old-b',
+      side: 'SELL',
+      quantity: '133',
+      price: '0.075',
+      instrument_name: 'DOGE_USD',
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const sellNew = makeOrder({
+      order_id: 'doge-sell-new',
+      side: 'SELL',
+      quantity: '137',
+      price: '0.0728',
+      instrument_name: 'DOGE_USD',
+      create_time: 3_000,
+      update_time: 3_000,
+    });
+    const all = [sellOldA, sellOldB, sellNew];
+    const shortBalance = -(135 + 133);
+    const openLots = buildOpenLotsByOrderId(all, [{ coin: 'DOGE', balance: shortBalance }]);
+    const mark = 0.071;
+
+    expect(openLots.has('doge-sell-old-a')).toBe(true);
+    expect(openLots.has('doge-sell-old-b')).toBe(true);
+    expect(openLots.has('doge-sell-new')).toBe(false);
+
+    const openResult = getExecutedOrderDisplayPnl(sellOldA, all, mark, openLots);
+    expect(openResult.available).toBe(true);
+    expect(openResult.isRealized).toBe(false);
+
+    const trimmedResult = getExecutedOrderDisplayPnl(sellNew, all, mark, openLots);
+    expect(trimmedResult.available).toBe(false);
+    expect(trimmedResult.unavailableReason).toBe('closed_without_counterpart');
+  });
+
+  it('getPnlUnavailableTooltip explains closed_without_counterpart in Spanish', () => {
+    const tip = getPnlUnavailableTooltip('closed_without_counterpart');
+    expect(tip).toMatch(/inventario abierto/i);
+    expect(tip).toMatch(/contraparte/i);
   });
 
   it('resolveCurrentPrice matches instrument or base symbol', () => {

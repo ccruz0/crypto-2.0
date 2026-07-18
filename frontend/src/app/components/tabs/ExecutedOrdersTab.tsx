@@ -11,6 +11,7 @@ import { useOrders } from '@/hooks/useOrders';
 import {
   buildOpenLotsByOrderId,
   getExecutedOrderDisplayPnl,
+  getPnlUnavailableTooltip,
   resolveCurrentPrice,
 } from '@/utils/orderProfitLoss';
 
@@ -568,7 +569,7 @@ export default function ExecutedOrdersTab({
                       ) : (
                         <span
                           className="text-gray-400 dark:text-gray-500"
-                          title="No se pudo calcular el P&L (sin precio actual o sin contraparte)"
+                          title={getPnlUnavailableTooltip(pnlData.unavailableReason)}
                         >
                           —
                         </span>
@@ -581,7 +582,12 @@ export default function ExecutedOrdersTab({
                           {formatNumber(Math.abs(pnlData.pnl), '$')}
                         </span>
                       ) : (
-                        <span className="text-gray-400 dark:text-gray-500">—</span>
+                        <span
+                          className="text-gray-400 dark:text-gray-500"
+                          title={getPnlUnavailableTooltip(pnlData.unavailableReason)}
+                        >
+                          —
+                        </span>
                       )}
                     </td>
                     <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${getStatusColorClass(order.status || '')}`}>
