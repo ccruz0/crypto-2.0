@@ -31,7 +31,7 @@ websockets==10.4
 
 # Data validation
 pydantic==2.9.2
-pydantic-settings==2.5.2
+pydantic-settings==2.14.2
 
 # Data analysis
 numpy==2.1.1
