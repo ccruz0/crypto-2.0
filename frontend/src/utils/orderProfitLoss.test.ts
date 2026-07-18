@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { OpenOrder } from '@/app/api';
 import {
   buildOpenLotsByOrderId,
+  buildRealizedPnlByOrderId,
   calculateOpenLotProfitLoss,
   calculateOrderProfitLoss,
   getExecutedOrderDisplayPnl,
   getOpenPositionLotsForAsset,
   getPnlUnavailableTooltip,
+  isClosedExecutedEntryOrder,
   rebuildOpenLots,
   resolveCurrentPrice,
   trimOpenLotsToBalance,
@@ -328,16 +330,92 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     });
     const all = [buy, sell];
     const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
     expect(openLots.size).toBe(0);
 
-    const result = getExecutedOrderDisplayPnl(sell, all, 130, openLots);
+    const result = getExecutedOrderDisplayPnl(sell, all, 130, openLots, realized);
     expect(result.available).toBe(true);
     expect(result.isRealized).toBe(true);
     expect(result.pnl).toBeCloseTo(20);
+    expect(isClosedExecutedEntryOrder(sell, openLots)).toBe(true);
 
-    // Closed long entry BUY must not be mislabeled as short-cover P/L
-    const buyResult = getExecutedOrderDisplayPnl(buy, all, 130, openLots);
-    expect(buyResult.available).toBe(false);
+    // Closed long entry BUY also shows the same FIFO realized P/L (orden cerrada).
+    const buyResult = getExecutedOrderDisplayPnl(buy, all, 130, openLots, realized);
+    expect(buyResult.available).toBe(true);
+    expect(buyResult.isRealized).toBe(true);
+    expect(buyResult.pnl).toBeCloseTo(20);
+    expect(isClosedExecutedEntryOrder(buy, openLots)).toBe(true);
+  });
+
+  it('FIFO-pairs partial qty and distant times for realized closed P/L', () => {
+    // Proximity matcher fails: qty differs >20% and times are days apart.
+    const buy = makeOrder({
+      order_id: 'buy-big',
+      side: 'BUY',
+      quantity: '100',
+      price: '0.10',
+      instrument_name: 'DOGE_USD',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sell = makeOrder({
+      order_id: 'sell-half',
+      side: 'SELL',
+      quantity: '40',
+      price: '0.12',
+      instrument_name: 'DOGE_USD',
+      create_time: 1_000 + 3 * 24 * 60 * 60 * 1000,
+      update_time: 1_000 + 3 * 24 * 60 * 60 * 1000,
+    });
+    const all = [buy, sell];
+    const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
+
+    expect(openLots.has('buy-big')).toBe(true);
+    expect(openLots.get('buy-big')?.remainingQty).toBeCloseTo(60);
+    expect(openLots.has('sell-half')).toBe(false);
+
+    const sellResult = getExecutedOrderDisplayPnl(sell, all, 0.11, openLots, realized);
+    expect(sellResult.available).toBe(true);
+    expect(sellResult.isRealized).toBe(true);
+    expect(sellResult.pnl).toBeCloseTo((0.12 - 0.10) * 40);
+
+    const buyOpen = getExecutedOrderDisplayPnl(buy, all, 0.11, openLots, realized);
+    expect(buyOpen.available).toBe(true);
+    expect(buyOpen.isRealized).toBe(false);
+    expect(buyOpen.pnl).toBeCloseTo((0.11 - 0.10) * 60);
+  });
+
+  it('does not treat SL/TP protection fills as closed entry P/L', () => {
+    const buy = makeOrder({
+      order_id: 'buy-1',
+      side: 'BUY',
+      quantity: '1',
+      price: '100',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sl = makeOrder({
+      order_id: 'sl-1',
+      side: 'SELL',
+      quantity: '1',
+      price: '90',
+      order_role: 'STOP_LOSS',
+      order_type: 'STOP_LOSS',
+      create_time: 10_000,
+      update_time: 10_000,
+    });
+    const all = [buy, sl];
+    const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
+
+    // Protection order is excluded from FIFO; buy stays open.
+    expect(openLots.has('buy-1')).toBe(true);
+    expect(realized.has('sl-1')).toBe(false);
+
+    const slResult = getExecutedOrderDisplayPnl(sl, all, 95, openLots, realized);
+    expect(slResult.available).toBe(false);
+    expect(isClosedExecutedEntryOrder(sl, openLots)).toBe(false);
   });
 
   it('shows realized short cover for BUY that closes a prior SELL', () => {
@@ -446,7 +524,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
 
   it('getPnlUnavailableTooltip explains closed_without_counterpart in Spanish', () => {
     const tip = getPnlUnavailableTooltip('closed_without_counterpart');
-    expect(tip).toMatch(/inventario abierto/i);
+    expect(tip).toMatch(/orden cerrada/i);
     expect(tip).toMatch(/contraparte/i);
   });
 

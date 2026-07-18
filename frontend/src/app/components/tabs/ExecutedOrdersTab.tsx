@@ -10,8 +10,10 @@ import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import { useOrders } from '@/hooks/useOrders';
 import {
   buildOpenLotsByOrderId,
+  buildRealizedPnlByOrderId,
   getExecutedOrderDisplayPnl,
   getPnlUnavailableTooltip,
+  isClosedExecutedEntryOrder,
   resolveCurrentPrice,
 } from '@/utils/orderProfitLoss';
 
@@ -118,6 +120,11 @@ export default function ExecutedOrdersTab({
   const openLotsByOrderId = useMemo(
     () => buildOpenLotsByOrderId(executedOrders, portfolioAssets),
     [executedOrders, portfolioAssets]
+  );
+
+  const realizedByOrderId = useMemo(
+    () => buildRealizedPnlByOrderId(executedOrders),
+    [executedOrders]
   );
 
   // Fetch executed orders on mount (Strict Mode safe)
@@ -247,8 +254,20 @@ export default function ExecutedOrdersTab({
         case 'pnl_percent': {
           const aPrice = resolveCurrentPrice(a.instrument_name, topCoins);
           const bPrice = resolveCurrentPrice(b.instrument_name, topCoins);
-          const aPnl = getExecutedOrderDisplayPnl(a, executedOrders, aPrice, openLotsByOrderId);
-          const bPnl = getExecutedOrderDisplayPnl(b, executedOrders, bPrice, openLotsByOrderId);
+          const aPnl = getExecutedOrderDisplayPnl(
+            a,
+            executedOrders,
+            aPrice,
+            openLotsByOrderId,
+            realizedByOrderId
+          );
+          const bPnl = getExecutedOrderDisplayPnl(
+            b,
+            executedOrders,
+            bPrice,
+            openLotsByOrderId,
+            realizedByOrderId
+          );
           aVal = aPnl.available ? (sortField === 'pnl' ? aPnl.pnl : aPnl.pnlPercent) : Number.NEGATIVE_INFINITY;
           bVal = bPnl.available ? (sortField === 'pnl' ? bPnl.pnl : bPnl.pnlPercent) : Number.NEGATIVE_INFINITY;
           break;
@@ -271,7 +290,15 @@ export default function ExecutedOrdersTab({
 
       return 0;
     });
-  }, [filteredOrders, sortField, sortDirection, topCoins, executedOrders, openLotsByOrderId]);
+  }, [
+    filteredOrders,
+    sortField,
+    sortDirection,
+    topCoins,
+    executedOrders,
+    openLotsByOrderId,
+    realizedByOrderId,
+  ]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -504,20 +531,33 @@ export default function ExecutedOrdersTab({
                   order,
                   executedOrders,
                   markPrice,
-                  openLotsByOrderId
+                  openLotsByOrderId,
+                  realizedByOrderId
                 );
                 const hasPnl = pnlData.available;
                 const pnlPositive = pnlData.pnl >= 0;
                 const pnlColorClass = pnlPositive
                   ? 'text-green-600 dark:text-green-400'
                   : 'text-red-600 dark:text-red-400';
-                const realizationLabel = pnlData.isRealized ? 'realizado' : 'no realizado';
-                const realizationTitle = pnlData.isRealized
-                  ? 'P&L realizado vs orden contraparte'
-                  : 'P&L no realizado vs precio actual (long gana si sube; short si baja)';
+                const isClosedEntry = isClosedExecutedEntryOrder(order, openLotsByOrderId);
+                const realizationLabel = isClosedEntry
+                  ? 'orden cerrada'
+                  : pnlData.isRealized
+                    ? 'realizado'
+                    : 'no realizado';
+                const realizationTitle = isClosedEntry
+                  ? hasPnl
+                    ? 'P&L realizado (orden cerrada vs contraparte FIFO)'
+                    : getPnlUnavailableTooltip(pnlData.unavailableReason)
+                  : pnlData.isRealized
+                    ? 'P&L realizado vs orden contraparte'
+                    : 'P&L no realizado vs precio actual (long gana si sube; short si baja)';
                 
                 return (
-                  <tr key={order.order_id} className="hover:bg-gray-50 dark:hover:bg-slate-800">
+                  <tr
+                    key={order.order_id}
+                    className={`hover:bg-gray-50 dark:hover:bg-slate-800${isClosedEntry ? ' font-bold' : ''}`}
+                  >
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200">
                       {createDatetime}
                     </td>
@@ -564,14 +604,19 @@ export default function ExecutedOrdersTab({
                         <span className={`font-medium ${pnlColorClass}`} title={realizationTitle}>
                           {pnlPositive ? '+' : ''}
                           {pnlData.pnlPercent.toFixed(2)}%
-                          <span className="ml-1 text-gray-400 font-normal">({realizationLabel})</span>
+                          <span className={`ml-1 text-gray-400 ${isClosedEntry ? '' : 'font-normal'}`}>
+                            ({realizationLabel})
+                          </span>
                         </span>
                       ) : (
                         <span
                           className="text-gray-400 dark:text-gray-500"
-                          title={getPnlUnavailableTooltip(pnlData.unavailableReason)}
+                          title={realizationTitle}
                         >
                           —
+                          {isClosedEntry && (
+                            <span className="ml-1">(orden cerrada)</span>
+                          )}
                         </span>
                       )}
                     </td>
@@ -584,7 +629,7 @@ export default function ExecutedOrdersTab({
                       ) : (
                         <span
                           className="text-gray-400 dark:text-gray-500"
-                          title={getPnlUnavailableTooltip(pnlData.unavailableReason)}
+                          title={realizationTitle}
                         >
                           —
                         </span>
