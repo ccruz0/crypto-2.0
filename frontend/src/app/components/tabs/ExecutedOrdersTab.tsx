@@ -106,8 +106,11 @@ export default function ExecutedOrdersTab({
   const {
     executedOrders,
     executedOrdersLoading,
+    executedOrdersLoadingMore,
     executedOrdersError,
     executedOrdersLastUpdate,
+    executedOrdersHasMore,
+    executedOrdersTotal,
     fetchExecutedOrders,
   } = useOrders();
 
@@ -125,15 +128,34 @@ export default function ExecutedOrdersTab({
     [executedOrders]
   );
 
-  // Fetch executed orders on mount (Strict Mode safe)
-  const didFetchRef = useRef(false);
+  // Fetch on mount and whenever Hide Cancelled toggles (server-side exclude_cancelled).
+  // Strict Mode safe: skip duplicate mount with same excludeCancelled value.
+  const lastExcludeRef = useRef<boolean | null>(null);
   useEffect(() => {
-    if (didFetchRef.current) return;
-    didFetchRef.current = true;
-
-    fetchExecutedOrders({ showLoader: true });
+    if (lastExcludeRef.current === hideCancelled) return;
+    lastExcludeRef.current = hideCancelled;
+    fetchExecutedOrders({ showLoader: true, excludeCancelled: hideCancelled });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty deps: only run on mount. fetchExecutedOrders is stable (useCallback with empty deps).
+  }, [hideCancelled]);
+
+  const statusSummary = useMemo(() => {
+    if (!Array.isArray(executedOrders)) {
+      return { cancelledLike: 0 };
+    }
+    let cancelledLike = 0;
+    for (const order of executedOrders) {
+      const normalized = (order.status || '').toUpperCase();
+      if (
+        normalized === 'CANCELLED' ||
+        normalized === 'CANCELED' ||
+        normalized === 'REJECTED' ||
+        normalized === 'EXPIRED'
+      ) {
+        cancelledLike += 1;
+      }
+    }
+    return { cancelledLike };
+  }, [executedOrders]);
 
   // Filter orders
   const filteredOrders = useMemo(() => {
@@ -319,8 +341,14 @@ export default function ExecutedOrdersTab({
             </div>
           )}
           <button
-            onClick={() => fetchExecutedOrders({ showLoader: true, sync: true })}
-            disabled={executedOrdersLoading}
+            onClick={() =>
+              fetchExecutedOrders({
+                showLoader: true,
+                sync: true,
+                excludeCancelled: hideCancelled,
+              })
+            }
+            disabled={executedOrdersLoading || executedOrdersLoadingMore}
             className={`px-3 md:px-4 py-2 rounded-lg font-medium transition-all text-sm md:text-base whitespace-nowrap ${
               executedOrdersLoading
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
@@ -341,6 +369,19 @@ export default function ExecutedOrdersTab({
           </button>
         </div>
       </div>
+
+      {!executedOrdersLoading && (
+        <div className="mb-3 text-sm text-gray-600 dark:text-gray-400">
+          Mostrando {sortedOrders.length}
+          {executedOrdersTotal != null ? ` de ${executedOrdersTotal}` : ''}
+          {hideCancelled
+            ? ' (canceladas/rechazadas ocultas)'
+            : statusSummary.cancelledLike > 0
+              ? ` · ${statusSummary.cancelledLike} canceladas/rechazadas en esta página`
+              : ''}
+          {executedOrdersHasMore ? ' · hay más páginas' : ''}
+        </div>
+      )}
 
       {/* Filter Section */}
       <div className="mb-4 p-4 bg-gray-50 dark:bg-slate-800 rounded-lg">
@@ -399,7 +440,24 @@ export default function ExecutedOrdersTab({
       {executedOrdersLoading ? (
         <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading executed orders...</div>
       ) : sortedOrders.length === 0 ? (
-        <div className="text-center py-8 text-gray-500 dark:text-gray-400">No executed orders</div>
+        <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+          <p>No executed orders</p>
+          {executedOrdersHasMore && (
+            <button
+              type="button"
+              onClick={() =>
+                fetchExecutedOrders({
+                  loadMore: true,
+                  excludeCancelled: hideCancelled,
+                })
+              }
+              disabled={executedOrdersLoadingMore}
+              className="mt-4 px-4 py-2 rounded-lg font-medium text-sm bg-slate-800 text-white hover:bg-slate-700 disabled:bg-gray-300 disabled:text-gray-500"
+            >
+              {executedOrdersLoadingMore ? 'Cargando…' : 'Cargar más'}
+            </button>
+          )}
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
@@ -668,8 +726,31 @@ export default function ExecutedOrdersTab({
               })}
             </tbody>
           </table>
-          <div className="mt-4 text-sm text-gray-600 dark:text-gray-400">
-            Total orders: {sortedOrders.length}
+          <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="text-sm text-gray-600 dark:text-gray-400">
+              Mostrando {sortedOrders.length}
+              {executedOrdersTotal != null ? ` de ${executedOrdersTotal}` : ''} órdenes
+              {hideCancelled ? ' (sin canceladas)' : ''}
+            </div>
+            {executedOrdersHasMore && (
+              <button
+                type="button"
+                onClick={() =>
+                  fetchExecutedOrders({
+                    loadMore: true,
+                    excludeCancelled: hideCancelled,
+                  })
+                }
+                disabled={executedOrdersLoadingMore || executedOrdersLoading}
+                className={`px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap ${
+                  executedOrdersLoadingMore || executedOrdersLoading
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    : 'bg-slate-800 text-white hover:bg-slate-700 dark:bg-slate-600 dark:hover:bg-slate-500'
+                }`}
+              >
+                {executedOrdersLoadingMore ? 'Cargando…' : 'Cargar más'}
+              </button>
+            )}
           </div>
         </div>
       )}

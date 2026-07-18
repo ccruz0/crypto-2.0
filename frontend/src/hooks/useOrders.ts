@@ -3,7 +3,7 @@
  * Extracted from page.tsx for better organization
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { 
   getDashboardState, 
   getDashboardSnapshot, 
@@ -15,6 +15,19 @@ import {
 } from '@/app/api';
 import { logger } from '@/utils/logger';
 
+const EXECUTED_ORDERS_PAGE_SIZE = 100;
+
+export type FetchExecutedOrdersOptions = {
+  showLoader?: boolean;
+  sync?: boolean;
+  /** @deprecated Prefer sync; kept for slow-tick callers */
+  loadAll?: boolean;
+  /** Append next page (uses current list length as offset) */
+  loadMore?: boolean;
+  /** When true, request exclude_cancelled so FILLED rows are not lost to client filtering */
+  excludeCancelled?: boolean;
+};
+
 export interface UseOrdersReturn {
   openOrders: OpenOrder[];
   openOrdersLoading: boolean;
@@ -25,10 +38,13 @@ export interface UseOrdersReturn {
   openOrdersSyncError: string | null;
   executedOrders: OpenOrder[];
   executedOrdersLoading: boolean;
+  executedOrdersLoadingMore: boolean;
   executedOrdersError: string | null;
   executedOrdersLastUpdate: Date | null;
+  executedOrdersHasMore: boolean;
+  executedOrdersTotal: number | null;
   fetchOpenOrders: (options?: { showLoader?: boolean; backgroundRefresh?: boolean }) => Promise<void>;
-  fetchExecutedOrders: (options?: { showLoader?: boolean; sync?: boolean; loadAll?: boolean }) => Promise<void>;
+  fetchExecutedOrders: (options?: FetchExecutedOrdersOptions) => Promise<void>;
   setOpenOrders: (orders: OpenOrder[]) => void;
   setExecutedOrders: (orders: OpenOrder[]) => void;
 }
@@ -43,8 +59,17 @@ export function useOrders(): UseOrdersReturn {
   const [openOrdersSyncError, setOpenOrdersSyncError] = useState<string | null>(null);
   const [executedOrders, setExecutedOrders] = useState<OpenOrder[]>([]);
   const [executedOrdersLoading, setExecutedOrdersLoading] = useState(true);
+  const [executedOrdersLoadingMore, setExecutedOrdersLoadingMore] = useState(false);
   const [executedOrdersError, setExecutedOrdersError] = useState<string | null>(null);
   const [executedOrdersLastUpdate, setExecutedOrdersLastUpdate] = useState<Date | null>(null);
+  const [executedOrdersHasMore, setExecutedOrdersHasMore] = useState(false);
+  const [executedOrdersTotal, setExecutedOrdersTotal] = useState<number | null>(null);
+  const executedOrdersRef = useRef<OpenOrder[]>([]);
+  const excludeCancelledRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    executedOrdersRef.current = executedOrders;
+  }, [executedOrders]);
 
   const fetchOpenOrders = useCallback(async (options: { showLoader?: boolean; backgroundRefresh?: boolean } = {}) => {
     const { showLoader = false, backgroundRefresh = false } = options;
@@ -237,10 +262,20 @@ export function useOrders(): UseOrdersReturn {
     }
   }, []);
 
-  const fetchExecutedOrders = useCallback(async (options: { showLoader?: boolean; sync?: boolean; loadAll?: boolean } = {}) => {
-    const { showLoader = false, sync = false, loadAll = false } = options;
-    const doSync = sync || loadAll; // when loadAll (e.g. from slow tick with no orders), sync from exchange
-    if (showLoader) {
+  const fetchExecutedOrders = useCallback(async (options: FetchExecutedOrdersOptions = {}) => {
+    const {
+      showLoader = false,
+      sync = false,
+      loadAll = false,
+      loadMore = false,
+      excludeCancelled = excludeCancelledRef.current,
+    } = options;
+    const doSync = (sync || loadAll) && !loadMore;
+    excludeCancelledRef.current = excludeCancelled;
+
+    if (loadMore) {
+      setExecutedOrdersLoadingMore(true);
+    } else if (showLoader) {
       setExecutedOrdersLoading(true);
     }
     setExecutedOrdersError(null);
@@ -249,20 +284,50 @@ export function useOrders(): UseOrdersReturn {
     const SAFETY_MS = 65_000;
     const safetyTimer = setTimeout(() => {
       setExecutedOrdersLoading(false);
+      setExecutedOrdersLoadingMore(false);
       setExecutedOrdersError('Request took too long. Click Refresh to try again.');
     }, SAFETY_MS);
-    
+
     try {
-      // First load: use sync=false to read from DB immediately (avoids long sync timeout).
-      // When user clicks "Refresh" or loadAll, pass sync=true to sync from exchange then return.
-      logger.info('🔄 Fetching executed orders...', { sync: doSync });
-      const response = await getOrderHistory(100, 0, doSync);
+      const offset = loadMore ? executedOrdersRef.current.length : 0;
+      logger.info('🔄 Fetching executed orders...', {
+        sync: doSync,
+        loadMore,
+        offset,
+        excludeCancelled,
+      });
+      const response = await getOrderHistory({
+        limit: EXECUTED_ORDERS_PAGE_SIZE,
+        offset,
+        sync: doSync,
+        excludeCancelled,
+      });
       const orders = response.orders || [];
-      
-      setExecutedOrders(orders);
+
+      if (loadMore) {
+        const existingIds = new Set(
+          executedOrdersRef.current.map((o) => o.order_id).filter(Boolean)
+        );
+        const merged = [
+          ...executedOrdersRef.current,
+          ...orders.filter((o) => o.order_id && !existingIds.has(o.order_id)),
+        ];
+        setExecutedOrders(merged);
+        executedOrdersRef.current = merged;
+      } else {
+        setExecutedOrders(orders);
+        executedOrdersRef.current = orders;
+      }
+
+      setExecutedOrdersHasMore(Boolean(response.has_more));
+      setExecutedOrdersTotal(
+        typeof response.total === 'number' ? response.total : null
+      );
       setExecutedOrdersLastUpdate(new Date());
       setExecutedOrdersError(null);
-      logger.info(`✅ Loaded ${orders.length} executed orders`);
+      logger.info(
+        `✅ Loaded ${orders.length} executed orders (page offset=${offset}, has_more=${response.has_more})`
+      );
     } catch (err) {
       logger.error('❌ Error in fetchExecutedOrders:', err);
       logger.logHandledError(
@@ -275,6 +340,7 @@ export function useOrders(): UseOrdersReturn {
     } finally {
       clearTimeout(safetyTimer);
       setExecutedOrdersLoading(false);
+      setExecutedOrdersLoadingMore(false);
     }
   }, []);
 
@@ -294,14 +360,14 @@ export function useOrders(): UseOrdersReturn {
     openOrdersSyncError,
     executedOrders,
     executedOrdersLoading,
+    executedOrdersLoadingMore,
     executedOrdersError,
     executedOrdersLastUpdate,
+    executedOrdersHasMore,
+    executedOrdersTotal,
     fetchOpenOrders,
     fetchExecutedOrders,
     setOpenOrders,
     setExecutedOrders,
   };
 }
-
-
-

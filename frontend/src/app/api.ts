@@ -779,8 +779,17 @@ export async function getTPSLOrderValues(): Promise<TPSLOrderValues> {
   }
 }
 
+export type GetOrderHistoryOptions = {
+  limit?: number;
+  offset?: number;
+  sync?: boolean;
+  symbol?: string;
+  status?: string;
+  excludeCancelled?: boolean;
+};
+
 export async function getOrderHistory(
-  limit: number = 100,
+  limitOrOptions: number | GetOrderHistoryOptions = 100,
   offset: number = 0,
   sync: boolean = false,
   symbol?: string
@@ -790,15 +799,26 @@ export async function getOrderHistory(
   total?: number;
   has_more?: boolean;
 }> {
+  const options: GetOrderHistoryOptions =
+    typeof limitOrOptions === 'object' && limitOrOptions !== null
+      ? limitOrOptions
+      : { limit: limitOrOptions, offset, sync, symbol };
+
   const params = new URLSearchParams({
-    limit: limit.toString(),
-    offset: offset.toString()
+    limit: String(options.limit ?? 100),
+    offset: String(options.offset ?? 0),
   });
-  if (sync) {
+  if (options.sync) {
     params.set('sync', 'true');
   }
-  if (symbol) {
-    params.set('symbol', symbol);
+  if (options.symbol) {
+    params.set('symbol', options.symbol);
+  }
+  if (options.status) {
+    params.set('status', options.status);
+  }
+  if (options.excludeCancelled) {
+    params.set('exclude_cancelled', 'true');
   }
   const data = await fetchAPI<{
     orders?: OpenOrder[];
