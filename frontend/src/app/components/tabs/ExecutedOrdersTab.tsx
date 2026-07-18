@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { OpenOrder, PortfolioAsset, TopCoin } from '@/app/api';
+import { OpenOrder, TopCoin } from '@/app/api';
 import { formatDateTime, formatNumber } from '@/utils/formatting';
 import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import { useOrders } from '@/hooks/useOrders';
@@ -93,8 +93,6 @@ interface ExecutedOrdersTabProps {
   onNavigateToExpectedTP?: (symbol: string, orderId: string) => void;
   /** Mark prices for unrealized P/L (same source as Portfolio / Watchlist). */
   topCoins?: TopCoin[];
-  /** Optional balances to trim open lots to exchange inventory. */
-  portfolioAssets?: PortfolioAsset[];
 }
 
 export default function ExecutedOrdersTab({
@@ -104,7 +102,6 @@ export default function ExecutedOrdersTab({
   onToggleHideCancelled,
   onNavigateToExpectedTP,
   topCoins = [],
-  portfolioAssets,
 }: ExecutedOrdersTabProps) {
   const {
     executedOrders,
@@ -117,9 +114,10 @@ export default function ExecutedOrdersTab({
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
+  // FIFO open lots only — do not trim by portfolio balance (Portfolio tab owns that).
   const openLotsByOrderId = useMemo(
-    () => buildOpenLotsByOrderId(executedOrders, portfolioAssets),
-    [executedOrders, portfolioAssets]
+    () => buildOpenLotsByOrderId(executedOrders),
+    [executedOrders]
   );
 
   const realizedByOrderId = useMemo(
@@ -539,19 +537,24 @@ export default function ExecutedOrdersTab({
                 const pnlColorClass = pnlPositive
                   ? 'text-green-600 dark:text-green-400'
                   : 'text-red-600 dark:text-red-400';
-                const isClosedEntry = isClosedExecutedEntryOrder(order, openLotsByOrderId);
+                const isClosedEntry = isClosedExecutedEntryOrder(
+                  order,
+                  openLotsByOrderId,
+                  realizedByOrderId
+                );
+                // Bold + "orden cerrada" only with numeric FIFO realized P/L.
                 const realizationLabel = isClosedEntry
                   ? 'orden cerrada'
                   : pnlData.isRealized
                     ? 'realizado'
                     : 'no realizado';
                 const realizationTitle = isClosedEntry
-                  ? hasPnl
-                    ? 'P&L realizado (orden cerrada vs contraparte FIFO)'
-                    : getPnlUnavailableTooltip(pnlData.unavailableReason)
+                  ? 'P&L realizado (orden cerrada vs contraparte FIFO)'
                   : pnlData.isRealized
                     ? 'P&L realizado vs orden contraparte'
-                    : 'P&L no realizado vs precio actual (long gana si sube; short si baja)';
+                    : hasPnl
+                      ? 'P&L no realizado vs precio actual (long gana si sube; short si baja)'
+                      : getPnlUnavailableTooltip(pnlData.unavailableReason);
                 
                 return (
                   <tr
@@ -614,9 +617,6 @@ export default function ExecutedOrdersTab({
                           title={realizationTitle}
                         >
                           —
-                          {isClosedEntry && (
-                            <span className="ml-1">(orden cerrada)</span>
-                          )}
                         </span>
                       )}
                     </td>

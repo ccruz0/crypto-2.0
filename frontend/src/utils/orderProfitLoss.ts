@@ -411,8 +411,10 @@ function groupFilledEntryOrdersBySymbol(orders: OpenOrder[]): Map<string, OpenOr
 
 /**
  * Index still-open FIFO lots by order_id across all symbols.
+ *
  * When portfolio balances are provided, lots are trimmed to match |balance|
- * (same semantics as Portfolio expandable rows).
+ * — use that only for Portfolio asset expansion. Executed Orders should call
+ * this without balances so every unmatched entry can still mark-to-market.
  */
 export function buildOpenLotsByOrderId(
   orders: OpenOrder[],
@@ -531,9 +533,12 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
 
 /**
  * P/L for a row on the Executed Orders tab:
- * - Still-open lots → unrealized long/short vs mark price
- * - Closed (not in open lots) → FIFO realized buy↔sell when a counterpart exists
- * - Otherwise — (trimmed inventory / missing history)
+ * - Still-open FIFO lots → unrealized long/short vs mark price
+ * - Fully FIFO-paired (no open remainder) → realized buy↔sell P/L
+ * - Unmatched remainder / no counterpart → MTM vs mark (never claim "cerrada")
+ *
+ * Balance trim is intentionally ignored here; callers should build openLots
+ * without portfolio balances. Trim remains Portfolio-only.
  */
 export function getExecutedOrderDisplayPnl(
   order: OpenOrder,
@@ -561,12 +566,14 @@ export function getExecutedOrderDisplayPnl(
     if (realized) return realized;
   }
 
-  // Legacy proximity/volume match as last resort (same-symbol history gaps).
+  // Legacy proximity/volume match (same-symbol history gaps) before MTM fallback.
   const side = (order.side || '').toUpperCase();
   if (side === 'SELL') {
-    return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'LONG' });
-  }
-  if (side === 'BUY') {
+    const legacy = calculateOrderProfitLoss(order, allOrders, currentPrice, {
+      positionHint: 'LONG',
+    });
+    if (legacy.available && legacy.isRealized) return legacy;
+  } else if (side === 'BUY') {
     const buyTime = getOrderExecutionTime(order);
     const hasPriorSell = allOrders.some(
       (o) =>
@@ -576,21 +583,47 @@ export function getExecutedOrderDisplayPnl(
         !PROTECTION_ROLES.has((o.order_role || '').toUpperCase()) &&
         getOrderExecutionTime(o) < buyTime
     );
-    if (!hasPriorSell) return unavailable('closed_without_counterpart');
-    return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'SHORT' });
+    if (hasPriorSell) {
+      const legacy = calculateOrderProfitLoss(order, allOrders, currentPrice, {
+        positionHint: 'SHORT',
+      });
+      if (legacy.available && legacy.isRealized) return legacy;
+    }
+  }
+
+  // No FIFO/legacy pair: still show unrealized MTM so every market entry has a %.
+  const orderPrice = getOrderPrice(order);
+  const orderQuantity = getOrderQuantity(order);
+  if (!(orderPrice > 0) || !(orderQuantity > 0)) {
+    return unavailable('invalid_order');
+  }
+  if (!(currentPrice && currentPrice > 0)) {
+    return unavailable('missing_mark_price');
+  }
+  if (side === 'SELL') {
+    return unrealizedShortPnl(orderPrice, orderQuantity, currentPrice);
+  }
+  if (side === 'BUY') {
+    return unrealizedLongPnl(orderPrice, orderQuantity, currentPrice);
   }
   return unavailable('invalid_order');
 }
 
-/** True when a filled entry is no longer in open inventory (FIFO-closed or balance-trimmed). */
+/**
+ * True only when a filled entry is fully FIFO-closed with numeric realized P/L.
+ * Balance-trimmed orphans (no counterpart) are NOT closed.
+ */
 export function isClosedExecutedEntryOrder(
   order: OpenOrder,
-  openLotsByOrderId: Map<string, OpenPositionLot>
+  openLotsByOrderId: Map<string, OpenPositionLot>,
+  realizedByOrderId?: Map<string, OrderProfitLoss>
 ): boolean {
   if (!isFilledEntryOrder(order)) return false;
   const orderId = order.order_id;
-  if (!orderId) return true;
-  return !openLotsByOrderId.has(orderId);
+  if (!orderId) return false;
+  if (openLotsByOrderId.has(orderId)) return false;
+  const realized = realizedByOrderId?.get(orderId);
+  return !!(realized?.available && realized.isRealized);
 }
 
 /** Spanish tooltip when Executed Orders shows — for P&L. */
@@ -600,10 +633,8 @@ export function getPnlUnavailableTooltip(reason?: PnlUnavailableReason): string 
       return 'Sin precio de mercado actual para calcular el P&L no realizado';
     case 'closed_without_counterpart':
       return (
-        'Orden cerrada respecto al inventario abierto, pero sin contraparte ' +
-        'compra/venta en el historial para calcular el P&L realizado ' +
-        '(p. ej. solo ventas en corto recortadas por el balance del exchange, ' +
-        'o historial incompleto)'
+        'Fuera del inventario abierto o sin compra/venta de cierre en el historial ' +
+        'para calcular el P&L realizado (historial incompleto o posición no cubierta)'
       );
     case 'invalid_order':
       return 'No se pudo calcular el P&L (cantidad o precio inválidos, o orden de protección SL/TP)';

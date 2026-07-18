@@ -337,14 +337,14 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     expect(result.available).toBe(true);
     expect(result.isRealized).toBe(true);
     expect(result.pnl).toBeCloseTo(20);
-    expect(isClosedExecutedEntryOrder(sell, openLots)).toBe(true);
+    expect(isClosedExecutedEntryOrder(sell, openLots, realized)).toBe(true);
 
     // Closed long entry BUY also shows the same FIFO realized P/L (orden cerrada).
     const buyResult = getExecutedOrderDisplayPnl(buy, all, 130, openLots, realized);
     expect(buyResult.available).toBe(true);
     expect(buyResult.isRealized).toBe(true);
     expect(buyResult.pnl).toBeCloseTo(20);
-    expect(isClosedExecutedEntryOrder(buy, openLots)).toBe(true);
+    expect(isClosedExecutedEntryOrder(buy, openLots, realized)).toBe(true);
   });
 
   it('FIFO-pairs partial qty and distant times for realized closed P/L', () => {
@@ -415,7 +415,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
 
     const slResult = getExecutedOrderDisplayPnl(sl, all, 95, openLots, realized);
     expect(slResult.available).toBe(false);
-    expect(isClosedExecutedEntryOrder(sl, openLots)).toBe(false);
+    expect(isClosedExecutedEntryOrder(sl, openLots, realized)).toBe(false);
   });
 
   it('shows realized short cover for BUY that closes a prior SELL', () => {
@@ -445,7 +445,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     expect(result.pnl).toBeCloseTo(20);
   });
 
-  it('trims open lots to portfolio balance before display P/L', () => {
+  it('portfolio trim still applies when balances are passed (Portfolio path)', () => {
     const sellA = makeOrder({
       order_id: 'sell-a',
       side: 'SELL',
@@ -464,19 +464,18 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       create_time: 2_000,
       update_time: 2_000,
     });
-    const openLots = buildOpenLotsByOrderId([sellA, sellB], [{ coin: 'SOL', balance: -0.25 }]);
+    const trimmedLots = buildOpenLotsByOrderId([sellA, sellB], [
+      { coin: 'SOL', balance: -0.25 },
+    ]);
 
-    expect(openLots.has('sell-a')).toBe(true);
-    expect(openLots.has('sell-b')).toBe(false);
-
-    const result = getExecutedOrderDisplayPnl(sellA, [sellA, sellB], 90, openLots);
-    expect(result.available).toBe(true);
-    expect(result.pnl).toBeCloseTo(2.5);
+    expect(trimmedLots.has('sell-a')).toBe(true);
+    expect(trimmedLots.has('sell-b')).toBe(false);
+    expect(trimmedLots.get('sell-a')?.remainingQty).toBeCloseTo(0.25);
   });
 
-  it('shows — for newer shorts trimmed by balance when no BUY counterpart exists', () => {
-    // Mirrors DOGE_USD: older sells stay open vs short balance; newer sells are
-    // trimmed out and have no matching BUY → unavailable (not a missing mark price).
+  it('Executed Orders ignores balance trim and marks all unmatched shorts', () => {
+    // Mirrors DOGE_USD: exchange short balance may cover only older lots, but
+    // Executed Orders still shows MTM for every unmatched SELL (no false "cerrada").
     const sellOldA = makeOrder({
       order_id: 'doge-sell-old-a',
       side: 'SELL',
@@ -505,27 +504,72 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       update_time: 3_000,
     });
     const all = [sellOldA, sellOldB, sellNew];
-    const shortBalance = -(135 + 133);
-    const openLots = buildOpenLotsByOrderId(all, [{ coin: 'DOGE', balance: shortBalance }]);
+    // No portfolio balances — Executed Orders path.
+    const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
     const mark = 0.071;
 
     expect(openLots.has('doge-sell-old-a')).toBe(true);
     expect(openLots.has('doge-sell-old-b')).toBe(true);
-    expect(openLots.has('doge-sell-new')).toBe(false);
+    expect(openLots.has('doge-sell-new')).toBe(true);
+    expect(realized.size).toBe(0);
 
-    const openResult = getExecutedOrderDisplayPnl(sellOldA, all, mark, openLots);
-    expect(openResult.available).toBe(true);
-    expect(openResult.isRealized).toBe(false);
+    for (const sell of all) {
+      const result = getExecutedOrderDisplayPnl(sell, all, mark, openLots, realized);
+      expect(result.available).toBe(true);
+      expect(result.isRealized).toBe(false);
+      expect(isClosedExecutedEntryOrder(sell, openLots, realized)).toBe(false);
+    }
 
-    const trimmedResult = getExecutedOrderDisplayPnl(sellNew, all, mark, openLots);
-    expect(trimmedResult.available).toBe(false);
-    expect(trimmedResult.unavailableReason).toBe('closed_without_counterpart');
+    const newResult = getExecutedOrderDisplayPnl(sellNew, all, mark, openLots, realized);
+    expect(newResult.pnl).toBeCloseTo((0.0728 - mark) * 137);
+    expect(newResult.pnlPercent).toBeCloseTo(((0.0728 - mark) / 0.0728) * 100);
   });
 
-  it('getPnlUnavailableTooltip explains closed_without_counterpart in Spanish', () => {
+  it('even if lots were balance-trimmed, orphan shorts get MTM not orden cerrada', () => {
+    const sellOld = makeOrder({
+      order_id: 'sell-kept',
+      side: 'SELL',
+      quantity: '100',
+      price: '0.08',
+      instrument_name: 'DOGE_USD',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sellOrphan = makeOrder({
+      order_id: 'sell-orphan',
+      side: 'SELL',
+      quantity: '137',
+      price: '0.0728',
+      instrument_name: 'DOGE_USD',
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const all = [sellOld, sellOrphan];
+    const trimmedLots = buildOpenLotsByOrderId(all, [{ coin: 'DOGE', balance: -100 }]);
+    const realized = buildRealizedPnlByOrderId(all);
+    const mark = 0.071;
+
+    expect(trimmedLots.has('sell-orphan')).toBe(false);
+    expect(realized.has('sell-orphan')).toBe(false);
+
+    const result = getExecutedOrderDisplayPnl(
+      sellOrphan,
+      all,
+      mark,
+      trimmedLots,
+      realized
+    );
+    expect(result.available).toBe(true);
+    expect(result.isRealized).toBe(false);
+    expect(result.pnl).toBeCloseTo((0.0728 - mark) * 137);
+    expect(isClosedExecutedEntryOrder(sellOrphan, trimmedLots, realized)).toBe(false);
+  });
+
+  it('getPnlUnavailableTooltip explains closed_without_counterpart without claiming cerrada', () => {
     const tip = getPnlUnavailableTooltip('closed_without_counterpart');
-    expect(tip).toMatch(/orden cerrada/i);
-    expect(tip).toMatch(/contraparte/i);
+    expect(tip).not.toMatch(/orden cerrada/i);
+    expect(tip).toMatch(/historial/i);
   });
 
   it('resolveCurrentPrice matches instrument or base symbol', () => {
