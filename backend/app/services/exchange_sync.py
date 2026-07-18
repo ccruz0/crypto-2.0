@@ -280,18 +280,6 @@ def should_auto_create_sl_tp_on_sync(
     has_sl = get_active_protection_order(db, parent_id, "STOP_LOSS") is not None
     has_tp = get_active_protection_order(db, parent_id, "TAKE_PROFIT") is not None
     if has_sl ^ has_tp:
-        # If SL exists but TP was proven unreachable (short TP already past market),
-        # do not keep scheduling half-protected backfill every sync cycle.
-        if has_sl and not has_tp:
-            try:
-                from app.services.telegram_event_dedup import is_telegram_event_claimed
-
-                if is_telegram_event_claimed(
-                    db, f"tp_unreachable:{parent_id}", ttl_minutes=24 * 60
-                ):
-                    return False, "tp_unreachable_skip"
-            except Exception:
-                pass
         return True, "half_protected_backfill"
 
     filled_at = order_filled_time
@@ -2108,44 +2096,20 @@ class ExchangeSyncService:
                 order_id,
             )
         else:
-            # Stop retry storm when prior attempt proved TP target is already past market.
-            from app.services.telegram_event_dedup import is_telegram_event_claimed
-
-            if is_telegram_event_claimed(
-                db, f"tp_unreachable:{order_id}", ttl_minutes=24 * 60
-            ):
-                skip_tp_creation = True
-                skip_tp_reason = "TP_TARGET_ALREADY_REACHED"
-                tp_result = {
-                    "order_id": None,
-                    "error": "TP target already reached (cached skip)",
-                    "error_code": "TP_TARGET_ALREADY_REACHED",
-                }
-                logger.info(
-                    "[SLTP_IDEMPOTENCY] Skipping TP create for parent %s (%s): "
-                    "tp_unreachable claim active",
-                    order_id,
-                    symbol,
-                )
-            else:
-                tp_result = create_take_profit_order(
-                    db=db,
-                    symbol=symbol,
-                    side=side_upper,
-                    tp_price=tp_price,
-                    quantity=filled_qty,
-                    entry_price=filled_price_f,
-                    parent_order_id=order_id,
-                    oco_group_id=oco_group_id,
-                    dry_run=False,
-                    source=source,
-                )
-                tp_newly_created = bool(tp_result.get("order_id")) and not tp_result.get("error")
-                if (tp_result.get("error_code") == "TP_TARGET_ALREADY_REACHED") or (
-                    "TP target already reached" in str(tp_result.get("error") or "")
-                ):
-                    skip_tp_creation = True
-                    skip_tp_reason = "TP_TARGET_ALREADY_REACHED"
+            # Always place TP at the agreed calculated/watchlist price (no market widen/skip).
+            tp_result = create_take_profit_order(
+                db=db,
+                symbol=symbol,
+                side=side_upper,
+                tp_price=tp_price,
+                quantity=filled_qty,
+                entry_price=filled_price_f,
+                parent_order_id=order_id,
+                oco_group_id=oco_group_id,
+                dry_run=False,
+                source=source,
+            )
+            tp_newly_created = bool(tp_result.get("order_id")) and not tp_result.get("error")
         # When SL already exists and nothing new was created, treat as idempotent
         # so callers do not re-send "SL/TP ORDERS CREATED".
         status = None
