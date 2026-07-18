@@ -1922,17 +1922,28 @@ class ExchangeSyncService:
                         "skip_tp_creation": bool(skip_tp_creation),
                         "skip_tp_reason": skip_tp_reason,
                     }
+                # Distinct claim keys so a later TP-only (or SL-only) backfill can still notify
+                # once, instead of being suppressed by the original paired SL/TP announcement.
+                if sl_newly_created and tp_newly_created:
+                    claim_key = f"sl_tp_created:{order_id}"
+                elif tp_newly_created:
+                    claim_key = f"sl_tp_created:{order_id}:tp"
+                elif sl_newly_created:
+                    claim_key = f"sl_tp_created:{order_id}:sl"
+                else:
+                    claim_key = f"sl_tp_created:{order_id}"
                 if not claim_telegram_event(
                     db,
-                    f"sl_tp_created:{order_id}",
+                    claim_key,
                     symbol=symbol,
                     ttl_minutes=7 * 24 * 60,
                     action="sl_tp_created",
                 ):
                     logger.info(
-                        "📢 Skipping SL/TP Telegram for order %s (%s): already claimed sl_tp_created.",
+                        "📢 Skipping SL/TP Telegram for order %s (%s): already claimed %s.",
                         order_id,
                         symbol,
+                        claim_key,
                     )
                     return {
                         "symbol": symbol,
@@ -1965,7 +1976,9 @@ class ExchangeSyncService:
                     sl_ref_price=sl_ref_from_order,  # Add SL ref price for verification
                     sl_percentage=effective_sl_pct,  # Add SL percentage for strategy display
                     tp_percentage=effective_tp_pct,  # Add TP percentage for strategy display
-                    original_order_side=side  # Add original order side for correct profit/loss calculation
+                    original_order_side=side,  # Add original order side for correct profit/loss calculation
+                    sl_newly_created=sl_newly_created,
+                    tp_newly_created=tp_newly_created,
                 )
                 if result:
                     logger.info(f"✅ Sent Telegram notification for SL/TP orders: {symbol} - SL: {sl_order_id}, TP: {tp_order_id}")
@@ -2062,7 +2075,16 @@ class ExchangeSyncService:
                 tp_price = filled_price_f * (1 - tp_pct / 100)
         sl_price = round(sl_price, 2) if sl_price >= 100 else round(sl_price, 4)
         tp_price = round(tp_price, 2) if tp_price >= 100 else round(tp_price, 4)
-        oco_group_id = f"oco_{order_id}_{int(time.time())}"
+        # When backfilling a missing leg, reuse the surviving leg's OCO group so Jarvis
+        # and OCO checks do not treat the new TP/SL as an incomplete orphan group.
+        existing_sl_oco = getattr(existing_sl, "oco_group_id", None) if existing_sl else None
+        existing_tp_oco = getattr(existing_tp, "oco_group_id", None) if existing_tp else None
+        if existing_sl_oco:
+            oco_group_id = existing_sl_oco
+        elif existing_tp_oco:
+            oco_group_id = existing_tp_oco
+        else:
+            oco_group_id = f"oco_{order_id}_{int(time.time())}"
         sl_newly_created = False
         tp_newly_created = False
         skip_tp_creation = False
@@ -2070,10 +2092,23 @@ class ExchangeSyncService:
         if existing_sl:
             sl_result = {"order_id": existing_sl.exchange_order_id, "error": None}
             logger.info(
-                "[SLTP_IDEMPOTENCY] Reusing existing SL %s for parent %s",
+                "[SLTP_IDEMPOTENCY] Reusing existing SL %s for parent %s oco=%s",
                 existing_sl.exchange_order_id,
                 order_id,
+                oco_group_id,
             )
+            if existing_sl.oco_group_id != oco_group_id:
+                existing_sl.oco_group_id = oco_group_id
+                db.add(existing_sl)
+                try:
+                    db.commit()
+                except Exception as heal_err:
+                    logger.warning(
+                        "[SLTP_IDEMPOTENCY] Failed to heal SL oco_group_id for parent %s: %s",
+                        order_id,
+                        heal_err,
+                    )
+                    db.rollback()
         else:
             sl_result = create_stop_loss_order(
                 db=db,
@@ -2091,10 +2126,23 @@ class ExchangeSyncService:
         if existing_tp:
             tp_result = {"order_id": existing_tp.exchange_order_id, "error": None}
             logger.info(
-                "[SLTP_IDEMPOTENCY] Reusing existing TP %s for parent %s",
+                "[SLTP_IDEMPOTENCY] Reusing existing TP %s for parent %s oco=%s",
                 existing_tp.exchange_order_id,
                 order_id,
+                oco_group_id,
             )
+            if existing_tp.oco_group_id != oco_group_id:
+                existing_tp.oco_group_id = oco_group_id
+                db.add(existing_tp)
+                try:
+                    db.commit()
+                except Exception as heal_err:
+                    logger.warning(
+                        "[SLTP_IDEMPOTENCY] Failed to heal TP oco_group_id for parent %s: %s",
+                        order_id,
+                        heal_err,
+                    )
+                    db.rollback()
         else:
             # Always place TP at the agreed calculated/watchlist price (no market widen/skip).
             tp_result = create_take_profit_order(
