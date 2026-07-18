@@ -14,7 +14,6 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.utils.trading_guardrails import can_place_real_order
 from app.services.telegram_notifier import telegram_notifier
-from app.utils.http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -111,117 +110,9 @@ def create_take_profit_order(
                 parent_order_id,
             )
             return {"order_id": existing_tp.exchange_order_id, "error": None}
-    
-    # CRITICAL: Verify TP price is valid for current market conditions (AUTO mode only).
-    #
-    # For manual/explicit SL/TP requests we must respect the exact requested percentage/price.
-    # Auto flows can adjust slightly to avoid creating an immediately-invalid TP (e.g. TP <= market for SELL TP).
-    if (not dry_run) and str(source).lower() != "manual":
-        try:
-            ticker_url = "https://api.crypto.com/v2/public/get-ticker"
-            ticker_params = {"instrument_name": symbol}
-            ticker_response = http_get(ticker_url, params=ticker_params, timeout=5, calling_module="tp_sl_order_creator")
-            
-            if ticker_response.status_code == 200:
-                ticker_data = ticker_response.json()
-                result_data = ticker_data.get("result", {})
-                if "data" in result_data and len(result_data["data"]) > 0:
-                    ticker_data_item = result_data["data"][0]
-                    # For SELL orders, use ask price; for BUY orders, use bid price
-                    current_price = float(ticker_data_item.get("a", 0) if tp_side == "SELL" else ticker_data_item.get("b", 0))
-                    
-                    if current_price > 0:
-                        original_tp_price = tp_price
-                        if tp_side == "SELL" and tp_price <= current_price:
-                            # TP price is below or equal to current price - adjust it
-                            # Add 0.5% margin above current price to ensure it's valid
-                            tp_price = current_price * 1.005
-                            logger.warning(
-                                f"⚠️ TP price ({original_tp_price:.4f}) was below current market price ({current_price:.4f}). "
-                                f"Adjusted to {tp_price:.4f} (0.5% above current price) to ensure order validity."
-                            )
-                        elif tp_side == "BUY" and tp_price >= current_price:
-                            # Short close (BUY TP): market at/below watchlist target.
-                            # Never widen TP beyond the calculated watchlist price (e.g. 1% -> 6.5%).
-                            capped_price = current_price * 0.995
-                            if capped_price >= original_tp_price:
-                                tp_price = capped_price
-                                logger.warning(
-                                    f"⚠️ TP price ({original_tp_price:.4f}) was above current market price "
-                                    f"({current_price:.4f}). Adjusted to {tp_price:.4f} (0.5% below current "
-                                    f"price) without widening beyond watchlist target."
-                                )
-                            else:
-                                error_msg = (
-                                    f"TP target already reached for {symbol}: calculated TP "
-                                    f"${original_tp_price:.4f} is above market ${current_price:.4f}. "
-                                    f"Refusing to widen TP beyond watchlist %."
-                                )
-                                logger.warning(f"⚠️ {error_msg}")
-                                # Once-per-parent notification: exchange sync retries every ~5s and
-                                # previously flooded Telegram with identical SHORT TP NOT WIDENED.
-                                try:
-                                    from app.services.telegram_event_dedup import claim_telegram_event
 
-                                    dedup_key = (
-                                        f"short_tp_not_widened:{parent_order_id}"
-                                        if parent_order_id
-                                        else f"short_tp_not_widened:{symbol}"
-                                    )
-                                    if claim_telegram_event(
-                                        db,
-                                        dedup_key,
-                                        symbol=symbol,
-                                        ttl_minutes=24 * 60,
-                                        action="short_tp_skip",
-                                    ):
-                                        telegram_notifier.send_message(
-                                            f"⚠️ <b>SHORT TP NOT WIDENED</b>\n\n"
-                                            f"📊 Symbol: <b>{symbol}</b>\n"
-                                            f"🎯 Calculated TP: ${original_tp_price:.4f}\n"
-                                            f"💹 Market: ${current_price:.4f}\n\n"
-                                            f"Market is already at/below the watchlist TP target. "
-                                            f"Auto TP was not placed with a wider target.\n"
-                                            f"Further retries for this entry are silent until the "
-                                            f"market moves back above the TP target.",
-                                            symbol=symbol,
-                                        )
-                                    else:
-                                        logger.info(
-                                            "SHORT TP NOT WIDENED Telegram suppressed (dedup) "
-                                            "symbol=%s parent=%s",
-                                            symbol,
-                                            parent_order_id,
-                                        )
-                                except Exception as telegram_err:
-                                    logger.warning(
-                                        f"Failed to send Telegram alert for short TP cap: {telegram_err}"
-                                    )
-                                # Mark parent so exchange_sync stops retrying TP every cycle.
-                                if parent_order_id:
-                                    try:
-                                        from app.services.telegram_event_dedup import claim_telegram_event
-
-                                        claim_telegram_event(
-                                            db,
-                                            f"tp_unreachable:{parent_order_id}",
-                                            symbol=symbol,
-                                            ttl_minutes=24 * 60,
-                                            action="tp_unreachable",
-                                        )
-                                    except Exception as mark_err:
-                                        logger.debug(
-                                            "Failed to mark tp_unreachable for %s: %s",
-                                            parent_order_id,
-                                            mark_err,
-                                        )
-                                return {
-                                    "order_id": None,
-                                    "error": error_msg,
-                                    "error_code": "TP_TARGET_ALREADY_REACHED",
-                                }
-        except Exception as price_check_err:
-            logger.warning(f"Could not verify TP price against current market: {price_check_err}. Proceeding with calculated TP price.")
+    # Place TP at the agreed watchlist/calculated price only.
+    # Do not widen, tighten, or skip based on current market (auto and manual).
     
     # Price formatting is handled by place_take_profit_order using normalize_price()
     # which follows docs/trading/crypto_com_order_formatting.md rules:

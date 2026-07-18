@@ -1,4 +1,4 @@
-"""Tests: short TP must respect watchlist tp_percentage (no auto-widen)."""
+"""Tests: short TP must use agreed watchlist price (no market-based adjust)."""
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
@@ -8,24 +8,22 @@ from app.services.sl_tp_checker import SLTPCheckerService
 from app.services.tp_sl_order_creator import create_take_profit_order
 
 
-class TestShortTpAutoAdjustRespectsWatchlistPct(unittest.TestCase):
-    @patch("app.services.tp_sl_order_creator.telegram_notifier")
-    @patch("app.services.tp_sl_order_creator.http_get")
+class TestShortTpUsesAgreedWatchlistPrice(unittest.TestCase):
     @patch("app.services.tp_sl_order_creator.can_place_real_order")
     @patch("app.services.tp_sl_order_creator.trade_client")
-    def test_short_tp_not_widened_when_market_past_target(
-        self, mock_trade_client, mock_can_place, mock_http_get, mock_telegram
+    def test_short_tp_places_agreed_price_when_market_past_target(
+        self, mock_trade_client, mock_can_place
     ):
-        """Entry 0.8984, 1% TP ~0.8894, market 0.845 — must NOT become ~0.840."""
+        """Entry 0.8984, 1% TP ~0.8894, market past target — still place agreed TP."""
         mock_can_place.return_value = (True, None)
-        mock_trade_client.place_take_profit_order.return_value = {"order_id": "should-not-run"}
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "result": {"data": [{"b": "0.845", "a": "0.846"}]}
+        mock_trade_client.place_take_profit_order.return_value = {"order_id": "tp-agreed"}
+        mock_trade_client._get_instrument_metadata.return_value = {
+            "min_quantity": "0.001",
+            "qty_tick_size": "0.001",
+            "min_notional": "0",
+            "quantity_decimals": 8,
         }
-        mock_http_get.return_value = mock_response
+        mock_trade_client.normalize_quantity.return_value = "0.01"
 
         entry = 0.8984
         tp_price = entry * (1 - 1.0 / 100)  # 0.889416
@@ -41,19 +39,16 @@ class TestShortTpAutoAdjustRespectsWatchlistPct(unittest.TestCase):
             source="auto",
         )
 
-        self.assertIsNone(result["order_id"])
-        self.assertIn("error", result)
-        self.assertIn("already reached", result["error"].lower())
-        mock_trade_client.place_take_profit_order.assert_not_called()
-        mock_telegram.send_message.assert_called_once()
+        self.assertEqual(result["order_id"], "tp-agreed")
+        placed_price = mock_trade_client.place_take_profit_order.call_args.kwargs["price"]
+        self.assertAlmostEqual(placed_price, tp_price, places=4)
 
-    @patch("app.services.tp_sl_order_creator.http_get")
     @patch("app.services.tp_sl_order_creator.can_place_real_order")
     @patch("app.services.tp_sl_order_creator.trade_client")
     def test_short_tp_keeps_watchlist_price_when_valid(
-        self, mock_trade_client, mock_can_place, mock_http_get
+        self, mock_trade_client, mock_can_place
     ):
-        """When market is above TP, auto path keeps calculated watchlist TP."""
+        """Auto path keeps calculated watchlist TP (no market adjust)."""
         mock_can_place.return_value = (True, None)
         mock_trade_client.place_take_profit_order.return_value = {"order_id": "tp-ok"}
         mock_trade_client._get_instrument_metadata.return_value = {
@@ -63,13 +58,6 @@ class TestShortTpAutoAdjustRespectsWatchlistPct(unittest.TestCase):
             "quantity_decimals": 8,
         }
         mock_trade_client.normalize_quantity.return_value = "0.01"
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "result": {"data": [{"b": "0.900", "a": "0.901"}]}
-        }
-        mock_http_get.return_value = mock_response
 
         entry = 0.8984
         tp_price = round(entry * (1 - 1.0 / 100), 4)

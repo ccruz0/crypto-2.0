@@ -27,68 +27,6 @@ class TestTelegramEventDedupMemory(unittest.TestCase):
         self.assertFalse(claim_telegram_event(None, "config_fail:amount_usd_missing:ETH_USD", ttl_minutes=60))
 
 
-class TestShortTpNotWidenedDedup(unittest.TestCase):
-    @patch("app.services.sl_tp_protection.get_active_protection_order", return_value=None)
-    @patch("app.services.tp_sl_order_creator.telegram_notifier")
-    @patch("app.services.tp_sl_order_creator.http_get")
-    def test_short_tp_telegram_once_per_parent(
-        self, mock_http_get, mock_notifier, _prot
-    ):
-        clear_memory_claims_for_tests()
-        # Market below short TP target → refuse to widen (auto path; dry_run skips check)
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "result": {"data": [{"b": 1800.0, "a": 1801.0}]}
-        }
-        mock_http_get.return_value = mock_resp
-
-        from app.services.tp_sl_order_creator import create_take_profit_order
-
-        # MagicMock Session makes Week-5 dedup always ALLOWED; force memory fallback.
-        real_claim = claim_telegram_event
-
-        def _claim_mem(_db, event_key, **kwargs):
-            return real_claim(None, event_key, **kwargs)
-
-        db = MagicMock()
-        db.query.return_value.filter.return_value.first.return_value = None
-
-        with patch(
-            "app.services.telegram_event_dedup.claim_telegram_event",
-            side_effect=_claim_mem,
-        ):
-            first = create_take_profit_order(
-                db=db,
-                symbol="ETH_USD",
-                side="SELL",
-                tp_price=1857.96,
-                quantity=0.05,
-                entry_price=1876.73,
-                parent_order_id="parent-eth-1",
-                dry_run=False,
-                source="auto",
-            )
-            second = create_take_profit_order(
-                db=db,
-                symbol="ETH_USD",
-                side="SELL",
-                tp_price=1857.96,
-                quantity=0.05,
-                entry_price=1876.73,
-                parent_order_id="parent-eth-1",
-                dry_run=False,
-                source="auto",
-            )
-
-        self.assertEqual(first.get("error_code"), "TP_TARGET_ALREADY_REACHED")
-        self.assertEqual(second.get("error_code"), "TP_TARGET_ALREADY_REACHED")
-        self.assertEqual(mock_notifier.send_message.call_count, 1)
-        self.assertTrue(
-            is_telegram_event_claimed(None, "tp_unreachable:parent-eth-1", ttl_minutes=24 * 60)
-        )
-
-
 class TestSlTpReuseSkipsTelegram(unittest.TestCase):
     @patch("app.services.telegram_notifier.telegram_notifier")
     @patch("app.api.routes_signals.calculate_stop_loss_and_take_profit", create=True)
