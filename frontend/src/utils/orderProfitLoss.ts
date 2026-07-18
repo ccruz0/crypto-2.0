@@ -375,3 +375,113 @@ export function filterFilledEntryOrdersForAsset(
     .filter((order) => orderMatchesAsset(order, assetCoin) && isFilledEntryOrder(order))
     .sort((a, b) => getOrderExecutionTime(b) - getOrderExecutionTime(a));
 }
+
+export interface PortfolioBalanceHint {
+  coin: string;
+  balance: number;
+}
+
+/**
+ * Index still-open FIFO lots by order_id across all symbols.
+ * When portfolio balances are provided, lots are trimmed to match |balance|
+ * (same semantics as Portfolio expandable rows).
+ */
+export function buildOpenLotsByOrderId(
+  orders: OpenOrder[],
+  portfolioAssets?: PortfolioBalanceHint[] | null
+): Map<string, OpenPositionLot> {
+  const bySymbol = new Map<string, OpenOrder[]>();
+
+  for (const order of orders) {
+    if (!isFilledEntryOrder(order)) continue;
+    const symbol = (order.instrument_name || '').toUpperCase();
+    if (!symbol) continue;
+    const list = bySymbol.get(symbol) ?? [];
+    list.push(order);
+    bySymbol.set(symbol, list);
+  }
+
+  const map = new Map<string, OpenPositionLot>();
+
+  for (const [symbol, symbolOrders] of bySymbol) {
+    let lots = rebuildOpenLots(symbolOrders);
+
+    if (portfolioAssets && portfolioAssets.length > 0) {
+      const base = getAssetBaseSymbol(symbol);
+      const asset = portfolioAssets.find((a) => {
+        const coin = (a.coin || '').toUpperCase();
+        return coin === symbol || coin === base || getAssetBaseSymbol(coin) === base;
+      });
+      if (asset) {
+        lots = trimOpenLotsToBalance(lots, asset.balance);
+      }
+    }
+
+    for (const lot of lots) {
+      const id = lot.order.order_id;
+      if (id) map.set(id, lot);
+    }
+  }
+
+  return map;
+}
+
+/**
+ * P/L for a row on the Executed Orders tab:
+ * - Still-open lots → unrealized long/short vs mark price
+ * - Closed SELL → realized long exit when a BUY counterpart matches
+ * - Closed BUY cover → realized short cover when a SELL counterpart matches
+ */
+export function getExecutedOrderDisplayPnl(
+  order: OpenOrder,
+  allOrders: OpenOrder[],
+  currentPrice: number | null | undefined,
+  openLotsByOrderId: Map<string, OpenPositionLot>
+): OrderProfitLoss {
+  const orderId = order.order_id;
+  if (orderId) {
+    const openLot = openLotsByOrderId.get(orderId);
+    if (openLot) {
+      return calculateOpenLotProfitLoss(openLot, currentPrice);
+    }
+  }
+
+  const side = (order.side || '').toUpperCase();
+  if (side === 'SELL') {
+    return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'LONG' });
+  }
+  if (side === 'BUY') {
+    // Short cover only when a filled SELL exists before this BUY.
+    // Avoid treating a later long-exit SELL as a cover for a closed long entry.
+    const buyTime = getOrderExecutionTime(order);
+    const hasPriorSell = allOrders.some(
+      (o) =>
+        o.instrument_name === order.instrument_name &&
+        (o.side || '').toUpperCase() === 'SELL' &&
+        (o.status || '').toUpperCase() === 'FILLED' &&
+        getOrderExecutionTime(o) < buyTime
+    );
+    if (!hasPriorSell) return UNAVAILABLE_PNL;
+    return calculateOrderProfitLoss(order, allOrders, currentPrice, { positionHint: 'SHORT' });
+  }
+  return UNAVAILABLE_PNL;
+}
+
+/** Resolve mark price from watchlist/topCoins by instrument or base asset. */
+export function resolveCurrentPrice(
+  instrumentName: string | null | undefined,
+  topCoins?: TopCoin[] | null
+): number | null {
+  if (!instrumentName || !topCoins?.length) return null;
+  const upper = instrumentName.toUpperCase();
+  const base = getAssetBaseSymbol(upper);
+
+  const exact = topCoins.find((c) => (c.instrument_name || '').toUpperCase() === upper);
+  if (exact?.current_price && exact.current_price > 0) return exact.current_price;
+
+  const byBase = topCoins.find((c) => {
+    const sym = (c.instrument_name || '').toUpperCase();
+    return getAssetBaseSymbol(sym) === base && c.current_price > 0;
+  });
+  return byBase?.current_price && byBase.current_price > 0 ? byBase.current_price : null;
+}

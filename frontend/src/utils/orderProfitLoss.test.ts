@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { OpenOrder } from '@/app/api';
 import {
+  buildOpenLotsByOrderId,
   calculateOpenLotProfitLoss,
   calculateOrderProfitLoss,
+  getExecutedOrderDisplayPnl,
   getOpenPositionLotsForAsset,
   rebuildOpenLots,
+  resolveCurrentPrice,
   trimOpenLotsToBalance,
 } from './orderProfitLoss';
+import type { TopCoin } from '@/app/api';
 
 function makeOrder(partial: Partial<OpenOrder> & Pick<OpenOrder, 'order_id' | 'side'>): OpenOrder {
   return {
@@ -265,5 +269,146 @@ describe('rebuildOpenLots / open-position filter', () => {
     expect(result.isRealized).toBe(false);
     expect(result.pnl).toBeCloseTo(2.5);
     expect(result.pnlPercent).toBeCloseTo(10);
+  });
+});
+
+describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
+  it('shows unrealized long P/L for an open BUY vs mark price', () => {
+    const buy = makeOrder({
+      order_id: 'buy-open',
+      side: 'BUY',
+      quantity: '1',
+      price: '100',
+      instrument_name: 'ETH_USD',
+    });
+    const openLots = buildOpenLotsByOrderId([buy]);
+    const result = getExecutedOrderDisplayPnl(buy, [buy], 110, openLots);
+
+    expect(result.available).toBe(true);
+    expect(result.isRealized).toBe(false);
+    expect(result.pnl).toBeCloseTo(10);
+    expect(result.pnlPercent).toBeCloseTo(10);
+  });
+
+  it('shows unrealized short P/L when price falls after open SELL', () => {
+    const sell = makeOrder({
+      order_id: 'sell-open',
+      side: 'SELL',
+      quantity: '1',
+      price: '100',
+      instrument_name: 'ETH_USD',
+    });
+    const openLots = buildOpenLotsByOrderId([sell]);
+    const result = getExecutedOrderDisplayPnl(sell, [sell], 90, openLots);
+
+    expect(result.available).toBe(true);
+    expect(result.isRealized).toBe(false);
+    expect(result.pnl).toBeCloseTo(10);
+    expect(result.pnlPercent).toBeCloseTo(10);
+  });
+
+  it('shows realized long exit for a closed SELL matched to prior BUY', () => {
+    const buy = makeOrder({
+      order_id: 'buy-1',
+      side: 'BUY',
+      quantity: '1',
+      price: '100',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sell = makeOrder({
+      order_id: 'sell-1',
+      side: 'SELL',
+      quantity: '1',
+      price: '120',
+      create_time: 10_000,
+      update_time: 10_000,
+    });
+    const all = [buy, sell];
+    const openLots = buildOpenLotsByOrderId(all);
+    expect(openLots.size).toBe(0);
+
+    const result = getExecutedOrderDisplayPnl(sell, all, 130, openLots);
+    expect(result.available).toBe(true);
+    expect(result.isRealized).toBe(true);
+    expect(result.pnl).toBeCloseTo(20);
+
+    // Closed long entry BUY must not be mislabeled as short-cover P/L
+    const buyResult = getExecutedOrderDisplayPnl(buy, all, 130, openLots);
+    expect(buyResult.available).toBe(false);
+  });
+
+  it('shows realized short cover for BUY that closes a prior SELL', () => {
+    const sell = makeOrder({
+      order_id: 'sell-1',
+      side: 'SELL',
+      quantity: '1',
+      price: '120',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const buy = makeOrder({
+      order_id: 'buy-cover',
+      side: 'BUY',
+      quantity: '1',
+      price: '100',
+      create_time: 10_000,
+      update_time: 10_000,
+    });
+    const all = [sell, buy];
+    const openLots = buildOpenLotsByOrderId(all);
+    expect(openLots.size).toBe(0);
+
+    const result = getExecutedOrderDisplayPnl(buy, all, 110, openLots);
+    expect(result.available).toBe(true);
+    expect(result.isRealized).toBe(true);
+    expect(result.pnl).toBeCloseTo(20);
+  });
+
+  it('trims open lots to portfolio balance before display P/L', () => {
+    const sellA = makeOrder({
+      order_id: 'sell-a',
+      side: 'SELL',
+      quantity: '1',
+      price: '100',
+      instrument_name: 'SOL_USD',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sellB = makeOrder({
+      order_id: 'sell-b',
+      side: 'SELL',
+      quantity: '1',
+      price: '110',
+      instrument_name: 'SOL_USD',
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const openLots = buildOpenLotsByOrderId([sellA, sellB], [{ coin: 'SOL', balance: -0.25 }]);
+
+    expect(openLots.has('sell-a')).toBe(true);
+    expect(openLots.has('sell-b')).toBe(false);
+
+    const result = getExecutedOrderDisplayPnl(sellA, [sellA, sellB], 90, openLots);
+    expect(result.available).toBe(true);
+    expect(result.pnl).toBeCloseTo(2.5);
+  });
+
+  it('resolveCurrentPrice matches instrument or base symbol', () => {
+    const coins = [
+      {
+        rank: 1,
+        instrument_name: 'ETH_USD',
+        base_currency: 'ETH',
+        quote_currency: 'USD',
+        current_price: 1842.5,
+        volume_24h: 1,
+        updated_at: '',
+      },
+    ] as TopCoin[];
+
+    expect(resolveCurrentPrice('ETH_USD', coins)).toBeCloseTo(1842.5);
+    expect(resolveCurrentPrice('ETH_USDT', coins)).toBeCloseTo(1842.5);
+    expect(resolveCurrentPrice('BTC_USD', coins)).toBeNull();
   });
 });
