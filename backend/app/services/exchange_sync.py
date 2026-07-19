@@ -297,6 +297,50 @@ def should_auto_create_sl_tp_on_sync(
     return True, "recent_external_fill"
 
 
+def filter_sync_cancel_orders_for_telegram(
+    db: Optional[Session],
+    cancelled_orders: List[ExchangeOrder],
+) -> List[ExchangeOrder]:
+    """
+    Drop routine SL/TP sync-cancel noise and dedupe entry cancels for Telegram.
+
+    Protection legs (STOP_LOSS / TAKE_PROFIT) are logged by sync but must not page
+    ATP Control — they churn during OCO / ghost cleanup. Entry cancels notify once
+    per order id (7d claim).
+    """
+    from app.services.telegram_event_dedup import claim_telegram_event
+
+    notify_orders: List[ExchangeOrder] = []
+    for order in cancelled_orders:
+        role = (order.order_role or "").upper()
+        oid = str(order.exchange_order_id or "")
+        if role in ("STOP_LOSS", "TAKE_PROFIT"):
+            logger.info(
+                "📢 Skipping Telegram for sync-cancelled protection leg %s (%s role=%s)",
+                oid,
+                order.symbol,
+                role,
+            )
+            continue
+        if not oid:
+            continue
+        if not claim_telegram_event(
+            db,
+            f"sync_cancel:{oid}",
+            symbol=order.symbol,
+            ttl_minutes=7 * 24 * 60,
+            action="sync_cancel",
+        ):
+            logger.info(
+                "📢 Skipping duplicate sync-cancel Telegram for order %s (%s)",
+                oid,
+                order.symbol,
+            )
+            continue
+        notify_orders.append(order)
+    return notify_orders
+
+
 def sl_tp_creation_result_ok(result: Optional[dict]) -> bool:
     """True when SL/TP creation produced (or already had) both protection legs."""
     if not isinstance(result, dict):
@@ -986,13 +1030,20 @@ class ExchangeSyncService:
                                 )
                             continue
                 
-                # Send Telegram notification for cancelled orders (batched)
+                # Telegram for sync cancels: skip routine SL/TP leg noise; dedupe entry cancels.
                 if cancelled_orders:
                     try:
                         from app.services.telegram_notifier import telegram_notifier
-                        
-                        if len(cancelled_orders) == 1:
-                            order = cancelled_orders[0]
+
+                        notify_orders = filter_sync_cancel_orders_for_telegram(db, cancelled_orders)
+
+                        if not notify_orders:
+                            logger.info(
+                                "📢 No sync-cancel Telegram sent (%d cancelled; all protection or deduped)",
+                                len(cancelled_orders),
+                            )
+                        elif len(notify_orders) == 1:
+                            order = notify_orders[0]
                             parent_entry_side = None
                             if order.parent_order_id:
                                 parent_order = db.query(ExchangeOrder).filter(
@@ -1015,28 +1066,31 @@ class ExchangeSyncService:
                                 price=float(order.price) if order.price else None,
                                 quantity=float(order.quantity) if order.quantity else None,
                             )
+                            telegram_notifier.send_message(message.strip(), origin="AWS")
+                            logger.info(
+                                "✅ Sent Telegram notification for 1 sync-cancelled entry order"
+                            )
                         else:
                             message = (
                                 f"❌ <b>ORDERS CANCELLED (Sync)</b>\n\n"
-                                f"📋 <b>{len(cancelled_orders)} orders</b> have been cancelled (not found in exchange open orders):\n\n"
+                                f"📋 <b>{len(notify_orders)} orders</b> have been cancelled (not found in exchange open orders):\n\n"
                             )
-                            
-                            for idx, order in enumerate(cancelled_orders[:10], 1):  # Limit to 10 for readability
+                            for idx, order in enumerate(notify_orders[:10], 1):
                                 order_type = order.order_type or "UNKNOWN"
                                 order_role = f" ({order.order_role})" if order.order_role else ""
-                                side = order.side.value if hasattr(order.side, 'value') else str(order.side)
+                                side = order.side.value if hasattr(order.side, "value") else str(order.side)
                                 message += (
                                     f"{idx}. <b>{order.symbol}</b> - {order_type}{order_role} ({side})\n"
                                     f"   ID: <code>{order.exchange_order_id}</code>\n\n"
                                 )
-                            
-                            if len(cancelled_orders) > 10:
-                                message += f"... and {len(cancelled_orders) - 10} more orders\n\n"
-                            
+                            if len(notify_orders) > 10:
+                                message += f"... and {len(notify_orders) - 10} more orders\n\n"
                             message += "💡 <b>Reason:</b> Orders not found in exchange open orders during sync"
-                        
-                        telegram_notifier.send_message(message.strip(), origin="AWS")
-                        logger.info(f"✅ Sent Telegram notification for {len(cancelled_orders)} cancelled order(s) from sync")
+                            telegram_notifier.send_message(message.strip(), origin="AWS")
+                            logger.info(
+                                "✅ Sent Telegram notification for %d sync-cancelled entry order(s)",
+                                len(notify_orders),
+                            )
                     except Exception as notify_err:
                         logger.warning(f"⚠️ Failed to send Telegram notification for cancelled orders from sync: {notify_err}", exc_info=True)
                         # Don't fail sync if notification fails

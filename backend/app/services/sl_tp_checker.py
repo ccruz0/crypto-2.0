@@ -631,12 +631,12 @@ class SLTPCheckerService:
         """Check for orphaned/stale SL/TP orders and send a Telegram alert."""
         try:
             issues = self._check_oco_issues(db)
-            return self._send_oco_alerts(issues) > 0
+            return self._send_oco_alerts(issues, db=db) > 0
         except Exception as e:
             logger.error("Error sending orphan order alert: %s", e, exc_info=True)
             return False
 
-    def _send_oco_alerts(self, oco_issues: Dict) -> int:
+    def _send_oco_alerts(self, oco_issues: Dict, db: Session = None) -> int:
         """Send Telegram alerts for OCO issues"""
         alerts_sent = 0
         
@@ -646,6 +646,29 @@ class SLTPCheckerService:
             
             if not orphaned and not incomplete:
                 logger.info("No OCO issues found")
+                return 0
+
+            # Suppress identical health snapshots for 24h (same orphans + incomplete groups).
+            from app.services.telegram_event_dedup import claim_telegram_event
+
+            orphan_ids = sorted(
+                str(o.get("order_id") or "") for o in orphaned if o.get("order_id")
+            )
+            incomplete_ids = sorted(
+                str(g.get("oco_group_id") or "") for g in incomplete if g.get("oco_group_id")
+            )
+            fingerprint = f"oco_health:{','.join(orphan_ids)}|{','.join(incomplete_ids)}"
+            if not claim_telegram_event(
+                db,
+                fingerprint,
+                ttl_minutes=24 * 60,
+                action="oco_health",
+            ):
+                logger.info(
+                    "📢 Skipping duplicate OCO health Telegram (orphaned=%d incomplete=%d)",
+                    len(orphaned),
+                    len(incomplete),
+                )
                 return 0
             
             message = "🔧 <b>ORPHAN / OCO HEALTH CHECK</b>\n\n"
