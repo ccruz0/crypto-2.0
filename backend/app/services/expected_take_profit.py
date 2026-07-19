@@ -75,6 +75,17 @@ def _order_symbol_scope(symbol: str) -> List[str]:
     return [symbol, f"{symbol}_USDT", f"{symbol}_USD"]
 
 
+def _group_lots_by_pair(open_lots: List[OpenLot]) -> Dict[str, List[OpenLot]]:
+    """Split open lots by exact pair symbol (BTC_USD vs BTC_USDT never merge)."""
+    grouped: Dict[str, List[OpenLot]] = {}
+    for lot in open_lots:
+        pair = (lot.symbol or "").upper()
+        if not pair:
+            continue
+        grouped.setdefault(pair, []).append(lot)
+    return grouped
+
+
 def _symbols_equivalent_for_matching(lot_symbol: str, tp_symbol: str) -> bool:
     """True when a protection order may attach to a lot's symbol."""
     lot_symbol = (lot_symbol or "").upper()
@@ -1185,11 +1196,13 @@ def _append_protected_short_summary_rows(
     results: Dict[str, Dict],
     market_prices: Dict[str, float],
 ) -> None:
-    """Add summary rows for margin shorts with OTOCO even when net balance is long."""
-    existing = {
-        (row.get("symbol"), row.get("position_side"))
-        for row in results.values()
-    }
+    """Add summary rows for pairs with protected margin shorts missing from results.
+
+    Uses *all* open lots on the pair (long + short) so hedged books surface as
+    MIXED with full expected profit — never a short-only stub that drops large
+    protected longs (BTC_USD / ETH_USD regression).
+    """
+    existing_symbols = {row.get("symbol") for row in results.values()}
 
     protection_orders = (
         db.query(ExchangeOrder)
@@ -1227,28 +1240,31 @@ def _append_protected_short_summary_rows(
             short_pairs.add(parent.symbol)
 
     for pair in sorted(short_pairs):
-        if (pair, "SHORT") in existing:
+        if pair in existing_symbols:
             continue
         open_lots = rebuild_open_lots(db, pair)
-        short_lots = [
-            lot
-            for lot in open_lots
-            if _entry_side_for_lot(db, lot) == OrderSideEnum.SELL
-        ]
-        if not short_lots:
+        if not open_lots:
             continue
-        net_short_qty = sum((lot.lot_qty for lot in short_lots), Decimal("0"))
-        current_price = _resolve_current_price(pair, net_short_qty, market_prices)
+        # Keep every open lot on the pair (BUY long + SELL short) so
+        # resolve_position_side can return MIXED and long TPs count toward profit.
+        has_short = any(
+            _entry_side_for_lot(db, lot) == OrderSideEnum.SELL for lot in open_lots
+        )
+        if not has_short:
+            continue
+        pair_qty = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
+        current_price = _resolve_current_price(pair, pair_qty, market_prices)
         summary_row = _compute_expected_tp_for_lots(
             db,
             pair,
-            short_lots,
-            net_short_qty,
+            open_lots,
+            pair_qty,
             current_price,
         )
         if summary_row:
-            results[f"{pair}|SHORT"] = summary_row
-            existing.add((pair, "SHORT"))
+            side = summary_row.get("position_side") or "SHORT"
+            results[f"{pair}|{side}"] = summary_row
+            existing_symbols.add(pair)
 
 
 def discover_symbols_with_orphaned_protection(db: Session) -> List[str]:
@@ -1584,27 +1600,26 @@ def get_expected_take_profit_summary(
                 continue
 
             open_lots = rebuild_open_lots(db, symbol)
-            short_lots = [
-                lot
-                for lot in open_lots
-                if _entry_side_for_lot(db, lot) == OrderSideEnum.SELL
-            ]
-            if not short_lots:
+            if not open_lots:
                 logger.debug(
-                    "Expected TP: Skipping %s - negative balance but no open short lots",
+                    "Expected TP: Skipping %s - negative balance but no open lots",
                     symbol,
                 )
                 continue
 
-            summary_row = _compute_expected_tp_for_lots(
-                db,
-                short_lots[0].symbol,
-                short_lots,
-                abs(balance),
-                current_price,
-            )
-            if summary_row:
-                results[summary_row["symbol"]] = summary_row
+            # Keep long + short lots per pair (do not strip BUY lots → false SHORT).
+            # Base-currency balances rebuild USD and USDT together; emit one row each.
+            for pair_symbol, pair_lots in _group_lots_by_pair(open_lots).items():
+                pair_qty = sum((lot.lot_qty for lot in pair_lots), Decimal("0"))
+                summary_row = _compute_expected_tp_for_lots(
+                    db,
+                    pair_symbol,
+                    pair_lots,
+                    pair_qty,
+                    current_price,
+                )
+                if summary_row:
+                    results[summary_row["symbol"]] = summary_row
             continue
 
         if balance == 0:
@@ -1947,77 +1962,27 @@ def get_expected_take_profit_summary(
                 logger.info(f"Expected TP: No open lots found for {symbol} and no balance/price, skipping")
                 continue
         
-        # Use the actual symbol from the first lot (which comes from orders)
-        # This ensures we use "BTC_USDT" instead of just "BTC"
-        actual_symbol = open_lots[0].symbol
-        logger.info(f"Expected TP: Found {len(open_lots)} open lots for {symbol} (actual symbol: {actual_symbol})")
-        
-        tp_orders = get_active_tp_orders(db, actual_symbol)
-        logger.info(f"Expected TP: Found {len(tp_orders)} active TP orders for {actual_symbol}")
-        
-        # Match TP orders: real OTOCO parent linkage first, then OCO group, then FIFO
-        all_matched, unmatched = match_all_tp_orders(db, open_lots, tp_orders)
-        
-        # Calculate totals
-        covered_qty = sum(float(lot.lot_qty) for lot in all_matched)
-        uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched)
-        
-        # Total net quantity from lots should match portfolio balance (approximately)
-        total_lot_qty = sum(float(lot.lot_qty) for lot in open_lots)
-        net_qty = max(float(balance), total_lot_qty)  # Use larger value
-        
-        # Calculate total expected profit and actual position value (at buy price)
-        total_expected_profit = Decimal("0")
-        actual_position_value = Decimal("0")
-        
-        for lot in all_matched:
-            entry_side = _entry_side_for_lot(db, lot)
-            for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
-                tp_price = Decimal(str(tp.price or 0))
-                if tp_price > 0:
-                    profit, _ = calculate_tp_display_profit(
-                        entry_side, lot.buy_price, tp_price, lot_qty_for_this_tp
-                    )
-                    total_expected_profit += profit
-            # Add to actual position value (at buy price)
-            actual_position_value += lot.buy_price * lot.lot_qty
-        
-        # Add unmatched lots to actual position value as well
-        for lot in unmatched:
-            actual_position_value += lot.buy_price * lot.lot_qty
-        
-        position_value = net_qty * current_price
-        
-        # If the position's cost basis is unknown (buy price is the current-price
-        # fallback because no real filled BUY order exists), we must NOT report a
-        # computed expected profit or a value-at-buy-price: both would be
-        # meaningless / misleading. Net qty and position value (at current price)
-        # remain real and are kept.
-        cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
-        total_lot_qty_dec = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
-        avg_entry_price = (
-            None
-            if cost_basis_unknown or total_lot_qty_dec <= 0
-            else float(actual_position_value / total_lot_qty_dec)
+        # Base-currency balances (e.g. "BTC") rebuild USD + USDT books together.
+        # Emit one summary row per exact pair so BTC_USD longs/TPs are not collapsed
+        # into a BTC_USDT row (which then shows coverage 0% / profit $0).
+        lots_by_pair = _group_lots_by_pair(open_lots)
+        logger.info(
+            "Expected TP: Found %s open lots for %s across pairs %s",
+            len(open_lots),
+            symbol,
+            list(lots_by_pair.keys()),
         )
-
-        # Use actual_symbol for the result key and symbol field
-        # This ensures consistency with order symbols (e.g., "BTC_USDT" instead of "BTC")
-        results[actual_symbol] = {
-            "symbol": actual_symbol,  # Use actual symbol from orders
-            "position_side": resolve_position_side(db, open_lots),
-            "net_qty": net_qty,
-            "current_price": current_price,
-            "position_value": position_value,
-            "actual_position_value": None if cost_basis_unknown else float(actual_position_value),  # Value at buy price
-            "avg_entry_price": avg_entry_price,
-            "entry_lot_count": len(open_lots),
-            "covered_qty": covered_qty,
-            "uncovered_qty": uncovered_qty,
-            "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
-            "coverage_ratio": covered_qty / net_qty if net_qty > 0 else 0,
-            "cost_basis_unknown": cost_basis_unknown,
-        }
+        for pair_symbol, pair_lots in lots_by_pair.items():
+            pair_qty = sum((lot.lot_qty for lot in pair_lots), Decimal("0"))
+            summary_row = _compute_expected_tp_for_lots(
+                db,
+                pair_symbol,
+                pair_lots,
+                pair_qty,
+                current_price,
+            )
+            if summary_row:
+                results[pair_symbol] = summary_row
     
     _append_protected_short_summary_rows(db, results, market_prices)
 
