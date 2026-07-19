@@ -50,15 +50,28 @@ const TIME_WINDOW_MS = 5 * 60 * 1000;
 const VOLUME_TOLERANCE = 0.20;
 const QTY_EPS = 1e-12;
 
-/** Position lifecycle: alert opens; only manual / SL / TP close. */
+/** Position lifecycle: alert opens; only manual flatten / SL / TP close. */
 export type OrderLifecycleRole = 'entry' | 'close';
+
+/**
+ * MANUAL fill that opened inventory with its own TP/SL (OTOCO), not a flatten.
+ * These are real open lots (same as Expected TP), distinct from MANUAL closes.
+ */
+export function isManualProtectedEntry(order: OpenOrder): boolean {
+  const origin = (order.execution_origin || '').toUpperCase();
+  const typeDisplay = (order.type_display || order.execution_origin_label || '').toLowerCase();
+  const looksManual = origin === 'MANUAL' || typeDisplay.includes('manual');
+  if (!looksManual) return false;
+  return order.has_linked_tp === true || order.has_linked_sl === true;
+}
 
 /**
  * Classify a fill as a position entry or a position close.
  *
  * Business rule:
  * - ALERT buy/sell → new entry (with its own SL/TP), never closes another alert
- * - MANUAL / SL / TP → close against opposite-side entry inventory
+ * - MANUAL with linked TP/SL → entry (manual open with protection; real open lot)
+ * - MANUAL flatten / SL / TP → close against opposite-side entry inventory
  * - Legacy fills without origin → entry (do not invent false closes)
  */
 export function getOrderLifecycleRole(order: OpenOrder): OrderLifecycleRole | null {
@@ -73,6 +86,10 @@ export function getOrderLifecycleRole(order: OpenOrder): OrderLifecycleRole | nu
 
   if (PROTECTION_ROLES.has(role) || TRIGGER_ORDER_TYPES.has(orderType)) {
     return 'close';
+  }
+  // Manual opens with attached TP/SL are inventory entries (e.g. large BTC buys).
+  if (isManualProtectedEntry(order)) {
+    return 'entry';
   }
   if (CLOSE_ORIGINS.has(origin)) {
     return 'close';
@@ -262,8 +279,8 @@ function unrealizedLongPnl(
 /**
  * Rebuild still-open entry lots.
  *
- * Alert BUY/SELL open inventory. Only MANUAL / SL / TP fills of the opposite
- * side reduce that inventory (FIFO). Alert never closes alert.
+ * ALERT and MANUAL-with-TP/SL open inventory. Only MANUAL flatten / SL / TP
+ * fills of the opposite side reduce that inventory (FIFO). Alert never closes alert.
  */
 export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
   const chronological = [...orders]

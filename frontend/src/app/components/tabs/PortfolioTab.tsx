@@ -10,7 +10,7 @@ import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import {
   calculateOpenLotProfitLoss,
   calculateOpenLotsAggregateProfitLoss,
-  filterFilledEntryOrdersForAsset,
+  filterFilledPositionOrdersForAsset,
   getOpenPositionLotsForAsset,
   getOrderExecutionTime,
   getOrderPrice,
@@ -44,6 +44,10 @@ interface PortfolioTabProps {
   /** Open positions counted toward MAX_OPEN_ORDERS_TOTAL (same as trade guardrail). */
   openOrdersCount?: number | null;
   maxOpenOrders?: number | null;
+  /** Per-base-symbol TP open counts from dashboard (fallback if asset.open_orders_count missing). */
+  openPositionCounts?: Record<string, number>;
+  /** Per-coin open-position limit (Watchlist / Signal Monitor). */
+  maxOpenOrdersPerCoin?: number | null;
   executedOrders?: OpenOrder[];
   topCoins?: TopCoin[];
   onToggleLiveTrading: () => Promise<void>;
@@ -64,6 +68,8 @@ export default function PortfolioTab({
   topCoinsLoading,
   openOrdersCount = null,
   maxOpenOrders = null,
+  openPositionCounts = {},
+  maxOpenOrdersPerCoin = 3,
   executedOrders = [],
   topCoins = [],
   onToggleLiveTrading,
@@ -73,6 +79,24 @@ export default function PortfolioTab({
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [expandedCoins, setExpandedCoins] = useState<Set<string>>(new Set());
   const [tradeCache, setTradeCache] = useState<Record<string, TradeCacheEntry>>({});
+
+  const perCoinLimit =
+    typeof maxOpenOrdersPerCoin === 'number' && maxOpenOrdersPerCoin > 0
+      ? maxOpenOrdersPerCoin
+      : 3;
+
+  const getOpenCountForAsset = useCallback(
+    (asset: PortfolioAsset): number => {
+      const fromAsset = asset.open_orders_count;
+      if (typeof fromAsset === 'number' && Number.isFinite(fromAsset)) {
+        return fromAsset;
+      }
+      const coin = (asset.coin || '').toUpperCase();
+      const base = coin.includes('_') ? coin.split('_')[0] : coin;
+      return openPositionCounts[base] ?? openPositionCounts[coin] ?? 0;
+    },
+    [openPositionCounts]
+  );
 
   const currentPriceByCoin = useMemo(() => {
     const map = new Map<string, number>();
@@ -101,7 +125,7 @@ export default function PortfolioTab({
       const assetCoin = asset.coin;
       const balance = asset.balance ?? 0;
       const cache = tradeCache[assetCoin];
-      const trades = cache?.orders ?? filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
+      const trades = cache?.orders ?? filterFilledPositionOrdersForAsset(executedOrders, assetCoin);
       const currentPrice = getCurrentPriceForAsset(assetCoin);
       const openLots = getOpenPositionLotsForAsset(trades, assetCoin, balance);
       if (openLots.length === 0) return null;
@@ -114,7 +138,8 @@ export default function PortfolioTab({
   const loadTradesForAsset = useCallback(
     async (assetCoin: string) => {
       const instrumentName = resolveInstrumentName(assetCoin, topCoins);
-      const fallbackOrders = filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
+      // Entries + closes (MANUAL flatten / SL / TP) so FIFO open lots match Expected TP.
+      const fallbackOrders = filterFilledPositionOrdersForAsset(executedOrders, assetCoin);
 
       setTradeCache((prev) => ({
         ...prev,
@@ -130,8 +155,9 @@ export default function PortfolioTab({
       }
 
       try {
-        const response = await getOrderHistory(200, 0, false, instrumentName);
-        const fetchedOrders = filterFilledEntryOrdersForAsset(response.orders || [], assetCoin);
+        // Up to API max so older MANUAL OTOCO entries (cost basis) are included.
+        const response = await getOrderHistory(500, 0, false, instrumentName);
+        const fetchedOrders = filterFilledPositionOrdersForAsset(response.orders || [], assetCoin);
         const mergedById = new Map<string, OpenOrder>();
         [...fallbackOrders, ...fetchedOrders].forEach((order) => {
           if (order.order_id) mergedById.set(order.order_id, order);
@@ -238,7 +264,7 @@ export default function PortfolioTab({
     const balance = asset.balance ?? 0;
     const isShortPosition = balance < 0;
     const cache = tradeCache[assetCoin];
-    const trades = cache?.orders ?? filterFilledEntryOrdersForAsset(executedOrders, assetCoin);
+    const trades = cache?.orders ?? filterFilledPositionOrdersForAsset(executedOrders, assetCoin);
     const currentPrice = getCurrentPriceForAsset(assetCoin);
     const openLots = getOpenPositionLotsForAsset(trades, assetCoin, balance);
 
@@ -570,6 +596,12 @@ export default function PortfolioTab({
                     </th>
                     <th
                       className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
+                      title={`Órdenes abiertas (TP) por moneda vs límite por moneda (${perCoinLimit}). Misma base que Watchlist.`}
+                    >
+                      <div className="flex items-center gap-1">Orders</div>
+                    </th>
+                    <th
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
                       title="Unrealized P&L % = sum of open-lot P&L / entry notional. Matches the lot breakdown."
                     >
                       <div className="flex items-center gap-1">P&amp;L %</div>
@@ -600,6 +632,8 @@ export default function PortfolioTab({
                     const balanceColorClass = isShort ? 'text-red-600 font-medium' : 'text-gray-500 dark:text-gray-300';
                     const isExpanded = expandedCoins.has(asset.coin);
                     const cache = tradeCache[asset.coin];
+                    const coinOpenCount = getOpenCountForAsset(asset);
+                    const atPerCoinLimit = coinOpenCount >= perCoinLimit;
                     const pnlTitle = lotsPnl
                       ? 'P&L no realizado = suma de lots abiertos vs precio de mercado'
                       : 'No tracked buy orders — cost basis unknown';
@@ -625,6 +659,20 @@ export default function PortfolioTab({
                           </td>
                           <td className={`px-4 py-3 whitespace-nowrap text-sm ${balanceColorClass}`}>{formatNumber(asset.balance)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-white">{formatNumber(asset.value_usd)}</td>
+                          <td
+                            className={`px-4 py-3 whitespace-nowrap text-sm font-medium ${
+                              atPerCoinLimit
+                                ? 'text-amber-700 dark:text-amber-300'
+                                : 'text-gray-700 dark:text-gray-200'
+                            }`}
+                            title={
+                              atPerCoinLimit
+                                ? `Límite por moneda alcanzado (${coinOpenCount}/${perCoinLimit}).`
+                                : `Órdenes abiertas (TP) para ${asset.coin}: ${coinOpenCount}/${perCoinLimit}`
+                            }
+                          >
+                            {coinOpenCount}/{perCoinLimit}
+                          </td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm">
                             {hasCostBasis ? (
                               <span className={`font-medium ${pnlColorClass}`} title={pnlTitle}>
@@ -646,7 +694,7 @@ export default function PortfolioTab({
                         </tr>
                         {isExpanded && (
                           <tr className="bg-gray-50 dark:bg-gray-900/40">
-                            <td colSpan={6} className="px-4 py-3">
+                            <td colSpan={7} className="px-4 py-3">
                               <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
                                 Rendimiento por lot abierto
                                 {cache?.loading && (

@@ -1275,6 +1275,8 @@ export interface ExpectedTPSummary {
   current_price: number;
   position_value: number;
   actual_position_value?: number;  // Value at buy price (for gain/loss calculation)
+  avg_entry_price?: number | null;
+  entry_lot_count?: number;
   covered_qty: number;
   uncovered_qty: number;
   total_expected_profit: number;
@@ -1331,6 +1333,8 @@ export interface ExpectedTPDetails {
   current_price?: number; // Optional for flexibility
   position_value: number;
   actual_position_value?: number;  // Value based on buy prices, not current market price
+  avg_entry_price?: number | null;
+  entry_lot_count?: number;
   covered_qty: number;
   uncovered_qty: number;
   total_expected_profit: number;

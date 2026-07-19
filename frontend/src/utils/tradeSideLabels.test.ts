@@ -11,9 +11,10 @@ describe('tradeSideLabels', () => {
     expect(sideLabelEs('SELL')).toBe('Venta');
   });
 
-  it('maps position side to Long/Short labels', () => {
+  it('maps position side to Long/Short/Mixto labels', () => {
     expect(positionDirectionEs('LONG')).toBe('Long (Compra)');
     expect(positionDirectionEs('SHORT')).toBe('Short (Venta)');
+    expect(positionDirectionEs('MIXED')).toBe('Mixto (Long + Short)');
   });
 
   it('uses green badge for buy/long and rose for sell/short', () => {

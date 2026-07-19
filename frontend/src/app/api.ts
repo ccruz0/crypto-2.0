@@ -111,6 +111,8 @@ export interface PortfolioAsset {
   updated_at: string;
   tp?: number;  // Take profit price
   sl?: number;  // Stop loss price
+  /** Active TP open-order count for this coin (same basis as Watchlist Orders). */
+  open_orders_count?: number;
   // Per-coin unrealized P&L vs cost basis (from filled BUY orders).
   // When cost_basis_unknown is true, pnl fields are null and the UI renders "—".
   avg_buy_price?: number | null;
@@ -177,6 +179,8 @@ export interface DashboardBalance {
   coin?: string;  // Alternative to asset (used in some API responses)
   tp?: number;  // Take profit price
   sl?: number;  // Stop loss price
+  /** Active TP open-order count for this coin. */
+  open_orders_count?: number;
 }
 
 export interface DashboardSignal {
@@ -1707,7 +1711,10 @@ export function dashboardBalancesToPortfolioAssets(balances: DashboardBalance[])
         reserved_qty: balance.locked || 0,
         haircut: 0,
         value_usd: usdValue,
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        open_orders_count: balance.open_orders_count,
+        tp: balance.tp,
+        sl: balance.sl,
       };
     });
 }
@@ -1715,10 +1722,14 @@ export function dashboardBalancesToPortfolioAssets(balances: DashboardBalance[])
 // Expected Take Profit API
 export interface ExpectedTPSummaryItem {
   symbol: string;
-  position_side?: 'LONG' | 'SHORT';
+  position_side?: 'LONG' | 'SHORT' | 'MIXED';
   net_qty: number;
   position_value: number;
   actual_position_value?: number | null; // Value at buy price (cost basis); null when cost basis unknown
+  /** Qty-weighted average entry price across open lots; null when cost basis unknown */
+  avg_entry_price?: number | null;
+  /** Number of open entry lots contributing to avg_entry_price */
+  entry_lot_count?: number;
   covered_qty: number;
   uncovered_qty: number;
   total_expected_profit: number | null; // null when cost basis is unknown (current-price fallback)
@@ -1814,10 +1825,13 @@ export interface ExpectedTPEntryOrder {
 
 export interface ExpectedTPDetails {
   symbol: string;
-  position_side?: 'LONG' | 'SHORT';
+  position_side?: 'LONG' | 'SHORT' | 'MIXED';
   net_qty: number;
   position_value: number;
   actual_position_value?: number | null;
+  /** Qty-weighted average entry price across open lots; null when cost basis unknown */
+  avg_entry_price?: number | null;
+  entry_lot_count?: number;
   covered_qty: number;
   uncovered_qty: number;
   total_expected_profit: number | null; // null when cost basis is unknown

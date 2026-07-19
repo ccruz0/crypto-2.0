@@ -13,7 +13,7 @@ import {
   sideLabelEs,
 } from '@/utils/tradeSideLabels';
 
-type SortField = 'symbol' | 'net_qty' | 'position_value' | 'covered_qty' | 'uncovered_qty' | 'total_expected_profit' | 'current_price' | 'coverage_ratio';
+type SortField = 'symbol' | 'net_qty' | 'position_value' | 'avg_entry_price' | 'covered_qty' | 'uncovered_qty' | 'total_expected_profit' | 'current_price' | 'coverage_ratio';
 type SortDirection = 'asc' | 'desc';
 
 interface ExpectedTakeProfitTabProps {
@@ -168,6 +168,10 @@ export default function ExpectedTakeProfitTab({
           aVal = a.position_value || 0;
           bVal = b.position_value || 0;
           break;
+        case 'avg_entry_price':
+          aVal = a.avg_entry_price ?? 0;
+          bVal = b.avg_entry_price ?? 0;
+          break;
         case 'covered_qty':
           aVal = a.covered_qty || 0;
           bVal = b.covered_qty || 0;
@@ -268,6 +272,7 @@ export default function ExpectedTakeProfitTab({
                   scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
                   onClick={() => handleSort('net_qty')}
+                  title="Suma de cantidades de lotes abiertos (no inventario neto firmado)"
                 >
                   <div className="flex items-center gap-1">
                     Net Qty {sortField === 'net_qty' && (sortDirection === 'asc' ? '↑' : '↓')}
@@ -280,6 +285,16 @@ export default function ExpectedTakeProfitTab({
                 >
                   <div className="flex items-center gap-1">
                     Position Value {sortField === 'position_value' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th
+                  scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
+                  onClick={() => handleSort('avg_entry_price')}
+                  title="Precio de entrada promedio (ponderado por cantidad). Ver Detalles para cada orden."
+                >
+                  <div className="flex items-center gap-1">
+                    Entry / Avg {sortField === 'avg_entry_price' && (sortDirection === 'asc' ? '↑' : '↓')}
                   </div>
                 </th>
                 <th
@@ -354,6 +369,24 @@ export default function ExpectedTakeProfitTab({
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {formatNumber(item.position_value, '$')}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                    {item.cost_basis_unknown || item.avg_entry_price == null ? (
+                      <span className="text-gray-400 dark:text-gray-500" title="Cost basis not tracked">
+                        —
+                      </span>
+                    ) : (
+                      <div>
+                        <div className="text-gray-900 dark:text-gray-200">
+                          {formatNumber(item.avg_entry_price, item.symbol)}
+                        </div>
+                        {(item.entry_lot_count ?? 0) > 1 && (
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            avg · {item.entry_lot_count} lots
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {formatNumber(item.covered_qty)}
@@ -452,7 +485,12 @@ export default function ExpectedTakeProfitTab({
                   <h4 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">Summary</h4>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div>
-                      <div className="text-sm text-gray-600 dark:text-gray-400">Net Qty</div>
+                      <div
+                        className="text-sm text-gray-600 dark:text-gray-400"
+                        title="Suma de cantidades de lotes abiertos (cada entrada con SL/TP activo). No es el inventario neto firmado Long−Short."
+                      >
+                        Open Lots Qty
+                      </div>
                       <div className="text-lg font-semibold text-gray-900 dark:text-white">
                         {formatNumber(expectedTPDetails.net_qty)}
                       </div>
@@ -499,6 +537,25 @@ export default function ExpectedTakeProfitTab({
                         </div>
                       </div>
                     )}
+                    <div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">
+                        {(expectedTPDetails.entry_lot_count ?? 0) > 1 ? 'Avg Entry' : 'Entry Price'}
+                      </div>
+                      {expectedTPDetails.cost_basis_unknown || expectedTPDetails.avg_entry_price == null ? (
+                        <div className="text-lg font-semibold text-gray-400 dark:text-gray-500" title="Cost basis not tracked">
+                          —
+                        </div>
+                      ) : (
+                        <div className="text-lg font-semibold text-gray-900 dark:text-white">
+                          {formatNumber(expectedTPDetails.avg_entry_price, expectedTPDetailsSymbol || '')}
+                          {(expectedTPDetails.entry_lot_count ?? 0) > 1 && (
+                            <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                              ({expectedTPDetails.entry_lot_count} lots)
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     {expectedTPDetails.uncovered_entry && (
                       <div className="col-span-2">
                         <div className="text-sm text-gray-600 dark:text-gray-400">Uncovered Entry</div>
@@ -513,9 +570,15 @@ export default function ExpectedTakeProfitTab({
                 {/* Entry Orders Section (expandable TP / SL per original order) */}
                 {entryOrders.length > 0 ? (
                   <div>
-                    <h4 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">
+                    <h4 className="text-lg font-semibold mb-1 text-gray-900 dark:text-white">
                       Entry Orders ({entryOrders.length})
                     </h4>
+                    <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
+                      Inventario por lote: cada fila es una entrada ejecutada que aún espera su SL/TP.
+                      {expectedTPDetails.position_side === 'MIXED' && (
+                        <> Incluye lotes Long (Compra) y Short (Venta) a la vez.</>
+                      )}
+                    </p>
                     <div className="overflow-x-auto">
                       <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                         <thead className="bg-gray-50 dark:bg-slate-700">
