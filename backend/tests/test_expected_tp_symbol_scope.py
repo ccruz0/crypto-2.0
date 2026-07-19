@@ -297,12 +297,13 @@ def test_protected_margin_sell_not_fifo_net_against_long_buys(db_session):
         market_prices={"BTC": 62722.0, "BTC_USD": 62722.0},
     )
 
-    short_rows = [
-        row for row in summary.values()
-        if row.get("symbol") == "BTC_USD" and row.get("position_side") == "SHORT"
-    ]
-    assert len(short_rows) == 1
-    assert short_rows[0]["net_qty"] == pytest.approx(0.00015)
+    # Hedged book: protected short + remaining long must be MIXED (not a short-only stub).
+    btc_usd = summary.get("BTC_USD")
+    assert btc_usd is not None
+    assert btc_usd["position_side"] == "MIXED"
+    assert btc_usd["entry_lot_count"] == 2
+    assert btc_usd["net_qty"] == pytest.approx(0.30015)
+    assert btc_usd["total_expected_profit"] == pytest.approx(0.094083)
 
     details = get_expected_take_profit_details(
         db_session,
@@ -318,3 +319,167 @@ def test_protected_margin_sell_not_fifo_net_against_long_buys(db_session):
     assert len(sell_entries) == 1
     assert sell_entries[0]["side"] == "SELL"
     assert sell_entries[0]["take_profits"]
+    assert details["position_side"] == "MIXED"
+
+
+def test_summary_eth_usd_mixed_not_short_only_stub(db_session):
+    """Negative ETH balance must not drop the protected BUY long from ETH_USD summary."""
+    t0 = datetime(2026, 7, 7, 2, 11, 33, tzinfo=timezone.utc)
+    t1 = datetime(2026, 7, 9, 17, 34, 16, tzinfo=timezone.utc)
+    t2 = datetime(2026, 7, 14, 13, 29, 8, tzinfo=timezone.utc)
+
+    sell_a = _add_order(
+        db_session,
+        exchange_order_id="5755600491465274888",
+        symbol="ETH_USD",
+        side=OrderSideEnum.SELL,
+        price="1790.66",
+        quantity="0.0558",
+        exchange_create_time=t0,
+    )
+    buy_long = _add_order(
+        db_session,
+        exchange_order_id="5755600491599559568",
+        symbol="ETH_USD",
+        side=OrderSideEnum.BUY,
+        price="1740.5",
+        quantity="0.0788",
+        exchange_create_time=t1,
+    )
+    sell_b = _add_order(
+        db_session,
+        exchange_order_id="5755600491780783859",
+        symbol="ETH_USD",
+        side=OrderSideEnum.SELL,
+        price="1876.73",
+        quantity="0.0532",
+        exchange_create_time=t2,
+    )
+    for parent, tp_id, tp_side, tp_price, qty in (
+        (sell_a, "tp-eth-a", OrderSideEnum.BUY, "1736.52", "0.0558"),
+        (buy_long, "tp-eth-long", OrderSideEnum.SELL, "1948.62", "0.0788"),
+        (sell_b, "tp-eth-b", OrderSideEnum.BUY, "1857.96", "0.0532"),
+    ):
+        _add_order(
+            db_session,
+            exchange_order_id=tp_id,
+            symbol="ETH_USD",
+            side=tp_side,
+            order_type="TAKE_PROFIT_LIMIT",
+            order_role="TAKE_PROFIT",
+            status=OrderStatusEnum.ACTIVE,
+            price=tp_price,
+            quantity=qty,
+            cumulative_quantity="0",
+            parent_order_id=parent.exchange_order_id,
+        )
+
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[
+            {"coin": "ETH", "balance": -0.0302, "value_usd": -56.0},
+        ],
+        market_prices={"ETH": 1872.0, "ETH_USD": 1872.0},
+    )
+
+    eth_usd = summary.get("ETH_USD")
+    assert eth_usd is not None
+    assert eth_usd["position_side"] == "MIXED"
+    assert eth_usd["entry_lot_count"] == 3
+    assert eth_usd["net_qty"] == pytest.approx(0.1878)
+    # Long TP dominates: (1948.62-1740.5)*0.0788 ≈ 16.40
+    assert eth_usd["total_expected_profit"] > 16.0
+
+    # Must not also emit a short-only duplicate row for the same pair.
+    short_stubs = [
+        row
+        for key, row in summary.items()
+        if row.get("symbol") == "ETH_USD" and row.get("position_side") == "SHORT"
+    ]
+    assert short_stubs == []
+
+
+def test_summary_btc_usd_includes_large_long_tp_profit(db_session):
+    """BTC_USD summary must count large MANUAL long TPs, not only micro short TPs."""
+    t_long = datetime(2026, 6, 29, 14, 53, 44, tzinfo=timezone.utc)
+    t_short = datetime(2026, 7, 14, 11, 18, 26, tzinfo=timezone.utc)
+
+    buy = _add_order(
+        db_session,
+        exchange_order_id="5755600491091887888",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="59100",
+        quantity="1.3",
+        exchange_create_time=t_long,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490101952837",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="67000",
+        quantity="1.3",
+        cumulative_quantity="0",
+        parent_order_id=buy.exchange_order_id,
+        exchange_create_time=t_long,
+    )
+    sell = _add_order(
+        db_session,
+        exchange_order_id="5755600491774711109",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="MARKET",
+        price="62722.11",
+        quantity="0.00015",
+        exchange_create_time=t_short,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490101973692",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="62094.89",
+        quantity="0.00015",
+        cumulative_quantity="0",
+        parent_order_id=sell.exchange_order_id,
+        exchange_create_time=t_short,
+    )
+    # Unrelated BTC_USDT lot must not absorb BTC_USD into the USDT summary row.
+    _add_order(
+        db_session,
+        exchange_order_id="usdt-buy-orphan",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.BUY,
+        price="75100",
+        quantity="0.3",
+        exchange_create_time=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[
+            {"coin": "BTC", "balance": 2.5, "value_usd": 160000.0},
+        ],
+        market_prices={"BTC": 64425.0, "BTC_USD": 64425.0, "BTC_USDT": 64425.0},
+    )
+
+    btc_usd = summary.get("BTC_USD")
+    assert btc_usd is not None
+    assert btc_usd["position_side"] == "MIXED"
+    assert btc_usd["entry_lot_count"] == 2
+    # (67000-59100)*1.3 + (62722.11-62094.89)*0.00015 ≈ 10270.09
+    assert btc_usd["total_expected_profit"] == pytest.approx(10270.094083, rel=1e-6)
+    assert "BTC_USDT" in summary
+    assert summary["BTC_USDT"]["symbol"] == "BTC_USDT"
+    # No short-only stub alongside the MIXED row.
+    assert not any(
+        row.get("symbol") == "BTC_USD" and row.get("position_side") == "SHORT"
+        for row in summary.values()
+    )
