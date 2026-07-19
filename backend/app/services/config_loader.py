@@ -33,32 +33,55 @@ def _resolve_config_path() -> Path:
     return _app_root / "trading_config.json"
 
 
-def get_config_path() -> Path:
+def get_config_path(*, for_write: bool = False) -> Path:
     """Return the active trading config path (honors TRADING_CONFIG_PATH).
 
-    If TRADING_CONFIG_PATH is set but not writable (e.g. root-owned volume before
-    entrypoint chown), fall back to /app/trading_config.json so the API stays up.
+    Reads always prefer the persistent volume path when the file exists.
+    Falling back to the baked ``/app`` image for *reads* makes strategies appear
+    to "change by themselves" whenever a flaky write-probe fails (seen in prod
+    logs: thousands of ``falling back to /app`` warnings while ``/data`` still
+    held the real presets).
+
+    Writes also stay on the persistent path when it exists (even if currently
+    not writable) so ``save_config`` fails loudly instead of silently persisting
+    to the ephemeral image layer. Fallback to ``/app`` is only used when the
+    persistent file is missing and its parent directory cannot be used.
     """
     path = _resolve_config_path()
     env_path = (os.environ.get("TRADING_CONFIG_PATH") or "").strip()
     if not env_path:
         return path
+
+    logger = logging.getLogger(__name__)
+
+    # Persistent file present → always use it for reads; never silently switch
+    # to baked /app (that is the "strategies changed alone" regression).
+    if path.exists():
+        if for_write and not os.access(path, os.W_OK):
+            logger.error(
+                "TRADING_CONFIG_PATH=%s exists but is not writable; "
+                "refusing to fall back to /app (would lose strategy edits on recreate)",
+                path,
+            )
+        return path
+
+    # File missing: prefer creating/seeding on the volume when parent is usable.
+    parent = path.parent
     try:
-        if path.exists():
-            # Probe write access without truncating content.
-            with open(path, "a", encoding="utf-8"):
-                pass
-            return path
-        # Parent must be creatable/writable for first save/seed.
-        parent = path.parent
         if parent.exists() and os.access(parent, os.W_OK):
             return path
-    except OSError:
-        pass
+        if not parent.exists():
+            parent.mkdir(parents=True, exist_ok=True)
+            if os.access(parent, os.W_OK):
+                return path
+    except OSError as exc:
+        logger.warning("Cannot use TRADING_CONFIG_PATH parent %s: %s", parent, exc)
+
     fallback = Path("/app/trading_config.json")
     if fallback.exists() or Path("/app").exists():
-        logging.getLogger(__name__).warning(
-            "TRADING_CONFIG_PATH=%s is not writable; falling back to %s",
+        logger.warning(
+            "TRADING_CONFIG_PATH=%s missing/unusable; using baked %s "
+            "(strategies may reset on recreate until volume is writable)",
             path,
             fallback,
         )
@@ -539,9 +562,10 @@ def save_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                             vol_ratio = rules.get("volumeMinRatio")
                             logger.info(f"[VOLUME] Saving {preset_name}/{risk_mode} volumeMinRatio={vol_ratio}")
 
-        # Write config to file (persistent volume when TRADING_CONFIG_PATH is set)
+        # Write config to file (persistent volume when TRADING_CONFIG_PATH is set).
+        # Use for_write=True so we never silently persist strategy edits to /app.
         try:
-            config_path = get_config_path()
+            config_path = get_config_path(for_write=True)
             CONFIG_PATH = config_path
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_json = json.dumps(normalized_cfg, indent=2)
@@ -549,7 +573,7 @@ def save_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
             logger.debug(f"Config saved to {config_path.absolute()}")
         except (IOError, OSError, PermissionError) as e:
             logger.error(
-                f"Failed to write config file to {get_config_path().absolute()}: {e}",
+                f"Failed to write config file to {get_config_path(for_write=True).absolute()}: {e}",
                 exc_info=True,
             )
             raise
