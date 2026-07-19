@@ -43,10 +43,60 @@ const TRIGGER_ORDER_TYPES = new Set([
   'TAKE_PROFIT',
   'TAKE_PROFIT_LIMIT',
 ]);
+const CLOSE_ORIGINS = new Set(['MANUAL', 'STOP_LOSS', 'TAKE_PROFIT', 'EXCHANGE']);
+const ENTRY_ORIGINS = new Set(['ALERT']);
 
 const TIME_WINDOW_MS = 5 * 60 * 1000;
 const VOLUME_TOLERANCE = 0.20;
 const QTY_EPS = 1e-12;
+
+/** Position lifecycle: alert opens; only manual / SL / TP close. */
+export type OrderLifecycleRole = 'entry' | 'close';
+
+/**
+ * Classify a fill as a position entry or a position close.
+ *
+ * Business rule:
+ * - ALERT buy/sell → new entry (with its own SL/TP), never closes another alert
+ * - MANUAL / SL / TP → close against opposite-side entry inventory
+ * - Legacy fills without origin → entry (do not invent false closes)
+ */
+export function getOrderLifecycleRole(order: OpenOrder): OrderLifecycleRole | null {
+  const status = (order.status || '').toUpperCase();
+  const side = (order.side || '').toUpperCase();
+  if (status !== 'FILLED') return null;
+  if (side !== 'BUY' && side !== 'SELL') return null;
+
+  const role = (order.order_role || '').toUpperCase();
+  const orderType = (order.order_type || '').toUpperCase();
+  const origin = (order.execution_origin || '').toUpperCase();
+
+  if (PROTECTION_ROLES.has(role) || TRIGGER_ORDER_TYPES.has(orderType)) {
+    return 'close';
+  }
+  if (CLOSE_ORIGINS.has(origin)) {
+    return 'close';
+  }
+  if (ENTRY_ORIGINS.has(origin)) {
+    return 'entry';
+  }
+
+  // type_display fallback when execution_origin is missing from older payloads
+  const typeDisplay = (order.type_display || order.execution_origin_label || '').toLowerCase();
+  if (typeDisplay.includes('sl ejecutado') || typeDisplay.includes('tp ejecutado')) {
+    return 'close';
+  }
+  if (typeDisplay.includes('manual')) {
+    return 'close';
+  }
+  if (typeDisplay.includes('alerta')) {
+    return 'entry';
+  }
+
+  // Untagged filled market/limit: treat as entry so alert history cannot
+  // false-close against other alerts via FIFO.
+  return 'entry';
+}
 
 function unavailable(reason: PnlUnavailableReason): OrderProfitLoss {
   return {
@@ -84,14 +134,16 @@ export function orderMatchesAsset(order: OpenOrder, assetCoin: string): boolean 
 }
 
 export function isFilledEntryOrder(order: OpenOrder): boolean {
-  const status = (order.status || '').toUpperCase();
-  const side = (order.side || '').toUpperCase();
-  const role = (order.order_role || '').toUpperCase();
-  if (status !== 'FILLED') return false;
-  if (PROTECTION_ROLES.has(role)) return false;
-  const orderType = (order.order_type || '').toUpperCase();
-  if (TRIGGER_ORDER_TYPES.has(orderType)) return false;
-  return side === 'BUY' || side === 'SELL';
+  return getOrderLifecycleRole(order) === 'entry';
+}
+
+export function isFilledCloseOrder(order: OpenOrder): boolean {
+  return getOrderLifecycleRole(order) === 'close';
+}
+
+export function isFilledPositionOrder(order: OpenOrder): boolean {
+  const role = getOrderLifecycleRole(order);
+  return role === 'entry' || role === 'close';
 }
 
 export function getOrderQuantity(order: OpenOrder): number {
@@ -208,46 +260,77 @@ function unrealizedLongPnl(
 }
 
 /**
- * Rebuild still-open lots with the same FIFO buy/sell netting used by the
- * backend Expected Take Profit path. Fully liquidated rounds drop out.
+ * Rebuild still-open entry lots.
+ *
+ * Alert BUY/SELL open inventory. Only MANUAL / SL / TP fills of the opposite
+ * side reduce that inventory (FIFO). Alert never closes alert.
  */
 export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
   const chronological = [...orders]
-    .filter(isFilledEntryOrder)
+    .filter(isFilledPositionOrder)
     .sort((a, b) => getOrderExecutionTime(a) - getOrderExecutionTime(b));
 
-  const buys = chronological.filter((o) => (o.side || '').toUpperCase() === 'BUY');
-  const sells = chronological.filter((o) => (o.side || '').toUpperCase() === 'SELL');
+  const entryBuys = chronological.filter(
+    (o) => isFilledEntryOrder(o) && (o.side || '').toUpperCase() === 'BUY'
+  );
+  const entrySells = chronological.filter(
+    (o) => isFilledEntryOrder(o) && (o.side || '').toUpperCase() === 'SELL'
+  );
+  const closeSells = chronological.filter(
+    (o) => isFilledCloseOrder(o) && (o.side || '').toUpperCase() === 'SELL'
+  );
+  const closeBuys = chronological.filter(
+    (o) => isFilledCloseOrder(o) && (o.side || '').toUpperCase() === 'BUY'
+  );
 
-  const sellRemaining = new Map<string, number>();
-  sells.forEach((sell, index) => {
-    const key = sell.order_id || `sell-${index}`;
-    sellRemaining.set(key, getOrderQuantity(sell));
+  const closeSellRemaining = new Map<string, number>();
+  closeSells.forEach((sell, index) => {
+    const key = sell.order_id || `close-sell-${index}`;
+    closeSellRemaining.set(key, getOrderQuantity(sell));
+  });
+
+  const closeBuyRemaining = new Map<string, number>();
+  closeBuys.forEach((buy, index) => {
+    const key = buy.order_id || `close-buy-${index}`;
+    closeBuyRemaining.set(key, getOrderQuantity(buy));
   });
 
   const openLots: OpenPositionLot[] = [];
 
-  for (const buy of buys) {
+  for (const buy of entryBuys) {
     let remaining = getOrderQuantity(buy);
-    for (let i = 0; i < sells.length; i++) {
+    const buyTime = getOrderExecutionTime(buy);
+    for (let i = 0; i < closeSells.length; i++) {
       if (remaining <= QTY_EPS) break;
-      const sell = sells[i];
-      const key = sell.order_id || `sell-${i}`;
-      const sellQty = sellRemaining.get(key) ?? 0;
+      const sell = closeSells[i];
+      // SL/TP/manual must be after (or with) the entry they close.
+      if (getOrderExecutionTime(sell) < buyTime) continue;
+      const key = sell.order_id || `close-sell-${i}`;
+      const sellQty = closeSellRemaining.get(key) ?? 0;
       if (sellQty <= QTY_EPS) continue;
       const applied = Math.min(remaining, sellQty);
       remaining -= applied;
-      sellRemaining.set(key, sellQty - applied);
+      closeSellRemaining.set(key, sellQty - applied);
     }
     if (remaining > QTY_EPS && getOrderPrice(buy) > 0) {
       openLots.push({ order: buy, remainingQty: remaining, side: 'BUY' });
     }
   }
 
-  for (let i = 0; i < sells.length; i++) {
-    const sell = sells[i];
-    const key = sell.order_id || `sell-${i}`;
-    const remaining = sellRemaining.get(key) ?? 0;
+  for (const sell of entrySells) {
+    let remaining = getOrderQuantity(sell);
+    const sellTime = getOrderExecutionTime(sell);
+    for (let i = 0; i < closeBuys.length; i++) {
+      if (remaining <= QTY_EPS) break;
+      const buy = closeBuys[i];
+      if (getOrderExecutionTime(buy) < sellTime) continue;
+      const key = buy.order_id || `close-buy-${i}`;
+      const buyQty = closeBuyRemaining.get(key) ?? 0;
+      if (buyQty <= QTY_EPS) continue;
+      const applied = Math.min(remaining, buyQty);
+      remaining -= applied;
+      closeBuyRemaining.set(key, buyQty - applied);
+    }
     if (remaining > QTY_EPS && getOrderPrice(sell) > 0) {
       openLots.push({ order: sell, remainingQty: remaining, side: 'SELL' });
     }
@@ -297,7 +380,7 @@ export function getOpenPositionLotsForAsset(
   assetCoin: string,
   balance: number
 ): OpenPositionLot[] {
-  const filled = filterFilledEntryOrdersForAsset(orders, assetCoin);
+  const filled = filterFilledPositionOrdersForAsset(orders, assetCoin);
   const openLots = rebuildOpenLots(filled);
   return trimOpenLotsToBalance(openLots, balance);
 }
@@ -436,15 +519,24 @@ export function filterFilledEntryOrdersForAsset(
     .sort((a, b) => getOrderExecutionTime(b) - getOrderExecutionTime(a));
 }
 
+export function filterFilledPositionOrdersForAsset(
+  orders: OpenOrder[],
+  assetCoin: string
+): OpenOrder[] {
+  return orders
+    .filter((order) => orderMatchesAsset(order, assetCoin) && isFilledPositionOrder(order))
+    .sort((a, b) => getOrderExecutionTime(b) - getOrderExecutionTime(a));
+}
+
 export interface PortfolioBalanceHint {
   coin: string;
   balance: number;
 }
 
-function groupFilledEntryOrdersBySymbol(orders: OpenOrder[]): Map<string, OpenOrder[]> {
+function groupFilledPositionOrdersBySymbol(orders: OpenOrder[]): Map<string, OpenOrder[]> {
   const bySymbol = new Map<string, OpenOrder[]>();
   for (const order of orders) {
-    if (!isFilledEntryOrder(order)) continue;
+    if (!isFilledPositionOrder(order)) continue;
     const symbol = (order.instrument_name || '').toUpperCase();
     if (!symbol) continue;
     const list = bySymbol.get(symbol) ?? [];
@@ -465,7 +557,7 @@ export function buildOpenLotsByOrderId(
   orders: OpenOrder[],
   portfolioAssets?: PortfolioBalanceHint[] | null
 ): Map<string, OpenPositionLot> {
-  const bySymbol = groupFilledEntryOrdersBySymbol(orders);
+  const bySymbol = groupFilledPositionOrdersBySymbol(orders);
   const map = new Map<string, OpenPositionLot>();
 
   for (const [symbol, symbolOrders] of bySymbol) {
@@ -506,59 +598,100 @@ function addRealized(accum: Map<string, RealizedAccum>, orderId: string, pnl: nu
 }
 
 /**
- * FIFO buy↔sell pairing for realized P/L (same netting as rebuildOpenLots).
- * Attributes matched quantity to both legs so closed entries and exits both
- * show realized P/L — including partial fills and matches outside the 5‑min window.
- * SL/TP protection orders are excluded via isFilledEntryOrder.
+ * FIFO entry↔close pairing for realized P/L (same netting as rebuildOpenLots).
+ * Alert never pairs with alert. Only MANUAL / SL / TP closes realize P/L.
  */
 export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, OrderProfitLoss> {
-  const bySymbol = groupFilledEntryOrdersBySymbol(orders);
+  const bySymbol = groupFilledPositionOrdersBySymbol(orders);
   const result = new Map<string, OrderProfitLoss>();
 
   for (const symbolOrders of bySymbol.values()) {
     const chronological = [...symbolOrders].sort(
       (a, b) => getOrderExecutionTime(a) - getOrderExecutionTime(b)
     );
-    const buys = chronological.filter((o) => (o.side || '').toUpperCase() === 'BUY');
-    const sells = chronological.filter((o) => (o.side || '').toUpperCase() === 'SELL');
 
-    const sellRemaining = new Map<string, number>();
-    sells.forEach((sell, index) => {
-      const key = sell.order_id || `sell-${index}`;
-      sellRemaining.set(key, getOrderQuantity(sell));
+    const entryBuys = chronological.filter(
+      (o) => isFilledEntryOrder(o) && (o.side || '').toUpperCase() === 'BUY'
+    );
+    const entrySells = chronological.filter(
+      (o) => isFilledEntryOrder(o) && (o.side || '').toUpperCase() === 'SELL'
+    );
+    const closeSells = chronological.filter(
+      (o) => isFilledCloseOrder(o) && (o.side || '').toUpperCase() === 'SELL'
+    );
+    const closeBuys = chronological.filter(
+      (o) => isFilledCloseOrder(o) && (o.side || '').toUpperCase() === 'BUY'
+    );
+
+    const closeSellRemaining = new Map<string, number>();
+    closeSells.forEach((sell, index) => {
+      const key = sell.order_id || `close-sell-${index}`;
+      closeSellRemaining.set(key, getOrderQuantity(sell));
+    });
+
+    const closeBuyRemaining = new Map<string, number>();
+    closeBuys.forEach((buy, index) => {
+      const key = buy.order_id || `close-buy-${index}`;
+      closeBuyRemaining.set(key, getOrderQuantity(buy));
     });
 
     const accum = new Map<string, RealizedAccum>();
 
-    for (const buy of buys) {
+    // Long exit: entry BUY closed by MANUAL/SL/TP SELL (close at/after entry)
+    for (const buy of entryBuys) {
       let remaining = getOrderQuantity(buy);
       const buyPrice = getOrderPrice(buy);
       const buyId = buy.order_id || '';
       const buyTime = getOrderExecutionTime(buy);
 
-      for (let i = 0; i < sells.length; i++) {
+      for (let i = 0; i < closeSells.length; i++) {
         if (remaining <= QTY_EPS) break;
-        const sell = sells[i];
-        const key = sell.order_id || `sell-${i}`;
-        const sellQty = sellRemaining.get(key) ?? 0;
+        const sell = closeSells[i];
+        if (getOrderExecutionTime(sell) < buyTime) continue;
+        const key = sell.order_id || `close-sell-${i}`;
+        const sellQty = closeSellRemaining.get(key) ?? 0;
         if (sellQty <= QTY_EPS) continue;
 
         const sellPrice = getOrderPrice(sell);
         const applied = Math.min(remaining, sellQty);
         remaining -= applied;
-        sellRemaining.set(key, sellQty - applied);
+        closeSellRemaining.set(key, sellQty - applied);
 
         if (!(applied > QTY_EPS) || !(buyPrice > 0) || !(sellPrice > 0)) continue;
 
         const matchPnl = (sellPrice - buyPrice) * applied;
-        const sellTime = getOrderExecutionTime(sell);
-        const sellId = sell.order_id || '';
-        // Short cover: sell opened before buy. Long exit: buy first (or same time).
-        const isShortCover = sellTime < buyTime;
-        const basis = (isShortCover ? sellPrice : buyPrice) * applied;
-
+        const basis = buyPrice * applied;
         addRealized(accum, buyId, matchPnl, basis);
+        addRealized(accum, sell.order_id || '', matchPnl, basis);
+      }
+    }
+
+    // Short cover: entry SELL closed by MANUAL/SL/TP BUY (close at/after entry)
+    for (const sell of entrySells) {
+      let remaining = getOrderQuantity(sell);
+      const sellPrice = getOrderPrice(sell);
+      const sellId = sell.order_id || '';
+      const sellTime = getOrderExecutionTime(sell);
+
+      for (let i = 0; i < closeBuys.length; i++) {
+        if (remaining <= QTY_EPS) break;
+        const buy = closeBuys[i];
+        if (getOrderExecutionTime(buy) < sellTime) continue;
+        const key = buy.order_id || `close-buy-${i}`;
+        const buyQty = closeBuyRemaining.get(key) ?? 0;
+        if (buyQty <= QTY_EPS) continue;
+
+        const buyPrice = getOrderPrice(buy);
+        const applied = Math.min(remaining, buyQty);
+        remaining -= applied;
+        closeBuyRemaining.set(key, buyQty - applied);
+
+        if (!(applied > QTY_EPS) || !(buyPrice > 0) || !(sellPrice > 0)) continue;
+
+        const matchPnl = (sellPrice - buyPrice) * applied;
+        const basis = sellPrice * applied;
         addRealized(accum, sellId, matchPnl, basis);
+        addRealized(accum, buy.order_id || '', matchPnl, basis);
       }
     }
 
@@ -578,12 +711,10 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
 
 /**
  * P/L for a row on the Executed Orders tab:
- * - Still-open FIFO lots → unrealized long/short vs mark price
- * - Fully FIFO-paired (no open remainder) → realized buy↔sell P/L
- * - Unmatched remainder / no counterpart → MTM vs mark (never claim "cerrada")
- *
- * Balance trim is intentionally ignored here; callers should build openLots
- * without portfolio balances. Trim remains Portfolio-only.
+ * - Open alert entry lots → unrealized long/short vs mark
+ * - Entry fully closed by MANUAL/SL/TP → realized ("orden cerrada")
+ * - Close fill matched to an entry → realized
+ * - Alert never realizes against another alert
  */
 export function getExecutedOrderDisplayPnl(
   order: OpenOrder,
@@ -592,13 +723,13 @@ export function getExecutedOrderDisplayPnl(
   openLotsByOrderId: Map<string, OpenPositionLot>,
   realizedByOrderId?: Map<string, OrderProfitLoss>
 ): OrderProfitLoss {
-  // SL/TP and other non-entry fills: never treat as open-lot / orden cerrada P/L.
-  if (!isFilledEntryOrder(order)) {
+  const lifecycle = getOrderLifecycleRole(order);
+  if (!lifecycle) {
     return unavailable('invalid_order');
   }
 
   const orderId = order.order_id;
-  if (orderId) {
+  if (lifecycle === 'entry' && orderId) {
     const openLot = openLotsByOrderId.get(orderId);
     if (openLot) {
       return calculateOpenLotProfitLoss(openLot, currentPrice);
@@ -611,32 +742,13 @@ export function getExecutedOrderDisplayPnl(
     if (realized) return realized;
   }
 
-  // Legacy proximity/volume match (same-symbol history gaps) before MTM fallback.
-  const side = (order.side || '').toUpperCase();
-  if (side === 'SELL') {
-    const legacy = calculateOrderProfitLoss(order, allOrders, currentPrice, {
-      positionHint: 'LONG',
-    });
-    if (legacy.available && legacy.isRealized) return legacy;
-  } else if (side === 'BUY') {
-    const buyTime = getOrderExecutionTime(order);
-    const hasPriorSell = allOrders.some(
-      (o) =>
-        o.instrument_name === order.instrument_name &&
-        (o.side || '').toUpperCase() === 'SELL' &&
-        (o.status || '').toUpperCase() === 'FILLED' &&
-        !PROTECTION_ROLES.has((o.order_role || '').toUpperCase()) &&
-        getOrderExecutionTime(o) < buyTime
-    );
-    if (hasPriorSell) {
-      const legacy = calculateOrderProfitLoss(order, allOrders, currentPrice, {
-        positionHint: 'SHORT',
-      });
-      if (legacy.available && legacy.isRealized) return legacy;
-    }
+  if (lifecycle === 'close') {
+    // Unmatched manual/SL/TP: no inventada "orden cerrada" vs another alert.
+    return unavailable('closed_without_counterpart');
   }
 
-  // No FIFO/legacy pair: still show unrealized MTM so every market entry has a %.
+  // Open entry with no lot map hit: MTM vs mark.
+  const side = (order.side || '').toUpperCase();
   const orderPrice = getOrderPrice(order);
   const orderQuantity = getOrderQuantity(order);
   if (!(orderPrice > 0) || !(orderQuantity > 0)) {
@@ -655,8 +767,8 @@ export function getExecutedOrderDisplayPnl(
 }
 
 /**
- * True only when a filled entry is fully FIFO-closed with numeric realized P/L.
- * Balance-trimmed orphans (no counterpart) are NOT closed.
+ * True only when a filled *entry* is fully closed by MANUAL/SL/TP with realized P/L.
+ * Alert-vs-alert netting never qualifies. Balance-trimmed orphans are NOT closed.
  */
 export function isClosedExecutedEntryOrder(
   order: OpenOrder,
@@ -682,7 +794,7 @@ export function getPnlUnavailableTooltip(reason?: PnlUnavailableReason): string 
         'para calcular el P&L realizado (historial incompleto o posición no cubierta)'
       );
     case 'invalid_order':
-      return 'No se pudo calcular el P&L (cantidad o precio inválidos, o orden de protección SL/TP)';
+      return 'No se pudo calcular el P&L (cantidad o precio inválidos)';
     default:
       return 'No se pudo calcular el P&L';
   }

@@ -113,6 +113,7 @@ describe('rebuildOpenLots / open-position filter', () => {
       quantity: '75.13',
       price: '137',
       instrument_name: 'SOL_USD',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -122,6 +123,7 @@ describe('rebuildOpenLots / open-position filter', () => {
       quantity: '75.13',
       price: '120',
       instrument_name: 'SOL_USD',
+      execution_origin: 'MANUAL',
       create_time: 2_000,
       update_time: 2_000,
     });
@@ -131,6 +133,7 @@ describe('rebuildOpenLots / open-position filter', () => {
       quantity: '0.05',
       price: '140',
       instrument_name: 'SOL_USD',
+      execution_origin: 'ALERT',
       create_time: 3_000,
       update_time: 3_000,
     });
@@ -151,6 +154,7 @@ describe('rebuildOpenLots / open-position filter', () => {
         quantity: '75.13',
         price: '137',
         instrument_name: 'SOL_USD',
+        execution_origin: 'ALERT',
         create_time: n * 1_000,
         update_time: n * 1_000,
       })
@@ -162,6 +166,7 @@ describe('rebuildOpenLots / open-position filter', () => {
         quantity: '75.13',
         price: '130',
         instrument_name: 'SOL_USD',
+        execution_origin: 'MANUAL',
         create_time: 10_000 + n * 1_000,
         update_time: 10_000 + n * 1_000,
       })
@@ -177,6 +182,7 @@ describe('rebuildOpenLots / open-position filter', () => {
       side: 'SELL',
       quantity: '1',
       price: '2000',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -185,6 +191,7 @@ describe('rebuildOpenLots / open-position filter', () => {
       side: 'BUY',
       quantity: '0.4',
       price: '1800',
+      execution_origin: 'MANUAL',
       create_time: 2_000,
       update_time: 2_000,
     });
@@ -193,6 +200,33 @@ describe('rebuildOpenLots / open-position filter', () => {
     expect(lots).toHaveLength(1);
     expect(lots[0].side).toBe('SELL');
     expect(lots[0].remainingQty).toBeCloseTo(0.6);
+  });
+
+  it('does not let alert SELL close an alert BUY', () => {
+    const buy = makeOrder({
+      order_id: 'dot-buy',
+      side: 'BUY',
+      quantity: '11.72',
+      price: '0.8526',
+      instrument_name: 'DOT_USD',
+      execution_origin: 'ALERT',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sell = makeOrder({
+      order_id: 'dot-sell-alert',
+      side: 'SELL',
+      quantity: '11.72',
+      price: '0.88',
+      instrument_name: 'DOT_USD',
+      execution_origin: 'ALERT',
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+
+    const lots = rebuildOpenLots([buy, sell]);
+    expect(lots).toHaveLength(2);
+    expect(lots.map((l) => l.order.order_id).sort()).toEqual(['dot-buy', 'dot-sell-alert']);
   });
 
   it('trims open lots to the signed portfolio balance', () => {
@@ -231,6 +265,7 @@ describe('rebuildOpenLots / open-position filter', () => {
         quantity: '75.13',
         price: '137',
         instrument_name: 'SOL_USD',
+        execution_origin: 'ALERT',
         create_time: 1_000,
         update_time: 1_000,
       }),
@@ -240,6 +275,7 @@ describe('rebuildOpenLots / open-position filter', () => {
         quantity: '75.13',
         price: '120',
         instrument_name: 'SOL_USD',
+        execution_origin: 'MANUAL',
         create_time: 2_000,
         update_time: 2_000,
       }),
@@ -249,6 +285,7 @@ describe('rebuildOpenLots / open-position filter', () => {
         quantity: '0.5',
         price: '140',
         instrument_name: 'SOL_USD',
+        execution_origin: 'ALERT',
         create_time: 3_000,
         update_time: 3_000,
       }),
@@ -371,6 +408,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '1',
       price: '100',
       instrument_name: 'ETH_USD',
+      execution_origin: 'ALERT',
     });
     const openLots = buildOpenLotsByOrderId([buy]);
     const result = getExecutedOrderDisplayPnl(buy, [buy], 110, openLots);
@@ -388,6 +426,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '1',
       price: '100',
       instrument_name: 'ETH_USD',
+      execution_origin: 'ALERT',
     });
     const openLots = buildOpenLotsByOrderId([sell]);
     const result = getExecutedOrderDisplayPnl(sell, [sell], 90, openLots);
@@ -398,12 +437,49 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     expect(result.pnlPercent).toBeCloseTo(10);
   });
 
-  it('shows realized long exit for a closed SELL matched to prior BUY', () => {
+  it('keeps alert BUY open when later alert SELL exists (no false orden cerrada)', () => {
+    const buy = makeOrder({
+      order_id: 'dot-buy',
+      side: 'BUY',
+      quantity: '11.72',
+      price: '0.8526',
+      instrument_name: 'DOT_USD',
+      execution_origin: 'ALERT',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const sell = makeOrder({
+      order_id: 'dot-sell',
+      side: 'SELL',
+      quantity: '11.5',
+      price: '0.87',
+      instrument_name: 'DOT_USD',
+      execution_origin: 'ALERT',
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const all = [buy, sell];
+    const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
+    const mark = 0.878;
+
+    expect(openLots.has('dot-buy')).toBe(true);
+    expect(openLots.has('dot-sell')).toBe(true);
+    expect(realized.size).toBe(0);
+    expect(isClosedExecutedEntryOrder(buy, openLots, realized)).toBe(false);
+
+    const buyPnl = getExecutedOrderDisplayPnl(buy, all, mark, openLots, realized);
+    expect(buyPnl.isRealized).toBe(false);
+    expect(buyPnl.pnlPercent).toBeCloseTo(((mark - 0.8526) / 0.8526) * 100);
+  });
+
+  it('shows realized long exit only when MANUAL/SL/TP closes a prior alert BUY', () => {
     const buy = makeOrder({
       order_id: 'buy-1',
       side: 'BUY',
       quantity: '1',
       price: '100',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -412,6 +488,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       side: 'SELL',
       quantity: '1',
       price: '120',
+      execution_origin: 'MANUAL',
       create_time: 10_000,
       update_time: 10_000,
     });
@@ -424,9 +501,9 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     expect(result.available).toBe(true);
     expect(result.isRealized).toBe(true);
     expect(result.pnl).toBeCloseTo(20);
-    expect(isClosedExecutedEntryOrder(sell, openLots, realized)).toBe(true);
+    // Close leg is realized, but "orden cerrada" bold applies only to entries.
+    expect(isClosedExecutedEntryOrder(sell, openLots, realized)).toBe(false);
 
-    // Closed long entry BUY also shows the same FIFO realized P/L (orden cerrada).
     const buyResult = getExecutedOrderDisplayPnl(buy, all, 130, openLots, realized);
     expect(buyResult.available).toBe(true);
     expect(buyResult.isRealized).toBe(true);
@@ -435,13 +512,13 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
   });
 
   it('FIFO-pairs partial qty and distant times for realized closed P/L', () => {
-    // Proximity matcher fails: qty differs >20% and times are days apart.
     const buy = makeOrder({
       order_id: 'buy-big',
       side: 'BUY',
       quantity: '100',
       price: '0.10',
       instrument_name: 'DOGE_USD',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -451,6 +528,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '40',
       price: '0.12',
       instrument_name: 'DOGE_USD',
+      execution_origin: 'MANUAL',
       create_time: 1_000 + 3 * 24 * 60 * 60 * 1000,
       update_time: 1_000 + 3 * 24 * 60 * 60 * 1000,
     });
@@ -473,12 +551,13 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     expect(buyOpen.pnl).toBeCloseTo((0.11 - 0.10) * 60);
   });
 
-  it('does not treat SL/TP protection fills as closed entry P/L', () => {
+  it('closes alert BUY when SL/TP protection fill executes', () => {
     const buy = makeOrder({
       order_id: 'buy-1',
       side: 'BUY',
       quantity: '1',
       price: '100',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -489,6 +568,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       price: '90',
       order_role: 'STOP_LOSS',
       order_type: 'STOP_LOSS',
+      execution_origin: 'STOP_LOSS',
       create_time: 10_000,
       update_time: 10_000,
     });
@@ -496,21 +576,24 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     const openLots = buildOpenLotsByOrderId(all);
     const realized = buildRealizedPnlByOrderId(all);
 
-    // Protection order is excluded from FIFO; buy stays open.
-    expect(openLots.has('buy-1')).toBe(true);
-    expect(realized.has('sl-1')).toBe(false);
+    expect(openLots.has('buy-1')).toBe(false);
+    expect(realized.has('sl-1')).toBe(true);
+    expect(isClosedExecutedEntryOrder(buy, openLots, realized)).toBe(true);
 
     const slResult = getExecutedOrderDisplayPnl(sl, all, 95, openLots, realized);
-    expect(slResult.available).toBe(false);
+    expect(slResult.available).toBe(true);
+    expect(slResult.isRealized).toBe(true);
+    expect(slResult.pnl).toBeCloseTo(-10);
     expect(isClosedExecutedEntryOrder(sl, openLots, realized)).toBe(false);
   });
 
-  it('shows realized short cover for BUY that closes a prior SELL', () => {
+  it('shows realized short cover for MANUAL BUY that closes a prior alert SELL', () => {
     const sell = makeOrder({
       order_id: 'sell-1',
       side: 'SELL',
       quantity: '1',
       price: '120',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -519,17 +602,20 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       side: 'BUY',
       quantity: '1',
       price: '100',
+      execution_origin: 'MANUAL',
       create_time: 10_000,
       update_time: 10_000,
     });
     const all = [sell, buy];
     const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
     expect(openLots.size).toBe(0);
 
-    const result = getExecutedOrderDisplayPnl(buy, all, 110, openLots);
+    const result = getExecutedOrderDisplayPnl(buy, all, 110, openLots, realized);
     expect(result.available).toBe(true);
     expect(result.isRealized).toBe(true);
     expect(result.pnl).toBeCloseTo(20);
+    expect(isClosedExecutedEntryOrder(sell, openLots, realized)).toBe(true);
   });
 
   it('portfolio trim still applies when balances are passed (Portfolio path)', () => {
@@ -539,6 +625,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '1',
       price: '100',
       instrument_name: 'SOL_USD',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -548,6 +635,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '1',
       price: '110',
       instrument_name: 'SOL_USD',
+      execution_origin: 'ALERT',
       create_time: 2_000,
       update_time: 2_000,
     });
@@ -569,6 +657,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '135',
       price: '0.074',
       instrument_name: 'DOGE_USD',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -578,6 +667,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '133',
       price: '0.075',
       instrument_name: 'DOGE_USD',
+      execution_origin: 'ALERT',
       create_time: 2_000,
       update_time: 2_000,
     });
@@ -587,6 +677,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '137',
       price: '0.0728',
       instrument_name: 'DOGE_USD',
+      execution_origin: 'ALERT',
       create_time: 3_000,
       update_time: 3_000,
     });
@@ -620,6 +711,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '100',
       price: '0.08',
       instrument_name: 'DOGE_USD',
+      execution_origin: 'ALERT',
       create_time: 1_000,
       update_time: 1_000,
     });
@@ -629,6 +721,7 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
       quantity: '137',
       price: '0.0728',
       instrument_name: 'DOGE_USD',
+      execution_origin: 'ALERT',
       create_time: 2_000,
       update_time: 2_000,
     });

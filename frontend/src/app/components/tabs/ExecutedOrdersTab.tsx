@@ -14,6 +14,7 @@ import {
   getExecutedOrderDisplayPnl,
   getPnlUnavailableTooltip,
   isClosedExecutedEntryOrder,
+  isFilledEntryOrder,
   resolveCurrentPrice,
 } from '@/utils/orderProfitLoss';
 
@@ -64,26 +65,6 @@ const getExecutionOriginBadgeClass = (origin?: string, typeDisplay?: string) => 
 
 const getOrderTypeLabel = (order: OpenOrder) =>
   order.type_display || order.execution_origin_label || order.order_type;
-
-const PROTECTION_ROLES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
-const TRIGGER_ORDER_TYPES = new Set([
-  'STOP_LIMIT',
-  'STOP_LOSS',
-  'STOP_LOSS_LIMIT',
-  'TAKE_PROFIT',
-  'TAKE_PROFIT_LIMIT',
-]);
-
-const isFilledEntryOrder = (order: OpenOrder) => {
-  const status = (order.status || '').toUpperCase();
-  const side = (order.side || '').toUpperCase();
-  const role = (order.order_role || '').toUpperCase();
-  if (status !== 'FILLED') return false;
-  if (PROTECTION_ROLES.has(role)) return false;
-  const orderType = (order.order_type || '').toUpperCase();
-  if (TRIGGER_ORDER_TYPES.has(orderType)) return false;
-  return side === 'BUY' || side === 'SELL';
-};
 
 interface ExecutedOrdersTabProps {
   orderFilter: { symbol: string; status: string; side: string; startDate: string; endDate: string };
