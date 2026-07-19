@@ -86,6 +86,37 @@ export default function ExpectedTakeProfitTab({
     return expectedTPDetails.entry_orders;
   }, [expectedTPDetails]);
 
+  // When details open, expand every entry that has TP/SL so nested rows are visible
+  // without a second click (summary chevron → details should feel like one expand).
+  useEffect(() => {
+    if (!showExpectedTPDetailsDialog || expectedTPDetailsLoading || !expectedTPDetails) {
+      return;
+    }
+    // Deep-link already sets a specific expansion; don't override it.
+    if (deepLink?.orderId) {
+      return;
+    }
+    const keys = (expectedTPDetails.entry_orders || [])
+      .map((entry, index) => {
+        const rowKey = entry.order_id || `entry-${index}`;
+        const hasChildren = entry.take_profits.length > 0 || entry.stop_loss !== null;
+        return hasChildren ? rowKey : null;
+      })
+      .filter((k): k is string => Boolean(k));
+    setExpandedEntryRows(new Set(keys));
+  }, [
+    showExpectedTPDetailsDialog,
+    expectedTPDetailsLoading,
+    expectedTPDetails,
+    deepLink?.orderId,
+  ]);
+
+  useEffect(() => {
+    if (!showExpectedTPDetailsDialog) {
+      setExpandedEntryRows(new Set());
+    }
+  }, [showExpectedTPDetailsDialog]);
+
   const formatSignedUsd = (value: number | null | undefined, forceSign: 'positive' | 'negative') => {
     if (value === null || value === undefined) return '—';
     const displayValue = forceSign === 'positive' ? Math.abs(value) : -Math.abs(value);
@@ -277,6 +308,12 @@ export default function ExpectedTakeProfitTab({
               <tr>
                 <th
                   scope="col"
+                  className="sticky left-0 z-10 bg-gray-50 dark:bg-slate-800 px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider w-10"
+                >
+                  <span className="sr-only">Expandir</span>
+                </th>
+                <th
+                  scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
                   onClick={() => handleSort('symbol')}
                 >
@@ -384,8 +421,42 @@ export default function ExpectedTakeProfitTab({
               </tr>
             </thead>
             <tbody className="bg-white dark:bg-slate-900 divide-y divide-gray-200 dark:divide-gray-700">
-              {sortedSummary.map((item) => (
-                <tr key={item.symbol} className="hover:bg-gray-50 dark:hover:bg-slate-800">
+              {sortedSummary.map((item) => {
+                const isDetailsOpen =
+                  showExpectedTPDetailsDialog && expectedTPDetailsSymbol === item.symbol;
+                const isDetailsLoading =
+                  expectedTPDetailsLoading && expectedTPDetailsSymbol === item.symbol;
+                return (
+                <tr
+                  key={item.symbol}
+                  className="hover:bg-gray-50 dark:hover:bg-slate-800 cursor-pointer"
+                  onClick={() => onFetchExpectedTakeProfitDetails(item.symbol)}
+                >
+                  <td className="sticky left-0 z-10 bg-white dark:bg-slate-900 px-2 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                    <button
+                      type="button"
+                      className="inline-flex w-6 h-6 items-center justify-center rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-600"
+                      aria-expanded={isDetailsOpen}
+                      aria-label={
+                        isDetailsLoading
+                          ? `Cargando detalles de ${item.symbol}`
+                          : isDetailsOpen
+                            ? `Cerrar detalles de ${item.symbol}`
+                            : `Expandir detalles de ${item.symbol}`
+                      }
+                      title={isDetailsLoading ? 'Cargando…' : isDetailsOpen ? 'Cerrar' : 'Ver TP/SL'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isDetailsOpen) {
+                          onCloseDetailsDialog();
+                        } else {
+                          onFetchExpectedTakeProfitDetails(item.symbol);
+                        }
+                      }}
+                    >
+                      {isDetailsLoading ? '…' : isDetailsOpen ? '▾' : '▸'}
+                    </button>
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-200">
                     {item.symbol}
                   </td>
@@ -456,14 +527,19 @@ export default function ExpectedTakeProfitTab({
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <button
-                      onClick={() => onFetchExpectedTakeProfitDetails(item.symbol)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onFetchExpectedTakeProfitDetails(item.symbol);
+                      }}
                       className="text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300"
                     >
                       View Details
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           <div className="mt-4 text-sm text-gray-600 dark:text-gray-400">
@@ -668,9 +744,9 @@ export default function ExpectedTakeProfitTab({
                                         onClick={() => toggleEntryRow(rowKey)}
                                         className="w-6 h-6 inline-flex items-center justify-center rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-600"
                                         aria-expanded={isExpanded}
-                                        title={isExpanded ? 'Collapse' : 'Expand'}
+                                        title={isExpanded ? 'Contraer TP/SL' : 'Expandir TP/SL'}
                                       >
-                                        {isExpanded ? '−' : '+'}
+                                        {isExpanded ? '▾' : '▸'}
                                       </button>
                                     ) : (
                                       <span className="inline-block w-6 text-center text-gray-400">·</span>

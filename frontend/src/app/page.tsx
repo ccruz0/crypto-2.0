@@ -5244,17 +5244,23 @@ function resolveDecisionIndexColor(value: number): string {
               onFetchExpectedTakeProfitDetails={async (symbol: string) => {
                 setExpectedTPDetailsLoading(true);
                 setExpectedTPDetailsSymbol(symbol);
+                setExpectedTPDetails(null);
+                setShowExpectedTPDetailsDialog(true);
                 try {
                   const details = await getExpectedTakeProfitDetails(symbol);
                   setExpectedTPDetails(details);
-                  setShowExpectedTPDetailsDialog(true);
                 } catch (err) {
                   logger.error('Failed to fetch expected take profit details:', err);
+                  setExpectedTPDetails(null);
                 } finally {
                   setExpectedTPDetailsLoading(false);
                 }
               }}
-              onCloseDetailsDialog={() => setShowExpectedTPDetailsDialog(false)}
+              onCloseDetailsDialog={() => {
+                setShowExpectedTPDetailsDialog(false);
+                setExpectedTPDetails(null);
+                setExpectedTPDetailsSymbol(null);
+              }}
             />
           )}
 
