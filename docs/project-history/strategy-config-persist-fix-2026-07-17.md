@@ -51,3 +51,17 @@ docker exec backend-aws python -c "from app.services.config_loader import get_co
 # expect: /data/trading_config.json
 curl -sS http://127.0.0.1:8002/api/diagnostics/strategy-consistency | python3 -m json.tool | head -40
 ```
+
+## Follow-up (2026-07-19) — read fallback race
+
+Symptom returned: strategies looked wrong again. Prod evidence:
+
+- `get_config_path()` used an `open(..., "a")` write probe on every resolve.
+- When the probe failed (~1881× since last recreate), **reads** fell back to baked
+  `/app/trading_config.json` even though `/data/trading_config.json` still existed.
+- That can flip the Watchlist dropdown to image defaults without any user action.
+
+Fix (branch `fix/strategy-config-read-fallback`): if the persistent file exists, always
+read it; never fall back to `/app` for reads. Writes stay on `/data` and fail
+loudly if unwritable. Also fixed `strategy-consistency` diagnostic to prefer the
+exact symbol key over the USD/USDT sibling.

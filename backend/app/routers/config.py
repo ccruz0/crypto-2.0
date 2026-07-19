@@ -317,11 +317,19 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             if not _preset_exists(base_preset_name):
                 raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}' (extracted base: '{base_preset_name}')")
     
-    cfg.setdefault("coins", {})[symbol] = {"preset": preset, "overrides": overrides}
+    coins = cfg.setdefault("coins", {})
+    previous = (coins.get(symbol) or {}).get("preset")
+    coins[symbol] = {"preset": preset, "overrides": overrides}
     save_config(cfg)  # Return value not needed here
     # CRITICAL: Invalidate strategy_profiles cache after saving coin config
     # This ensures alerts use the updated strategy immediately
     invalidate_config_cache()
+    logger.info(
+        "[CONFIG] upsert_coin %s preset: %s → %s",
+        symbol,
+        previous,
+        preset,
+    )
     logger.debug(f"[CONFIG] Strategy profiles cache invalidated after updating coin {symbol}")
 
     # Keep trade_signals table aligned with dashboard selections

@@ -282,11 +282,19 @@ def strategy_consistency_diagnostic(db: Session = Depends(get_db)):
             symbol = (item.symbol or "").upper()
             if not symbol:
                 continue
+            # Prefer exact symbol key; only then USD/USDT sibling (iteration order
+            # previously could pick ETH_USDT for ETH_USD and false-report mismatches).
             config_preset = None
-            for k, v in coins.items():
-                if k == symbol or k == symbol.replace("_USDT", "_USD") or k == symbol.replace("_USD", "_USDT"):
-                    config_preset = v.get("preset")
-                    break
+            coin_entry = coins.get(symbol)
+            if not isinstance(coin_entry, dict) or not coin_entry:
+                alt = None
+                if "_USDT" in symbol:
+                    alt = coins.get(symbol.replace("_USDT", "_USD"))
+                elif "_USD" in symbol:
+                    alt = coins.get(symbol.replace("_USD", "_USDT"))
+                coin_entry = alt if isinstance(alt, dict) else None
+            if isinstance(coin_entry, dict):
+                config_preset = coin_entry.get("preset")
             try:
                 strategy_type, risk_approach = resolve_strategy_profile(symbol, db, item)
                 raw = build_strategy_key(strategy_type, risk_approach)
