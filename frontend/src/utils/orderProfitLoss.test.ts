@@ -8,8 +8,10 @@ import {
   calculateOrderProfitLoss,
   getExecutedOrderDisplayPnl,
   getOpenPositionLotsForAsset,
+  getOrderLifecycleRole,
   getPnlUnavailableTooltip,
   isClosedExecutedEntryOrder,
+  isManualProtectedEntry,
   rebuildOpenLots,
   resolveCurrentPrice,
   trimOpenLotsToBalance,
@@ -227,6 +229,123 @@ describe('rebuildOpenLots / open-position filter', () => {
     const lots = rebuildOpenLots([buy, sell]);
     expect(lots).toHaveLength(2);
     expect(lots.map((l) => l.order.order_id).sort()).toEqual(['dot-buy', 'dot-sell-alert']);
+  });
+
+  it('classifies MANUAL with linked TP/SL as entry; MANUAL flatten as close', () => {
+    const withTp = makeOrder({
+      order_id: 'm-tp',
+      side: 'BUY',
+      execution_origin: 'MANUAL',
+      has_linked_tp: true,
+    });
+    const withSl = makeOrder({
+      order_id: 'm-sl',
+      side: 'BUY',
+      execution_origin: 'MANUAL',
+      has_linked_sl: true,
+    });
+    const flatten = makeOrder({
+      order_id: 'm-flat',
+      side: 'SELL',
+      execution_origin: 'MANUAL',
+      has_linked_tp: false,
+      has_linked_sl: false,
+    });
+    const alert = makeOrder({
+      order_id: 'a1',
+      side: 'BUY',
+      execution_origin: 'ALERT',
+    });
+    const stopLoss = makeOrder({
+      order_id: 'sl1',
+      side: 'SELL',
+      execution_origin: 'STOP_LOSS',
+      order_role: 'STOP_LOSS',
+      order_type: 'STOP_LOSS',
+    });
+    const takeProfit = makeOrder({
+      order_id: 'tp1',
+      side: 'SELL',
+      execution_origin: 'TAKE_PROFIT',
+      order_role: 'TAKE_PROFIT',
+      order_type: 'TAKE_PROFIT',
+    });
+
+    expect(isManualProtectedEntry(withTp)).toBe(true);
+    expect(isManualProtectedEntry(withSl)).toBe(true);
+    expect(isManualProtectedEntry(flatten)).toBe(false);
+    expect(getOrderLifecycleRole(withTp)).toBe('entry');
+    expect(getOrderLifecycleRole(withSl)).toBe('entry');
+    expect(getOrderLifecycleRole(flatten)).toBe('close');
+    expect(getOrderLifecycleRole(alert)).toBe('entry');
+    expect(getOrderLifecycleRole(stopLoss)).toBe('close');
+    expect(getOrderLifecycleRole(takeProfit)).toBe('close');
+  });
+
+  it('treats MANUAL buys with linked TP as open entries (not closes)', () => {
+    // Mirrors BTC Portfolio bug: large MANUAL OTOCO buys were classified as
+    // closes, so only the ALERT micro showed under "Rendimiento por lot abierto".
+    const manualBig = makeOrder({
+      order_id: 'btc-manual-1.3',
+      side: 'BUY',
+      quantity: '1.3',
+      price: '59100',
+      instrument_name: 'BTC_USD',
+      execution_origin: 'MANUAL',
+      type_display: 'LIMIT (Manual)',
+      has_linked_tp: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const manualMid = makeOrder({
+      order_id: 'btc-manual-0.3',
+      side: 'BUY',
+      quantity: '0.3',
+      price: '60500',
+      instrument_name: 'BTC_USD',
+      execution_origin: 'MANUAL',
+      type_display: 'MARKET (Manual)',
+      has_linked_tp: true,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const alertMicro = makeOrder({
+      order_id: 'btc-alert-micro',
+      side: 'BUY',
+      quantity: '0.00016',
+      price: '62343.84',
+      instrument_name: 'BTC_USD',
+      execution_origin: 'ALERT',
+      type_display: 'MARKET (Alerta)',
+      has_linked_tp: true,
+      create_time: 3_000,
+      update_time: 3_000,
+    });
+    // MANUAL flatten without protection stays a close (must not become an entry).
+    const manualClose = makeOrder({
+      order_id: 'btc-manual-flat',
+      side: 'SELL',
+      quantity: '0.05',
+      price: '64000',
+      instrument_name: 'BTC_USD',
+      execution_origin: 'MANUAL',
+      type_display: 'MARKET (Manual)',
+      has_linked_tp: false,
+      create_time: 4_000,
+      update_time: 4_000,
+    });
+
+    const history = [manualBig, manualMid, alertMicro, manualClose];
+    const lots = getOpenPositionLotsForAsset(history, 'BTC', 1.55016);
+
+    expect(lots.map((l) => l.order.order_id).sort()).toEqual([
+      'btc-alert-micro',
+      'btc-manual-0.3',
+      'btc-manual-1.3',
+    ]);
+    const totalQty = lots.reduce((s, l) => s + l.remainingQty, 0);
+    expect(totalQty).toBeCloseTo(1.55016, 8);
+    expect(lots.find((l) => l.order.order_id === 'btc-manual-1.3')?.remainingQty).toBeCloseTo(1.25);
   });
 
   it('trims open lots to the signed portfolio balance', () => {

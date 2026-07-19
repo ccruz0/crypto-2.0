@@ -4818,6 +4818,8 @@ function resolveDecisionIndexColor(value: number): string {
               topCoinsLoading={topCoinsLoading}
               openOrdersCount={openOrdersLimitCount}
               maxOpenOrders={maxOpenOrdersLimit ?? tradingLimits.maxOpenOrdersTotal}
+              openPositionCounts={openPositionCounts}
+              maxOpenOrdersPerCoin={maxOpenOrdersPerCoin}
               executedOrders={executedOrders}
               topCoins={topCoins}
               onToggleLiveTrading={async () => {

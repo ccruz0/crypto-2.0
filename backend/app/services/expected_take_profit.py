@@ -1355,6 +1355,12 @@ def _compute_expected_tp_for_lots(
 
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
     position_value = net_qty * current_price if current_price > 0 else 0.0
+    total_lot_qty_dec = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
+    avg_entry_price = (
+        None
+        if cost_basis_unknown or total_lot_qty_dec <= 0
+        else float(actual_position_value / total_lot_qty_dec)
+    )
 
     return {
         "symbol": actual_symbol,
@@ -1363,6 +1369,8 @@ def _compute_expected_tp_for_lots(
         "current_price": current_price,
         "position_value": position_value,
         "actual_position_value": None if cost_basis_unknown else float(actual_position_value),
+        "avg_entry_price": avg_entry_price,
+        "entry_lot_count": len(open_lots),
         "covered_qty": covered_qty,
         "uncovered_qty": uncovered_qty,
         "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
@@ -1373,7 +1381,13 @@ def _compute_expected_tp_for_lots(
 
 
 def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
-    """Return LONG or SHORT based on qty-weighted dominant entry side."""
+    """Return LONG, SHORT, or MIXED from open-lot entry sides.
+
+    MIXED when both long (BUY entry) and short (SELL entry) lots remain open
+    for the symbol — e.g. hedged / dual-direction OTOCO lots that must not be
+    FIFO-netted while their SL/TP protection is still active. Dominant-side
+    fallback only applies when a single direction is present.
+    """
     if not open_lots:
         return "LONG"
 
@@ -1395,6 +1409,8 @@ def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
         else:
             buy_qty += lot.lot_qty
 
+    if buy_qty > 0 and sell_qty > 0:
+        return "MIXED"
     return "SHORT" if sell_qty > buy_qty else "LONG"
 
 
@@ -1978,7 +1994,13 @@ def get_expected_take_profit_summary(
         # meaningless / misleading. Net qty and position value (at current price)
         # remain real and are kept.
         cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
-        
+        total_lot_qty_dec = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
+        avg_entry_price = (
+            None
+            if cost_basis_unknown or total_lot_qty_dec <= 0
+            else float(actual_position_value / total_lot_qty_dec)
+        )
+
         # Use actual_symbol for the result key and symbol field
         # This ensures consistency with order symbols (e.g., "BTC_USDT" instead of "BTC")
         results[actual_symbol] = {
@@ -1988,6 +2010,8 @@ def get_expected_take_profit_summary(
             "current_price": current_price,
             "position_value": position_value,
             "actual_position_value": None if cost_basis_unknown else float(actual_position_value),  # Value at buy price
+            "avg_entry_price": avg_entry_price,
+            "entry_lot_count": len(open_lots),
             "covered_qty": covered_qty,
             "uncovered_qty": uncovered_qty,
             "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
@@ -2343,6 +2367,8 @@ def get_expected_take_profit_details(
                     "current_price": current_price,
                     "position_value": 0,
                     "actual_position_value": 0,
+                    "avg_entry_price": None,
+                    "entry_lot_count": 0,
                     "covered_qty": 0,
                     "uncovered_qty": 0,
                     "total_expected_profit": 0,
@@ -2601,6 +2627,13 @@ def get_expected_take_profit_details(
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
     entry_orders = build_entry_orders_details(db, open_lots)
     position_side = resolve_position_side(db, open_lots)
+    total_open_qty = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
+    total_entry_cost = sum((lot.buy_price * lot.lot_qty for lot in open_lots), Decimal("0"))
+    avg_entry_price = (
+        None
+        if cost_basis_unknown or total_open_qty <= 0
+        else float(total_entry_cost / total_open_qty)
+    )
 
     return {
         "symbol": symbol,
@@ -2609,6 +2642,8 @@ def get_expected_take_profit_details(
         "current_price": current_price,
         "position_value": position_value,
         "actual_position_value": None if cost_basis_unknown else float(total_actual_position_value),
+        "avg_entry_price": avg_entry_price,
+        "entry_lot_count": len(open_lots),
         "covered_qty": float(total_covered_qty),
         "uncovered_qty": uncovered_qty,
         "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
