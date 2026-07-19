@@ -1281,6 +1281,8 @@ export interface ExpectedTPSummary {
   uncovered_qty: number;
   total_expected_profit: number;
   coverage_ratio: number;
+  /** Highest path-progress % toward an active TP fill (0–100) */
+  max_tp_fill_proximity_pct?: number | null;
 }
 
 export interface ExpectedTPMatchedLot {
@@ -1311,6 +1313,7 @@ export interface ExpectedTPProtectionOrder {
   status: string;
   expected_amount_usd: number | null;
   expected_amount_pct: number | null;
+  tp_fill_proximity_pct?: number | null;
 }
 
 export interface ExpectedTPStopLossOrder extends ExpectedTPProtectionOrder {}

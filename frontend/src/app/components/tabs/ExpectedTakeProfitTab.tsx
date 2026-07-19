@@ -12,9 +12,27 @@ import {
   sideBadgeClass,
   sideLabelEs,
 } from '@/utils/tradeSideLabels';
+import {
+  formatTpFillProximityPct,
+  tpFillProximityPct,
+  tpFillProximityToneClass,
+} from '@/utils/tpFillProximity';
 
-type SortField = 'symbol' | 'net_qty' | 'position_value' | 'avg_entry_price' | 'covered_qty' | 'uncovered_qty' | 'total_expected_profit' | 'current_price' | 'coverage_ratio';
+type SortField =
+  | 'symbol'
+  | 'net_qty'
+  | 'position_value'
+  | 'avg_entry_price'
+  | 'covered_qty'
+  | 'uncovered_qty'
+  | 'total_expected_profit'
+  | 'current_price'
+  | 'coverage_ratio'
+  | 'max_tp_fill_proximity_pct';
 type SortDirection = 'asc' | 'desc';
+
+const TP_PROXIMITY_TOOLTIP =
+  'Cercanía al fill del TP: progreso del precio desde la entrada hacia el TP. 100% = mark en o más allá del precio del TP (cerca de ejecutarse). No es cobertura de cantidad.';
 
 interface ExpectedTakeProfitTabProps {
   expectedTPSummary: ExpectedTPSummaryItem[];
@@ -192,6 +210,10 @@ export default function ExpectedTakeProfitTab({
           aVal = a.coverage_ratio || 0;
           bVal = b.coverage_ratio || 0;
           break;
+        case 'max_tp_fill_proximity_pct':
+          aVal = a.max_tp_fill_proximity_pct ?? -1;
+          bVal = b.max_tp_fill_proximity_pct ?? -1;
+          break;
       }
 
       if (typeof aVal === 'string' && typeof bVal === 'string') {
@@ -344,6 +366,17 @@ export default function ExpectedTakeProfitTab({
                 </th>
                 <th
                   scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
+                  onClick={() => handleSort('max_tp_fill_proximity_pct')}
+                  title={TP_PROXIMITY_TOOLTIP}
+                >
+                  <div className="flex items-center gap-1">
+                    TP cerca %{' '}
+                    {sortField === 'max_tp_fill_proximity_pct' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th
+                  scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
                 >
                   Actions
@@ -414,6 +447,12 @@ export default function ExpectedTakeProfitTab({
                     {item.coverage_ratio !== undefined && item.coverage_ratio !== null 
                       ? `${(item.coverage_ratio * 100).toFixed(1)}%` 
                       : 'N/A'}
+                  </td>
+                  <td
+                    className={`px-6 py-4 whitespace-nowrap text-sm ${tpFillProximityToneClass(item.max_tp_fill_proximity_pct)}`}
+                    title={TP_PROXIMITY_TOOLTIP}
+                  >
+                    {formatTpFillProximityPct(item.max_tp_fill_proximity_pct)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <button
@@ -667,8 +706,26 @@ export default function ExpectedTakeProfitTab({
 
                                 {isExpanded && hasChildren && (
                                   <>
-                                    {entry.take_profits.map((tp) => (
-                                      <tr key={`${rowKey}-tp-${tp.order_id}`} className="bg-green-50/60 dark:bg-green-950/20">
+                                    {entry.take_profits.map((tp) => {
+                                      const proximity =
+                                        tp.tp_fill_proximity_pct ??
+                                        tpFillProximityPct({
+                                          mark: expectedTPDetails.current_price,
+                                          entry: entry.entry_price,
+                                          tp: tp.price,
+                                        });
+                                      const proximityLabel = formatTpFillProximityPct(proximity);
+                                      const proximityTitle =
+                                        proximity == null
+                                          ? TP_PROXIMITY_TOOLTIP
+                                          : `Cercanía TP: ${proximityLabel}. ${TP_PROXIMITY_TOOLTIP}`;
+
+                                      return (
+                                      <tr
+                                        key={`${rowKey}-tp-${tp.order_id}`}
+                                        className="bg-green-50/60 dark:bg-green-950/20"
+                                        title={proximityTitle}
+                                      >
                                         <td className="px-4 py-2" />
                                         <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-xs pl-8 text-gray-700 dark:text-gray-300" colSpan={3}>
                                           <span className="font-semibold text-green-700 dark:text-green-400 mr-2">TP</span>
@@ -696,10 +753,19 @@ export default function ExpectedTakeProfitTab({
                                             <span className="text-xs text-green-700 dark:text-green-300">
                                               ({formatSignedPct(tp.expected_amount_pct, 'positive')})
                                             </span>
+                                            {proximity != null && (
+                                              <span
+                                                className={`text-xs ${tpFillProximityToneClass(proximity)}`}
+                                                title={proximityTitle}
+                                              >
+                                                Cercanía TP: {proximityLabel}
+                                              </span>
+                                            )}
                                           </div>
                                         </td>
                                       </tr>
-                                    ))}
+                                      );
+                                    })}
 
                                     {entry.stop_loss && (
                                       <tr key={`${rowKey}-sl-${entry.stop_loss.order_id}`} className="bg-red-50/60 dark:bg-red-950/20">

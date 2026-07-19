@@ -1735,6 +1735,8 @@ export interface ExpectedTPSummaryItem {
   total_expected_profit: number | null; // null when cost basis is unknown (current-price fallback)
   current_price?: number;
   coverage_ratio?: number;
+  /** Highest path-progress % toward an active TP fill (0–100); not coverage ratio */
+  max_tp_fill_proximity_pct?: number | null;
   cost_basis_unknown?: boolean; // true when buy price is the current-price fallback (no real BUY orders)
   orphaned_protection_only?: boolean; // true when SL/TP remain but portfolio balance <= 0
 }
@@ -1801,6 +1803,8 @@ export interface ExpectedTPProtectionOrder {
   expected_amount_usd: number | null;
   /** Always positive for take-profit rows */
   expected_amount_pct: number | null;
+  /** Path progress from entry toward this TP fill (0–100); mark at/through TP → 100 */
+  tp_fill_proximity_pct?: number | null;
 }
 
 export interface ExpectedTPStopLossOrder extends ExpectedTPProtectionOrder {
@@ -1838,6 +1842,8 @@ export interface ExpectedTPDetails {
   matched_lots: ExpectedTPMatchedLot[]; // Backend returns 'matched_lots', not 'lots'
   entry_orders?: ExpectedTPEntryOrder[];
   current_price?: number;
+  /** Highest path-progress % toward an active TP fill among entry lots */
+  max_tp_fill_proximity_pct?: number | null;
   has_uncovered?: boolean;
   cost_basis_unknown?: boolean; // true when buy price is the current-price fallback
   uncovered_entry?: {
