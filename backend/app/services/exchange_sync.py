@@ -19,9 +19,11 @@ from app.services.brokers.crypto_com_trade import CryptoComTradeClient, trade_cl
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
 from app.services.sl_tp_protection import (
+    GHOST_CANCEL_GRACE_SECONDS,
     get_active_protection_order,
     has_complete_sl_tp_protection,
     release_sl_tp_creation_lock,
+    should_mark_unresolved_order_cancelled,
     try_acquire_sl_tp_creation_lock,
 )
 # fill_dedup_postgres may be absent in some deployments; run with fill dedup disabled if missing.
@@ -957,8 +959,10 @@ class ExchangeSyncService:
                                 logger.debug(f"Order {order.exchange_order_id} ({order.symbol}) status is {resolved_status} - still pending, not marking as canceled")
                                 continue
                         else:
-                            # Order not found in exchange history - mark stale DB ghosts as cancelled
-                            # after a grace period (avoids cancelling brand-new orders during API lag).
+                            # Order not found in exchange history — only ghost-cancel
+                            # non-protection rows after grace. SL/TP trigger orders are
+                            # often missing from spot open/history snapshots; marking
+                            # them CANCELLED caused recreate loops (moved TP prices).
                             order_created = order.exchange_create_time or order.created_at
                             age_seconds = None
                             if order_created:
@@ -966,23 +970,34 @@ class ExchangeSyncService:
                                 if created_utc.tzinfo is None:
                                     created_utc = created_utc.replace(tzinfo=timezone.utc)
                                 age_seconds = (datetime.now(timezone.utc) - created_utc).total_seconds()
-                            if age_seconds is not None and age_seconds >= 120:
+                            may_cancel, cancel_reason = should_mark_unresolved_order_cancelled(
+                                order,
+                                age_seconds,
+                                grace_seconds=GHOST_CANCEL_GRACE_SECONDS,
+                            )
+                            if may_cancel:
                                 old_status = order.status
                                 order.status = OrderStatusEnum.CANCELLED
                                 order.exchange_update_time = datetime.now(timezone.utc)
                                 logger.info(
-                                    "Order %s (%s) not in open orders or history for %.0fs — marking CANCELLED (DB ghost cleanup)",
+                                    "Order %s (%s) not in open orders or history for %.0fs — marking CANCELLED (DB ghost cleanup, reason=%s)",
                                     order.exchange_order_id,
                                     order.symbol,
-                                    age_seconds,
+                                    age_seconds if age_seconds is not None else -1,
+                                    cancel_reason,
                                 )
                                 if old_status != OrderStatusEnum.CANCELLED:
                                     cancelled_orders.append(order)
                             else:
-                                logger.debug(
-                                    "Order %s (%s) not found in exchange history - status unknown, leaving for next sync",
+                                logger.info(
+                                    "Order %s (%s role=%s type=%s) unresolved on exchange — "
+                                    "not ghost-cancelling (reason=%s, age_s=%s)",
                                     order.exchange_order_id,
                                     order.symbol,
+                                    order.order_role,
+                                    order.order_type,
+                                    cancel_reason,
+                                    f"{age_seconds:.0f}" if age_seconds is not None else "unknown",
                                 )
                             continue
                 

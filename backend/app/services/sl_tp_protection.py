@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+from app.utils.filled_entry_order import PROTECTION_ROLES, TRIGGER_ORDER_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,50 @@ ACTIVE_PROTECTION_STATUSES = [
     OrderStatusEnum.PARTIALLY_FILLED,
 ]
 
+# Ghost-cleanup grace for ordinary (non-protection) DB rows missing from open+history.
+GHOST_CANCEL_GRACE_SECONDS = 120.0
+
 _SL_TP_LOCK_NAMESPACE = 876543210
+
+
+def is_protection_order(
+    *,
+    order_role: Optional[str] = None,
+    order_type: Optional[str] = None,
+) -> bool:
+    """True for SL/TP protection legs (by role or trigger order type)."""
+    role = (order_role or "").upper().strip()
+    if role in PROTECTION_ROLES:
+        return True
+    return (order_type or "").upper().strip() in TRIGGER_ORDER_TYPES
+
+
+def is_protection_exchange_order(order: ExchangeOrder) -> bool:
+    """Convenience wrapper for ExchangeOrder rows."""
+    return is_protection_order(order_role=order.order_role, order_type=order.order_type)
+
+
+def should_mark_unresolved_order_cancelled(
+    order: Union[ExchangeOrder, object],
+    age_seconds: Optional[float],
+    *,
+    grace_seconds: float = GHOST_CANCEL_GRACE_SECONDS,
+) -> Tuple[bool, str]:
+    """Decide whether sync may mark a missing open order as CANCELLED.
+
+    Protection (SL/TP) must never be ghost-cancelled: Crypto.com trigger/advanced
+    orders often omit them from spot open-order/history snapshots, which previously
+    caused CANCELLED → recreate loops and moved TP prices.
+    """
+    if age_seconds is None or age_seconds < grace_seconds:
+        return False, "within_grace"
+
+    role = getattr(order, "order_role", None)
+    order_type = getattr(order, "order_type", None)
+    if is_protection_order(order_role=role, order_type=order_type):
+        return False, "protection_requires_exchange_confirmation"
+
+    return True, "stale_non_protection_ghost"
 
 
 def get_active_protection_order(
