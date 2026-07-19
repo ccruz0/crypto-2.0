@@ -361,6 +361,10 @@ export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
 /**
  * Cap open lots so their remaining qty matches |balance|. Extra unmatched
  * history (incomplete sync / dust) is trimmed oldest-first.
+ *
+ * Only keeps the side that matches the signed balance (BUY for long, SELL for
+ * short). Prefer {@link selectOpenLotsForPortfolioDisplay} in Portfolio UI so
+ * opposite-side open entries (hedges / micros with SL/TP) are not dropped.
  */
 export function trimOpenLotsToBalance(
   lots: OpenPositionLot[],
@@ -392,14 +396,125 @@ export function trimOpenLotsToBalance(
   );
 }
 
+/**
+ * Portfolio expand display: trim same-side inventory to |balance| for P&L vs
+ * wallet, but keep opposite-side open lots in full (e.g. long BTC balance must
+ * still list micro SHORT alerts waiting on SL/TP).
+ */
+export function selectOpenLotsForPortfolioDisplay(
+  lots: OpenPositionLot[],
+  balance: number
+): OpenPositionLot[] {
+  const longs = lots.filter((lot) => lot.side === 'BUY');
+  const shorts = lots.filter((lot) => lot.side === 'SELL');
+
+  let selected: OpenPositionLot[];
+  if (balance > QTY_EPS) {
+    selected = [...trimOpenLotsToBalance(longs, balance), ...shorts];
+  } else if (balance < -QTY_EPS) {
+    selected = [...longs, ...trimOpenLotsToBalance(shorts, balance)];
+  } else {
+    // Flat wallet: still surface any rebuilt open entries (protected micros).
+    selected = [...longs, ...shorts];
+  }
+
+  return selected.sort(
+    (a, b) => getOrderExecutionTime(b.order) - getOrderExecutionTime(a.order)
+  );
+}
+
+/**
+ * Classic buy↔sell FIFO residual lots (Expected TP style).
+ *
+ * Used only when lifecycle {@link rebuildOpenLots} finds nothing — e.g.
+ * unprotected MANUAL shorts that are still open on the book but classified as
+ * closes under alert/manual lifecycle rules.
+ */
+export function rebuildClassicResidualLots(orders: OpenOrder[]): OpenPositionLot[] {
+  const chronological = [...orders]
+    .filter((o) => (o.status || '').toUpperCase() === 'FILLED')
+    .filter((o) => {
+      const side = (o.side || '').toUpperCase();
+      return (side === 'BUY' || side === 'SELL') && getOrderQuantity(o) > QTY_EPS;
+    })
+    .sort((a, b) => getOrderExecutionTime(a) - getOrderExecutionTime(b));
+
+  const buys = chronological.filter((o) => (o.side || '').toUpperCase() === 'BUY');
+  const sells = chronological.filter((o) => (o.side || '').toUpperCase() === 'SELL');
+
+  const sellRemaining = new Map<string, number>();
+  sells.forEach((sell, index) => {
+    sellRemaining.set(sell.order_id || `classic-sell-${index}`, getOrderQuantity(sell));
+  });
+
+  const lots: OpenPositionLot[] = [];
+
+  for (const buy of buys) {
+    let remaining = getOrderQuantity(buy);
+    for (let i = 0; i < sells.length; i++) {
+      if (remaining <= QTY_EPS) break;
+      const sell = sells[i];
+      const key = sell.order_id || `classic-sell-${i}`;
+      const sellQty = sellRemaining.get(key) ?? 0;
+      if (sellQty <= QTY_EPS) continue;
+      const applied = Math.min(remaining, sellQty);
+      remaining -= applied;
+      sellRemaining.set(key, sellQty - applied);
+    }
+    if (remaining > QTY_EPS && getOrderPrice(buy) > 0) {
+      lots.push({ order: buy, remainingQty: remaining, side: 'BUY' });
+    }
+  }
+
+  for (let i = 0; i < sells.length; i++) {
+    const sell = sells[i];
+    const key = sell.order_id || `classic-sell-${i}`;
+    const remaining = sellRemaining.get(key) ?? 0;
+    if (remaining > QTY_EPS && getOrderPrice(sell) > 0) {
+      lots.push({ order: sell, remainingQty: remaining, side: 'SELL' });
+    }
+  }
+
+  return lots.sort(
+    (a, b) => getOrderExecutionTime(b.order) - getOrderExecutionTime(a.order)
+  );
+}
+
 export function getOpenPositionLotsForAsset(
   orders: OpenOrder[],
   assetCoin: string,
   balance: number
 ): OpenPositionLot[] {
   const filled = filterFilledPositionOrdersForAsset(orders, assetCoin);
-  const openLots = rebuildOpenLots(filled);
-  return trimOpenLotsToBalance(openLots, balance);
+  let openLots = rebuildOpenLots(filled);
+  // Lifecycle rebuild empty (e.g. only unprotected MANUAL history) → classic
+  // residual FIFO so Portfolio can still list inventory ETP already shows.
+  if (openLots.length === 0) {
+    openLots = rebuildClassicResidualLots(filled);
+  }
+  return selectOpenLotsForPortfolioDisplay(openLots, balance);
+}
+
+/** Spanish empty-state copy when expand has history but no displayable lots. */
+export function getOpenLotsEmptyMessage(options: {
+  balance: number;
+  hasBackendPnl?: boolean;
+}): string {
+  const { balance, hasBackendPnl } = options;
+  if (Math.abs(balance) > QTY_EPS && hasBackendPnl) {
+    return (
+      'No hay lots abiertos que coincidan con el historial de entradas. ' +
+      'El P&L de la fila puede venir del precio medio del exchange (historial cerrado, ' +
+      'depósitos o sync incompleto), no de lots con SL/TP abiertos.'
+    );
+  }
+  if (Math.abs(balance) > QTY_EPS) {
+    return (
+      'No hay lots abiertos: el historial está liquidado o no encaja con el saldo actual. ' +
+      'El saldo puede venir de depósitos, transferencias o historial no sincronizado.'
+    );
+  }
+  return 'No hay lots abiertos: el historial está liquidado o no encaja con el saldo actual.';
 }
 
 /** Unrealized P/L for a still-open lot vs mark price. */
@@ -566,9 +681,9 @@ function groupFilledPositionOrdersBySymbol(orders: OpenOrder[]): Map<string, Ope
 /**
  * Index still-open FIFO lots by order_id across all symbols.
  *
- * When portfolio balances are provided, lots are trimmed to match |balance|
- * — use that only for Portfolio asset expansion. Executed Orders should call
- * this without balances so every unmatched entry can still mark-to-market.
+ * When portfolio balances are provided, same-side lots are trimmed to |balance|
+ * while opposite-side open lots are kept (Portfolio expand). Executed Orders
+ * should call this without balances so every unmatched entry can still MTM.
  */
 export function buildOpenLotsByOrderId(
   orders: OpenOrder[],
@@ -579,6 +694,9 @@ export function buildOpenLotsByOrderId(
 
   for (const [symbol, symbolOrders] of bySymbol) {
     let lots = rebuildOpenLots(symbolOrders);
+    if (lots.length === 0) {
+      lots = rebuildClassicResidualLots(symbolOrders);
+    }
 
     if (portfolioAssets && portfolioAssets.length > 0) {
       const base = getAssetBaseSymbol(symbol);
@@ -587,7 +705,7 @@ export function buildOpenLotsByOrderId(
         return coin === symbol || coin === base || getAssetBaseSymbol(coin) === base;
       });
       if (asset) {
-        lots = trimOpenLotsToBalance(lots, asset.balance);
+        lots = selectOpenLotsForPortfolioDisplay(lots, asset.balance);
       }
     }
 

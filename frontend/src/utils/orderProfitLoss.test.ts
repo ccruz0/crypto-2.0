@@ -7,13 +7,16 @@ import {
   calculateOpenLotsAggregateProfitLoss,
   calculateOrderProfitLoss,
   getExecutedOrderDisplayPnl,
+  getOpenLotsEmptyMessage,
   getOpenPositionLotsForAsset,
   getOrderLifecycleRole,
   getPnlUnavailableTooltip,
   isClosedExecutedEntryOrder,
   isManualProtectedEntry,
+  rebuildClassicResidualLots,
   rebuildOpenLots,
   resolveCurrentPrice,
+  selectOpenLotsForPortfolioDisplay,
   trimOpenLotsToBalance,
 } from './orderProfitLoss';
 import type { TopCoin } from '@/app/api';
@@ -414,6 +417,152 @@ describe('rebuildOpenLots / open-position filter', () => {
     expect(lots).toHaveLength(1);
     expect(lots[0].order.order_id).toBe('sell-open');
     expect(lots[0].remainingQty).toBeCloseTo(0.2);
+  });
+
+  it('keeps opposite-side open lots when wallet balance is long (BTC shorts case)', () => {
+    const longManual = makeOrder({
+      order_id: 'btc-long',
+      side: 'BUY',
+      quantity: '2.19',
+      price: '59100',
+      instrument_name: 'BTC_USD',
+      execution_origin: 'MANUAL',
+      has_linked_tp: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const shortA = makeOrder({
+      order_id: 'btc-short-a',
+      side: 'SELL',
+      quantity: '0.00015',
+      price: '62700',
+      instrument_name: 'BTC_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const shortB = makeOrder({
+      order_id: 'btc-short-b',
+      side: 'SELL',
+      quantity: '0.00016',
+      price: '62300',
+      instrument_name: 'BTC_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      create_time: 3_000,
+      update_time: 3_000,
+    });
+
+    const rebuilt = rebuildOpenLots([longManual, shortA, shortB]);
+    const sameSideOnly = trimOpenLotsToBalance(rebuilt, 2.19);
+    expect(sameSideOnly.every((l) => l.side === 'BUY')).toBe(true);
+    expect(sameSideOnly).toHaveLength(1);
+
+    const displayed = selectOpenLotsForPortfolioDisplay(rebuilt, 2.19);
+    expect(displayed.map((l) => l.order.order_id).sort()).toEqual([
+      'btc-long',
+      'btc-short-a',
+      'btc-short-b',
+    ]);
+
+    const viaAsset = getOpenPositionLotsForAsset(
+      [longManual, shortA, shortB],
+      'BTC',
+      2.19
+    );
+    expect(viaAsset.filter((l) => l.side === 'SELL')).toHaveLength(2);
+    expect(viaAsset.filter((l) => l.side === 'BUY')).toHaveLength(1);
+  });
+
+  it('keeps opposite-side open longs when wallet balance is short', () => {
+    const shortAlert = makeOrder({
+      order_id: 'eth-short',
+      side: 'SELL',
+      quantity: '0.1',
+      price: '1800',
+      instrument_name: 'ETH_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const longHedge = makeOrder({
+      order_id: 'eth-long',
+      side: 'BUY',
+      quantity: '0.05',
+      price: '1700',
+      instrument_name: 'ETH_USD',
+      execution_origin: 'MANUAL',
+      has_linked_tp: true,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+
+    const lots = getOpenPositionLotsForAsset([shortAlert, longHedge], 'ETH', -0.1);
+    expect(lots.map((l) => l.order.order_id).sort()).toEqual(['eth-long', 'eth-short']);
+    expect(lots.find((l) => l.order.order_id === 'eth-short')?.remainingQty).toBeCloseTo(0.1);
+  });
+
+  it('falls back to classic residual FIFO for unprotected MANUAL shorts (DGB/AAVE case)', () => {
+    // Lifecycle treats unprotected MANUAL as close → rebuildOpenLots empty.
+    // Classic residual matches Expected TP uncovered short inventory.
+    const sellEntry = makeOrder({
+      order_id: 'dgb-manual-sell',
+      side: 'SELL',
+      quantity: '336730',
+      price: '0.00611',
+      instrument_name: 'DGB_USD',
+      execution_origin: 'MANUAL',
+      has_linked_tp: false,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const buyCoverA = makeOrder({
+      order_id: 'dgb-buy-a',
+      side: 'BUY',
+      quantity: '2020',
+      price: '0.00494',
+      instrument_name: 'DGB_USD',
+      execution_origin: 'MANUAL',
+      has_linked_tp: false,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const buyCoverB = makeOrder({
+      order_id: 'dgb-buy-b',
+      side: 'BUY',
+      quantity: '2010',
+      price: '0.00497',
+      instrument_name: 'DGB_USD',
+      execution_origin: 'MANUAL',
+      has_linked_tp: false,
+      create_time: 3_000,
+      update_time: 3_000,
+    });
+    const history = [sellEntry, buyCoverA, buyCoverB];
+
+    expect(rebuildOpenLots(history)).toHaveLength(0);
+    const classic = rebuildClassicResidualLots(history);
+    expect(classic).toHaveLength(1);
+    expect(classic[0].side).toBe('SELL');
+    expect(classic[0].remainingQty).toBeCloseTo(332700);
+
+    // Long dust wallet must still list the residual short (opposite side).
+    const lots = getOpenPositionLotsForAsset(history, 'DGB', 4028.36);
+    expect(lots).toHaveLength(1);
+    expect(lots[0].order.order_id).toBe('dgb-manual-sell');
+    expect(lots[0].remainingQty).toBeCloseTo(332700);
+  });
+
+  it('describes empty expand when balance/P&L exist but no open lots', () => {
+    expect(
+      getOpenLotsEmptyMessage({ balance: 4028, hasBackendPnl: true })
+    ).toMatch(/precio medio del exchange/i);
+    expect(
+      getOpenLotsEmptyMessage({ balance: 1, hasBackendPnl: false })
+    ).toMatch(/depósitos|sincronizado/i);
+    expect(getOpenLotsEmptyMessage({ balance: 0 })).toMatch(/liquidado/i);
   });
 
   it('calculates unrealized P/L on remaining open qty only', () => {

@@ -11,11 +11,13 @@ import {
   calculateOpenLotProfitLoss,
   calculateOpenLotsAggregateProfitLoss,
   filterFilledPositionOrdersForAsset,
+  getOpenLotsEmptyMessage,
   getOpenPositionLotsForAsset,
   getOrderExecutionTime,
   getOrderPrice,
   getOrderQuantity,
   resolveInstrumentName,
+  type OpenPositionLot,
   type OrderProfitLoss,
 } from '@/utils/orderProfitLoss';
 import { logger } from '@/utils/logger';
@@ -259,14 +261,133 @@ export default function PortfolioTab({
     }
   };
 
+  const renderLotRows = (
+    lots: OpenPositionLot[],
+    currentPrice: number | null
+  ) =>
+    lots.map((lot) => {
+      const order = lot.order;
+      const qty = lot.remainingQty;
+      const entryPrice = getOrderPrice(order);
+      const entryValue = qty * entryPrice;
+      const hasMark = !!(currentPrice && currentPrice > 0);
+      const markValue = hasMark ? qty * (currentPrice as number) : null;
+      const filledQty = getOrderQuantity(order);
+      const executionTime = getOrderExecutionTime(order);
+      const executionDate = executionTime ? new Date(executionTime) : null;
+      const pnlData = calculateOpenLotProfitLoss(lot, currentPrice);
+      const hasPnl = pnlData.available;
+      const pnlPositive = pnlData.pnl >= 0;
+      const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
+      const unrealizedTitle =
+        lot.side === 'SELL'
+          ? 'P&L no realizado del short abierto vs precio actual'
+          : 'P&L no realizado del long abierto vs precio actual';
+      const rowKey = `${order.order_id || 'order'}-${lot.side}-${qty}`;
+
+      return (
+        <tr key={rowKey} className="border-t border-gray-200 dark:border-gray-700">
+          <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+            {executionDate ? formatDateTime(executionDate) : '—'}
+          </td>
+          <td className="px-3 py-2 whitespace-nowrap">
+            <span className={`px-2 py-0.5 rounded font-medium ${sideBadgeClass(order.side)}`}>
+              {sideLabelEs(order.side)}
+            </span>
+          </td>
+          <td
+            className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300"
+            title={
+              Math.abs(filledQty - qty) > 1e-12
+                ? `Cantidad original ejecutada: ${formatNumber(filledQty)}`
+                : undefined
+            }
+          >
+            {formatNumber(qty)}
+          </td>
+          <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+            {formatNumber(entryPrice)}
+          </td>
+          <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+            {formatNumber(entryValue)}
+          </td>
+          <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+            {hasMark ? formatNumber(currentPrice as number) : (
+              <span className="text-gray-400">—</span>
+            )}
+          </td>
+          <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
+            {markValue !== null ? formatNumber(markValue) : (
+              <span className="text-gray-400">—</span>
+            )}
+          </td>
+          <td className="px-3 py-2 whitespace-nowrap">
+            {hasPnl ? (
+              <span className={`font-medium ${pnlColorClass}`}>
+                {pnlPositive ? '+' : ''}{pnlData.pnlPercent.toFixed(2)}%
+                <span className="ml-1 text-gray-400 font-normal" title={unrealizedTitle}>
+                  (no realizado)
+                </span>
+              </span>
+            ) : (
+              <span className="text-gray-400" title="No se pudo calcular el P&L para esta operación">—</span>
+            )}
+          </td>
+          <td className="px-3 py-2 whitespace-nowrap">
+            {hasPnl ? (
+              <span className={`font-medium ${pnlColorClass}`}>
+                {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(pnlData.pnl))}
+              </span>
+            ) : (
+              <span className="text-gray-400">—</span>
+            )}
+          </td>
+        </tr>
+      );
+    });
+
+  const renderLotsTable = (lots: OpenPositionLot[], currentPrice: number | null) => (
+    <table className="min-w-full text-xs">
+      <thead>
+        <tr className="text-gray-500 dark:text-gray-400">
+          <th className="px-3 py-1 text-left font-medium">Fecha</th>
+          <th className="px-3 py-1 text-left font-medium">Lado</th>
+          <th className="px-3 py-1 text-left font-medium">Cantidad abierta</th>
+          <th className="px-3 py-1 text-left font-medium" title="Precio de entrada del lot">
+            Precio entrada
+          </th>
+          <th className="px-3 py-1 text-left font-medium" title="Valor a precio de entrada (coste)">
+            Valor entrada
+          </th>
+          <th className="px-3 py-1 text-left font-medium" title="Precio de mercado actual">
+            Precio actual
+          </th>
+          <th className="px-3 py-1 text-left font-medium" title="Valor a precio de mercado (qty × mark)">
+            Valor actual
+          </th>
+          <th className="px-3 py-1 text-left font-medium">P&amp;L %</th>
+          <th className="px-3 py-1 text-left font-medium">Beneficio neto</th>
+        </tr>
+      </thead>
+      <tbody>{renderLotRows(lots, currentPrice)}</tbody>
+    </table>
+  );
+
   const renderTradeSection = (asset: PortfolioAsset) => {
     const assetCoin = asset.coin;
     const balance = asset.balance ?? 0;
-    const isShortPosition = balance < 0;
     const cache = tradeCache[assetCoin];
     const trades = cache?.orders ?? filterFilledPositionOrdersForAsset(executedOrders, assetCoin);
     const currentPrice = getCurrentPriceForAsset(assetCoin);
     const openLots = getOpenPositionLotsForAsset(trades, assetCoin, balance);
+    const longLots = openLots.filter((lot) => lot.side === 'BUY');
+    const shortLots = openLots.filter((lot) => lot.side === 'SELL');
+    const hasBackendPnl =
+      !asset.cost_basis_unknown &&
+      asset.pnl_pct !== null &&
+      asset.pnl_pct !== undefined &&
+      asset.net_profit_usd !== null &&
+      asset.net_profit_usd !== undefined;
 
     if (cache?.loading && trades.length === 0) {
       return (
@@ -282,7 +403,9 @@ export default function PortfolioTab({
           No hay operaciones ejecutadas registradas para esta moneda.
           {Math.abs(balance) > 0 && (
             <span className="block mt-1 text-xs">
-              El saldo en cartera puede venir de depósitos, transferencias o historial no sincronizado.
+              {hasBackendPnl
+                ? 'El P&L de la fila puede venir del precio medio del exchange; el saldo puede ser de depósitos o historial no sincronizado.'
+                : 'El saldo en cartera puede venir de depósitos, transferencias o historial no sincronizado.'}
             </span>
           )}
         </div>
@@ -292,116 +415,32 @@ export default function PortfolioTab({
     if (openLots.length === 0) {
       return (
         <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-          No hay lots abiertos: el historial está liquidado o no encaja con el saldo actual.
+          {getOpenLotsEmptyMessage({ balance, hasBackendPnl })}
         </div>
       );
     }
 
-    return (
-      <table className="min-w-full text-xs">
-        <thead>
-          <tr className="text-gray-500 dark:text-gray-400">
-            <th className="px-3 py-1 text-left font-medium">Fecha</th>
-            <th className="px-3 py-1 text-left font-medium">Lado</th>
-            <th className="px-3 py-1 text-left font-medium">Cantidad abierta</th>
-            <th className="px-3 py-1 text-left font-medium" title="Precio de entrada del lot">
-              Precio entrada
-            </th>
-            <th className="px-3 py-1 text-left font-medium" title="Valor a precio de entrada (coste)">
-              Valor entrada
-            </th>
-            <th className="px-3 py-1 text-left font-medium" title="Precio de mercado actual">
-              Precio actual
-            </th>
-            <th className="px-3 py-1 text-left font-medium" title="Valor a precio de mercado (qty × mark)">
-              Valor actual
-            </th>
-            <th className="px-3 py-1 text-left font-medium">P&amp;L %</th>
-            <th className="px-3 py-1 text-left font-medium">Beneficio neto</th>
-          </tr>
-        </thead>
-        <tbody>
-          {openLots.map((lot) => {
-            const order = lot.order;
-            const qty = lot.remainingQty;
-            const entryPrice = getOrderPrice(order);
-            const entryValue = qty * entryPrice;
-            const hasMark = !!(currentPrice && currentPrice > 0);
-            const markValue = hasMark ? qty * (currentPrice as number) : null;
-            const filledQty = getOrderQuantity(order);
-            const executionTime = getOrderExecutionTime(order);
-            const executionDate = executionTime ? new Date(executionTime) : null;
-            const pnlData = calculateOpenLotProfitLoss(lot, currentPrice);
-            const hasPnl = pnlData.available;
-            const pnlPositive = pnlData.pnl >= 0;
-            const pnlColorClass = pnlPositive ? 'text-green-600' : 'text-red-600';
-            const unrealizedTitle = isShortPosition
-              ? 'P&L no realizado del short abierto vs precio actual'
-              : 'P&L no realizado del long abierto vs precio actual';
-            const rowKey = `${order.order_id || 'order'}-${lot.side}-${qty}`;
+    const showSections = longLots.length > 0 && shortLots.length > 0;
 
-            return (
-              <tr key={rowKey} className="border-t border-gray-200 dark:border-gray-700">
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
-                  {executionDate ? formatDateTime(executionDate) : '—'}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  <span className={`px-2 py-0.5 rounded font-medium ${sideBadgeClass(order.side)}`}>
-                    {sideLabelEs(order.side)}
-                  </span>
-                </td>
-                <td
-                  className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300"
-                  title={
-                    Math.abs(filledQty - qty) > 1e-12
-                      ? `Cantidad original ejecutada: ${formatNumber(filledQty)}`
-                      : undefined
-                  }
-                >
-                  {formatNumber(qty)}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
-                  {formatNumber(entryPrice)}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
-                  {formatNumber(entryValue)}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
-                  {hasMark ? formatNumber(currentPrice as number) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
-                  {markValue !== null ? formatNumber(markValue) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  {hasPnl ? (
-                    <span className={`font-medium ${pnlColorClass}`}>
-                      {pnlPositive ? '+' : ''}{pnlData.pnlPercent.toFixed(2)}%
-                      <span className="ml-1 text-gray-400 font-normal" title={unrealizedTitle}>
-                        (no realizado)
-                      </span>
-                    </span>
-                  ) : (
-                    <span className="text-gray-400" title="No se pudo calcular el P&L para esta operación">—</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  {hasPnl ? (
-                    <span className={`font-medium ${pnlColorClass}`}>
-                      {pnlPositive ? '+' : '-'}{formatNumber(Math.abs(pnlData.pnl))}
-                    </span>
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    if (!showSections) {
+      return renderLotsTable(openLots, currentPrice);
+    }
+
+    return (
+      <div className="space-y-4">
+        <div>
+          <div className="px-3 mb-1 text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+            Lots long ({longLots.length})
+          </div>
+          {renderLotsTable(longLots, currentPrice)}
+        </div>
+        <div>
+          <div className="px-3 mb-1 text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
+            Lots short ({shortLots.length})
+          </div>
+          {renderLotsTable(shortLots, currentPrice)}
+        </div>
+      </div>
     );
   };
 
@@ -635,8 +674,10 @@ export default function PortfolioTab({
                     const coinOpenCount = getOpenCountForAsset(asset);
                     const atPerCoinLimit = coinOpenCount >= perCoinLimit;
                     const pnlTitle = lotsPnl
-                      ? 'P&L no realizado = suma de lots abiertos vs precio de mercado'
-                      : 'No tracked buy orders — cost basis unknown';
+                      ? 'P&L no realizado = suma de lots abiertos (long y short) vs precio de mercado'
+                      : backendPnlAvailable
+                        ? 'P&L del exchange (precio medio); sin lots abiertos coincidentes en el historial'
+                        : 'No tracked buy orders — cost basis unknown';
 
                     return (
                       <React.Fragment key={asset.coin}>
