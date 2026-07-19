@@ -1000,6 +1000,51 @@ def calculate_tp_display_profit(
     return abs(profit), abs(profit_pct)
 
 
+def tp_fill_proximity_pct(
+    mark: Optional[float],
+    entry: Optional[float],
+    tp: Optional[float],
+) -> Optional[float]:
+    """Path progress from entry toward TP fill (0–100).
+
+    100% means mark is at or through the TP price (about to / ready to fill).
+    0% means mark is at or on the wrong side of entry (away from TP).
+
+    Formula (LONG and SHORT):
+      span = |tp - entry|
+      if mark is at/past TP in the fill direction → 100
+      else proximity = clamp(0, 100, 100 * (1 - |tp - mark| / span))
+
+    Not coverage ratio (qty protected / position qty).
+    """
+    if mark is None or entry is None or tp is None:
+        return None
+    try:
+        mark_f = float(mark)
+        entry_f = float(entry)
+        tp_f = float(tp)
+    except (TypeError, ValueError):
+        return None
+    if mark_f <= 0 or entry_f <= 0 or tp_f <= 0:
+        return None
+
+    span = abs(tp_f - entry_f)
+    if span < 1e-12:
+        return 100.0 if abs(mark_f - tp_f) < 1e-12 else None
+
+    if tp_f >= entry_f:
+        if mark_f >= tp_f:
+            return 100.0
+    else:
+        if mark_f <= tp_f:
+            return 100.0
+
+    raw = 100.0 * (1.0 - abs(tp_f - mark_f) / span)
+    if raw != raw:  # NaN
+        return None
+    return max(0.0, min(100.0, raw))
+
+
 def calculate_sl_display_loss(
     entry_side: OrderSideEnum,
     entry_price: Decimal,
@@ -1378,6 +1423,27 @@ def _compute_expected_tp_for_lots(
         else float(actual_position_value / total_lot_qty_dec)
     )
 
+    # Highest fill-proximity among active TPs on matched lots (not coverage %).
+    max_proximity: Optional[float] = None
+    if current_price and current_price > 0:
+        for lot in all_matched:
+            if getattr(lot, "cost_basis_unknown", False):
+                continue
+            entry_px = float(lot.buy_price or 0)
+            if entry_px <= 0:
+                continue
+            for tp, _lot_qty_for_this_tp in split_lot_across_tps(lot):
+                if tp.status not in ACTIVE_TP_STATUSES:
+                    continue
+                tp_price = float(_protection_order_price(tp) or 0)
+                if tp_price <= 0:
+                    continue
+                prox = tp_fill_proximity_pct(current_price, entry_px, tp_price)
+                if prox is None:
+                    continue
+                if max_proximity is None or prox > max_proximity:
+                    max_proximity = prox
+
     return {
         "symbol": actual_symbol,
         "position_side": resolve_position_side(db, open_lots),
@@ -1391,6 +1457,7 @@ def _compute_expected_tp_for_lots(
         "uncovered_qty": uncovered_qty,
         "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
         "coverage_ratio": covered_qty / net_qty if net_qty > 0 else (1.0 if covered_qty > 0 else 0),
+        "max_tp_fill_proximity_pct": max_proximity,
         "cost_basis_unknown": cost_basis_unknown,
         "orphaned_protection_only": orphaned_protection_only,
     }
@@ -1433,6 +1500,7 @@ def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
 def build_entry_orders_details(
     db: Session,
     open_lots: List[OpenLot],
+    current_price: Optional[float] = None,
 ) -> List[Dict]:
     """Build one expandable row per original entry order with linked TP and SL."""
     from app.services.sl_tp_protection import get_active_protection_order
@@ -1460,6 +1528,20 @@ def build_entry_orders_details(
                         entry_side, lot.buy_price, tp_price, lot_qty_for_tp
                     )
 
+                proximity = None
+                if (
+                    not lot_cost_basis_unknown
+                    and current_price
+                    and current_price > 0
+                    and tp_price > 0
+                    and float(lot.buy_price or 0) > 0
+                ):
+                    proximity = tp_fill_proximity_pct(
+                        float(current_price),
+                        float(lot.buy_price),
+                        float(tp_price),
+                    )
+
                 take_profits.append({
                     "order_id": tp.exchange_order_id,
                     "side": tp.side.value if tp.side else None,
@@ -1469,6 +1551,7 @@ def build_entry_orders_details(
                     "status": tp.status.value,
                     "expected_amount_usd": None if expected_amount is None else float(expected_amount),
                     "expected_amount_pct": None if expected_pct is None else float(expected_pct),
+                    "tp_fill_proximity_pct": proximity,
                 })
 
         stop_loss = None
@@ -2590,7 +2673,7 @@ def get_expected_take_profit_details(
     # the frontend renders "—" instead of a misleading number. Net qty, position
     # value (at current price) and covered/uncovered qty stay real.
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
-    entry_orders = build_entry_orders_details(db, open_lots)
+    entry_orders = build_entry_orders_details(db, open_lots, current_price=current_price)
     position_side = resolve_position_side(db, open_lots)
     total_open_qty = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
     total_entry_cost = sum((lot.buy_price * lot.lot_qty for lot in open_lots), Decimal("0"))
@@ -2599,6 +2682,15 @@ def get_expected_take_profit_details(
         if cost_basis_unknown or total_open_qty <= 0
         else float(total_entry_cost / total_open_qty)
     )
+
+    max_proximity: Optional[float] = None
+    for entry in entry_orders:
+        for tp in entry.get("take_profits") or []:
+            prox = tp.get("tp_fill_proximity_pct")
+            if prox is None:
+                continue
+            if max_proximity is None or prox > max_proximity:
+                max_proximity = prox
 
     return {
         "symbol": symbol,
@@ -2614,6 +2706,7 @@ def get_expected_take_profit_details(
         "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
         "matched_lots": matched_lot_details,
         "entry_orders": entry_orders,
+        "max_tp_fill_proximity_pct": max_proximity,
         "has_uncovered": uncovered_qty > 0,
         "cost_basis_unknown": cost_basis_unknown,
         "orphaned_protection_only": orphaned_protection_only,
