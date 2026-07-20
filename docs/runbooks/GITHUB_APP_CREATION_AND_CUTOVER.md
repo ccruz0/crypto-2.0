@@ -470,13 +470,22 @@ bash scripts/aws/uninstall_github_app_cutover_cron.sh
 
 | Event | Telegram |
 |-------|----------|
-| Monitor **FAIL** | Immediate alert with status and rerun command |
+| Monitor **FAIL** (AUTH / OTHER) | Immediate alert with severity, failure list, and remedy |
+| Monitor **FAIL** (TRANSIENT only) | Wait ~90s and recheck once; alert only if still failing |
 | Monitor **PASS** | Success heartbeat at most once every **12 hours** |
 | After **2026-06-12 08:18 UTC** with **PASS** | One-time PAT-removal-ready message (marker: `logs/github_app_pat_removal_ready_alert_sent`) |
 
-Failures trigger Telegram immediately. Successful hourly runs do not spam Telegram;
-only the 12-hour heartbeat (during the observation window) and the one-time
-PAT-removal-ready message are sent on success.
+**Severity classes** (set by `run_github_app_cutover_monitor_with_alerts.sh`):
+
+| Severity | Meaning | Default remedy |
+|----------|---------|----------------|
+| `TRANSIENT` | Cutover OK (`auth_mode=github_app`, mint OK) but containers/probes not ready | Recheck; if persists, inspect docker restarts / HostSwapHigh |
+| `AUTH` | GitHub App cutover or live mint broken | `verify_github_app_cutover_ready.sh` + SSM / container env |
+| `OTHER` | Unclassified monitor failure | Rerun monitor + inspect `logs/github_app_monitor_latest.log` |
+
+Override recheck delay with `TRANSIENT_RECHECK_S` (default `90`).
+Successful hourly runs do not spam Telegram; only the 12-hour heartbeat (during
+the observation window) and the one-time PAT-removal-ready message are sent on success.
 
 ### PAT removal schedule
 
