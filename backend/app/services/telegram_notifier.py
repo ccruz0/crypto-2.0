@@ -43,6 +43,33 @@ logger = logging.getLogger(__name__)
 # Cooldown timestamp after Telegram 429 rate limit; None = no cooldown active
 _TELEGRAM_COOLDOWN_UNTIL_TS: Optional[float] = None
 
+# Telegram Bot API hard limit is 4096; leave headroom for source footer / parse quirks.
+_TELEGRAM_MAX_MESSAGE_CHARS = 3500
+
+
+def _redact_telegram_secrets(text: str) -> str:
+    """Strip bot tokens / sendMessage URLs before persisting diagnostics."""
+    if not text:
+        return text
+    import re
+
+    cleaned = re.sub(
+        r"https?://api\.telegram\.org/bot[^\s]+",
+        "https://api.telegram.org/bot***/...",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***:***", cleaned)
+    return cleaned
+
+
+def _truncate_telegram_text(text: str, limit: int = _TELEGRAM_MAX_MESSAGE_CHARS) -> str:
+    if text is None:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
 
 class AppEnv(str, Enum):
     """Application environment identifiers for alert routing"""
@@ -524,6 +551,21 @@ class TelegramNotifier:
                 full_message = message + source_tag
             else:
                 full_message = message
+
+            # Avoid Telegram HTTP 400 "message is too long" on OCO / digest dumps.
+            if len(full_message) > _TELEGRAM_MAX_MESSAGE_CHARS:
+                logger.warning(
+                    "[TELEGRAM_TRUNCATE] symbol=%s original_len=%d limit=%d",
+                    symbol or "N/A",
+                    len(full_message),
+                    _TELEGRAM_MAX_MESSAGE_CHARS,
+                )
+                # Keep the source footer when possible.
+                body_limit = max(200, _TELEGRAM_MAX_MESSAGE_CHARS - len(source_tag) - 20)
+                body = message if source_tag not in message else message
+                if len(body) > body_limit:
+                    body = body[:body_limit] + "\n…(truncated)"
+                full_message = body + source_tag if source_tag not in body else body
             
             # Extract symbol and side for logging
             log_symbol = symbol or "UNKNOWN"
@@ -629,17 +671,28 @@ class TelegramNotifier:
                         status_code,
                         response_text,
                     )
-                    # Persist non-200 response to DB
+                    # Persist non-200 response to DB (delivery failure — not a trade guardrail)
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        error_preview = full_message[:150] + "..." if len(full_message) > 150 else full_message
-                        blocked_message = f"[TELEGRAM_FAILED] {error_preview}\n\nHTTP {status_code}: {response_text[:100]}"
+                        from app.utils.decision_reason import ReasonCode
+
+                        safe_body = _redact_telegram_secrets(response_text or "")[:120]
+                        error_preview = _truncate_telegram_text(full_message, 150)
+                        blocked_message = (
+                            f"[TELEGRAM_FAILED] {error_preview}\n\nHTTP {status_code}: {safe_body}"
+                        )
                         add_telegram_message(
                             blocked_message,
                             symbol=symbol,
                             blocked=True,
-                            throttle_status="FAILED",
-                            throttle_reason=f"Telegram HTTP {status_code}: {response_text[:100]}",
+                            throttle_status="TELEGRAM_FAILED",
+                            throttle_reason=_redact_telegram_secrets(
+                                f"Telegram HTTP {status_code}: {safe_body}"
+                            ),
+                            reason_code=ReasonCode.TELEGRAM_API_ERROR.value,
+                            reason_message=_redact_telegram_secrets(
+                                f"Telegram HTTP {status_code}: {safe_body}"
+                            ),
                         )
                         logger.info(
                             "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_http_%d",
@@ -670,17 +723,26 @@ class TelegramNotifier:
                     origin_upper,
                 )
                 
-                # Persist failed send to DB for debugging
+                # Persist failed send to DB for debugging (delivery failure — not a trade guardrail)
                 try:
                     from app.api.routes_monitoring import add_telegram_message
-                    error_preview = full_message[:150] + "..." if len(full_message) > 150 else full_message
-                    blocked_message = f"[TELEGRAM_FAILED] {error_preview}\n\nError: {error_body}"
+                    from app.utils.decision_reason import ReasonCode
+
+                    safe_body = _redact_telegram_secrets(error_body or "")[:120]
+                    error_preview = _truncate_telegram_text(full_message, 150)
+                    blocked_message = f"[TELEGRAM_FAILED] {error_preview}\n\nError: {safe_body}"
                     add_telegram_message(
                         blocked_message,
                         symbol=symbol,
                         blocked=True,
-                        throttle_status="FAILED",
-                        throttle_reason=f"Telegram API error: {status_code} - {error_body[:100]}",
+                        throttle_status="TELEGRAM_FAILED",
+                        throttle_reason=_redact_telegram_secrets(
+                            f"Telegram API error: {status_code} - {safe_body}"
+                        ),
+                        reason_code=ReasonCode.TELEGRAM_API_ERROR.value,
+                        reason_message=_redact_telegram_secrets(
+                            f"Telegram API error: {status_code} - {safe_body}"
+                        ),
                     )
                     logger.info(
                         "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_api_failure",
@@ -692,7 +754,7 @@ class TelegramNotifier:
                 raise
             except Exception as e:
                 # Log other Telegram errors
-                error_str = str(e)[:200]
+                error_str = _redact_telegram_secrets(str(e)[:200])
                 logger.error(
                     "[TELEGRAM_RESPONSE] status=unknown RESULT=FAILURE error_type=Exception error=%s",
                     error_str,
@@ -705,17 +767,25 @@ class TelegramNotifier:
                     origin_upper,
                 )
                 
-                # Persist failed send to DB for debugging
+                # Persist failed send to DB for debugging (delivery failure — not a trade guardrail)
                 try:
                     from app.api.routes_monitoring import add_telegram_message
-                    error_preview = full_message[:150] + "..." if len(full_message) > 150 else full_message
+                    from app.utils.decision_reason import ReasonCode
+
+                    error_preview = _truncate_telegram_text(full_message, 150)
                     blocked_message = f"[TELEGRAM_FAILED] {error_preview}\n\nError: {error_str}"
                     add_telegram_message(
                         blocked_message,
                         symbol=symbol,
                         blocked=True,
-                        throttle_status="FAILED",
-                        throttle_reason=f"Telegram exception: {error_str[:100]}",
+                        throttle_status="TELEGRAM_FAILED",
+                        throttle_reason=_redact_telegram_secrets(
+                            f"Telegram exception: {error_str[:100]}"
+                        ),
+                        reason_code=ReasonCode.TELEGRAM_API_ERROR.value,
+                        reason_message=_redact_telegram_secrets(
+                            f"Telegram exception: {error_str[:100]}"
+                        ),
                     )
                     logger.info(
                         "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_exception",

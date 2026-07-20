@@ -42,7 +42,36 @@ _REASON_CODE_LABELS = {
     "SAFETY_GUARD": "Safety guard",
     "ORDER_CREATION_LOCK": "Lock de creación de orden",
     "IDEMPOTENCY_BLOCKED": "Bloqueo de idempotencia",
+    "TELEGRAM_API_ERROR": "Error de Telegram (API)",
+    "THROTTLED_DUPLICATE_ALERT": "Alerta duplicada (throttle)",
 }
+
+# Alert-pipeline noise: every monitor cycle re-logs these while a signal is sticky.
+# They are NOT honest "órdenes no ejecutadas" counts — exclude from the rollup.
+_EXCLUDED_NOISE_REASON_CODES = frozenset(
+    {
+        "COOLDOWN_ACTIVE",
+        "THROTTLED_DUPLICATE_ALERT",
+        "RECENT_ORDERS_COOLDOWN",
+    }
+)
+
+# Sticky expected blocks: collapse to one episode per (symbol, reason) with duration.
+_STICKY_EPISODE_KEYS = frozenset(
+    {
+        "MAX_OPEN_TRADES_REACHED",
+        "MAX_OPEN_ORDERS_TOTAL",
+        "MAX_ORDERS_PER_SYMBOL",
+        "TRADE_DISABLED",
+        "ALERTS_DISABLED",
+        "ALERT_DISABLED",
+        "PORTFOLIO_VALUE_LIMIT",
+        "MIN_SECONDS_BETWEEN_ORDERS",
+    }
+)
+
+# Gap larger than this starts a new episode for the same symbol+reason.
+_EPISODE_GAP = timedelta(minutes=30)
 
 class DailySummaryService:
     """Daily summary service for portfolio and trading activity"""
@@ -226,8 +255,43 @@ class DailySummaryService:
         """Collapse volatile counters so (27/10) and (28/10) roll up together."""
         if not text:
             return ""
-        normalized = re.sub(r"\(\d+/\d+\)", "", text)
+        # Never keep bot-token URLs in rollup keys / labels.
+        cleaned = re.sub(
+            r"https?://api\.telegram\.org/bot[^\s]+",
+            "https://api.telegram.org/bot***/...",
+            text,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***:***", cleaned)
+        normalized = re.sub(r"\(\d+/\d+\)", "", cleaned)
         return " ".join(normalized.split()).strip()
+
+    @staticmethod
+    def _is_telegram_delivery_detail(detail: str) -> bool:
+        upper = (detail or "").upper()
+        return (
+            "TELEGRAM API ERROR" in upper
+            or "TELEGRAM HTTP" in upper
+            or "API.TELEGRAM.ORG" in upper
+            or "[TELEGRAM_FAILED]" in upper
+        )
+
+    @staticmethod
+    def _is_alert_throttle_detail(detail: str) -> bool:
+        """Pure alert throttle / duplicate gates — not order placement failures."""
+        upper = (detail or "").upper()
+        return any(
+            token in upper
+            for token in (
+                "THROTTLED_TIME_GATE",
+                "THROTTLED_PRICE_GATE",
+                "THROTTLED_MIN_TIME",
+                "THROTTLED_MIN_CHANGE",
+                "THROTTLED_DUPLICATE",
+                "ΔT=",
+                "|ΔP|=",
+            )
+        )
 
     @classmethod
     def _non_executed_bucket_key(cls, row: Any) -> Tuple[str, str]:
@@ -238,12 +302,20 @@ class DailySummaryService:
         )
         detail_upper = detail.upper()
 
+        # Telegram delivery failures are never trading guardrails.
+        if reason_code == "TELEGRAM_API_ERROR" or cls._is_telegram_delivery_detail(detail):
+            http_match = re.search(r"\b(400|401|403|404|429|500)\b", detail)
+            http_bit = f" HTTP {http_match.group(1)}" if http_match else ""
+            return ("TELEGRAM_API_ERROR", f"Error de Telegram (API{http_bit})")
+
         if "MAX_OPEN_ORDERS_TOTAL" in detail_upper:
             return ("MAX_OPEN_ORDERS_TOTAL", "Tope global de órdenes abiertas")
         if "MAX_ORDERS_PER_SYMBOL" in detail_upper:
             return ("MAX_ORDERS_PER_SYMBOL", "Tope por símbolo / día")
         if "MAX_USD_PER_ORDER" in detail_upper:
             return ("MAX_USD_PER_ORDER", "Tope USD por orden")
+        if "PORTFOLIO_VALUE_LIMIT" in detail_upper:
+            return ("PORTFOLIO_VALUE_LIMIT", "Tope de valor de portfolio")
         if "AMOUNT USD" in detail_upper or "TRADE_AMOUNT" in detail_upper:
             return ("INVALID_TRADE_AMOUNT", "Amount USD no configurado")
         if "MIN_SECONDS_BETWEEN" in detail_upper:
@@ -256,8 +328,52 @@ class DailySummaryService:
                 short = short[8:].strip()
             if len(short) > 60:
                 short = short[:57] + "..."
+            # Portfolio / named limits get a clean sticky key when present in short form.
+            short_upper = short.upper()
+            if "PORTFOLIO_VALUE_LIMIT" in short_upper:
+                return ("PORTFOLIO_VALUE_LIMIT", "Tope de valor de portfolio")
             return (f"GUARDRAIL:{detail.lower()}", f"Guardrail: {short}")
         return (reason_code, label)
+
+    @classmethod
+    def _should_exclude_from_non_executed_rollup(cls, row: Any, key: str) -> bool:
+        """Drop alert-throttle / cooldown re-logs that inflate the 24h summary."""
+        reason_code = (getattr(row, "reason_code", None) or "").strip()
+        if reason_code in _EXCLUDED_NOISE_REASON_CODES:
+            return True
+        if key in _EXCLUDED_NOISE_REASON_CODES:
+            return True
+        detail = cls._normalize_block_detail(
+            getattr(row, "throttle_reason", None) or getattr(row, "reason_message", None)
+        )
+        if cls._is_alert_throttle_detail(detail) and reason_code != "TELEGRAM_API_ERROR":
+            # Keep real order failures; drop pure alert gates.
+            if reason_code in ("", "UNKNOWN", "THROTTLED_DUPLICATE_ALERT", "COOLDOWN_ACTIVE") or not reason_code:
+                return True
+            if reason_code in _EXCLUDED_NOISE_REASON_CODES:
+                return True
+        return False
+
+    @staticmethod
+    def _row_timestamp(row: Any) -> Optional[datetime]:
+        ts = getattr(row, "timestamp", None)
+        if ts is None:
+            return None
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        if seconds < 90:
+            return "<2m"
+        minutes = int(round(seconds / 60.0))
+        if minutes < 60:
+            return f"~{minutes}m"
+        hours = minutes / 60.0
+        if hours < 10:
+            return f"~{hours:.1f}h".replace(".0h", "h")
+        return f"~{int(round(hours))}h"
 
     def get_non_executed_orders_summary(
         self,
@@ -270,6 +386,12 @@ class DailySummaryService:
 
         Source: telegram_messages decision tracing / TRADE_BLOCKED / ORDER_FAILED /
         order_skipped rows written by the signal monitor lifecycle path.
+
+        Aggregation:
+        - Excludes alert cooldown / THROTTLED_* duplicate noise.
+        - Sticky blocks (max open, portfolio limit, trade off, …) collapse to
+          episodes per (symbol, reason) with first→last duration.
+        - Real placement failures keep per-event counts.
         """
         from app.models.telegram_message import TelegramMessage
 
@@ -291,32 +413,136 @@ class DailySummaryService:
                         ),
                     ),
                 )
-                .order_by(TelegramMessage.timestamp.desc())
+                .order_by(TelegramMessage.timestamp.asc())
                 .limit(5000)
                 .all()
             )
 
-            buckets: Dict[str, Dict[str, Any]] = {}
+            # Chronological events after noise filter: (key, label, symbol, ts, dtype, sticky)
+            events: List[Tuple[str, str, str, Optional[datetime], str, bool]] = []
             for row in rows:
                 key, label = self._non_executed_bucket_key(row)
+                if self._should_exclude_from_non_executed_rollup(row, key):
+                    continue
+                symbol = (getattr(row, "symbol", None) or "UNKNOWN").upper()
+                ts = self._row_timestamp(row)
+                dtype = getattr(row, "decision_type", None) or "SKIPPED"
+                sticky = (
+                    key in _STICKY_EPISODE_KEYS
+                    or key.startswith("GUARDRAIL:")
+                    or key == "TELEGRAM_API_ERROR"
+                )
+                events.append((key, label, symbol, ts, dtype, sticky))
+
+            # Collapse sticky (symbol, reason) streams into episodes; keep raw counts for failures.
+            open_eps: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            closed_eps: List[Dict[str, Any]] = []
+            failure_buckets: Dict[str, Dict[str, Any]] = {}
+
+            for key, label, symbol, ts, dtype, sticky in events:
+                if not sticky:
+                    bucket = failure_buckets.setdefault(
+                        key,
+                        {
+                            "key": key,
+                            "label": label,
+                            "count": 0,
+                            "episodes": 0,
+                            "symbols": defaultdict(int),
+                            "decision_types": defaultdict(int),
+                            "symbol_details": [],
+                            "mode": "events",
+                        },
+                    )
+                    bucket["count"] += 1
+                    bucket["episodes"] = bucket["count"]
+                    bucket["symbols"][symbol] += 1
+                    bucket["decision_types"][dtype] += 1
+                    continue
+
+                ep_id = (key, symbol)
+                ep = open_eps.get(ep_id)
+                if ep is None:
+                    open_eps[ep_id] = {
+                        "key": key,
+                        "label": label,
+                        "symbol": symbol,
+                        "cycles": 1,
+                        "first_ts": ts,
+                        "last_ts": ts,
+                        "decision_types": defaultdict(int, {dtype: 1}),
+                    }
+                    continue
+
+                last_ts = ep["last_ts"]
+                if ts is not None and last_ts is not None and (ts - last_ts) > _EPISODE_GAP:
+                    closed_eps.append(ep)
+                    open_eps[ep_id] = {
+                        "key": key,
+                        "label": label,
+                        "symbol": symbol,
+                        "cycles": 1,
+                        "first_ts": ts,
+                        "last_ts": ts,
+                        "decision_types": defaultdict(int, {dtype: 1}),
+                    }
+                else:
+                    ep["cycles"] += 1
+                    ep["decision_types"][dtype] += 1
+                    if ts is not None:
+                        ep["last_ts"] = ts if ep["last_ts"] is None else max(ep["last_ts"], ts)
+                        ep["first_ts"] = (
+                            ts if ep["first_ts"] is None else min(ep["first_ts"], ts)
+                        )
+
+            closed_eps.extend(open_eps.values())
+
+            buckets: Dict[str, Dict[str, Any]] = dict(failure_buckets)
+            for ep in closed_eps:
+                key = ep["key"]
+                label = ep["label"]
+                symbol = ep["symbol"]
+                first_ts = ep.get("first_ts")
+                last_ts = ep.get("last_ts")
+                duration_s = 0.0
+                if first_ts is not None and last_ts is not None:
+                    duration_s = max(0.0, (last_ts - first_ts).total_seconds())
                 bucket = buckets.setdefault(
                     key,
                     {
                         "key": key,
                         "label": label,
                         "count": 0,
+                        "episodes": 0,
                         "symbols": defaultdict(int),
                         "decision_types": defaultdict(int),
+                        "symbol_details": [],
+                        "mode": "episodes",
                     },
                 )
+                bucket["mode"] = "episodes"
+                bucket["episodes"] += 1
                 bucket["count"] += 1
-                symbol = (getattr(row, "symbol", None) or "UNKNOWN").upper()
                 bucket["symbols"][symbol] += 1
-                dtype = getattr(row, "decision_type", None) or "SKIPPED"
-                bucket["decision_types"][dtype] += 1
+                for dt_key, dt_count in ep.get("decision_types", {}).items():
+                    bucket["decision_types"][dt_key] += dt_count
+                bucket["symbol_details"].append(
+                    {
+                        "symbol": symbol,
+                        "cycles": ep.get("cycles", 1),
+                        "duration_seconds": duration_s,
+                        "duration_label": self._format_duration(duration_s)
+                        if duration_s >= 60
+                        else None,
+                    }
+                )
 
-            ranked = sorted(buckets.values(), key=lambda b: b["count"], reverse=True)
-            total = sum(b["count"] for b in ranked)
+            ranked = sorted(
+                buckets.values(),
+                key=lambda b: (b.get("episodes") or b.get("count") or 0),
+                reverse=True,
+            )
+            total = sum(int(b.get("episodes") or b.get("count") or 0) for b in ranked)
             symbols_affected = {
                 sym for b in ranked for sym in b["symbols"].keys() if sym != "UNKNOWN"
             }
@@ -324,6 +550,7 @@ class DailySummaryService:
             return {
                 "hours": hours,
                 "total_events": total,
+                "total_episodes": total,
                 "unique_symbols": len(symbols_affected),
                 "buckets": ranked,
             }
@@ -332,6 +559,7 @@ class DailySummaryService:
             return {
                 "hours": hours,
                 "total_events": 0,
+                "total_episodes": 0,
                 "unique_symbols": 0,
                 "buckets": [],
                 "error": str(exc),
@@ -346,7 +574,7 @@ class DailySummaryService:
             return ""
 
         hours = int(rollup.get("hours") or 24)
-        total = int(rollup.get("total_events") or 0)
+        total = int(rollup.get("total_episodes") or rollup.get("total_events") or 0)
         if rollup.get("error") and total == 0:
             return (
                 f"🚫 **Órdenes no ejecutadas ({hours}h)**\n"
@@ -356,28 +584,55 @@ class DailySummaryService:
         if total == 0:
             return (
                 f"🚫 **Órdenes no ejecutadas ({hours}h)**\n"
-                "✅ Ningún intento de orden bloqueado o fallido\n"
+                "✅ Ningún bloqueo o fallo de orden relevante\n"
             )
 
         unique_symbols = int(rollup.get("unique_symbols") or 0)
         lines = [
-            f"🚫 **Órdenes no ejecutadas ({hours}h):** {total} intento(s)",
+            f"🚫 **Órdenes no ejecutadas ({hours}h):** {total} episodio(s)",
             f"📊 Símbolos afectados: {unique_symbols}",
             "",
         ]
 
         for bucket in (rollup.get("buckets") or [])[:8]:
-            count = bucket["count"]
             label = bucket["label"]
-            symbol_counts = sorted(
-                bucket["symbols"].items(), key=lambda item: item[1], reverse=True
-            )
-            top_symbols = [sym for sym, _ in symbol_counts[:3]]
-            extra = len(symbol_counts) - len(top_symbols)
-            symbols_text = ", ".join(top_symbols) if top_symbols else "N/A"
-            if extra > 0:
-                symbols_text += f" +{extra}"
-            lines.append(f"• {label} — {count}× ({symbols_text})")
+            mode = bucket.get("mode") or "events"
+            details = bucket.get("symbol_details") or []
+            if mode == "episodes" and details:
+                # Prefer per-symbol duration lines for sticky blocks.
+                details_sorted = sorted(
+                    details,
+                    key=lambda d: (d.get("duration_seconds") or 0, d.get("cycles") or 0),
+                    reverse=True,
+                )
+                parts = []
+                for d in details_sorted[:3]:
+                    sym = d["symbol"]
+                    dur = d.get("duration_label")
+                    cycles = int(d.get("cycles") or 0)
+                    if dur:
+                        parts.append(f"{sym} {dur}")
+                    elif cycles > 1:
+                        parts.append(f"{sym}")
+                    else:
+                        parts.append(sym)
+                extra = len(details_sorted) - len(parts)
+                symbols_text = ", ".join(parts) if parts else "N/A"
+                if extra > 0:
+                    symbols_text += f" +{extra}"
+                ep_count = int(bucket.get("episodes") or bucket.get("count") or 0)
+                lines.append(f"• {label} — {ep_count} ep. ({symbols_text})")
+            else:
+                count = int(bucket.get("count") or 0)
+                symbol_counts = sorted(
+                    bucket["symbols"].items(), key=lambda item: item[1], reverse=True
+                )
+                top_symbols = [sym for sym, _ in symbol_counts[:3]]
+                extra = len(symbol_counts) - len(top_symbols)
+                symbols_text = ", ".join(top_symbols) if top_symbols else "N/A"
+                if extra > 0:
+                    symbols_text += f" +{extra}"
+                lines.append(f"• {label} — {count}× ({symbols_text})")
 
         remaining = len(rollup.get("buckets") or []) - 8
         if remaining > 0:
