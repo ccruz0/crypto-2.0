@@ -425,10 +425,11 @@ services:
   # ============================================
   # Alerts are generated here (signal_monitor). Same AWS env as backend-aws so Telegram sends.
   # Do NOT load .env.local - AWS must use only .env + .env.aws (Telegram: TELEGRAM_BOT_TOKEN_AWS, TELEGRAM_CHAT_ID_AWS).
+  # MUST use the same BACKEND_IMAGE as backend-aws (not a stale local build) and the same
+  # aws_trading_config_data volume — otherwise signal alerts read baked scalp presets while
+  # /api/config (backend) shows the live swing-conservative presets the user configured.
   market-updater-aws:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-634531197711.dkr.ecr.ap-southeast-1.amazonaws.com/atp-backend:latest}
     env_file:
       - .env
       - .env.aws
@@ -447,12 +448,14 @@ services:
       # Price move alert configuration (market-updater runs signal monitor loop)
       - PRICE_MOVE_ALERT_PCT=${PRICE_MOVE_ALERT_PCT:-0.50}
       - PRICE_MOVE_ALERT_COOLDOWN_SECONDS=${PRICE_MOVE_ALERT_COOLDOWN_SECONDS:-300}
+      # Same persistent strategy config as backend-aws (dashboard writes here)
+      - TRADING_CONFIG_PATH=/data/trading_config.json
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
     depends_on:
       db:
         condition: service_healthy
-    # volumes:
-    #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
+    volumes:
+      - aws_trading_config_data:/data
     command: python3 run_updater.py
     restart: unless-stopped
     # Healthcheck: Python one-liner to avoid bash/shell forks (containerd-shim zombie leak)

@@ -34,6 +34,13 @@ class ReasonCode(str, Enum):
     INVALID_TRADE_AMOUNT = "INVALID_TRADE_AMOUNT"
     RECENT_ORDERS_COOLDOWN = "RECENT_ORDERS_COOLDOWN"
     GUARDRAIL_BLOCKED = "GUARDRAIL_BLOCKED"
+    # system_core position / exposure gates (not exchange errors)
+    ONE_ACTIVE_TRADE_PER_COIN = "ONE_ACTIVE_TRADE_PER_COIN"
+    SYSTEM_CORE_MAX_OPEN_TRADES = "SYSTEM_CORE_MAX_OPEN_TRADES"
+    SYSTEM_CORE_RSI = "SYSTEM_CORE_RSI"
+    SYSTEM_CORE_MA200 = "SYSTEM_CORE_MA200"
+    SYSTEM_CORE_MAX_TRADE_USD = "SYSTEM_CORE_MAX_TRADE_USD"
+    SYSTEM_CORE_DAILY_DRAWDOWN = "SYSTEM_CORE_DAILY_DRAWDOWN"
     ORDER_CREATION_LOCK = "ORDER_CREATION_LOCK"
     IDEMPOTENCY_BLOCKED = "IDEMPOTENCY_BLOCKED"
     MARGIN_ERROR_609_LOCK = "MARGIN_ERROR_609_LOCK"
@@ -159,6 +166,79 @@ def _looks_like_telegram_api_error(error_msg: str) -> bool:
     return False
 
 
+# Spanish (and short EN) labels for Telegram / daily summary — not exchange errors.
+_REASON_CODE_ES_LABELS = {
+    ReasonCode.ONE_ACTIVE_TRADE_PER_COIN.value: (
+        "Máx. 1 trade activo por moneda (límite per-coin)"
+    ),
+    ReasonCode.SYSTEM_CORE_MAX_OPEN_TRADES.value: "Máx. trades abiertos (portfolio)",
+    ReasonCode.SYSTEM_CORE_RSI.value: "RSI fuera de rango (system_core)",
+    ReasonCode.SYSTEM_CORE_MA200.value: "Precio vs MA200 (system_core)",
+    ReasonCode.SYSTEM_CORE_MAX_TRADE_USD.value: "Tope USD por trade (system_core)",
+    ReasonCode.SYSTEM_CORE_DAILY_DRAWDOWN.value: "Drawdown diario (system_core)",
+    ReasonCode.GUARDRAIL_BLOCKED.value: "Bloqueado por guardrail",
+}
+
+
+def classify_system_core_error(error_msg: str) -> Optional[str]:
+    """Map system_core_* / blocked: strings to a specific reason code, else None."""
+    if not error_msg:
+        return None
+    error_lower = error_msg.lower().strip()
+    # Strip common wrappers so classification is robust.
+    for prefix in ("blocked:", "error:", "order failed:"):
+        if error_lower.startswith(prefix):
+            error_lower = error_lower[len(prefix) :].strip()
+
+    if "system_core_one_active_trade_per_coin" in error_lower:
+        return ReasonCode.ONE_ACTIVE_TRADE_PER_COIN.value
+    if "system_core_max_open_trades" in error_lower:
+        return ReasonCode.SYSTEM_CORE_MAX_OPEN_TRADES.value
+    if error_lower.startswith("system_core_rsi") or " system_core_rsi" in error_lower:
+        return ReasonCode.SYSTEM_CORE_RSI.value
+    if error_lower.startswith("system_core_ma200") or " system_core_ma200" in error_lower:
+        return ReasonCode.SYSTEM_CORE_MA200.value
+    if "system_core_max_trade_usd" in error_lower:
+        return ReasonCode.SYSTEM_CORE_MAX_TRADE_USD.value
+    if "system_core_daily_drawdown" in error_lower:
+        return ReasonCode.SYSTEM_CORE_DAILY_DRAWDOWN.value
+    if error_lower.startswith("system_core") or "system_core_" in error_lower:
+        return ReasonCode.GUARDRAIL_BLOCKED.value
+    return None
+
+
+def reason_code_es_label(reason_code: str, error_msg: Optional[str] = None) -> str:
+    """Human-readable Spanish label for Telegram ORDER FAILED / summaries."""
+    if reason_code in _REASON_CODE_ES_LABELS:
+        return _REASON_CODE_ES_LABELS[reason_code]
+    mapped = classify_system_core_error(error_msg or "")
+    if mapped and mapped in _REASON_CODE_ES_LABELS:
+        return _REASON_CODE_ES_LABELS[mapped]
+    if reason_code:
+        return reason_code.replace("_", " ").title()
+    return "Error desconocido"
+
+
+def format_order_failed_telegram(
+    *,
+    symbol: str,
+    side: str,
+    error_msg: str,
+    reason_code: str,
+) -> str:
+    """Telegram HTML body for ORDER FAILED — includes Spanish reason, not EXCHANGE_ERROR_UNKNOWN noise."""
+    es = reason_code_es_label(reason_code, error_msg)
+    return (
+        f"❌ <b>ORDER FAILED</b>\n\n"
+        f"📊 Symbol: <b>{symbol}</b>\n"
+        f"🔄 Side: {side}\n"
+        f"❌ Error: {error_msg}\n"
+        f"📋 Reason Code: {reason_code}\n"
+        f"🇪🇸 Motivo: {es}\n\n"
+        f"<i>Señal enviada; la orden no se creó.</i>"
+    )
+
+
 def classify_exchange_error(error_msg: str) -> str:
     """Classify exchange or local block error into canonical reason code"""
     if not error_msg:
@@ -170,7 +250,11 @@ def classify_exchange_error(error_msg: str) -> str:
     if _looks_like_telegram_api_error(error_msg):
         return ReasonCode.TELEGRAM_API_ERROR.value
 
-    if error_lower.startswith("system_core") or error_lower.startswith("blocked:"):
+    system_core_code = classify_system_core_error(error_msg)
+    if system_core_code:
+        return system_core_code
+
+    if error_lower.startswith("blocked:"):
         return ReasonCode.GUARDRAIL_BLOCKED.value
     if "guardrail" in error_lower or "trade_blocked" in error_lower:
         return ReasonCode.GUARDRAIL_BLOCKED.value
@@ -203,8 +287,8 @@ def classify_exchange_error(error_msg: str) -> str:
     if any(code in error_upper for code in ["MIN_NOTIONAL", "NOTIONAL", "AMOUNT TOO SMALL"]):
         return ReasonCode.MIN_NOTIONAL_NOT_MET.value
     
-    # Signature errors
-    if any(code in error_upper for code in ["SIGNATURE", "SIGN"]):
+    # Signature errors (avoid bare "SIGN" — false-positives on SYSTEM_CORE etc.)
+    if "SIGNATURE" in error_upper or re.search(r"(?:^|[^A-Z])SIGN(?:[^A-Z]|$)", error_upper):
         return ReasonCode.SIGNATURE_ERROR.value
     
     # Generic rejection

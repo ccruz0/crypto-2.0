@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "docker-compose.yml"
       - ".github/workflows/deploy-backend.yml"
   workflow_dispatch:
 concurrency:
@@ -51,11 +52,18 @@ jobs:
           set -euo pipefail
           read -r -d '' REMOTE <<EOF || true
           set -e
+          cd ${COMPOSE_DIR}
+          # Sync compose from main so market-updater gets TRADING_CONFIG_PATH + volume
+          # without requiring a full working-tree reset on the host.
+          git fetch origin main
+          git checkout origin/main -- docker-compose.yml
           aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${REGISTRY}
           CUR=\$(docker inspect --format='{{.Config.Image}}' \$(docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps -q backend-aws) 2>/dev/null || true)
           [ -n "\$CUR" ] && docker tag "\$CUR" atp-backend-rollback:predeploy || true
           docker pull ${IMAGE}
-          BACKEND_IMAGE=${IMAGE} docker compose -f ${COMPOSE_DIR}/docker-compose.yml up -d --no-deps backend-aws backend-aws-canary
+          BACKEND_IMAGE=${IMAGE} docker compose -f ${COMPOSE_DIR}/docker-compose.yml --profile aws up -d --no-deps backend-aws backend-aws-canary
+          # Recreate market-updater so new image + config volume mount apply.
+          BACKEND_IMAGE=${IMAGE} docker compose -f ${COMPOSE_DIR}/docker-compose.yml --profile aws up -d --no-deps --force-recreate market-updater-aws
           ok=0
           for i in \$(seq 1 60); do
             if curl -fsS http://localhost:8002/api/health/ready >/dev/null; then ok=1; break; fi
@@ -63,7 +71,7 @@ jobs:
           done
           if [ "\$ok" != "1" ]; then
             echo "HEALTHCHECK FAILED - rollback"
-            BACKEND_IMAGE=atp-backend-rollback:predeploy docker compose -f ${COMPOSE_DIR}/docker-compose.yml up -d --no-deps backend-aws backend-aws-canary || true
+            BACKEND_IMAGE=atp-backend-rollback:predeploy docker compose -f ${COMPOSE_DIR}/docker-compose.yml --profile aws up -d --no-deps backend-aws backend-aws-canary market-updater-aws || true
             exit 1
           fi
           # Pin the deployed image digest in .env so a later MANUAL "docker compose up"

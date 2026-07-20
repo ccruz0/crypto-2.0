@@ -11,9 +11,20 @@ from app.services.system_core_trade_guards import (
 from app.utils.decision_reason import ReasonCode, classify_exchange_error
 
 
-def test_classify_system_core_as_guardrail_blocked():
+def test_classify_system_core_daily_drawdown():
     msg = "system_core_daily_drawdown dd_pct=50.00 peak=188487.58 now=94234.46"
-    assert classify_exchange_error(msg) == ReasonCode.GUARDRAIL_BLOCKED.value
+    assert classify_exchange_error(msg) == ReasonCode.SYSTEM_CORE_DAILY_DRAWDOWN.value
+
+
+def test_classify_one_active_trade_per_coin_not_exchange_unknown():
+    msg = "system_core_one_active_trade_per_coin"
+    assert classify_exchange_error(msg) == ReasonCode.ONE_ACTIVE_TRADE_PER_COIN.value
+    assert classify_exchange_error(msg) != ReasonCode.EXCHANGE_ERROR_UNKNOWN.value
+    # Wrapped forms must still classify
+    assert (
+        classify_exchange_error(f"Blocked: {msg}")
+        == ReasonCode.ONE_ACTIVE_TRADE_PER_COIN.value
+    )
 
 
 def test_rebaseline_stale_peak_when_peak_is_double_current():

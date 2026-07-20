@@ -4385,7 +4385,10 @@ class SignalMonitorService:
                                                 )
                                             
                                                 # Classify error for strict reporting (Step 4)
-                                                from app.utils.decision_reason import classify_exchange_error
+                                                from app.utils.decision_reason import (
+                                                    classify_exchange_error,
+                                                    format_order_failed_telegram,
+                                                )
                                                 reason_code = classify_exchange_error(error_msg)
                                             
                                                 decision_reason = make_fail(
@@ -4415,12 +4418,12 @@ class SignalMonitorService:
                                                 try:
                                                     if self._telegram_send_enabled():
                                                         telegram_notifier.send_message(
-                                                            f"❌ <b>ORDER FAILED</b>\n\n"
-                                                            f"📊 Symbol: <b>{symbol}</b>\n"
-                                                            f"🔄 Side: BUY\n"
-                                                            f"❌ Error: {error_msg}\n"
-                                                            f"📋 Reason Code: {reason_code}\n\n"
-                                                            f"<i>Signal was sent but order creation failed.</i>"
+                                                            format_order_failed_telegram(
+                                                                symbol=symbol,
+                                                                side="BUY",
+                                                                error_msg=error_msg,
+                                                                reason_code=reason_code,
+                                                            )
                                                         )
                                                     else:
                                                         logger.debug("Telegram notifier is disabled - skipping failure message")
@@ -4530,7 +4533,10 @@ class SignalMonitorService:
                                             )
                                         
                                             # Classify error for strict reporting (Step 4)
-                                            from app.utils.decision_reason import classify_exchange_error
+                                            from app.utils.decision_reason import (
+                                                classify_exchange_error,
+                                                format_order_failed_telegram,
+                                            )
                                             reason_code = classify_exchange_error(error_msg)
                                         
                                             decision_reason = make_fail(
@@ -4560,12 +4566,12 @@ class SignalMonitorService:
                                             try:
                                                 if self._telegram_send_enabled():
                                                     telegram_notifier.send_message(
-                                                        f"❌ <b>ORDER FAILED</b>\n\n"
-                                                        f"📊 Symbol: <b>{symbol}</b>\n"
-                                                        f"🔄 Side: BUY\n"
-                                                        f"❌ Error: {error_msg}\n"
-                                                        f"📋 Reason Code: {reason_code}\n\n"
-                                                        f"<i>Signal was sent but order creation failed.</i>"
+                                                        format_order_failed_telegram(
+                                                            symbol=symbol,
+                                                            side="BUY",
+                                                            error_msg=error_msg,
+                                                            reason_code=reason_code,
+                                                        )
                                                     )
                                                 else:
                                                     logger.debug("Telegram notifier is disabled - skipping failure message")
@@ -6494,7 +6500,10 @@ class SignalMonitorService:
                                                 )
                                             
                                                 # Classify error for strict reporting
-                                                from app.utils.decision_reason import classify_exchange_error
+                                                from app.utils.decision_reason import (
+                                                    classify_exchange_error,
+                                                    format_order_failed_telegram,
+                                                )
                                                 reason_code = classify_exchange_error(error_msg)
                                             
                                                 decision_reason = make_fail(
@@ -6520,11 +6529,12 @@ class SignalMonitorService:
                                                 try:
                                                     if self._telegram_send_enabled():
                                                         telegram_notifier.send_message(
-                                                            f"❌ <b>ORDER FAILED</b>\n\n"
-                                                            f"📊 Symbol: <b>{symbol}</b>\n"
-                                                            f"🔄 Side: SELL\n"
-                                                            f"❌ Error: {error_msg}\n\n"
-                                                            f"<i>Signal was sent but order creation failed.</i>"
+                                                            format_order_failed_telegram(
+                                                                symbol=symbol,
+                                                                side="SELL",
+                                                                error_msg=error_msg,
+                                                                reason_code=reason_code,
+                                                            )
                                                         )
                                                     else:
                                                         logger.debug("Telegram notifier is disabled - skipping failure message")
@@ -6612,7 +6622,10 @@ class SignalMonitorService:
                                             )
                                         
                                             # Classify error for strict reporting
-                                            from app.utils.decision_reason import classify_exchange_error
+                                            from app.utils.decision_reason import (
+                                                classify_exchange_error,
+                                                format_order_failed_telegram,
+                                            )
                                             reason_code = classify_exchange_error(error_msg)
                                         
                                             decision_reason = make_fail(
@@ -6638,11 +6651,12 @@ class SignalMonitorService:
                                             try:
                                                 if self._telegram_send_enabled():
                                                     telegram_notifier.send_message(
-                                                        f"❌ <b>ORDER FAILED</b>\n\n"
-                                                        f"📊 Symbol: <b>{symbol}</b>\n"
-                                                        f"🔄 Side: SELL\n"
-                                                        f"❌ Error: {error_msg}\n\n"
-                                                        f"<i>Signal was sent but order creation failed.</i>"
+                                                        format_order_failed_telegram(
+                                                            symbol=symbol,
+                                                            side="SELL",
+                                                            error_msg=error_msg,
+                                                            reason_code=reason_code,
+                                                        )
                                                     )
                                                 else:
                                                     logger.debug("Telegram notifier is disabled - skipping failure message")

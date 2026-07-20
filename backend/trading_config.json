@@ -202,7 +202,7 @@
       }
     },
     "BTC_USD": {
-      "preset": "scalp-conservative",
+      "preset": "swing-conservative",
       "overrides": {}
     },
     "BNB_USDT": {
