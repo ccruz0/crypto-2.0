@@ -136,8 +136,31 @@ def start_metrics_server(port: int = 9101) -> None:
         logger.warning("Could not start metrics server: %s", e)
 
 
+def to_binance_symbol(symbol: str) -> str:
+    """Map watchlist/CDC-style symbols to Binance kline symbols.
+
+    Bare bases (e.g. ``XRP``, ``ALGO``) must become ``XRPUSDT`` / ``ALGOUSDT``.
+    Previously they were passed through as ``XRP``, which Binance rejects with HTTP 400,
+    so indicators fell back to RSI=50 / MAs=price / volume_ratio=0 (Watchlist Volume ``—``).
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return sym
+    if "_" not in sym:
+        # Bare base currency from watchlist (XRP, ALGO) → spot USDT pair
+        return f"{sym}USDT"
+    if sym.endswith("_USDT"):
+        return sym[:-5] + "USDT"
+    if sym.endswith("_USD"):
+        return sym[:-4] + "USDT"
+    # Other quote pairs: BTC_ETH → BTCETH
+    return sym.replace("_", "")
+
+
 def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Optional[List[Dict]]:
     """Fetch OHLCV data from Crypto.com API with fallback to Binance if Crypto.com doesn't have the pair"""
+    cdc_partial: Optional[List[Dict]] = None
+
     # Try Crypto.com first
     try:
         # Normalize symbol for Crypto.com API - automatically add _USDT if no pair specified
@@ -196,6 +219,7 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
                 # If we need more than 50 candles (for RSI/MA calculations), use Binance fallback
                 if len(ohlcv_data) < 50 and limit >= 50:
                     logger.debug(f"⚠️ Crypto.com only returned {len(ohlcv_data)} candles for {symbol} (need {limit}), trying Binance fallback for more data")
+                    cdc_partial = ohlcv_data
                     # Fall through to Binance fallback to get more candles
                 else:
                     logger.debug(f"✅ Fetched {len(ohlcv_data)} candles from Crypto.com for {symbol} (normalized: {normalized_symbol})")
@@ -207,20 +231,8 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
         logger.debug(f"Crypto.com error for {symbol}: {e}, trying Binance fallback...")
     
     # Fallback to Binance for pairs Crypto.com doesn't support (e.g., BNB_USDT)
+    binance_symbol = to_binance_symbol(symbol)
     try:
-        # Convert symbol format for Binance: BTC_USDT -> BTCUSDT, BNB_USD -> BNBUSDT
-        # IMPORTANT: Check for _USDT first (before _USD) to avoid creating "USDTUSDT"
-        # This prevents creating invalid symbols like "BNBUSDTT"
-        if symbol.endswith("_USDT"):
-            # Remove _USDT and append USDT: BTC_USDT -> BTC + USDT = BTCUSDT
-            binance_symbol = symbol[:-5] + "USDT"  # Remove last 5 chars (_USDT) and add USDT
-        elif symbol.endswith("_USD"):
-            # Remove _USD and append USDT: BNB_USD -> BNB + USDT = BNBUSDT
-            binance_symbol = symbol[:-4] + "USDT"  # Remove last 4 chars (_USD) and add USDT
-        else:
-            # For other formats, just remove underscore: BTC_ETH -> BTCETH
-            binance_symbol = symbol.replace("_", "")
-        
         # Map interval to Binance format
         interval_map = {
             "1m": "1m", "5m": "5m", "10m": "10m", "15m": "15m", "30m": "30m",
@@ -258,13 +270,18 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
             return ohlcv_data
         else:
             logger.warning(f"No OHLCV data from Binance for {symbol} (Binance symbol: {binance_symbol})")
-            return None
     except requests.exceptions.HTTPError as e:
         logger.warning(f"Binance HTTP error for {symbol} (Binance symbol: {binance_symbol}): {e}")
-        return None
     except Exception as e:
         logger.warning(f"Binance error for {symbol} (Binance symbol: {binance_symbol}): {e}")
-        return None
+
+    if cdc_partial:
+        logger.warning(
+            f"⚠️ Returning {len(cdc_partial)} Crypto.com candles for {symbol} after Binance fallback failed "
+            f"(indicators may use defaults if <50)"
+        )
+        return cdc_partial
+    return None
 
 def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float, ohlcv_data_daily: Optional[List[Dict]] = None, ohlcv_data_volume: Optional[List[Dict]] = None) -> Dict[str, float]:
     """Calculate all technical indicators from OHLCV data
