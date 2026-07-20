@@ -1,4 +1,5 @@
 """DecisionReason helper for tracking buy order decisions"""
+import re
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 from enum import Enum
@@ -39,6 +40,7 @@ class ReasonCode(str, Enum):
     DECISION_PIPELINE_NOT_CALLED = "DECISION_PIPELINE_NOT_CALLED"
     SIGNAL_ID_MISSING = "SIGNAL_ID_MISSING"
     MISSING_ORDER_INTENT = "MISSING_ORDER_INTENT"
+    TELEGRAM_API_ERROR = "TELEGRAM_API_ERROR"
     
     # Fail reasons
     EXCHANGE_REJECTED = "EXCHANGE_REJECTED"
@@ -141,6 +143,22 @@ def make_execute(
     )
 
 
+def _looks_like_telegram_api_error(error_msg: str) -> bool:
+    """True when the error is a Telegram Bot API / delivery failure, not a trade guardrail."""
+    lower = (error_msg or "").lower()
+    if not lower:
+        return False
+    if "api.telegram.org" in lower or "telegram api error" in lower:
+        return True
+    if "telegram http" in lower or "[telegram_failed]" in lower:
+        return True
+    if "telegram" in lower and any(
+        token in lower for token in ("bad request", "can't parse", "message is too long", "http 400", "http 429")
+    ):
+        return True
+    return False
+
+
 def classify_exchange_error(error_msg: str) -> str:
     """Classify exchange or local block error into canonical reason code"""
     if not error_msg:
@@ -148,15 +166,21 @@ def classify_exchange_error(error_msg: str) -> str:
 
     error_lower = error_msg.lower()
 
+    # Telegram delivery failures must not be labeled as trading guardrails.
+    if _looks_like_telegram_api_error(error_msg):
+        return ReasonCode.TELEGRAM_API_ERROR.value
+
     if error_lower.startswith("system_core") or error_lower.startswith("blocked:"):
         return ReasonCode.GUARDRAIL_BLOCKED.value
     if "guardrail" in error_lower or "trade_blocked" in error_lower:
         return ReasonCode.GUARDRAIL_BLOCKED.value
 
     error_upper = error_msg.upper()
-    
-    # Authentication errors
-    if any(code in error_upper for code in ["401", "40101", "40103", "AUTHENTICATION"]):
+
+    # Authentication errors (word-boundary style; avoid matching "401" inside bot tokens/URLs)
+    if "AUTHENTICATION" in error_upper or "40101" in error_upper or "40103" in error_upper:
+        return ReasonCode.AUTHENTICATION_ERROR.value
+    if re.search(r"(?:^|[^0-9])401(?:[^0-9]|$)", error_msg):
         return ReasonCode.AUTHENTICATION_ERROR.value
     
     # Insufficient funds/balance
@@ -166,7 +190,9 @@ def classify_exchange_error(error_msg: str) -> str:
         return ReasonCode.INSUFFICIENT_FUNDS.value
     
     # Rate limiting
-    if any(code in error_upper for code in ["429", "RATE", "LIMIT", "TOO MANY"]):
+    if any(code in error_upper for code in ["429", "RATE LIMIT", "TOO MANY"]):
+        return ReasonCode.RATE_LIMIT.value
+    if re.search(r"(?:^|[^0-9])429(?:[^0-9]|$)", error_msg):
         return ReasonCode.RATE_LIMIT.value
     
     # Timeout

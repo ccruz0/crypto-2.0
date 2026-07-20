@@ -1382,13 +1382,20 @@ def update_telegram_message_decision_trace(
     from datetime import timedelta
     
     try:
-        # Find the most recent BUY SIGNAL message for this symbol without decision tracing
+        # Find the most recent BUY SIGNAL message for this symbol without decision tracing.
+        # Never attach trade decision codes onto Telegram delivery failures
+        # ([TELEGRAM_FAILED] previews often still contain "BUY SIGNAL" text).
         threshold = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
         recent_message = db.query(TelegramMessage).filter(
             TelegramMessage.symbol == symbol,
             TelegramMessage.message.like(f"%{message_pattern}%"),
             TelegramMessage.decision_type.is_(None),  # Only update messages without decision tracing
             TelegramMessage.timestamp >= threshold,
+            ~TelegramMessage.message.like("%[TELEGRAM_FAILED]%"),
+            or_(
+                TelegramMessage.throttle_reason.is_(None),
+                ~TelegramMessage.throttle_reason.ilike("%telegram%"),
+            ),
         ).order_by(TelegramMessage.timestamp.desc()).first()
         
         if recent_message:
