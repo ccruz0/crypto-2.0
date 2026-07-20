@@ -55,9 +55,17 @@ jobs:
           cd ${COMPOSE_DIR}
           # Sync compose from main so market-updater gets TRADING_CONFIG_PATH + volume
           # without requiring a full working-tree reset on the host.
-          # SSM RunShellScript runs as root; repo + GitHub SSH keys belong to ubuntu.
-          sudo -u ubuntu -H git -C ${COMPOSE_DIR} fetch origin main
-          sudo -u ubuntu -H git -C ${COMPOSE_DIR} checkout origin/main -- docker-compose.yml
+          # SSM runs as root; ubuntu deploy key is mode 600. Use it via GIT_SSH_COMMAND.
+          # Best-effort: never block ECR pull/up if git SSH fails under the agent.
+          export HOME=/home/ubuntu
+          export GIT_SSH_COMMAND='ssh -i /home/ubuntu/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
+          git config --global --add safe.directory ${COMPOSE_DIR} 2>/dev/null || true
+          if git -C ${COMPOSE_DIR} fetch origin main \
+            && git -C ${COMPOSE_DIR} checkout origin/main -- docker-compose.yml; then
+            echo "Compose synced from origin/main"
+          else
+            echo "WARNING: compose git sync failed; continuing with on-host docker-compose.yml"
+          fi
           aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${REGISTRY}
           CUR=\$(docker inspect --format='{{.Config.Image}}' \$(docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps -q backend-aws) 2>/dev/null || true)
           [ -n "\$CUR" ] && docker tag "\$CUR" atp-backend-rollback:predeploy || true
