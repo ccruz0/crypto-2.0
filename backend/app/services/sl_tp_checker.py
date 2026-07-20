@@ -546,65 +546,64 @@ class SLTPCheckerService:
                 if not missing_items:
                     continue  # Skip if nothing is missing (shouldn't happen, but just in case)
                 
-                # Build message for this specific position
-                message = f"⚠️ <b>UNPROTECTED POSITION: {symbol}</b>\n\n"
-                message += f"📊 Symbol: <b>{symbol}</b>\n"
+                # Spanish operator copy: state the problem, then list actionable options.
+                # Reminder path currently tracks long balances only → close = SELL.
+                close_key = f"{symbol}:LONG"
+                message = f"⚠️ <b>POSICIÓN SIN PROTECCIÓN: {symbol}</b>\n\n"
+                message += (
+                    "⚠️ <b>Problema:</b> hay una posición abierta "
+                    f"<b>sin {' y '.join(missing_items)}</b>.\n"
+                    "Sin esa protección la posición queda expuesta.\n\n"
+                )
+                message += f"📊 Símbolo: <b>{symbol}</b>\n"
                 message += f"💰 Balance: {balance:.6f} {currency}\n\n"
-                
-                # Show status of SL and TP
-                sl_status = "✅" if has_sl else "❌ MISSING"
-                tp_status = "✅" if has_tp else "❌ MISSING"
-                
+
+                sl_status = "✅ Activo" if has_sl else "❌ Falta"
+                tp_status = "✅ Activo" if has_tp else "❌ Falta"
+
                 message += f"🛑 Stop Loss: {sl_status}"
                 if sl_price:
-                    message += f" @ ${sl_price:.4f}" if has_sl else f" (suggested price: ${sl_price:.4f})"
+                    message += f" @ ${sl_price:.4f}" if has_sl else f" (precio sugerido: ${sl_price:.4f})"
                 message += "\n"
-                
+
                 message += f"🚀 Take Profit: {tp_status}"
                 if tp_price:
-                    message += f" @ ${tp_price:.4f}" if has_tp else f" (suggested price: ${tp_price:.4f})"
+                    message += f" @ ${tp_price:.4f}" if has_tp else f" (precio sugerido: ${tp_price:.4f})"
                 message += "\n\n"
-                
-                # Show what's missing (buttons will provide options)
-                if not has_sl and not has_tp:
-                    # Missing both
-                    message += "❌ Missing SL and TP\n\n"
-                    message += "💡 Use buttons below to create orders:"
-                elif not has_sl:
-                    # Only missing SL
-                    message += "❌ Missing SL\n\n"
-                    message += "💡 Use buttons below to create order:"
-                elif not has_tp:
-                    # Only missing TP
-                    message += "❌ Missing TP\n\n"
-                    message += "💡 Use buttons below to create order:"
-                
-                # Build buttons based on what's missing
+
+                message += "<b>Opciones:</b>\n"
+                opt_n = 1
+                if not has_sl:
+                    message += f"{opt_n}. Crear un SL\n"
+                    opt_n += 1
+                if not has_tp:
+                    message += f"{opt_n}. Crear un TP\n"
+                    opt_n += 1
+                message += f"{opt_n}. Cerrar la posición (vender a mercado → SELL)\n\n"
+                message += "Elige un botón abajo."
+
                 buttons = []
-                
+
                 if not has_sl and not has_tp:
-                    # Missing both - show buttons for both
                     buttons.append([
-                        {"text": "✅ Create SL & TP", "callback_data": f"create_sl_tp_{symbol}"},
+                        {"text": "🛡️ Crear SL y TP", "callback_data": f"create_sl_tp_{symbol}"},
                     ])
                     buttons.append([
-                        {"text": "🛑 SL Only", "callback_data": f"create_sl_{symbol}"},
-                        {"text": "🚀 TP Only", "callback_data": f"create_tp_{symbol}"}
+                        {"text": "🛑 Crear SL", "callback_data": f"create_sl_{symbol}"},
+                        {"text": "🚀 Crear TP", "callback_data": f"create_tp_{symbol}"}
                     ])
                 elif not has_sl:
-                    # Only missing SL
                     buttons.append([
-                        {"text": "🛑 Create SL", "callback_data": f"create_sl_{symbol}"}
+                        {"text": "🛑 Crear SL", "callback_data": f"create_sl_{symbol}"}
                     ])
                 elif not has_tp:
-                    # Only missing TP
                     buttons.append([
-                        {"text": "🚀 Create TP", "callback_data": f"create_tp_{symbol}"}
+                        {"text": "🚀 Crear TP", "callback_data": f"create_tp_{symbol}"}
                     ])
-                
-                # Always add skip button at the end
+
                 buttons.append([
-                    {"text": "⏭️ Don't Ask Again", "callback_data": f"skip_sl_tp_{symbol}"}
+                    {"text": "🔴 Cerrar (vender)", "callback_data": f"posrev_close:{close_key}"},
+                    {"text": "⏭️ No preguntar más", "callback_data": f"skip_sl_tp_{symbol}"}
                 ])
                 
                 # Send individual message for this position with buttons

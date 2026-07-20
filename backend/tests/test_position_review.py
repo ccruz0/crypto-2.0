@@ -176,3 +176,71 @@ def test_execute_close_flat_returns_error(db):
         tc.get_account_summary.return_value = {"accounts": []}
         result = prs.execute_close(db, "DOT_USD", "SHORT")
     assert result["error"] == "POSITION_NOT_FOUND"
+
+
+# --- alert copy / keyboard (unprotected vs protected) ----------------------
+def test_format_alert_unprotected_states_problem_and_options():
+    text = prs._format_alert({
+        **_pos("DOT_USD", "SHORT", qty=22.4, mv=-19.4),
+        "has_sl": False,
+        "has_tp": False,
+    })
+    assert "Problema" in text
+    assert "sin SL y TP" in text
+    assert "Crear un SL" in text
+    assert "Crear un TP" in text
+    assert "Cerrar la posición (comprar" in text
+    assert "BUY" in text
+
+
+def test_format_alert_long_close_says_sell():
+    text = prs._format_alert({
+        **_pos("BTC_USD", "LONG", qty=0.01, mv=600.0),
+        "has_sl": True,
+        "has_tp": False,
+    })
+    assert "sin TP" in text
+    assert "Crear un TP" in text
+    assert "Crear un SL" not in text
+    assert "Cerrar la posición (vender" in text
+    assert "SELL" in text
+
+
+def test_format_alert_protected_keeps_simple_close_prompt():
+    text = prs._format_alert({
+        **_pos("ETH_USD", "LONG", qty=1.0, mv=2000.0),
+        "has_sl": True,
+        "has_tp": True,
+    })
+    assert "ya tiene SL y TP" in text
+    assert "Problema" not in text
+    assert "vender" in text
+
+
+def test_alert_keyboard_unprotected_offers_sl_tp_and_close():
+    kb = prs._alert_keyboard({
+        **_pos("DOT_USD", "SHORT"),
+        "has_sl": False,
+        "has_tp": False,
+    })
+    flat = [b["callback_data"] for row in kb["inline_keyboard"] for b in row]
+    labels = [b["text"] for row in kb["inline_keyboard"] for b in row]
+    assert "create_sl_DOT_USD" in flat
+    assert "create_tp_DOT_USD" in flat
+    assert "create_sl_tp_DOT_USD" in flat
+    assert f"{prs.PREFIX_CLOSE}DOT_USD:SHORT" in flat
+    assert any("Cerrar (comprar)" in t for t in labels)
+
+
+def test_alert_keyboard_protected_only_close_and_snooze():
+    kb = prs._alert_keyboard({
+        **_pos("BTC_USD", "LONG", qty=1.0, mv=60000.0),
+        "has_sl": True,
+        "has_tp": True,
+    })
+    flat = [b["callback_data"] for row in kb["inline_keyboard"] for b in row]
+    assert flat == [
+        f"{prs.PREFIX_CLOSE}BTC_USD:LONG",
+        f"{prs.PREFIX_SNOOZE}BTC_USD:LONG",
+    ]
+    assert "create_sl_" not in "".join(flat)

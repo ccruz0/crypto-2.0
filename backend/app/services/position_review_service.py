@@ -1,9 +1,11 @@
-"""Daily Position Review — prompt the operator to close each open position, with snooze.
+"""Daily Position Review — prompt the operator about open positions (close / protect / snooze).
 
-Once a day a Telegram message is sent for every open position (long or short) with two
-buttons: **Close** (executes a market close after a confirm tap) and **Keep 30 days**
-(snoozes prompts for that position for 30 days). A position that is closed and later
-re-opened is treated as a NEW case and prompted again even if the old one was snoozed.
+Once a day a Telegram message is sent for every open position (long or short). When the
+position is missing SL and/or TP, the message states that problem clearly and offers:
+**Crear SL**, **Crear TP**, and **Cerrar** (market sell for LONG / buy for SHORT). Fully
+protected positions still get a simple close/snooze prompt. **Mantener 30 días** snoozes
+prompts for that position for 30 days. A position that is closed and later re-opened is
+treated as a NEW case and prompted again even if the old one was snoozed.
 
 Design notes
 ------------
@@ -201,15 +203,141 @@ def snooze_position(db: Session, position_key: str, now: Optional[datetime] = No
 
 
 # --- Telegram rendering -----------------------------------------------------
-def _alert_keyboard(position_key: str) -> dict:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "🔴 Cerrar", "callback_data": f"{PREFIX_CLOSE}{position_key}"},
-                {"text": "😴 Mantener 30 días", "callback_data": f"{PREFIX_SNOOZE}{position_key}"},
-            ]
+def _close_action_label(side: str) -> str:
+    """Market close wording: LONG closes with SELL, SHORT covers with BUY."""
+    return "vender" if str(side).upper() == "LONG" else "comprar"
+
+
+def _close_button_text(side: str) -> str:
+    return f"🔴 Cerrar ({_close_action_label(side)})"
+
+
+def _missing_protection_items(has_sl: bool, has_tp: bool) -> List[str]:
+    missing: List[str] = []
+    if not has_sl:
+        missing.append("SL")
+    if not has_tp:
+        missing.append("TP")
+    return missing
+
+
+def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
+    """Best-effort SL/TP presence for a live position (exchange open orders, DB fallback).
+
+    On any failure assumes unprotected so the operator still sees Create SL/TP options.
+    """
+    symbol_u = str(symbol).upper()
+    variants = {symbol_u}
+    if symbol_u.endswith("_USDT"):
+        variants.add(symbol_u.replace("_USDT", "_USD"))
+    elif symbol_u.endswith("_USD"):
+        variants.add(symbol_u.replace("_USD", "_USDT"))
+
+    try:
+        from app.services.brokers.crypto_com_trade import trade_client
+
+        all_orders = (trade_client.get_open_orders() or {}).get("data") or []
+        matched = []
+        for order in all_orders:
+            inst = str(order.get("instrument_name") or "").replace("/", "_").upper()
+            if inst in variants:
+                matched.append(order)
+
+        has_sl = False
+        has_tp = False
+        for o in matched:
+            status = (o.get("order_status") or o.get("status") or "").upper()
+            if status and status not in ("ACTIVE", "NEW", "PENDING"):
+                continue
+            otype = str(o.get("order_type") or "").lower()
+            if any(t in otype for t in ("stop", "stop_loss")):
+                has_sl = True
+            if "take" in otype and "profit" in otype:
+                has_tp = True
+            elif "profit" in otype and "take" in otype:
+                has_tp = True
+        return {"has_sl": has_sl, "has_tp": has_tp}
+    except Exception as e:
+        logger.warning("posrev: exchange protection check failed for %s: %s", symbol, e)
+
+    try:
+        from sqlalchemy import or_
+
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+
+        active = [
+            OrderStatusEnum.NEW,
+            OrderStatusEnum.ACTIVE,
+            OrderStatusEnum.PENDING,
         ]
-    }
+        sl_n = (
+            db.query(ExchangeOrder)
+            .filter(
+                or_(*[ExchangeOrder.symbol == v for v in variants]),
+                ExchangeOrder.order_type.in_(["STOP_LIMIT", "STOP_LOSS", "STOP_LOSS_LIMIT"]),
+                ExchangeOrder.status.in_(active),
+            )
+            .count()
+        )
+        tp_n = (
+            db.query(ExchangeOrder)
+            .filter(
+                or_(*[ExchangeOrder.symbol == v for v in variants]),
+                ExchangeOrder.order_type.in_(["TAKE_PROFIT_LIMIT", "TAKE_PROFIT"]),
+                ExchangeOrder.status.in_(active),
+            )
+            .count()
+        )
+        return {"has_sl": sl_n > 0, "has_tp": tp_n > 0}
+    except Exception as e:
+        logger.warning("posrev: DB protection check failed for %s: %s", symbol, e)
+        return {"has_sl": False, "has_tp": False}
+
+
+def enrich_positions_with_protection(
+    db: Session, positions: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Attach has_sl / has_tp to each position dict (mutates copies)."""
+    enriched: List[Dict[str, Any]] = []
+    for p in positions:
+        row = dict(p)
+        status = _get_protection_status(db, row["symbol"])
+        row["has_sl"] = bool(status.get("has_sl"))
+        row["has_tp"] = bool(status.get("has_tp"))
+        enriched.append(row)
+    return enriched
+
+
+def _alert_keyboard(p: Dict[str, Any]) -> dict:
+    """Inline actions: create missing SL/TP and/or market-close (+ snooze)."""
+    position_key = p["key"]
+    symbol = p["symbol"]
+    side = p.get("side", "LONG")
+    has_sl = bool(p.get("has_sl"))
+    has_tp = bool(p.get("has_tp"))
+    missing = _missing_protection_items(has_sl, has_tp)
+
+    rows: List[List[Dict[str, str]]] = []
+    if missing:
+        create_row: List[Dict[str, str]] = []
+        if not has_sl:
+            create_row.append({"text": "🛑 Crear SL", "callback_data": f"create_sl_{symbol}"})
+        if not has_tp:
+            create_row.append({"text": "🚀 Crear TP", "callback_data": f"create_tp_{symbol}"})
+        if create_row:
+            rows.append(create_row)
+        if not has_sl and not has_tp:
+            rows.append(
+                [{"text": "🛡️ Crear SL y TP", "callback_data": f"create_sl_tp_{symbol}"}]
+            )
+
+    rows.append(
+        [
+            {"text": _close_button_text(side), "callback_data": f"{PREFIX_CLOSE}{position_key}"},
+            {"text": "😴 Mantener 30 días", "callback_data": f"{PREFIX_SNOOZE}{position_key}"},
+        ]
+    )
+    return {"inline_keyboard": rows}
 
 
 def _confirm_keyboard(position_key: str) -> dict:
@@ -224,13 +352,52 @@ def _confirm_keyboard(position_key: str) -> dict:
 
 
 def _format_alert(p: Dict[str, Any]) -> str:
-    return (
-        "📋 <b>REVISIÓN DE POSICIÓN</b>\n\n"
+    """Spanish operator copy: state the problem when SL/TP is missing, then list options."""
+    side = str(p.get("side", "LONG")).upper()
+    has_sl = bool(p.get("has_sl"))
+    has_tp = bool(p.get("has_tp"))
+    missing = _missing_protection_items(has_sl, has_tp)
+    close_verb = _close_action_label(side)
+    close_side = "SELL" if side == "LONG" else "BUY"
+
+    header = "📋 <b>REVISIÓN DE POSICIÓN</b>\n\n"
+    facts = (
         f"📈 Símbolo: <b>{p['symbol']}</b>\n"
-        f"🔄 Lado: <b>{p['side']}</b>\n"
+        f"🔄 Lado: <b>{side}</b>\n"
         f"📦 Cantidad: {p['qty']}\n"
-        f"💵 Valor: ${p['market_value']:.2f}\n\n"
-        "¿Quieres cerrarla?"
+        f"💵 Valor: ${float(p['market_value']):.2f}\n"
+    )
+
+    if missing:
+        sl_status = "✅ Activo" if has_sl else "❌ Falta"
+        tp_status = "✅ Activo" if has_tp else "❌ Falta"
+        missing_es = " y ".join(missing)
+        problem = (
+            f"⚠️ <b>Problema:</b> hay una posición abierta <b>sin {missing_es}</b>.\n"
+            "Sin esa protección la posición queda expuesta.\n\n"
+            f"🛑 Stop Loss: {sl_status}\n"
+            f"🚀 Take Profit: {tp_status}\n\n"
+            "<b>Opciones:</b>\n"
+        )
+        options: List[str] = []
+        n = 1
+        if not has_sl:
+            options.append(f"{n}. Crear un SL")
+            n += 1
+        if not has_tp:
+            options.append(f"{n}. Crear un TP")
+            n += 1
+        options.append(
+            f"{n}. Cerrar la posición ({close_verb} a mercado → orden {close_side})"
+        )
+        return header + facts + "\n" + problem + "\n".join(options) + "\n\nElige un botón abajo."
+
+    return (
+        header
+        + facts
+        + "\n"
+        + "✅ Esta posición ya tiene SL y TP.\n\n"
+        + f"¿Quieres cerrarla de todas formas ({close_verb} a mercado → {close_side})?"
     )
 
 
@@ -241,7 +408,9 @@ def send_review_alerts(positions: List[Dict[str, Any]]) -> int:
     sent = 0
     for p in positions:
         try:
-            ok = telegram_notifier.send_message(_format_alert(p), reply_markup=_alert_keyboard(p["key"]))
+            ok = telegram_notifier.send_message(
+                _format_alert(p), reply_markup=_alert_keyboard(p)
+            )
             if ok:
                 sent += 1
         except Exception as e:
@@ -253,6 +422,7 @@ def run_review(db: Session, now: Optional[datetime] = None) -> Dict[str, Any]:
     """Enumerate positions, update state, and send prompts for the non-snoozed ones."""
     positions = enumerate_open_positions(db)
     to_alert = evaluate_positions(db, positions, now=now)
+    to_alert = enrich_positions_with_protection(db, to_alert)
     sent = send_review_alerts(to_alert)
     logger.info("posrev: reviewed %d positions, alerted %d, sent %d", len(positions), len(to_alert), sent)
     return {"open": len(positions), "alerted": len(to_alert), "sent": sent}
@@ -333,8 +503,15 @@ def handle_close_request_callback(chat_id: str, callback_data: str, db: Session)
     from app.services.telegram_notifier import telegram_notifier
 
     key = callback_data[len(PREFIX_CLOSE):]
+    try:
+        _symbol, side = key.rsplit(":", 1)
+    except ValueError:
+        side = "LONG"
+    close_verb = _close_action_label(side)
+    close_side = "SELL" if str(side).upper() == "LONG" else "BUY"
     telegram_notifier.send_message(
-        f"⚠️ ¿Confirmas <b>CERRAR</b> la posición <b>{key}</b>? Esto coloca una orden de mercado real.",
+        f"⚠️ ¿Confirmas <b>CERRAR</b> la posición <b>{key}</b>?\n\n"
+        f"Esto coloca una orden de mercado real: <b>{close_verb}</b> ({close_side}).",
         reply_markup=_confirm_keyboard(key),
     )
     return True
