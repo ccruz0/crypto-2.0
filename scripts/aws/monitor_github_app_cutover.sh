@@ -125,10 +125,13 @@ inspect_backend_logs() {
     return 0
   fi
 
-  patterns='failed to mint|GitHub API auth unavailable|auth_method=none|legacy_pat|PermissionError'
-  if echo "$logs" | grep -Eiq "$patterns"; then
+  # Match real auth failures only. Do not match diagnostic keys like
+  # legacy_pat_escape_hatch (false positive that failed the 2026-07-20 15:00 run).
+  patterns='failed to mint|GitHub API auth unavailable|auth_method=none|auth_method=legacy_pat|PermissionError'
+  auth_hits="$(echo "$logs" | grep -Ei "$patterns" | grep -Eiv 'GitHub auth diagnostics:' || true)"
+  if [[ -n "$auth_hits" ]]; then
     echo "    GitHub auth log warnings:"
-    echo "$logs" | grep -Ei "$patterns" | tail -20 | sed 's/^/      /'
+    echo "$auth_hits" | tail -20 | sed 's/^/      /'
     note_fail "$service logs contain GitHub auth warnings"
   else
     echo "    GitHub auth log warnings: none"
