@@ -23,6 +23,12 @@ BALI_TZ = pytz.timezone('Asia/Makassar')  # Makassar is the same timezone as Bal
 # Friendly labels for decision reason codes in the daily rollup.
 _REASON_CODE_LABELS = {
     "GUARDRAIL_BLOCKED": "Bloqueado por guardrail",
+    "ONE_ACTIVE_TRADE_PER_COIN": "Máx. 1 trade activo por moneda (límite per-coin)",
+    "SYSTEM_CORE_MAX_OPEN_TRADES": "Máx. trades abiertos (portfolio)",
+    "SYSTEM_CORE_RSI": "RSI fuera de rango (system_core)",
+    "SYSTEM_CORE_MA200": "Precio vs MA200 (system_core)",
+    "SYSTEM_CORE_MAX_TRADE_USD": "Tope USD por trade (system_core)",
+    "SYSTEM_CORE_DAILY_DRAWDOWN": "Drawdown diario (system_core)",
     "INVALID_TRADE_AMOUNT": "Amount USD no configurado",
     "TRADE_DISABLED": "Trade desactivado",
     "ALERTS_DISABLED": "Alertas desactivadas",
@@ -320,8 +326,18 @@ class DailySummaryService:
             return ("INVALID_TRADE_AMOUNT", "Amount USD no configurado")
         if "MIN_SECONDS_BETWEEN" in detail_upper:
             return ("MIN_SECONDS_BETWEEN_ORDERS", "Cooldown entre órdenes")
+        if "ONE_ACTIVE_TRADE_PER_COIN" in detail_upper or "SYSTEM_CORE_ONE_ACTIVE" in detail_upper:
+            return (
+                "ONE_ACTIVE_TRADE_PER_COIN",
+                "Máx. 1 trade activo por moneda (límite per-coin)",
+            )
 
         label = _REASON_CODE_LABELS.get(reason_code, reason_code.replace("_", " ").title())
+        if reason_code == "ONE_ACTIVE_TRADE_PER_COIN":
+            return (
+                "ONE_ACTIVE_TRADE_PER_COIN",
+                "Máx. 1 trade activo por moneda (límite per-coin)",
+            )
         if reason_code == "GUARDRAIL_BLOCKED" and detail:
             short = detail
             if short.lower().startswith("blocked:"):
