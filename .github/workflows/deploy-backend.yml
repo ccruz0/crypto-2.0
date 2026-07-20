@@ -55,9 +55,9 @@ jobs:
           cd ${COMPOSE_DIR}
           # Sync compose from main so market-updater gets TRADING_CONFIG_PATH + volume
           # without requiring a full working-tree reset on the host.
-          # SSM may run as a different user than the repo owner → safe.directory.
-          git -c safe.directory=${COMPOSE_DIR} fetch origin main
-          git -c safe.directory=${COMPOSE_DIR} checkout origin/main -- docker-compose.yml
+          # SSM RunShellScript runs as root; repo + GitHub SSH keys belong to ubuntu.
+          sudo -u ubuntu -H git -C ${COMPOSE_DIR} fetch origin main
+          sudo -u ubuntu -H git -C ${COMPOSE_DIR} checkout origin/main -- docker-compose.yml
           aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${REGISTRY}
           CUR=\$(docker inspect --format='{{.Config.Image}}' \$(docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps -q backend-aws) 2>/dev/null || true)
           [ -n "\$CUR" ] && docker tag "\$CUR" atp-backend-rollback:predeploy || true
