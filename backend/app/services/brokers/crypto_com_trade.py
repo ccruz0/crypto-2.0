@@ -3897,9 +3897,18 @@ class CryptoComTradeClient:
         # - BUY: use "notional" parameter (amount in USD)
         # - SELL: use "quantity" parameter (amount of crypto)
         client_oid = str(uuid.uuid4())
+
+        # Resolve bare / variant symbols to a real instrument_name (ALGO → ALGO_USD).
+        resolved_symbol = self.resolve_tradable_instrument(symbol) or symbol
+        if resolved_symbol != symbol:
+            logger.info(
+                "[ORDER_PLACEMENT] Resolved instrument %s → %s",
+                symbol,
+                resolved_symbol,
+            )
         
         params: Dict[str, Any] = {
-            "instrument_name": symbol,
+            "instrument_name": resolved_symbol,
             "side": side_upper,  # UPPERCASE as per documentation
             "type": "MARKET",
             "client_oid": client_oid
@@ -3920,7 +3929,7 @@ class CryptoComTradeClient:
                 params["notional"] = notional_str
         else:  # SELL
             # Get instrument metadata for debug logging
-            inst_meta = self._get_instrument_metadata(symbol)
+            inst_meta = self._get_instrument_metadata(resolved_symbol)
             if inst_meta:
                 quantity_decimals = inst_meta["quantity_decimals"]
                 qty_tick_size = inst_meta["qty_tick_size"]
@@ -3933,12 +3942,12 @@ class CryptoComTradeClient:
             # Normalize quantity using shared helper
             assert qty is not None
             raw_quantity = float(qty)
-            normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
+            normalized_qty_str = self.normalize_quantity(resolved_symbol, raw_quantity)
 
             # Emergency fallback for forced-close / protection paths when metadata missing
             if normalized_qty_str is None:
                 normalized_qty_str, norm_diag = self.normalize_quantity_safe_with_fallback(
-                    symbol=symbol,
+                    symbol=resolved_symbol,
                     raw_quantity=raw_quantity,
                     for_sl_tp=True,
                 )
@@ -3950,18 +3959,26 @@ class CryptoComTradeClient:
             
             # Check if normalized quantity is valid
             if normalized_qty_str is None:
-                error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
+                error_msg = (
+                    f"Cannot place MARKET SELL for {symbol}"
+                    f"{f' (resolved {resolved_symbol})' if resolved_symbol != symbol else ''}: "
+                    f"quantity {raw_quantity} invalid or instrument rules unavailable "
+                    f"(min_quantity={min_quantity})"
+                )
                 logger.error(f"❌ {error_msg}")
-                # Send Telegram alert if possible (non-blocking)
+                # Send Telegram alert if possible (non-blocking). Single clear message
+                # replaces the previous double spam ("rules unavailable" + code 209).
                 try:
                     from app.services.telegram_notifier import telegram_notifier
-                    telegram_notifier.send_message(f"⚠️ Order failed: {error_msg}")
+                    telegram_notifier.send_message(f"⚠️ Order blocked: {error_msg}")
                 except Exception:
                     pass  # Non-blocking
                 return {
                     "error": error_msg,
                     "status": "FAILED",
-                    "reason": "quantity_below_min"
+                    "reason": "quantity_below_min_or_instrument_unavailable",
+                    "symbol": symbol,
+                    "resolved_symbol": resolved_symbol,
                 }
             
             # Deterministic debug logs (before sending order)
@@ -6297,6 +6314,18 @@ class CryptoComTradeClient:
             candidates.append(base[:-4] + "_USDT")
         if base.endswith("_USDT"):
             candidates.append(base[:-5] + "_USD")
+        # Bare base currency (e.g. "ALGO") is not a valid Crypto.com instrument.
+        # Try common quote pairs so metadata/order placement can recover
+        # (observed 2026-07-21: ALGO sell → code 209 Invalid instrument_name).
+        if base and "_" not in base and "-" not in base:
+            candidates.extend(
+                [
+                    f"{base}_USD",
+                    f"{base}_USDT",
+                    f"{base}-USD",
+                    f"{base}-USDT",
+                ]
+            )
 
         seen: set[str] = set()
         uniq: List[str] = []
@@ -6308,6 +6337,27 @@ class CryptoComTradeClient:
             uniq.append(cand_clean)
         return uniq
 
+    def resolve_tradable_instrument(self, symbol: str) -> Optional[str]:
+        """Return the exchange instrument_name that has metadata, or None.
+
+        Bare base currencies (e.g. ``ALGO``) are not valid Crypto.com instruments.
+        Prefer a candidate that includes a quote suffix when the input was bare.
+        """
+        symbol_upper = (symbol or "").strip().upper()
+        if not symbol_upper:
+            return None
+        if self._get_instrument_metadata(symbol_upper) is None:
+            return None
+
+        candidates = self._instrument_symbol_candidates(symbol_upper)
+        # Prefer a candidate that looks like a real pair (has quote separator).
+        pair_candidates = [c for c in candidates if "_" in c or "-" in c]
+        search_order = pair_candidates + [c for c in candidates if c not in pair_candidates]
+        for cand in search_order:
+            cached = self._instrument_cache.get(cand)
+            if cached is not None:
+                return cand.replace("-", "_")
+        return symbol_upper.replace("-", "_")
     @staticmethod
     def _parse_instrument_entry(inst: dict, symbol_upper: str) -> Optional[dict]:
         """Parse a single instrument entry from the exchange API into metadata dict."""

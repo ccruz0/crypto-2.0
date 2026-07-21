@@ -234,12 +234,21 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
         variants.add(symbol_u.replace("_USD", "_USDT"))
 
     try:
-        from app.services.brokers.crypto_com_trade import trade_client
+        from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 
-        all_orders = (trade_client.get_open_orders() or {}).get("data") or []
+        # Regular get_open_orders misses trigger/advanced SL-TP legs; the daily
+        # review then claimed "sin SL/TP" while protective orders were live
+        # (observed 2026-07-21). Prefer the unified fetch.
+        fetch_result = fetch_unified_open_orders()
+        all_orders = list(fetch_result.get("all_raw_orders") or [])
+        if not all_orders:
+            all_orders = list(fetch_result.get("data") or [])
+
         matched = []
         for order in all_orders:
-            inst = str(order.get("instrument_name") or "").replace("/", "_").upper()
+            inst = str(
+                order.get("instrument_name") or order.get("symbol") or ""
+            ).replace("/", "_").upper()
             if inst in variants:
                 matched.append(order)
 
@@ -247,16 +256,22 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
         has_tp = False
         for o in matched:
             status = (o.get("order_status") or o.get("status") or "").upper()
-            if status and status not in ("ACTIVE", "NEW", "PENDING"):
+            if status and status not in ("ACTIVE", "NEW", "PENDING", "PARTIALLY_FILLED"):
                 continue
-            otype = str(o.get("order_type") or "").lower()
-            if any(t in otype for t in ("stop", "stop_loss")):
+            otype = str(o.get("order_type") or o.get("type") or "").lower()
+            # Crypto.com uses STOP_LIMIT / TAKE_PROFIT_LIMIT for protective orders.
+            # Matching only the literal "stop_loss" missed live STOP_LIMIT rows, so
+            # the daily review kept saying "sin SL/TP" while protection already existed.
+            if any(t in otype for t in ("stop_limit", "stop_loss", "stop-loss", "stop")):
                 has_sl = True
-            if "take" in otype and "profit" in otype:
+            if any(t in otype for t in ("take_profit", "take-profit")) or (
+                "take" in otype and "profit" in otype
+            ):
                 has_tp = True
-            elif "profit" in otype and "take" in otype:
-                has_tp = True
-        return {"has_sl": has_sl, "has_tp": has_tp}
+        # Prefer the live exchange view when it sees protection. If it sees none,
+        # still fall through to the DB — open-order fetches can briefly miss rows.
+        if has_sl or has_tp:
+            return {"has_sl": has_sl, "has_tp": has_tp}
     except Exception as e:
         logger.warning("posrev: exchange protection check failed for %s: %s", symbol, e)
 
@@ -268,14 +283,19 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
         active = [
             OrderStatusEnum.NEW,
             OrderStatusEnum.ACTIVE,
-            OrderStatusEnum.PENDING,
+            OrderStatusEnum.PARTIALLY_FILLED,
         ]
         sl_n = (
             db.query(ExchangeOrder)
             .filter(
                 or_(*[ExchangeOrder.symbol == v for v in variants]),
-                ExchangeOrder.order_type.in_(["STOP_LIMIT", "STOP_LOSS", "STOP_LOSS_LIMIT"]),
                 ExchangeOrder.status.in_(active),
+                or_(
+                    ExchangeOrder.order_type.in_(
+                        ["STOP_LIMIT", "STOP_LOSS", "STOP_LOSS_LIMIT"]
+                    ),
+                    ExchangeOrder.order_role == "STOP_LOSS",
+                ),
             )
             .count()
         )
@@ -283,8 +303,13 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
             db.query(ExchangeOrder)
             .filter(
                 or_(*[ExchangeOrder.symbol == v for v in variants]),
-                ExchangeOrder.order_type.in_(["TAKE_PROFIT_LIMIT", "TAKE_PROFIT"]),
                 ExchangeOrder.status.in_(active),
+                or_(
+                    ExchangeOrder.order_type.in_(
+                        ["TAKE_PROFIT_LIMIT", "TAKE_PROFIT"]
+                    ),
+                    ExchangeOrder.order_role == "TAKE_PROFIT",
+                ),
             )
             .count()
         )
