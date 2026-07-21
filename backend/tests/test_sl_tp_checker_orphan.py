@@ -74,6 +74,29 @@ def test_ghost_tp_not_on_exchange_is_flagged():
     assert "missing parent_order_id" not in issues["orphaned_orders"][0]["missing"]
 
 
+def test_ghost_tp_reconciled_only_with_complete_exchange_snapshot():
+    """A confirmed-complete snapshot may safely reconcile a missing DB row."""
+    checker = SLTPCheckerService()
+    checker._open_orders_snapshot_complete = True
+    order = _tp_order(
+        "ghost-confirmed",
+        parent_order_id="parent-1",
+        oco_group_id="oco-1",
+    )
+    db = _mock_db_with_orders([order])
+
+    with patch.object(
+        checker,
+        "_fetch_exchange_open_order_ids",
+        return_value={"some-other-order"},
+    ):
+        issues = checker._check_oco_issues(db)
+
+    assert order.status == OrderStatusEnum.CANCELLED
+    assert issues["orphaned_orders"] == []
+    db.commit.assert_called_once()
+
+
 def test_oco_sibling_filled_still_flagged_when_on_exchange():
     """OCO integrity issue remains actionable even if order still shows on exchange."""
     checker = SLTPCheckerService()
