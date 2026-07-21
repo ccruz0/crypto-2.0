@@ -153,25 +153,37 @@ def _resolve_max_orders_per_symbol_per_day(db: Session, symbol: str) -> int:
 
 def _get_telegram_kill_switch_status(db: Session) -> bool:
     """
-    Get Telegram kill switch status from TradingSettings.
-    
+    Get the global trading kill switch status from TradingSettings.
+
+    Fail-closed semantics (safety control): if the kill switch state cannot be
+    read (DB error, malformed value), treat the kill switch as ON (block trading).
+    Only an explicit, successfully-read "false"/absent setting allows trading.
+
     Returns:
-        bool: True if kill switch is ON (trading disabled), False if OFF (trading allowed)
+        bool: True if kill switch is ON (trading disabled) OR state is unknown,
+              False only if the setting is explicitly OFF / not present.
     """
     try:
         setting = db.query(TradingSettings).filter(
             TradingSettings.setting_key == "TRADING_KILL_SWITCH"
         ).first()
-        
-        if setting:
-            enabled = setting.setting_value.lower() == "true"
-            logger.debug(f"TRADING_KILL_SWITCH from database: {enabled}")
-            return enabled
     except Exception as e:
-        logger.warning(f"Error reading TRADING_KILL_SWITCH from database: {e}")
-    
-    # Default: kill switch OFF (trading allowed)
-    return False
+        # Fail-closed: cannot verify kill switch -> block trading.
+        logger.error(f"Error reading TRADING_KILL_SWITCH from database (fail-closed: ON): {e}")
+        return True
+
+    if setting is None:
+        # Setting was never created -> kill switch OFF (trading allowed by default).
+        return False
+
+    try:
+        enabled = (setting.setting_value or "").strip().lower() == "true"
+        logger.debug(f"TRADING_KILL_SWITCH from database: {enabled}")
+        return enabled
+    except Exception as e:
+        # Malformed/unexpected value -> fail-closed.
+        logger.error(f"Malformed TRADING_KILL_SWITCH value (fail-closed: ON): {e}")
+        return True
 
 
 def _get_trade_enabled_for_symbol(db: Session, symbol: str) -> bool:
