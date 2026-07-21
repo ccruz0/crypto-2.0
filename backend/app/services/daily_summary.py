@@ -851,9 +851,18 @@ class DailySummaryService:
                         pnl_info = f"\n   {pnl_emoji} P&L: {pnl_sign}${profit_loss:,.2f} ({pnl_sign}{profit_loss_pct:,.2f}%)"
                         pnl_info += f"\n   💵 Entrada: ${entry_price:,.4f}"
                     
-                    # Format order line
-                    role_emoji = "🚀" if order_role == "TAKE_PROFIT" else "🛑" if order_role == "STOP_LOSS" else "🔴"
-                    role_text = "TP" if order_role == "TAKE_PROFIT" else "SL" if order_role == "STOP_LOSS" else "SELL"
+                    # Format order line. Distinguish a direct exit (market/limit
+                    # sell placed by the bot) from a protective SL/TP order so the
+                    # operator can tell at a glance it was not a stop-loss/take-profit.
+                    order_type_str = str(order.order_type or "").upper()
+                    if order_role == "TAKE_PROFIT":
+                        role_emoji, role_text = "🚀", "TP"
+                    elif order_role == "STOP_LOSS":
+                        role_emoji, role_text = "🛑", "SL"
+                    elif "LIMIT" in order_type_str:
+                        role_emoji, role_text = "🔴", "Venta (Límite)"
+                    else:
+                        role_emoji, role_text = "🔴", "Venta de Mercado"
                     
                     message += f"• <b>{symbol}</b> {role_emoji} {role_text}\n"
                     message += f"   💵 Precio: ${sell_price:,.4f}\n"
