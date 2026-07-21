@@ -14,6 +14,26 @@ from app.jarvis.investigations.alerting.types import AlertInput, AlertRecord
 
 logger = logging.getLogger(__name__)
 
+# Ordinal severity ranking used to detect escalation across deduplicated alerts.
+_SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "CRITICAL": 2}
+
+
+def _severity_rank(severity: str | None) -> int:
+    return _SEVERITY_RANK.get(str(severity or "").upper(), 0)
+
+
+def _should_send_for_dedup(record: AlertRecord) -> bool:
+    """Gate Telegram re-sends for deduplicated alerts within the suppression window.
+
+    A new fingerprint (first occurrence) always reaches the per-severity send gate.
+    A deduplicated alert only re-pages when its re-evaluated severity escalated
+    above the prior severity; an unchanged or downgraded duplicate is not re-paged,
+    which stops the recurring WARNING/CRITICAL storm from each scheduled run.
+    """
+    if not record.deduplicated:
+        return True
+    return _severity_rank(record.severity) > _severity_rank(record.previous_severity)
+
 
 def _emit_alert(alert_input: AlertInput, *, investigation_type: str = "") -> AlertRecord | None:
     if not alert_config.jarvis_alerting_enabled():
@@ -29,6 +49,17 @@ def _emit_alert(alert_input: AlertInput, *, investigation_type: str = "") -> Ale
     except Exception as exc:
         logger.warning("alert engine persistence failed: %s", exc)
         return None
+
+    if not _should_send_for_dedup(record):
+        logger.info(
+            "investigation alert dedup re-send suppressed severity=%s prev=%s alert_id=%s occurrences=%s",
+            record.severity,
+            record.previous_severity,
+            record.alert_id,
+            record.occurrence_count,
+        )
+        record.telegram_sent = False
+        return record
 
     record.telegram_sent = send_investigation_alert(
         record,
