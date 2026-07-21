@@ -405,8 +405,8 @@ def _check_risk_limits(
 
             if orders_today >= max_orders_per_symbol_per_day:
                 reason = (
-                    "blocked: MAX_ORDERS_PER_SYMBOL_PER_DAY limit reached "
-                    f"({orders_today}/{max_orders_per_symbol_per_day})"
+                    "blocked: límite diario por símbolo "
+                    f"({orders_today}/{max_orders_per_symbol_per_day} órdenes hoy)"
                 )
                 logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
                 return False, reason

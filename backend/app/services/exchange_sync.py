@@ -160,6 +160,49 @@ def should_notify_executed_fill(
     return (True, "recent fill")
 
 
+_PROTECTIVE_ORDER_TYPES = (
+    "STOP_LIMIT",
+    "STOP_LOSS",
+    "STOP_LOSS_LIMIT",
+    "TAKE_PROFIT",
+    "TAKE_PROFIT_LIMIT",
+)
+
+
+def _count_open_entry_buy_orders(db: Session, symbol: str) -> int:
+    """Count open entry BUY orders for a symbol, excluding protective SL/TP.
+
+    For SHORT positions, SL/TP are BUY-side STOP_LIMIT / TAKE_PROFIT_LIMIT.
+    Counting every open BUY inflated the ORDER EXECUTED "Open Orders" warning
+    (observed 2026-07-21: "Open Orders: 22" when most were protective).
+    """
+    from sqlalchemy import or_
+
+    return (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol == symbol,
+            ExchangeOrder.side == OrderSideEnum.BUY,
+            ExchangeOrder.status.in_(
+                [
+                    OrderStatusEnum.NEW,
+                    OrderStatusEnum.ACTIVE,
+                    OrderStatusEnum.PARTIALLY_FILLED,
+                ]
+            ),
+            or_(
+                ExchangeOrder.order_type.is_(None),
+                ~ExchangeOrder.order_type.in_(_PROTECTIVE_ORDER_TYPES),
+            ),
+            or_(
+                ExchangeOrder.order_role.is_(None),
+                ~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+            ),
+        )
+        .count()
+    )
+
+
 def link_system_trade_signal_to_order(db: Session, order: ExchangeOrder) -> bool:
     """Attach trade_signal_id to an ExchangeOrder when a TradeSignal references it."""
     order_id = str(order.exchange_order_id)
@@ -3463,14 +3506,12 @@ class ExchangeSyncService:
                                         entry_price = original_order.avg_price if original_order.avg_price else original_order.price
                                         logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from SELL order {original_order.exchange_order_id}")
                             
-                            # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
-                            # CRITICAL: Only count BUY orders, not SELL (SL/TP), because limit is per BUY orders
+                            # Count open entry BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED).
+                            # Exclude protective SL/TP orders: for SHORT positions they are BUY-side
+                            # (STOP_LIMIT / TAKE_PROFIT_LIMIT), which inflated the count in the
+                            # ORDER EXECUTED warning ("Open Orders: 22").
                             order_symbol = symbol or existing.symbol
-                            open_orders_count = db.query(ExchangeOrder).filter(
-                                ExchangeOrder.symbol == order_symbol,
-                                ExchangeOrder.side == OrderSideEnum.BUY,  # Only count BUY orders
-                                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
-                            ).count()
+                            open_orders_count = _count_open_entry_buy_orders(db, order_symbol)
                             
                             # Infer order_role from order_type if order_role is not set
                             # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
@@ -3503,7 +3544,15 @@ class ExchangeSyncService:
                                 "handler": "exchange_sync.update_existing_order"
                             })
                             logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
-                            
+
+                            # Last-chance link retry: the TradeSignal row may have been
+                            # committed by signal_monitor AFTER this order row was first
+                            # synced, so an earlier link attempt could have found nothing.
+                            # Without this the notification says "Origen: Manual" for
+                            # bot-created orders (observed 2026-07-21 ETH/DOT/DOGE sells).
+                            if existing.trade_signal_id is None:
+                                link_system_trade_signal_to_order(db, existing)
+
                             result = telegram_notifier.send_executed_order(
                                 symbol=order_symbol,
                                 side=side or (existing.side.value if existing.side else 'BUY'),
@@ -3860,13 +3909,8 @@ class ExchangeSyncService:
                                 entry_price = float(original_order.avg_price) if original_order.avg_price else float(original_order.price) if original_order.price else None
                                 logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from order {original_order.exchange_order_id}")
                         
-                        # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
-                        # CRITICAL: Only count BUY orders, not SELL (SL/TP), because limit is per BUY orders
-                        open_orders_count = db.query(ExchangeOrder).filter(
-                            ExchangeOrder.symbol == symbol,
-                            ExchangeOrder.side == OrderSideEnum.BUY,  # Only count BUY orders
-                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
-                        ).count()
+                        # Count open entry BUY orders for this symbol (SL/TP excluded, see helper)
+                        open_orders_count = _count_open_entry_buy_orders(db, symbol)
                         
                         # Get order_role, trade_signal_id, and parent_order_id from the order if it exists in database
                         order_role = None
@@ -3877,6 +3921,11 @@ class ExchangeSyncService:
                                 ExchangeOrder.exchange_order_id == order_id
                             ).first()
                             if existing_order:
+                                # Last-chance link retry: the TradeSignal may have been
+                                # committed after the earlier link attempt; without this
+                                # bot-created orders are notified as "Origen: Manual".
+                                if existing_order.trade_signal_id is None:
+                                    link_system_trade_signal_to_order(db, existing_order)
                                 order_role = existing_order.order_role
                                 trade_signal_id = existing_order.trade_signal_id
                                 parent_order_id = existing_order.parent_order_id
