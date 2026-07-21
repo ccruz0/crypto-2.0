@@ -1015,8 +1015,9 @@ class TelegramNotifier:
             # Order has a parent but no explicit role - likely SL/TP without role set
             origin_text = f"\n🎯 Origen: 🔗 Orden relacionada (Parent: {parent_order_id[:8]}...)"
         else:
-            # Manual order or unknown origin
-            origin_text = f"\n🎯 Origen: ✋ Manual"
+            # No linked signal/parent found. This can also happen for bot orders when
+            # the TradeSignal link is not visible yet, so do not assert "Manual".
+            origin_text = "\n🎯 Origen: ✋ Manual / externa (sin señal vinculada)"
         
         # Build order type text - include role (TP/SL) if available
         if order_role:
@@ -1026,13 +1027,16 @@ class TelegramNotifier:
         else:
             order_type_text = f"\n📋 Type: {order_type}" if order_type else "\n📋 Type: LIMIT"
         
-        # Add open orders count information
+        # Add open orders count information (entry BUY orders only; SL/TP excluded by caller)
         open_orders_text = ""
         if open_orders_count is not None:
             if open_orders_count > 3:
-                open_orders_text = f"\n⚠️ <b>Open Orders: {open_orders_count} (WARNING: Should be ≤ 3)</b>"
+                open_orders_text = (
+                    f"\n⚠️ <b>Órdenes BUY de entrada abiertas: {open_orders_count} "
+                    f"(objetivo ≤ 3, no incluye SL/TP)</b>"
+                )
             else:
-                open_orders_text = f"\n📊 Open Orders: {open_orders_count}"
+                open_orders_text = f"\n📊 Órdenes BUY de entrada abiertas: {open_orders_count}"
         
         # Calculate profit/loss if entry_price is provided (for SL/TP orders)
         profit_loss_text = ""
