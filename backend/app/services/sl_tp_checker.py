@@ -4,7 +4,7 @@ Checks all open positions for missing SL/TP orders and sends Telegram alerts
 """
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
@@ -63,16 +63,30 @@ class SLTPCheckerService:
     
     def __init__(self):
         self.last_check_date = None
+        self._open_orders_snapshot_complete = False
     
     def _fetch_exchange_open_order_ids(self) -> set:
         """Return exchange order IDs currently open (regular + trigger + advanced)."""
         open_ids: set = set()
+        self._open_orders_snapshot_complete = False
         try:
             fetch_result = fetch_unified_open_orders(trade_client)
             if not fetch_result.get("data_verified"):
                 logger.warning(
                     "Unified open orders fetch not verified for orphan check: %s",
                     fetch_result.get("error_message"),
+                )
+            self._open_orders_snapshot_complete = bool(
+                fetch_result.get("data_verified")
+                and fetch_result.get("trigger_orders_status") in (None, "ok")
+                and fetch_result.get("advanced_orders_status") in (None, "ok")
+            )
+            if not self._open_orders_snapshot_complete:
+                logger.warning(
+                    "Unified open-orders snapshot incomplete; ghost reconciliation disabled "
+                    "(trigger=%s advanced=%s)",
+                    fetch_result.get("trigger_orders_status"),
+                    fetch_result.get("advanced_orders_status"),
                 )
             for raw in fetch_result.get("all_raw_orders") or []:
                 for field in ("order_id", "exchange_order_id", "client_oid"):
@@ -153,6 +167,32 @@ class SLTPCheckerService:
 
                 if reasons and order.exchange_order_id not in seen_orphan_ids:
                     seen_orphan_ids.add(order.exchange_order_id)
+                    # Ghost rows: ACTIVE in DB but gone from the exchange. Reconcile
+                    # immediately so the next health check / half_protected path does
+                    # not keep recreating TP or spamming the same 14 orphans
+                    # (observed 2026-07-21). Sibling-FILLED orphans stay alert-only
+                    # until an explicit cancel attempt.
+                    if (
+                        reasons == ["ACTIVE in DB but not on exchange"]
+                        and self._open_orders_snapshot_complete
+                    ):
+                        try:
+                            order.status = OrderStatusEnum.CANCELLED
+                            order.updated_at = datetime.now(timezone.utc)
+                            logger.info(
+                                "[OCO_RECONCILE] Marked ghost SL/TP CANCELLED: "
+                                "order_id=%s symbol=%s type=%s",
+                                order.exchange_order_id,
+                                order.symbol,
+                                order.order_role or order.order_type,
+                            )
+                            continue  # reconciled; do not alert
+                        except Exception as reconcile_err:
+                            logger.warning(
+                                "[OCO_RECONCILE] Failed to mark ghost %s CANCELLED: %s",
+                                order.exchange_order_id,
+                                reconcile_err,
+                            )
                     issues['orphaned_orders'].append({
                         'order_id': order.exchange_order_id,
                         'symbol': order.symbol,
@@ -164,6 +204,12 @@ class SLTPCheckerService:
                         'oco_group_id': order.oco_group_id,
                     })
 
+            try:
+                db.commit()
+            except Exception as commit_err:
+                logger.warning("[OCO_RECONCILE] commit failed: %s", commit_err)
+                db.rollback()
+
             from collections import defaultdict
             oco_groups = defaultdict(list)
             for order in active_sl_tp:
@@ -173,10 +219,22 @@ class SLTPCheckerService:
             issues['total_oco_groups'] = len(oco_groups)
 
             for oco_id, orders in oco_groups.items():
-                has_sl = any(o.order_role == "STOP_LOSS" for o in orders)
-                has_tp = any(o.order_role == "TAKE_PROFIT" for o in orders)
+                still_active = [
+                    o
+                    for o in orders
+                    if o.status
+                    in (
+                        OrderStatusEnum.NEW,
+                        OrderStatusEnum.ACTIVE,
+                        OrderStatusEnum.PARTIALLY_FILLED,
+                    )
+                ]
+                if not still_active:
+                    continue
+                has_sl = any(o.order_role == "STOP_LOSS" for o in still_active)
+                has_tp = any(o.order_role == "TAKE_PROFIT" for o in still_active)
                 if not (has_sl and has_tp):
-                    symbol = orders[0].symbol if orders else "Unknown"
+                    symbol = still_active[0].symbol if still_active else "Unknown"
                     issues['incomplete_groups'].append({
                         'oco_group_id': oco_id,
                         'symbol': symbol,
