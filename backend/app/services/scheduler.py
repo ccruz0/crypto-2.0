@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, time as time_module, date, timezone
 import pytz
@@ -7,6 +8,22 @@ from app.services.daily_summary import daily_summary_service
 from app.services.telegram_commands import process_telegram_commands
 from app.services.sl_tp_checker import sl_tp_checker_service
 from app.database import SessionLocal
+
+
+def _is_primary_report_sender() -> bool:
+    """Primary/standby split for operator-facing scheduled reports.
+
+    Same flag as the Telegram poller (docker-compose sets RUN_TELEGRAM_POLLER=false
+    on backend-aws-canary). Without this gate the canary also runs the daily
+    summary / sell-orders report and the operator receives every report twice
+    (observed 2026-07-21: duplicate "Resumen Diario" from two container hosts).
+    """
+    return (os.getenv("RUN_TELEGRAM_POLLER") or "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -735,6 +752,12 @@ class TradingScheduler:
         logger.info("Trading scheduler started - running=True")
         
         logger.info("[SCHEDULER] Entering main scheduler loop")
+        primary_reports = _is_primary_report_sender()
+        if not primary_reports:
+            logger.info(
+                "[SCHEDULER] Operator reports disabled on this instance "
+                "(RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate daily reports)"
+            )
         loop_count = 0
         while self.running:
             try:
@@ -755,15 +778,19 @@ class TradingScheduler:
                         await asyncio.to_thread(_refresh_equity_peak)
                     except Exception as eq_err:
                         logger.warning("[SCHEDULER] system_core equity_peak_refresh thread failed: %s", eq_err)
-                await self.check_daily_summary()
-                await self.check_kr_refresh()
-                await self.check_daily_followup()
-                await self.check_weekly_executive_report()
-                await self.check_sell_orders_report()
-                await self.check_sl_tp_positions()
-                await self.check_orphan_orders()
+                if primary_reports:
+                    # Operator-facing scheduled reports/alerts: only the primary
+                    # instance sends them, otherwise canary/standby duplicates
+                    # every daily report in Telegram.
+                    await self.check_daily_summary()
+                    await self.check_kr_refresh()
+                    await self.check_daily_followup()
+                    await self.check_weekly_executive_report()
+                    await self.check_sell_orders_report()
+                    await self.check_sl_tp_positions()
+                    await self.check_orphan_orders()
+                    await self.check_nightly_consistency()
                 await self.check_approval_queue()
-                await self.check_nightly_consistency()
                 # DISABLED: Hourly SL/TP check - use Telegram menu button instead
                 # await self.check_hourly_sl_tp_missed()  # Check for missed SL/TP every hour
                 # Update dashboard snapshot periodically (every 60 seconds)
