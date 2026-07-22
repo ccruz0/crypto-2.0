@@ -9,6 +9,7 @@ import { formatDateTime, formatNumber, normalizeSymbolKey } from '@/utils/format
 import { logger } from '@/utils/logger';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import { usePriceStream } from '@/app/context/PriceStreamContext';
+import { isAutoPreset, toWatchlistStrategySelectValue } from '@/types/dashboard';
 
 interface WatchlistTabProps {
   botStatus: { is_running: boolean; status: 'running' | 'stopped'; reason: string | null; live_trading_enabled?: boolean; mode?: 'LIVE' | 'DRY_RUN'; kill_switch_on?: boolean } | null;
@@ -662,11 +663,12 @@ export default function WatchlistTab({
     setUpdatingCoins(prev => new Set(prev).add(symbol));
     
     // Parse strategy key (e.g., "swing-conservative" -> preset="swing", risk="conservative")
-    // Bare "auto" has no risk suffix; use conservative for watchlist sl_tp_mode compatibility.
-    const isAuto = strategyKey.toLowerCase() === 'auto';
+    // Auto may arrive as bare "auto" or "auto-*"; use conservative for watchlist sl_tp_mode compatibility.
+    const isAuto = isAutoPreset(strategyKey);
     const parts = strategyKey.split('-');
     const preset = isAuto ? 'auto' : (parts[0] || 'swing');
     const risk = isAuto ? 'conservative' : (parts[1] || 'conservative');
+    const selectStrategyKey = isAuto ? 'auto' : strategyKey;
 
     const applyStrategyToParent = (key: string) => {
       if (onCoinUpdated) {
@@ -680,19 +682,22 @@ export default function WatchlistTab({
     };
 
     // Optimistic update so the dropdown does not snap back while requests are in flight
-    applyStrategyToParent(strategyKey);
+    applyStrategyToParent(selectStrategyKey);
     
     try {
       // Strategy resolution on the backend uses BOTH sources:
       // 1. trading_config.json per-coin preset (swing/intraday/scalp)
       // 2. WatchlistItem.sl_tp_mode (conservative/aggressive when preset has no risk suffix)
       const [, result] = await Promise.all([
-        updateCoinConfig(symbol, { preset: strategyKey }),
+        updateCoinConfig(symbol, { preset: selectStrategyKey }),
         saveCoinSettings(symbol, { sl_tp_mode: risk }),
       ]);
       
-      if (result?.strategy_key && result.strategy_key !== strategyKey) {
-        logger.warn(`[STRATEGY_MISMATCH] Strategy update mismatch for ${symbol}: requested=${strategyKey}, API=${result.strategy_key}. Using requested strategy for UI.`);
+      if (
+        result?.strategy_key &&
+        toWatchlistStrategySelectValue(result.strategy_key) !== selectStrategyKey
+      ) {
+        logger.warn(`[STRATEGY_MISMATCH] Strategy update mismatch for ${symbol}: requested=${selectStrategyKey}, API=${result.strategy_key}. Using requested strategy for UI.`);
       }
       
       setLocalCoinPresets(prev => {
@@ -702,12 +707,12 @@ export default function WatchlistTab({
       });
       
       if (onCoinPresetChange) {
-        onCoinPresetChange(symbol, strategyKey);
+        onCoinPresetChange(symbol, selectStrategyKey);
       }
       
       if (onCoinUpdated && result) {
         onCoinUpdated(symbol, {
-          strategy_key: strategyKey,
+          strategy_key: selectStrategyKey,
           strategy_preset: preset,
           strategy_risk: risk,
           sl_tp_mode: result.sl_tp_mode || risk,
@@ -718,12 +723,12 @@ export default function WatchlistTab({
         });
       }
       
-      logger.info(`✅ Strategy updated for ${symbol}: ${strategyKey} (preset=${preset}, sl_tp_mode=${risk})`);
+      logger.info(`✅ Strategy updated for ${symbol}: ${selectStrategyKey} (preset=${preset}, sl_tp_mode=${risk})`);
       
     } catch (err) {
       logger.error(`Failed to update strategy for ${symbol}:`, err);
       if (previousStrategy) {
-        applyStrategyToParent(previousStrategy);
+        applyStrategyToParent(toWatchlistStrategySelectValue(previousStrategy));
       }
       setLocalCoinPresets(prev => {
         const updated = { ...prev };
@@ -800,21 +805,21 @@ export default function WatchlistTab({
     return signal.signals?.sell === true;
   }, []);
 
-  // Helper function to get strategy for a coin
+  // Helper function to get strategy for a coin (Watchlist <select> option value)
   // CRITICAL: Uses API strategy_key as single source of truth (from WatchlistItem)
+  // Maps auto / auto-* → "auto" so the dropdown matches the Auto option.
   const getCoinStrategy = useCallback((coin: TopCoin, signal: TradingSignals | null | undefined): string | undefined => {
     const symbolKey = normalizeSymbolKey(coin?.instrument_name);
     
     // PRIORITY 1: API strategy_key (single source of truth from WatchlistItem)
     // This ensures dropdown and tooltip always match what's in the database
     if (coin?.strategy_key) {
-      return coin.strategy_key;
+      return toWatchlistStrategySelectValue(coin.strategy_key);
     }
     
     // PRIORITY 2: Construct from API strategy_preset + strategy_risk
     if (coin?.strategy_preset) {
-      const preset = String(coin.strategy_preset).toLowerCase();
-      if (preset === 'auto') {
+      if (isAutoPreset(coin.strategy_preset)) {
         return 'auto';
       }
       if (coin?.strategy_risk) {
@@ -824,16 +829,16 @@ export default function WatchlistTab({
     
     // FALLBACK: Legacy sources (for backward compatibility during migration)
     if (localCoinPresets[symbolKey]) {
-      return localCoinPresets[symbolKey];
+      return toWatchlistStrategySelectValue(localCoinPresets[symbolKey]);
     }
     if (coin?.strategy) {
-      return coin.strategy;
+      return toWatchlistStrategySelectValue(coin.strategy);
     }
     if (signal?.strategy) {
-      return signal.strategy;
+      return toWatchlistStrategySelectValue(signal.strategy);
     }
     if (parentTradingConfig?.coins?.[symbolKey]?.preset) {
-      return parentTradingConfig.coins[symbolKey].preset;
+      return toWatchlistStrategySelectValue(parentTradingConfig.coins[symbolKey].preset);
     }
     
     // Default to swing-conservative if no strategy is set
@@ -849,7 +854,11 @@ export default function WatchlistTab({
     const lines: string[] = [];
     
     // REGRESSION GUARD: Verify strategy matches API (dev/test warning)
-    if (coin?.strategy_key && coin.strategy_key !== strategy) {
+    // auto / auto-* are equivalent for the Watchlist select.
+    if (
+      coin?.strategy_key &&
+      toWatchlistStrategySelectValue(coin.strategy_key) !== strategy
+    ) {
       logger.warn(`[STRATEGY_MISMATCH] Tooltip strategy mismatch for ${coin?.instrument_name}: API=${coin.strategy_key}, computed=${strategy}. UI using fallback instead of API.`);
     }
     

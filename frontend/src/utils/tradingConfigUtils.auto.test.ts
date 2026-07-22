@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PresetConfig } from '@/types/dashboard';
-import { isAutoPreset } from '@/types/dashboard';
+import { isAutoPreset, toWatchlistStrategySelectValue } from '@/types/dashboard';
 import { strategyRulesToPresetConfig } from './tradingConfigUtils';
 
 const BASE_PRESET_CONFIG: PresetConfig = {
@@ -75,10 +75,33 @@ const BASE_PRESET_CONFIG: PresetConfig = {
 };
 
 describe('isAutoPreset', () => {
-  it('detects Auto / auto', () => {
+  it('detects Auto / auto / auto-*', () => {
     expect(isAutoPreset('Auto')).toBe(true);
     expect(isAutoPreset('auto')).toBe(true);
+    expect(isAutoPreset('auto-conservative')).toBe(true);
+    expect(isAutoPreset('auto-aggressive')).toBe(true);
     expect(isAutoPreset('Swing')).toBe(false);
+    expect(isAutoPreset('swing-conservative')).toBe(false);
+  });
+});
+
+describe('toWatchlistStrategySelectValue', () => {
+  it('maps auto and auto-* to the Auto select option', () => {
+    expect(toWatchlistStrategySelectValue('auto')).toBe('auto');
+    expect(toWatchlistStrategySelectValue('auto-conservative')).toBe('auto');
+    expect(toWatchlistStrategySelectValue('auto-aggressive')).toBe('auto');
+    expect(toWatchlistStrategySelectValue('AUTO-CONSERVATIVE')).toBe('auto');
+  });
+
+  it('passes through non-auto strategy keys', () => {
+    expect(toWatchlistStrategySelectValue('swing-conservative')).toBe('swing-conservative');
+    expect(toWatchlistStrategySelectValue('intraday-aggressive')).toBe('intraday-aggressive');
+  });
+
+  it('uses fallback when strategy key is missing', () => {
+    expect(toWatchlistStrategySelectValue(null)).toBe('swing-conservative');
+    expect(toWatchlistStrategySelectValue(undefined)).toBe('swing-conservative');
+    expect(toWatchlistStrategySelectValue('')).toBe('swing-conservative');
   });
 });
 
