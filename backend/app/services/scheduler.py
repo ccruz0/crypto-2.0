@@ -497,6 +497,13 @@ class TradingScheduler:
                         stats.get("oldest_pending_age_seconds", 0),
                         stats.get("pending_total"),
                     )
+                if stats.get("jarvis_stale_total", 0) > 0:
+                    logger.warning(
+                        "[APPROVAL_QUEUE] jarvis_stale_waiting=%s oldest_age_s=%.0f waiting_total=%s",
+                        stats.get("jarvis_stale_total"),
+                        stats.get("jarvis_oldest_waiting_age_seconds", 0),
+                        stats.get("jarvis_waiting_total"),
+                    )
                 if stats.get("expired", 0) > 0:
                     logger.info("[APPROVAL_QUEUE] expired=%s", stats.get("expired"))
                 record_workflow_execution("approval_queue_maintenance", "success", None)

@@ -1,10 +1,11 @@
 """Tests for approval queue monitor metrics and lifecycle."""
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from app.services.approval_queue_monitor import (
     collect_approval_queue_stats,
+    collect_jarvis_approval_queue_stats,
     expire_stale_pending_approvals,
 )
 
@@ -38,3 +39,32 @@ class TestApprovalQueueMonitor(unittest.TestCase):
         self.assertEqual(expired, 1)
         self.assertEqual(row.status, "expired")
         db.commit.assert_called_once()
+
+
+class TestJarvisApprovalQueueMonitor(unittest.TestCase):
+    def test_collect_jarvis_stats_marks_stale_waiting(self):
+        now = datetime.now(timezone.utc)
+        row_old = MagicMock()
+        row_old._mapping = {
+            "status": "waiting_for_approval",
+            "created_at": now - timedelta(hours=30),
+        }
+        row_new = MagicMock()
+        row_new._mapping = {
+            "status": "waiting_for_pr_approval",
+            "created_at": now - timedelta(hours=2),
+        }
+        db = MagicMock()
+        db.execute.return_value.fetchall.return_value = [row_old, row_new]
+        stats = collect_jarvis_approval_queue_stats(db, stale_hours=24)
+        self.assertEqual(stats["waiting_total"], 2)
+        self.assertEqual(stats["stale_total"], 1)
+        self.assertGreater(stats["oldest_waiting_age_seconds"], 24 * 3600)
+
+    def test_collect_jarvis_stats_empty_when_table_missing(self):
+        db = MagicMock()
+        db.execute.side_effect = Exception("no such table: jarvis_task_runs")
+        stats = collect_jarvis_approval_queue_stats(db, stale_hours=24)
+        self.assertEqual(stats["waiting_total"], 0)
+        self.assertEqual(stats["stale_total"], 0)
+        self.assertEqual(stats["oldest_waiting_age_seconds"], 0.0)
