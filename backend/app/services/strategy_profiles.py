@@ -24,6 +24,7 @@ class StrategyType(str, Enum):
     SWING = "swing"
     INTRADAY = "intraday"
     SCALP = "scalp"
+    AUTO = "auto"
 
 
 class RiskApproach(str, Enum):
@@ -94,6 +95,9 @@ def _parse_preset(preset_name: Optional[str]) -> Tuple[Optional[StrategyType], O
     if not preset_name:
         return None, None
     normalized = str(preset_name).lower()
+    # Bare "auto" preset (no risk suffix) — approach resolved later / defaults conservative.
+    if normalized == "auto":
+        return StrategyType.AUTO, None
     parts = normalized.split("-", 1)
     strategy = _normalize_strategy(parts[0])
     approach = _normalize_approach(parts[1]) if len(parts) > 1 else None

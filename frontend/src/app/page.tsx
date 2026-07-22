@@ -602,6 +602,49 @@ const PRESET_CONFIG: PresetConfig = {
         notes: ['Entradas anticipadas', 'Muchas micro-salidas']
       }
     }
+  },
+  Auto: {
+    notificationProfile: 'swing',
+    rules: {
+      // Display slot for Learned (seeded from Swing Conservative). Not manually editable.
+      Conservative: {
+        rsi: { buyBelow: 30, sellAbove: 70 },
+        maChecks: { ema10: true, ma50: true, ma200: true },
+        sl: { atrMult: 1.5, fallbackPct: 3.0 },
+        tp: { rr: 1.5 },
+        volumeMinRatio: 1.0,
+        minPriceChangePct: 3.0,
+        alertCooldownMinutes: 5.0,
+        trendFilters: {
+          require_price_above_ma200: true,
+          require_ema10_above_ma50: true
+        },
+        rsiConfirmation: {
+          require_rsi_cross_up: true,
+          rsi_cross_level: 30
+        },
+        candleConfirmation: {
+          require_close_above_ema10: true,
+          require_rsi_rising_n_candles: 2
+        },
+        atr: {
+          period: 14,
+          multiplier_sl: 1.5,
+          multiplier_tp: null
+        },
+        notes: ['Auto (aprendida)', 'Semilla: Swing Conservadora', 'Parámetros bloqueados']
+      },
+      Aggressive: {
+        rsi: { buyBelow: 30, sellAbove: 70 },
+        maChecks: { ema10: true, ma50: true, ma200: true },
+        sl: { atrMult: 1.5, fallbackPct: 3.0 },
+        tp: { rr: 1.5 },
+        volumeMinRatio: 1.0,
+        minPriceChangePct: 3.0,
+        alertCooldownMinutes: 5.0,
+        notes: ['Auto usa banda Learned única']
+      }
+    }
   }
 };
 
@@ -4632,6 +4675,11 @@ function resolveDecisionIndexColor(value: number): string {
     riskMode: RiskMode,
     updatedRules: StrategyRules
   ) => {
+    if (preset === 'Auto') {
+      throw new Error(
+        'Auto strategy parameters are locked. Updates require Approval Center (learning not enabled yet).'
+      );
+    }
     try {
       setPresetsConfig(prev => ({
         ...prev,
@@ -4983,6 +5031,7 @@ function resolveDecisionIndexColor(value: number): string {
                       <option value="Swing">Swing</option>
                       <option value="Intraday">Intraday</option>
                       <option value="Scalp">Scalp</option>
+                      <option value="Auto">Auto (aprendida)</option>
                     </select>
                   </div>
                   <div>
@@ -4990,13 +5039,20 @@ function resolveDecisionIndexColor(value: number): string {
                       Risk Mode
                     </label>
                     <select
-                      value={selectedConfigRisk}
+                      value={selectedConfigPreset === 'Auto' ? 'Conservative' : selectedConfigRisk}
                       onChange={(e) => setSelectedConfigRisk(e.target.value as RiskMode)}
                       aria-label="Risk mode selection"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      disabled={selectedConfigPreset === 'Auto'}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      <option value="Conservative">Conservative</option>
-                      <option value="Aggressive">Aggressive</option>
+                      {selectedConfigPreset === 'Auto' ? (
+                        <option value="Conservative">Learned (locked)</option>
+                      ) : (
+                        <>
+                          <option value="Conservative">Conservative</option>
+                          <option value="Aggressive">Aggressive</option>
+                        </>
+                      )}
                     </select>
                   </div>
                 </div>

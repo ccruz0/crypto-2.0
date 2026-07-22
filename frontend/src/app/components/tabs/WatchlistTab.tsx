@@ -662,9 +662,11 @@ export default function WatchlistTab({
     setUpdatingCoins(prev => new Set(prev).add(symbol));
     
     // Parse strategy key (e.g., "swing-conservative" -> preset="swing", risk="conservative")
+    // Bare "auto" has no risk suffix; use conservative for watchlist sl_tp_mode compatibility.
+    const isAuto = strategyKey.toLowerCase() === 'auto';
     const parts = strategyKey.split('-');
-    const preset = parts[0] || 'swing';
-    const risk = parts[1] || 'conservative';
+    const preset = isAuto ? 'auto' : (parts[0] || 'swing');
+    const risk = isAuto ? 'conservative' : (parts[1] || 'conservative');
 
     const applyStrategyToParent = (key: string) => {
       if (onCoinUpdated) {
@@ -746,6 +748,7 @@ export default function WatchlistTab({
     { value: 'intraday-aggressive', label: 'Intradia Agresiva' },
     { value: 'scalp-conservative', label: 'Scalp Conservadora' },
     { value: 'scalp-aggressive', label: 'Scalp Agresiva' },
+    { value: 'auto', label: 'Auto (aprendida)' },
   ];
 
   // Helper function to build crypto page URL for a symbol
@@ -761,16 +764,22 @@ export default function WatchlistTab({
   // Helper function to format strategy name
   const formatStrategyName = useCallback((strategy?: string | null): string => {
     if (!strategy || typeof strategy !== 'string') return 'No strategy';
+    const normalized = strategy.toLowerCase();
+    if (normalized === 'auto' || normalized.startsWith('auto-')) {
+      return 'Auto (aprendida)';
+    }
     // Format: "swing-conservative" -> "Swing Conservadora"
     const parts = strategy.split('-');
     const presetMap: Record<string, string> = {
       'swing': 'Swing',
       'intraday': 'Intradia',
-      'scalp': 'Scalp'
+      'scalp': 'Scalp',
+      'auto': 'Auto',
     };
     const riskMap: Record<string, string> = {
       'conservative': 'Conservadora',
-      'aggressive': 'Agresiva'
+      'aggressive': 'Agresiva',
+      'learned': '(aprendida)',
     };
     const preset = presetMap[parts[0]?.toLowerCase()] || parts[0] || 'Unknown';
     const risk = riskMap[parts[1]?.toLowerCase()] || parts[1] || '';
@@ -803,8 +812,14 @@ export default function WatchlistTab({
     }
     
     // PRIORITY 2: Construct from API strategy_preset + strategy_risk
-    if (coin?.strategy_preset && coin?.strategy_risk) {
-      return `${coin.strategy_preset}-${coin.strategy_risk}`;
+    if (coin?.strategy_preset) {
+      const preset = String(coin.strategy_preset).toLowerCase();
+      if (preset === 'auto') {
+        return 'auto';
+      }
+      if (coin?.strategy_risk) {
+        return `${coin.strategy_preset}-${coin.strategy_risk}`;
+      }
     }
     
     // FALLBACK: Legacy sources (for backward compatibility during migration)

@@ -8,6 +8,7 @@ const PRESET_KEY_MAP: Record<string, Preset> = {
   swing: 'Swing',
   intraday: 'Intraday',
   scalp: 'Scalp',
+  auto: 'Auto',
 };
 
 export const DEFAULT_TRADING_LIMITS: TradingLimits = {
@@ -84,7 +85,9 @@ export function strategyRulesToPresetConfig(
 
     const entry = presetData as {
       notificationProfile?: 'swing' | 'intraday' | 'scalp';
-      rules?: Partial<Record<RiskMode, StrategyRules>>;
+      rules?: Partial<Record<RiskMode | 'Learned', StrategyRules>>;
+      locked?: boolean;
+      param_version?: number;
     };
 
     if (!entry.rules || typeof entry.rules !== 'object') {
@@ -92,13 +95,31 @@ export function strategyRulesToPresetConfig(
     }
 
     const mergedRules: Record<RiskMode, StrategyRules> = { ...result[preset].rules };
-    for (const riskMode of ['Conservative', 'Aggressive'] as RiskMode[]) {
-      const backendRules = entry.rules[riskMode];
-      if (backendRules && typeof backendRules === 'object') {
-        mergedRules[riskMode] = {
-          ...mergedRules[riskMode],
-          ...backendRules,
+    if (preset === 'Auto') {
+      // Auto uses a single Learned band; mirror into Conservative for UI display.
+      const learned =
+        entry.rules.Learned ||
+        entry.rules.Conservative ||
+        mergedRules.Conservative;
+      if (learned && typeof learned === 'object') {
+        mergedRules.Conservative = {
+          ...mergedRules.Conservative,
+          ...learned,
         };
+        mergedRules.Aggressive = {
+          ...mergedRules.Aggressive,
+          ...learned,
+        };
+      }
+    } else {
+      for (const riskMode of ['Conservative', 'Aggressive'] as RiskMode[]) {
+        const backendRules = entry.rules[riskMode];
+        if (backendRules && typeof backendRules === 'object') {
+          mergedRules[riskMode] = {
+            ...mergedRules[riskMode],
+            ...backendRules,
+          };
+        }
       }
     }
 
