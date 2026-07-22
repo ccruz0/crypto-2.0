@@ -13,6 +13,48 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["config"])
 
 
+def _merge_strategy_rules_preserving_locked_auto(
+    existing_cfg: Dict[str, Any],
+    incoming_strategy_rules: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Preserve strategy_rules.auto and reject manual edits to its locked params.
+
+    Coin preset assignment to \"auto\" is allowed elsewhere; this only guards
+    the Auto rule payload (learning apply is Phase 2+ / Approval Center).
+    """
+    merged = dict(incoming_strategy_rules)
+    existing_auto = (existing_cfg.get("strategy_rules") or {}).get("auto")
+    incoming_auto = merged.get("auto")
+
+    if existing_auto is not None:
+        if incoming_auto is None:
+            merged["auto"] = existing_auto
+        elif incoming_auto != existing_auto:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "strategy_rules.auto is locked; parameters are read-only. "
+                    "Updates require Approval Center (learning apply not enabled yet)."
+                ),
+            )
+    elif incoming_auto is not None:
+        # Allow first-time seed only when locked metadata is present.
+        if not isinstance(incoming_auto, dict) or incoming_auto.get("locked") is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="strategy_rules.auto must be locked=true when created via API",
+            )
+        rules = incoming_auto.get("rules") if isinstance(incoming_auto.get("rules"), dict) else {}
+        if "Learned" not in rules:
+            raise HTTPException(
+                status_code=400,
+                detail="strategy_rules.auto.rules.Learned is required",
+            )
+
+    return merged
+
+
 def _log_volume_min_ratio(prefix: str, cfg: Dict[str, Any]) -> None:
     """
     Helper function to log volumeMinRatio values from config.
@@ -132,8 +174,10 @@ def put_config(new_cfg: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             except Exception as e:
                 logger.warning(f"[CONFIG] Failed to log volume min ratio (non-critical): {e}")
             
-            existing_cfg["strategy_rules"] = incoming_strategy_rules
-            logger.info(f"[CONFIG] Saving strategy_rules with {len(incoming_strategy_rules)} presets")
+            existing_cfg["strategy_rules"] = _merge_strategy_rules_preserving_locked_auto(
+                existing_cfg, incoming_strategy_rules
+            )
+            logger.info(f"[CONFIG] Saving strategy_rules with {len(existing_cfg['strategy_rules'])} presets")
         else:
             logger.warning("PUT /config: No strategy_rules in incoming config!")
         
@@ -190,6 +234,11 @@ def put_config(new_cfg: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
 @router.put("/presets/{name}")
 def upsert_preset(name: str, preset: Dict[str, Any]) -> Dict[str, Any]:
+    if name.lower() == "auto":
+        raise HTTPException(
+            status_code=403,
+            detail="Preset 'auto' is locked; updates require Approval Center",
+        )
     ok, msg = validate_preset(preset)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)

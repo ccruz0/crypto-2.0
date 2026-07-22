@@ -6,8 +6,13 @@ import { OpenOrder } from '@/app/api';
 
 export type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring';
 
-export type Preset = 'Swing' | 'Intraday' | 'Scalp';
+export type Preset = 'Swing' | 'Intraday' | 'Scalp' | 'Auto';
 export type RiskMode = 'Conservative' | 'Aggressive';
+
+/** True when strategy config fields must be read-only (Auto / learned). */
+export function isAutoPreset(preset: Preset | string | null | undefined): boolean {
+  return String(preset || '').toLowerCase() === 'auto';
+}
 
 /** Global trading guardrails (strategy-agnostic). */
 export interface TradingLimits {

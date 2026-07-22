@@ -28,6 +28,13 @@ const BASE_PRESET_CONFIG: PresetConfig = {
       Aggressive: { rsi: { buyBelow: 55, sellAbove: 65 }, maChecks: { ema10: true, ma50: false, ma200: false }, sl: {}, tp: {} },
     },
   },
+  Auto: {
+    notificationProfile: 'swing',
+    rules: {
+      Conservative: { rsi: { buyBelow: 30, sellAbove: 70 }, maChecks: { ema10: true, ma50: true, ma200: true }, sl: {}, tp: {} },
+      Aggressive: { rsi: { buyBelow: 30, sellAbove: 70 }, maChecks: { ema10: true, ma50: true, ma200: true }, sl: {}, tp: {} },
+    },
+  },
 };
 
 describe('parseTradingLimits', () => {

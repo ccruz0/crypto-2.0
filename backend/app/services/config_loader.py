@@ -249,6 +249,42 @@ def _migrate_swing_conservative_defaults(rules: Dict[str, Any]) -> Dict[str, Any
     return migrated_rules
 
 
+def _ensure_auto_strategy_preset(cfg: Dict[str, Any], auto_default: Dict[str, Any]) -> None:
+    """Ensure strategy_rules.auto exists (seeded from swing-conservative). Does not touch coins."""
+    from copy import deepcopy
+
+    logger = logging.getLogger(__name__)
+    strategy_rules = cfg.setdefault("strategy_rules", {})
+    if not isinstance(strategy_rules, dict):
+        return
+    existing = strategy_rules.get("auto")
+    if isinstance(existing, dict) and isinstance(existing.get("rules"), dict):
+        # Keep locked metadata consistent without overwriting Learned params.
+        existing.setdefault("locked", True)
+        existing.setdefault("seed_from", "swing-conservative")
+        existing.setdefault("param_version", 1)
+        existing.setdefault("notificationProfile", "swing")
+        if "Learned" not in existing["rules"]:
+            swing_cons = (
+                (strategy_rules.get("swing") or {}).get("rules", {}).get("Conservative")
+            )
+            if isinstance(swing_cons, dict):
+                existing["rules"]["Learned"] = deepcopy(swing_cons)
+            else:
+                existing["rules"]["Learned"] = deepcopy(
+                    auto_default.get("rules", {}).get("Learned", {})
+                )
+        strategy_rules["auto"] = existing
+        return
+
+    seed = deepcopy(auto_default)
+    swing_cons = (strategy_rules.get("swing") or {}).get("rules", {}).get("Conservative")
+    if isinstance(swing_cons, dict):
+        seed["rules"] = {"Learned": deepcopy(swing_cons)}
+    strategy_rules["auto"] = seed
+    logger.info("Seeded strategy_rules.auto from swing-conservative (locked=true, param_version=1)")
+
+
 def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize config to ensure strategy_rules is the single source of truth.
@@ -349,6 +385,41 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     "alertCooldownMinutes": 0.1667,
                 }
             }
+        },
+        # Auto: visible, locked params; seed = swing-conservative. Learning apply is Phase 2+.
+        "auto": {
+            "notificationProfile": "swing",
+            "locked": True,
+            "seed_from": "swing-conservative",
+            "param_version": 1,
+            "rules": {
+                "Learned": {
+                    "rsi": {"buyBelow": 30, "sellAbove": 70},
+                    "maChecks": {"ema10": True, "ma50": True, "ma200": True},
+                    "sl": {"atrMult": 1.5, "fallbackPct": 3.0},
+                    "tp": {"rr": 1.5},
+                    "volumeMinRatio": 1.0,
+                    "minPriceChangePct": 3.0,
+                    "alertCooldownMinutes": 0.1667,
+                    "trendFilters": {
+                        "require_price_above_ma200": True,
+                        "require_ema10_above_ma50": True
+                    },
+                    "rsiConfirmation": {
+                        "require_rsi_cross_up": True,
+                        "rsi_cross_level": 30
+                    },
+                    "candleConfirmation": {
+                        "require_close_above_ema10": True,
+                        "require_rsi_rising_n_candles": 2
+                    },
+                    "atr": {
+                        "period": 14,
+                        "multiplier_sl": 1.5,
+                        "multiplier_tp": None
+                    },
+                }
+            }
         }
     }
     
@@ -363,6 +434,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 if migrated != conservative_rules:
                     swing_preset["rules"]["Conservative"] = migrated
                     cfg["strategy_rules"]["swing"] = swing_preset
+        _ensure_auto_strategy_preset(cfg, default_strategy_rules["auto"])
         return cfg
     
     # If no strategy_rules but presets exists, migrate
@@ -712,10 +784,20 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
     risk_key = risk_mode.capitalize() if risk_mode else "Conservative"
     if risk_key not in ["Conservative", "Aggressive"]:
         risk_key = "Conservative"
+    # Auto uses a single Learned band (seeded from swing-conservative).
+    if preset_key == "auto":
+        risk_key = "Learned"
     
     # Check if new format (has "rules" structure)
     if "rules" in preset_cfg:
         rules = preset_cfg.get("rules", {}).get(risk_key, {})
+        if not rules and preset_key == "auto":
+            # Fallbacks if Learned missing in older configs
+            rules = (
+                preset_cfg.get("rules", {}).get("Conservative")
+                or (strategy_rules_cfg.get("swing") or {}).get("rules", {}).get("Conservative")
+                or {}
+            )
         if rules:
             # Return rules in expected format (including new gating parameters)
             result = {
