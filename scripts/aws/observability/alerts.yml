@@ -93,5 +93,13 @@ groups:
         for: 30m
         labels: { severity: "warning" }
         annotations:
-          summary: "Approval queue has stale pending tasks"
-          description: "One or more agent approval tasks have been pending longer than the configured stale threshold (default 24h). Review the Approval Center and resolve or expire stale items."
+          summary: "Telegram agent approval queue has stale pending tasks"
+          description: "One or more Telegram agent approval tasks (agent_approval_states) have been pending longer than the configured stale threshold (default 24h). Resolve or let the 7-day expire job clean them up."
+
+      - alert: JarvisApprovalQueueStale
+        expr: jarvis_approval_queue_stale_total > 0
+        for: 30m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Jarvis Approval Center has stale waiting tasks"
+          description: "One or more ACW tasks (jarvis_task_runs in waiting_for_approval / waiting_for_pr_approval) are older than the configured stale threshold (default 24h). Review /jarvis/approval and approve, reject, or cancel them."

@@ -67,9 +67,11 @@ Health: `https://dashboard.hilovivo.com/api/health`
 1. **Investigate memory consumption and swap pressure** (read-only first).
 2. Decide: **(A) upgrade host** vs **(B) split production and LAB** onto separate
    hosts vs a hybrid approach. Recommend the safest, most cost-effective option.
-3. Implement **`ApprovalQueueStale`** alerting.
+3. **`ApprovalQueueStale` alerting** — shipped for Telegram agent approvals;
+   **`JarvisApprovalQueueStale`** covers Approval Center ACW waiting tasks.
 4. Improve the approval-queue lifecycle (expiration policy, deduplication,
-   escalation). The Approval Center currently accumulates stale low-risk tasks.
+   escalation). Agent queue has 7-day expire; Approval Center still needs
+   expire/dedup/escalation for accumulating low-risk waiting tasks.
 
 ### Active task: HostSwapHigh investigation
 - Highest current production risk is **memory pressure / swap**, not disk
