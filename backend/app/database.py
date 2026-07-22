@@ -756,7 +756,8 @@ def ensure_jarvis_alerting_tables(engine_to_use) -> bool:
                     occurrence_count INTEGER NOT NULL DEFAULT 1,
                     status TEXT NOT NULL DEFAULT 'open',
                     first_seen {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
-                    last_seen {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'}
+                    last_seen {ts_type} NOT NULL DEFAULT {'CURRENT_TIMESTAMP' if is_sqlite else 'NOW()'},
+                    snoozed_until {ts_type}
                 )
                 """,
             ),
@@ -779,6 +780,21 @@ def ensure_jarvis_alerting_tables(engine_to_use) -> bool:
                 with engine_to_use.begin() as conn:
                     conn.execute(text(ddl))
                 logger.info("[BOOT] Created table %s", tname)
+        # Existing installs: add snoozed_until for Telegram CTA snooze.
+        if table_exists(engine_to_use, "jarvis_alerts"):
+            inspector = inspect(engine_to_use)
+            columns = {col["name"] for col in inspector.get_columns("jarvis_alerts")}
+            if "snoozed_until" not in columns:
+                with engine_to_use.begin() as conn:
+                    if is_sqlite:
+                        conn.execute(text(f"ALTER TABLE jarvis_alerts ADD COLUMN snoozed_until {ts_type}"))
+                    else:
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE jarvis_alerts ADD COLUMN IF NOT EXISTS snoozed_until {ts_type}"
+                            )
+                        )
+                logger.info("[BOOT] Added jarvis_alerts.snoozed_until")
         return all(table_exists(engine_to_use, tname) for tname, _ in tables)
     except Exception as e:
         logger.error("ensure_jarvis_alerting_tables failed: %s", e, exc_info=True)
