@@ -5,3 +5,26 @@ These notes do not modify production logic by themselves.
 
 - [Notion task 8be78afb-c44c-409a-94ff-8a16a335ae13: Full Audit of Trading Alert Pipeline and Anti-Spam Logic](notion-task-8be78afb-c44c-409a-94ff-8a16a335ae13.md)
 - [Notion task 1df2868f-7a3f-4013-8820-2b0e92109221: Audit BTC Alert Spam and Alert Rules Compliance](notion-task-1df2868f-7a3f-4013-8820-2b0e92109221.md)
+
+## Alert quality scorecard (Phase 1 offline)
+
+Design: [`docs/project-history/alert-quality-eval-phase1-2026-07-22.md`](../project-history/alert-quality-eval-phase1-2026-07-22.md) · ADR-0003.
+
+Offline script (no prod writes, no Auto UI, no `trading_config` mutation):
+
+```bash
+# Demo (synthetic candles, no network / no DB)
+python3 scripts/eval_alert_quality.py --demo
+
+# From dashboard API (sent alerts only)
+python3 scripts/eval_alert_quality.py --api-url https://dashboard.hilovivo.com --days 14
+
+# From DATABASE_URL (never logged / never written into scorecard)
+python3 scripts/eval_alert_quality.py --database-url "$DATABASE_URL" --days 14
+
+# Local fixture + live Binance OHLCV re-fetch
+python3 scripts/eval_alert_quality.py --alerts-json path/to/alerts.json
+```
+
+Outputs: `docs/analysis/alert-quality-scorecard-YYYY-MM-DD.md` (+ `.json`).
+Pure metric helpers: `scripts/alert_quality_metrics.py` (unit-tested).
