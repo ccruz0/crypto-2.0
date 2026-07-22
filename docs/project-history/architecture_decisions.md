@@ -124,6 +124,41 @@ Cursor/canary/obs compartan el host).
 
 ---
 
+## ADR-0003 — Alert quality evaluation + preset Auto (aprendizaje con aprobación)
+
+**Estado:** PROPUESTA (Phase 1 diseño aprobado; implementación pendiente)  
+**Fecha:** 2026-07-22  
+**Detalle:** `alert-quality-eval-phase1-2026-07-22.md`
+
+### Contexto
+
+Las alertas BUY/SELL se emiten vía SignalMonitor → Telegram, pero no hay scorecard
+sistemático de “¿capturó la tendencia?”. `market_data` es snapshot-only (sin
+historial de velas). Se quiere evaluar calidad y, más adelante, un preset `auto`
+con parámetros visibles y no editables manualmente, actualizados solo con
+aprobación humana.
+
+### Opciones consideradas
+
+1. **Offline eval primero** (re-fetch OHLCV) → luego `alert_outcomes` → luego Auto UI.
+2. Warehouse de velas desde día 1 (más infra, más blast radius en host compartido).
+3. Mutar presets swing/scalp in-place con learning (mezcla control humano y automático).
+
+### Decisión
+
+Adoptar (1): métricas M1–M7 definidas; join key `telegram_messages.id`; primer PR =
+script offline + scorecard; preset `auto` seeded desde swing-conservative, locked
+en UI; learning apply solo vía Approval Center (Phase 2+). No mutar presets live
+en prod en Phase 1.
+
+### Consecuencias
+
+- Scorecard reproducible sin tocar runtime de trading.
+- Auto no compite con edición manual de swing/scalp.
+- Deuda aceptada: dependencia de OHLCV externo hasta (opcional) tabla de velas.
+
+---
+
 ## Plantilla para nuevas ADR
 
 ```markdown
