@@ -52,6 +52,7 @@ def _row_to_alert(row: Any) -> AlertRecord:
         evidence = json.loads(evidence_raw) if isinstance(evidence_raw, str) else list(evidence_raw or [])
     except (json.JSONDecodeError, TypeError):
         evidence = []
+    snoozed_raw = getattr(row, "snoozed_until", None)
     return AlertRecord(
         alert_id=row.alert_id,
         created_at=_iso(_parse_dt(row.created_at)) or "",
@@ -67,6 +68,7 @@ def _row_to_alert(row: Any) -> AlertRecord:
         occurrence_count=int(row.occurrence_count or 1),
         first_seen=_iso(_parse_dt(row.first_seen)) or "",
         last_seen=_iso(_parse_dt(row.last_seen)) or "",
+        snoozed_until=_iso(_parse_dt(snoozed_raw)) or "",
     )
 
 
@@ -85,6 +87,51 @@ def upsert_alert(
     evidence_json = json.dumps(alert_input.evidence or [])
 
     with engine.begin() as conn:
+        # Active snooze for this fingerprint: bump occurrence, keep suppressed, skip new open alert.
+        snoozed = conn.execute(
+            text(
+                """
+                SELECT * FROM jarvis_alerts
+                WHERE fingerprint = :fingerprint
+                  AND snoozed_until IS NOT NULL
+                  AND snoozed_until > :now
+                ORDER BY snoozed_until DESC
+                LIMIT 1
+                """
+            ),
+            {"fingerprint": fingerprint, "now": now},
+        ).fetchone()
+        if snoozed:
+            conn.execute(
+                text(
+                    """
+                    UPDATE jarvis_alerts
+                    SET occurrence_count = occurrence_count + 1,
+                        last_seen = :last_seen,
+                        updated_at = :updated_at,
+                        summary = :summary,
+                        evidence = :evidence,
+                        investigation_id = COALESCE(:investigation_id, investigation_id)
+                    WHERE alert_id = :alert_id
+                    """
+                ),
+                {
+                    "alert_id": snoozed.alert_id,
+                    "last_seen": now,
+                    "updated_at": now,
+                    "summary": alert_input.summary,
+                    "evidence": evidence_json,
+                    "investigation_id": alert_input.investigation_id,
+                },
+            )
+            updated = conn.execute(
+                text("SELECT * FROM jarvis_alerts WHERE alert_id = :alert_id"),
+                {"alert_id": snoozed.alert_id},
+            ).fetchone()
+            record = _row_to_alert(updated)
+            record.deduplicated = True
+            return record
+
         existing = conn.execute(
             text(
                 """
@@ -231,6 +278,45 @@ def update_alert_status(alert_id: str, status: AlertStatus) -> AlertRecord | Non
             {"alert_id": alert_id},
         ).fetchone()
     return _row_to_alert(row) if row else None
+
+
+def snooze_alert(alert_id: str, *, hours: int = 24) -> AlertRecord | None:
+    """Suppress Telegram re-fires for this alert fingerprint until snoozed_until."""
+    if not ensure_tables():
+        return None
+    now = _now_utc()
+    until = now + timedelta(hours=max(1, hours))
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE jarvis_alerts
+                SET status = :status,
+                    snoozed_until = :snoozed_until,
+                    updated_at = :updated_at
+                WHERE alert_id = :alert_id
+                """
+            ),
+            {
+                "alert_id": alert_id,
+                "status": AlertStatus.SUPPRESSED.value,
+                "snoozed_until": until,
+                "updated_at": now,
+            },
+        )
+        row = conn.execute(
+            text("SELECT * FROM jarvis_alerts WHERE alert_id = :alert_id"),
+            {"alert_id": alert_id},
+        ).fetchone()
+    return _row_to_alert(row) if row else None
+
+
+def alert_is_snoozed(alert: AlertRecord, *, now: datetime | None = None) -> bool:
+    """True when alert has an active snooze window."""
+    until = _parse_dt(alert.snoozed_until)
+    if until is not None:
+        return until > (now or _now_utc())
+    return (alert.status or "").strip().lower() == AlertStatus.SUPPRESSED.value
 
 
 def count_alerts_since(*, since: datetime, severity: str | None = None) -> int:

@@ -242,13 +242,33 @@ def test_telegram_format_includes_required_fields():
     assert "exchange_connectivity" in msg
     assert "inv-1" in msg
     assert "Evidence: 1" in msg
+    assert "Alert: alert-1" in msg
+    assert "CTAs:" in msg
 
 
-def test_telegram_warning_sent_immediately():
+def test_telegram_warning_not_sent_by_default():
+    """WARNING findings are stored but do not interrupt via Telegram."""
     alert = AlertRecord(
         alert_id="a",
         created_at="",
         severity="WARNING",
+        source="s",
+        investigation_id=None,
+        title="t",
+        summary="s",
+        evidence=[],
+        status="open",
+        fingerprint="f",
+    )
+    assert should_send_telegram(alert, info_enabled=False) is False
+    assert should_send_telegram(alert, info_enabled=True) is False
+
+
+def test_telegram_critical_sent():
+    alert = AlertRecord(
+        alert_id="a",
+        created_at="",
+        severity="CRITICAL",
         source="s",
         investigation_id=None,
         title="t",

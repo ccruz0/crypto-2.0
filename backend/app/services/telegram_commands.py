@@ -5181,6 +5181,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             and _cb_for_callback_dedup != "noop"
             and not _cb_for_callback_dedup.startswith("task_project:")
             and not _cb_for_callback_dedup.startswith("jm:")
+            and not _cb_for_callback_dedup.startswith("jia:")
         ):
             now = time.time()
             if _cb_for_callback_dedup in PROCESSED_CALLBACK_DATA:
@@ -5228,6 +5229,70 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         )
 
         _cb_raw = (callback_data or "").strip()
+        if _cb_raw.startswith("jia:"):
+            from app.jarvis.telegram_control import (
+                is_jarvis_telegram_enabled,
+                jarvis_allowlists_configured,
+                jarvis_telegram_allowed,
+                jarvis_telegram_token_present,
+            )
+            from app.jarvis.investigations.alerting.telegram_inline import (
+                handle_jarvis_investigation_alert_callback,
+            )
+
+            def _jarvis_alert_send(msg: str) -> None:
+                send_command_response(chat_id, msg)
+
+            if (
+                not is_jarvis_telegram_enabled()
+                or not jarvis_telegram_token_present()
+                or not jarvis_allowlists_configured()
+                or not jarvis_telegram_allowed(chat_id, actor_user_id)
+            ):
+                try:
+                    token = _get_effective_bot_token()
+                    if token and callback_query_id:
+                        http_post(
+                            f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                            json={"callback_query_id": callback_query_id},
+                            timeout=5,
+                            calling_module="telegram_commands",
+                        )
+                except Exception:
+                    pass
+                send_command_response(
+                    chat_id,
+                    "⛔ Acciones de alerta no permitidas: chat o usuario fuera de la lista "
+                    "(mismas reglas que /mission).",
+                )
+                return
+
+            if callback_query_id:
+                PROCESSED_CALLBACK_IDS.add(callback_query_id)
+                if len(PROCESSED_CALLBACK_IDS) > 1000:
+                    old_ids = list(PROCESSED_CALLBACK_IDS)[:500]
+                    PROCESSED_CALLBACK_IDS.difference_update(old_ids)
+            try:
+                token = _get_effective_bot_token()
+                if token and callback_query_id:
+                    http_post(
+                        f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                        json={"callback_query_id": callback_query_id},
+                        timeout=5,
+                        calling_module="telegram_commands",
+                    )
+            except Exception:
+                pass
+
+            handle_jarvis_investigation_alert_callback(
+                chat_id=chat_id,
+                user_id=user_id,
+                from_user=from_user,
+                callback_data=_cb_raw,
+                send=_jarvis_alert_send,
+            )
+            return
+
         if _cb_raw.startswith("jm:"):
             from app.jarvis.telegram_control import (
                 is_jarvis_telegram_enabled,

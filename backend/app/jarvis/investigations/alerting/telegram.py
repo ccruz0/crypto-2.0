@@ -6,6 +6,10 @@ import logging
 import os
 from typing import Any
 
+from app.jarvis.investigations.alerting.persistence import alert_is_snoozed
+from app.jarvis.investigations.alerting.telegram_markup import (
+    build_investigation_alert_inline_markup,
+)
 from app.jarvis.investigations.alerting.types import AlertRecord, AlertSeverity
 
 logger = logging.getLogger(__name__)
@@ -37,14 +41,24 @@ def format_investigation_alert_message(
         f"Summary: {alert.summary[:800]}",
         f"Evidence: {evidence_count}",
         f"Investigation: {alert.investigation_id or 'n/a'}",
+        f"Alert: {alert.alert_id}",
     ]
     if alert.deduplicated and alert.occurrence_count > 1:
         lines.append(f"Occurrences: {alert.occurrence_count}")
-    lines.extend(["", "Read-only alert — no actions executed."])
+    lines.extend(
+        [
+            "",
+            "Read-only alert — no actions executed.",
+            "CTAs: Ver detalle · Crear tarea · Snooze 24h",
+        ]
+    )
     return "\n".join(lines)
 
 
 def should_send_telegram(alert: AlertRecord, *, info_enabled: bool) -> bool:
+    # Snoozed fingerprints must not interrupt the operator.
+    if alert_is_snoozed(alert):
+        return False
     # Only send Telegram alerts for CRITICAL issues. WARNING and INFO are logged but not notified
     # (read-only warnings shouldn't interrupt the operator; log them instead)
     if alert.severity == AlertSeverity.CRITICAL.value:
@@ -60,7 +74,7 @@ def send_investigation_alert(
     investigation_type: str = "",
     info_enabled: bool = False,
 ) -> bool:
-    """Send alert via existing Jarvis Telegram infrastructure."""
+    """Send alert via existing Jarvis Telegram infrastructure (with human-gated CTAs)."""
     if not should_send_telegram(alert, info_enabled=info_enabled):
         return False
 
@@ -69,13 +83,35 @@ def send_investigation_alert(
         logger.warning("investigation alert skipped: no TELEGRAM_CHAT_ID configured")
         return False
 
+    message = format_investigation_alert_message(alert, investigation_type=investigation_type)
+    markup = build_investigation_alert_inline_markup(alert.alert_id)
+
+    try:
+        from app.services.telegram_commands import send_telegram_message_with_markup
+
+        sent = send_telegram_message_with_markup(
+            chat_id,
+            message,
+            reply_markup=markup,
+            parse_mode=None,
+        )
+        if sent:
+            logger.info(
+                "investigation alert telegram sent=True severity=%s alert_id=%s with_ctas=1",
+                alert.severity,
+                alert.alert_id,
+            )
+            return True
+    except Exception as exc:
+        logger.warning("investigation alert telegram markup send failed: %s", exc)
+
+    # Fallback: plain text without buttons (still useful if markup path fails).
     try:
         from app.jarvis.telegram_service import TelegramMissionService
 
-        message = format_investigation_alert_message(alert, investigation_type=investigation_type)
         sent = TelegramMissionService().send_message(chat_id, message)
         logger.info(
-            "investigation alert telegram sent=%s severity=%s alert_id=%s",
+            "investigation alert telegram sent=%s severity=%s alert_id=%s with_ctas=0",
             sent,
             alert.severity,
             alert.alert_id,

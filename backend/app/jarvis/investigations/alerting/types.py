@@ -54,3 +54,4 @@ class AlertRecord:
     updated_at: str = ""
     telegram_sent: bool = False
     deduplicated: bool = False
+    snoozed_until: str = ""
