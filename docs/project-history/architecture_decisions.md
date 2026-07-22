@@ -33,15 +33,18 @@ detonante de la decisión ADR-0002.
 
 ## ADR-0002 — Resolver la presión de memoria/swap: upgrade vs split vs híbrido
 
-**Estado:** RECOMENDADA (investigación cerrada 2026-06-26; **sin implementación**).
-**Depende de:** `swap_investigation.md` (datos del host 2026-06-26).
+**Estado:** PARCIALMENTE IMPLEMENTADA (Opción A aplicada 2026-07-22; Opción B
+sigue recomendada a medio plazo).
+**Depende de:** `swap_investigation.md`, `host-swap-investigation-2026-07-10.md`,
+`host-swap-followup-2026-07-22.md`.
 
 ### Contexto
 
-`HostSwapHigh` es un true positive (PR #76). El disco ya se resolvió (30→50 GB).
-El riesgo dominante es ahora la memoria. Investigación read-only en
-`i-087953603011543c5` confirmó swap ~50% sostenido, MemAvailable ~19%, y
-oversubscription de límites Docker (~5.5 GiB declarados en 1.9 GiB RAM).
+`HostSwapHigh` es un true positive (PR #76). El disco ya se resolvió (30→50 GB)
+como riesgo primario; el riesgo dominante pasó a memoria. Investigación
+read-only en `i-087953603011543c5` confirmó swap ~50–55% en `t3.small`,
+MemAvailable bajo, y oversubscription (prod + canary + observabilidad +
+Cursor/IDE en el mismo host).
 
 ### Opciones
 
@@ -96,23 +99,28 @@ Upgrade prod a t3.medium **y** mover LAB a host dedicado.
 
 ### Decisión
 
-**Recomendación: Opción B (split LAB)** — más segura y coste-efectiva a largo plazo
-para aislar prod de Jarvis Builder y eliminar el antipatrón de secretos LAB en el
-host prod.
+**2026-07-22 — Opción A aplicada:** la instancia `i-087953603011543c5` es ahora
+`t3.medium` (3.7 GiB RAM). Reboot 01:41 UTC. Post-resize: swap ≈ 0% (68 KiB),
+MemAvailable ≈ 1.7 GiB, `/api/health` y `/api/health/ready` OK. Canary se
+reinició tras exit 137 del reboot.
 
-**Opción A** como paliativo de emergencia si swap supera umbrales críticos antes de
-poder migrar LAB.
+**Opción B (split LAB/canary/obs)** sigue siendo la recomendación arquitectónica
+a medio plazo para reducir blast radius; ya no es el paliativo de emergencia de
+RAM.
 
-**Requiere aprobación humana** antes de: resize de instancia, launch/migrate LAB host,
-o cambios de compose en prod.
+**No implementar sin aprobación humana:** prune agresivo de disco, migrate LAB,
+o bajar de nuevo a `t3.small`.
 
-**Validación post-implementación:**
+**Validación post-Opción A (2026-07-22):**
 
-- Prod: `HostSwapHigh` resuelto o swap <25% sostenido; prod health OK.
-- LAB: backend-lab healthy en host dedicado; Bedrock STS + invoke OK.
+- Prod: swap <25% tras resize; health OK; `HostSwapHigh` no debe re-disparar si
+  el swap se mantiene bajo la ventana de 10m (no suprimir la alerta).
+- Canary: healthy tras restart explícito.
+- Disco: raíz al ~82% — riesgo secundario; ver follow-up 2026-07-22 (reclaimable
+  ~6–8 GiB en imágenes/build-cache/caches de Cursor/npm sin tocar datos).
 
-**Rollback:** revertir tipo de instancia (A) o recrear backend-lab en host prod
-(B) usando snapshot documentado del compose actual.
+**Rollback (A):** revertir tipo de instancia a `t3.small` (no recomendado mientras
+Cursor/canary/obs compartan el host).
 
 ---
 
