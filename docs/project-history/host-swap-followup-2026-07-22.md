@@ -45,9 +45,19 @@ Largest non-container consumer on PROD: Cursor server / extensionHost / Prisma M
    `/home/ubuntu/.cache/ms-playwright` if unused (~1–2 G).
 4. Do **not** delete postgres volumes or active container layers.
 
+### Cleanup executed 2026-07-22 (approved)
+
+- `docker builder prune -af` — ~2.6 G build cache removed.
+- Removed unused `atp-backend:<old-sha>` tags; **kept**
+  `…:70b2cd62…` (live) and `atp-backend-rollback:predeploy`.
+- Removed unused local `automated-trading-platform-backend-aws:latest`.
+- Result: root **82% → 53%** (39 G → 26 G used; ~23 G free).
+- Health `/api/health` + `/api/health/ready` OK; backend / canary / postgres healthy.
+- Not touched: volumes, Cursor/npm caches, `/opt/openclaw`.
+
 ## Decision / next
 
 - ADR-0002 Opción A: **done**.
+- Disk emergency relieved (53%); further cache/OpenClaw cleanup optional.
 - Do not suppress `HostSwapHigh`.
-- Disk cleanup: propose dry-run commands; wait for human OK before prune.
 - Opción B (split): backlog, not emergency.
