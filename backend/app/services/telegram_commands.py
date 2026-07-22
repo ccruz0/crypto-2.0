@@ -5175,13 +5175,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         # (e.g., when both Hilovivo-alerts and Hilovivo-alerts-local receive the same callback).
         # Exclude task_project:* — data is identical for every user/chat; global dedup would ACK but
         # skip task creation and user confirmation (silent failure for legitimate clicks).
+        # Exclude jm:* (mission multi-user approve/reply) and jia:v:* (view detail can be re-tapped).
+        # Keep jia:t:* / jia:s:* under global dedup to avoid duplicate ACW tasks / double snooze.
         _cb_for_callback_dedup = (callback_data or "").strip()
         if (
             _cb_for_callback_dedup
             and _cb_for_callback_dedup != "noop"
             and not _cb_for_callback_dedup.startswith("task_project:")
             and not _cb_for_callback_dedup.startswith("jm:")
-            and not _cb_for_callback_dedup.startswith("jia:")
+            and not _cb_for_callback_dedup.startswith("jia:v:")
         ):
             now = time.time()
             if _cb_for_callback_dedup in PROCESSED_CALLBACK_DATA:

@@ -112,6 +112,13 @@ def _create_acw_task_for_alert(alert: Any, *, actor: str) -> str:
 
     existing_task = (investigation.get("proposal_task_id") or "").strip()
     existing_status = (investigation.get("proposal_status") or "").strip()
+    if existing_status == "no_fix_required":
+        return (
+            "Esta investigación ya se evaluó: no_fix_required (fix ya en el repo).\n"
+            f"Task: {existing_task or 'n/a'}\n"
+            f"Investigation: {inv_id}\n"
+            "No se re-ejecuta el proposal. Considera Snooze 24h si el ruido continúa."
+        )
     if existing_task and existing_status in (
         "proposing",
         "waiting_for_approval",

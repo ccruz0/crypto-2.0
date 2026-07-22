@@ -180,6 +180,60 @@ def test_view_callback_sends_detail(alert_db, monkeypatch):
     assert "Read-only detail" in sent[0]
 
 
+def test_create_task_skips_when_no_fix_required(alert_db, monkeypatch):
+    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
+    alert_input = AlertInput(
+        alert_type="t",
+        source="dashboard",
+        title="t",
+        summary="summary",
+        severity=AlertSeverity.CRITICAL,
+        investigation_id="inv-noop",
+        normalized_finding="noop create task finding",
+    )
+    fp = build_fingerprint(alert_input)
+    record = upsert_alert(alert_input, fingerprint=fp, suppression_window_hours=24)
+
+    sent: list[str] = []
+    submit_mock = MagicMock()
+
+    with (
+        patch(
+            "app.jarvis.investigations.alerting.telegram_inline._jarvis_alert_gate_ok",
+            return_value=True,
+        ),
+        patch(
+            "app.jarvis.investigations.alerting.telegram_inline.actor_from_telegram_user",
+            return_value="@carlos",
+        ),
+        patch(
+            "app.jarvis.investigations.persistence.get_investigation",
+            return_value={
+                "investigation_id": "inv-noop",
+                "root_cause": "Trigger order API failure blocks cache updates",
+                "recommended_fix": "Allow regular open orders independent cache update",
+                "proposal_task_id": "task-already",
+                "proposal_status": "no_fix_required",
+            },
+        ),
+        patch(
+            "app.jarvis.proposals.proposal_service.submit_patch_proposal",
+            submit_mock,
+        ),
+    ):
+        ok = handle_jarvis_investigation_alert_callback(
+            chat_id="-100",
+            user_id="1",
+            from_user={"id": 1, "username": "carlos"},
+            callback_data=f"jia:t:{record.alert_id}",
+            send=sent.append,
+        )
+    assert ok is True
+    assert submit_mock.called is False
+    assert "no_fix_required" in sent[0]
+    assert "No se re-ejecuta" in sent[0]
+
+
 def test_create_task_fallback_queues_dry_run(alert_db, monkeypatch):
     monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
     alert_input = AlertInput(
