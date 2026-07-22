@@ -56,18 +56,23 @@ PR #61.
 
 ### Estado y guardrail
 
-- `HostSwapHigh` es **correcto / true positive**. Es la señal que originó la
-  investigación activa de presión de memoria/swap (ver
-  `swap_investigation.md`). **No suprimir ni ajustar sus umbrales.**
+- `HostSwapHigh` es **correcto / true positive**. **No suprimir ni ajustar sus
+  umbrales.**
+- **2026-07-22:** host resizeado a `t3.medium`; swap post-reboot ≈ 0%. Ver
+  `host-swap-followup-2026-07-22.md` y ADR-0002 (Opción A aplicada). La alerta
+  debe poder resolver sola con swap &lt;25% sostenido; no tocar reglas.
 
 ---
 
 ## 3. Resuelto previamente: presión de disco
 
-**Estado:** RESUELTO.
+**Estado:** RESUELTO como outage (expand 30→50 GB); **reactivado como riesgo
+secundario** el 2026-07-22 (~82% usado). Ver follow-up de limpieza (imágenes /
+build cache / caches Cursor) — sin prune hasta aprobación humana.
 
-- El disco se expandió **30 GB → 50 GB**; uso ~48%.
-- El disco **ya no es** el riesgo principal; el foco actual es memoria/swap.
+- El disco se expandió **30 GB → 50 GB**.
+- Tras el expand el uso bajó ~48%; a 2026-07-22 volvió a ~82% (containerd images
+  + Cursor/npm caches).
 
 ---
 
