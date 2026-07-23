@@ -117,18 +117,9 @@ export default function ExpectedTakeProfitTab({
     }
   }, [showExpectedTPDetailsDialog]);
 
-  const formatSignedUsd = (value: number | null | undefined, forceSign: 'positive' | 'negative') => {
-    if (value === null || value === undefined) return '—';
-    const displayValue = forceSign === 'positive' ? Math.abs(value) : -Math.abs(value);
-    const prefix = displayValue >= 0 ? '+' : '';
-    return `${prefix}${formatNumber(displayValue, '$')}`;
-  };
-
-  const formatSignedPct = (value: number | null | undefined, forceSign: 'positive' | 'negative') => {
-    if (value === null || value === undefined) return '—';
-    const displayValue = forceSign === 'positive' ? Math.abs(value) : -Math.abs(value);
-    const prefix = displayValue >= 0 ? '+' : '';
-    return `${prefix}${displayValue.toFixed(2)}%`;
+  const formatExitPrice = (price: number | null | undefined, symbol: string) => {
+    if (price === null || price === undefined) return '—';
+    return formatNumber(price, symbol);
   };
 
   const sideLabel = (side: ExpectedTPEntryOrder['side']) => sideLabelEs(side);
@@ -557,15 +548,21 @@ export default function ExpectedTakeProfitTab({
                 <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
                   Expected TP Details: {expectedTPDetailsSymbol}
                 </h3>
-                {expectedTPDetails?.position_side && (
-                  <div className="mt-2">
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {expectedTPDetails?.position_side && (
                     <span
                       className={`px-2 py-1 rounded text-sm font-semibold ${positionBadgeClass(expectedTPDetails.position_side)}`}
                     >
                       {positionLabel(expectedTPDetails.position_side)}
                     </span>
-                  </div>
-                )}
+                  )}
+                  {expectedTPDetails?.current_price !== undefined && expectedTPDetails?.current_price !== null && (
+                    <span className="px-2 py-1 rounded text-sm font-semibold bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-100">
+                      Precio actual:{' '}
+                      {formatNumber(expectedTPDetails.current_price, expectedTPDetailsSymbol || '')}
+                    </span>
+                  )}
+                </div>
               </div>
               <button
                 onClick={onCloseDetailsDialog}
@@ -646,7 +643,7 @@ export default function ExpectedTakeProfitTab({
                     </div>
                     {expectedTPDetails.current_price !== undefined && (
                       <div>
-                        <div className="text-sm text-gray-600 dark:text-gray-400">Current Price</div>
+                        <div className="text-sm text-gray-600 dark:text-gray-400">Precio actual</div>
                         <div className="text-lg font-semibold text-gray-900 dark:text-white">
                           {formatNumber(expectedTPDetails.current_price, expectedTPDetailsSymbol || '')}
                         </div>
@@ -711,7 +708,7 @@ export default function ExpectedTakeProfitTab({
                               Dirección
                             </th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                              Entry Price
+                              Precio
                             </th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Qty
@@ -824,10 +821,7 @@ export default function ExpectedTakeProfitTab({
                                               {tp.status}
                                             </span>
                                             <span className="font-semibold text-green-600 dark:text-green-400">
-                                              {formatSignedUsd(tp.expected_amount_usd, 'positive')}
-                                            </span>
-                                            <span className="text-xs text-green-700 dark:text-green-300">
-                                              ({formatSignedPct(tp.expected_amount_pct, 'positive')})
+                                              Salida: {formatExitPrice(tp.price, expectedTPDetailsSymbol || '')}
                                             </span>
                                             {proximity != null && (
                                               <span
@@ -864,10 +858,7 @@ export default function ExpectedTakeProfitTab({
                                               {entry.stop_loss.status}
                                             </span>
                                             <span className="font-semibold text-red-600 dark:text-red-400">
-                                              {formatSignedUsd(entry.stop_loss.expected_amount_usd, 'negative')}
-                                            </span>
-                                            <span className="text-xs text-red-700 dark:text-red-300">
-                                              ({formatSignedPct(entry.stop_loss.expected_amount_pct, 'negative')})
+                                              Salida: {formatExitPrice(entry.stop_loss.price, expectedTPDetailsSymbol || '')}
                                             </span>
                                           </div>
                                         </td>
