@@ -327,19 +327,32 @@ class TradingScheduler:
         await asyncio.to_thread(self.check_telegram_commands_sync)
     
     def check_hourly_sl_tp_missed_sync(self):
-        """Check for FILLED orders missing SL/TP - synchronous worker
-        Runs hourly to catch orders that were missed by the 1-hour automatic window
+        """Hourly: ensure every open position has SL/TP (no fill-age gate).
+
+        Also attempts SL/TP for recent FILLED entries missing protection.
         """
-        logger.info("Checking for FILLED orders missing SL/TP (hourly check)...")
+        logger.info("Checking for open positions / FILLED orders missing SL/TP (hourly)...")
         
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
             from app.services.exchange_sync import ExchangeSyncService
             from app.services.telegram_notifier import telegram_notifier
+            from app.services.sl_tp_checker import sl_tp_checker_service
             from datetime import timedelta, timezone
             
             db = SessionLocal()
             try:
+                # Primary path: open balances must always have both legs
+                ensure_result = sl_tp_checker_service.ensure_missing_protection(db)
+                positions_created = len(ensure_result.get("created") or [])
+                positions_failed = len(ensure_result.get("failed") or [])
+                if positions_created or positions_failed:
+                    logger.info(
+                        "Hourly position ensure: created=%s failed=%s",
+                        positions_created,
+                        positions_failed,
+                    )
+
                 exchange_sync = ExchangeSyncService()
                 now_utc = datetime.now(timezone.utc)
                 
@@ -431,27 +444,40 @@ class TradingScheduler:
                                     logger.error(f"❌ Failed to create SL/TP for order {order.exchange_order_id}: {e}", exc_info=True)
                                     orders_missing_sl_tp.append(order_info)
                             else:
-                                # Order is >3 hours old - too late to auto-create
+                                # Order is >3 hours old — position ensure above covers open balances
                                 orders_too_old.append(order_info)
                 
                 # Send Telegram notification if there are issues
-                if orders_too_old or (orders_missing_sl_tp and orders_created == 0):
+                if (
+                    positions_failed
+                    or orders_too_old
+                    or (orders_missing_sl_tp and orders_created == 0)
+                ):
                     try:
                         message_parts = ["🔍 <b>HOURLY SL/TP CHECK</b>\n\n"]
+
+                        if positions_created > 0:
+                            message_parts.append(
+                                f"✅ Position ensure created protection for {positions_created} symbol(s)\n\n"
+                            )
+                        if positions_failed > 0:
+                            message_parts.append(
+                                f"❌ Position ensure failed for {positions_failed} symbol(s)\n"
+                            )
+                            for f in (ensure_result.get("failed") or [])[:5]:
+                                message_parts.append(
+                                    f"• {f.get('symbol')}: {f.get('error')}\n"
+                                )
+                            message_parts.append("\n")
                         
                         if orders_created > 0:
                             message_parts.append(f"✅ Created SL/TP for {orders_created} missed order(s)\n\n")
                         
                         if orders_too_old:
-                            message_parts.append(f"⚠️ <b>{len(orders_too_old)} order(s) too old for auto-creation (>3 hours):</b>\n")
-                            for o in orders_too_old[:5]:  # Limit to 5 for brevity
-                                message_parts.append(
-                                    f"• {o['symbol']} {o['side']} - {o['order_id']}\n"
-                                    f"  Filled {o['time_since_filled']:.1f}h ago | Missing: {'SL' if not o['has_sl'] else ''} {'TP' if not o['has_tp'] else ''}\n"
-                                )
-                            if len(orders_too_old) > 5:
-                                message_parts.append(f"  ... and {len(orders_too_old) - 5} more\n")
-                            message_parts.append("\n💡 Manual intervention required\n")
+                            message_parts.append(
+                                f"ℹ️ {len(orders_too_old)} old fill(s) (>3h) — "
+                                "covered by open-position ensure if balance still open\n"
+                            )
                         
                         if orders_missing_sl_tp and orders_created == 0:
                             message_parts.append(f"❌ <b>{len(orders_missing_sl_tp)} order(s) failed SL/TP creation:</b>\n")
@@ -466,8 +492,13 @@ class TradingScheduler:
                     except Exception as notify_err:
                         logger.warning(f"Failed to send hourly SL/TP check notification: {notify_err}", exc_info=True)
                 
-                if orders_created == 0 and not orders_too_old and not orders_missing_sl_tp:
-                    logger.info("✅ All recent FILLED orders have SL/TP protection")
+                if (
+                    orders_created == 0
+                    and positions_created == 0
+                    and not positions_failed
+                    and not orders_missing_sl_tp
+                ):
+                    logger.info("✅ All open positions / recent FILLED orders have SL/TP protection")
                 
                 # Record execution
                 from app.api.routes_monitoring import record_workflow_execution
@@ -798,8 +829,8 @@ class TradingScheduler:
                     await self.check_orphan_orders()
                     await self.check_nightly_consistency()
                 await self.check_approval_queue()
-                # DISABLED: Hourly SL/TP check - use Telegram menu button instead
-                # await self.check_hourly_sl_tp_missed()  # Check for missed SL/TP every hour
+                # Hourly: ensure open positions always have SL/TP (no fill-age gate)
+                await self.check_hourly_sl_tp_missed()
                 # Update dashboard snapshot periodically (every 60 seconds)
                 await self.update_dashboard_snapshot()
                 # Check Telegram commands continuously (long polling handles timing)
