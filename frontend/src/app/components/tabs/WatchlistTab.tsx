@@ -114,7 +114,8 @@ export default function WatchlistTab({
   const coinAlertStatus = parentCoinAlertStatus || hookCoinAlertStatus;
 
   const [watchlistFilter, setWatchlistFilter] = useState(parentWatchlistFilter || '');
-  const [sortField, setSortField] = useState<SortField | null>(null);
+  // Default to Symbol A→Z so the table opens alphabetically (click header to toggle).
+  const [sortField, setSortField] = useState<SortField | null>('symbol');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [updatingCoins, setUpdatingCoins] = useState<Set<string>>(new Set());
   const [editingAmount, setEditingAmount] = useState<Record<string, string>>({});
@@ -170,8 +171,8 @@ export default function WatchlistTab({
       
       switch (sortField) {
         case 'symbol':
-          aValue = a.instrument_name || '';
-          bValue = b.instrument_name || '';
+          aValue = (a.instrument_name || '').toLowerCase();
+          bValue = (b.instrument_name || '').toLowerCase();
           break;
         case 'last_price':
           aValue = a.current_price || 0;
@@ -204,9 +205,10 @@ export default function WatchlistTab({
       }
       
       if (typeof aValue === 'string' && typeof bValue === 'string') {
-        return sortDirection === 'asc' 
-          ? aValue.localeCompare(bValue)
-          : bValue.localeCompare(aValue);
+        // Case-insensitive (matches Executed Orders / page.tsx sortData)
+        return sortDirection === 'asc'
+          ? aValue.localeCompare(bValue, undefined, { sensitivity: 'base' })
+          : bValue.localeCompare(aValue, undefined, { sensitivity: 'base' });
       }
       
       return sortDirection === 'asc'
@@ -1092,13 +1094,15 @@ export default function WatchlistTab({
 
   const SortableHeader: React.FC<{ field: SortField; children: React.ReactNode }> = ({ field, children }) => (
     <th
-      className="px-4 py-2 text-left cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800"
+      className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
       onClick={() => handleSort(field)}
+      title={`Sort by ${typeof children === 'string' ? children : field}`}
+      aria-sort={sortField === field ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
         {children}
         {sortField === field && (
-          <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
+          <span aria-hidden="true">{sortDirection === 'asc' ? '↑' : '↓'}</span>
         )}
       </div>
     </th>
