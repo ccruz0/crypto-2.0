@@ -394,6 +394,8 @@ def _check_risk_limits(
             symbol_base = symbol_upper.split("_")[0] if "_" in symbol_upper else symbol_upper
             max_orders_per_symbol_per_day = _resolve_max_orders_per_symbol_per_day(db, symbol_upper)
 
+            # Count entry/manual orders only — SL/TP children must not consume the daily budget.
+            # (One BUY + STOP_LOSS + TAKE_PROFIT was incorrectly blocking at limit 2.)
             orders_today = db.query(func.count(ExchangeOrder.id)).filter(
                 and_(
                     or_(
@@ -403,6 +405,10 @@ def _check_risk_limits(
                     or_(
                         ExchangeOrder.exchange_create_time >= today_start,
                         ExchangeOrder.created_at >= today_start,
+                    ),
+                    or_(
+                        ExchangeOrder.order_role.is_(None),
+                        ~ExchangeOrder.order_role.in_(("STOP_LOSS", "TAKE_PROFIT")),
                     ),
                 )
             ).scalar() or 0
