@@ -959,7 +959,7 @@ class ExchangeSyncService:
                     exc_info=True,
                 )
             try:
-                self._cancel_oco_sibling(db, order)
+                self._cancel_oco_after_protection_fill(db, order)
             except Exception as oco_err:
                 logger.warning(
                     "Failed to cancel OCO sibling after %s for %s: %s",
@@ -1648,7 +1648,7 @@ class ExchangeSyncService:
                                             "STOP_MARKET",
                                         )
                                     ):
-                                        self._cancel_oco_sibling(db, order)
+                                        self._cancel_oco_after_protection_fill(db, order)
                                 except Exception as oco_err:
                                     logger.warning(
                                         "Failed to cancel OCO sibling after fill resolve for %s: %s",
@@ -2026,6 +2026,22 @@ class ExchangeSyncService:
                     "Protection fill reconcile failed: %s", repair_err, exc_info=True
                 )
 
+            # Lightweight sweeper: ACTIVE SL/TP whose OCO sibling is already FILLED
+            # and the orphan is still present on the exchange open-orders snapshot.
+            try:
+                swept = self._sweep_orphaned_oco_siblings(
+                    db, live_open_ids=all_exchange_order_ids, limit=20
+                )
+                if swept:
+                    logger.info(
+                        "Swept %d orphaned OCO sibling(s) still open after linked fill",
+                        swept,
+                    )
+            except Exception as sweep_err:
+                logger.warning(
+                    "Orphaned OCO sibling sweep failed: %s", sweep_err, exc_info=True
+                )
+
             db.commit()
             regular_count = fetch_result.get("regular_count", 0)
             trigger_count = fetch_result.get("trigger_count", 0)
@@ -2168,51 +2184,298 @@ class ExchangeSyncService:
             logger.warning(f"Failed to send OCO cancellation notification: {e}", exc_info=True)
             raise
     
-    def _cancel_oco_sibling(self, db: Session, filled_order: 'ExchangeOrder') -> bool:
-        """Cancel the sibling order in an OCO group when one is FILLED
-        
-        This method handles two scenarios:
-        1. Sibling is still active -> Cancel it via API and update DB
-        2. Sibling is already CANCELLED (by Crypto.com OCO) -> Update DB and notify
-        
+    @staticmethod
+    def _opposite_protection_role(role: Optional[str]) -> Optional[str]:
+        role_u = (role or "").upper()
+        if role_u == "TAKE_PROFIT":
+            return "STOP_LOSS"
+        if role_u == "STOP_LOSS":
+            return "TAKE_PROFIT"
+        return None
+
+    @staticmethod
+    def _is_active_oco_sibling_status(status) -> bool:
+        """True for open/working sibling statuses (enum or raw string)."""
+        if status is None:
+            return False
+        raw = getattr(status, "value", status)
+        return str(raw).upper() in {
+            "NEW",
+            "ACTIVE",
+            "PENDING",
+            "OPEN",
+            "PARTIALLY_FILLED",
+            "UNTRIGGERED",
+        }
+
+    @staticmethod
+    def _cancel_order_type_for_sibling(sibling: "ExchangeOrder") -> Optional[str]:
+        """Prefer DB order_type; map protection role so advanced cancel is used."""
+        ot = (getattr(sibling, "order_type", None) or "").strip().upper()
+        if ot in {"STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
+            return ot
+        role = (getattr(sibling, "order_role", None) or "").upper()
+        if role == "STOP_LOSS":
+            return "STOP_LIMIT"
+        if role == "TAKE_PROFIT":
+            return "TAKE_PROFIT_LIMIT"
+        return ot or None
+
+    @staticmethod
+    def _cancel_result_indicates_already_gone(result: Optional[dict]) -> bool:
+        """Idempotent success when exchange says the order is already absent."""
+        if not isinstance(result, dict):
+            return False
+        if "error" not in result:
+            return False
+        msg = str(result.get("error") or result.get("message") or "").lower()
+        needles = (
+            "not found",
+            "does not exist",
+            "already cancelled",
+            "already canceled",
+            "order_not_found",
+            "invalid order_id",
+            "no such order",
+        )
+        return any(n in msg for n in needles)
+
+    def _find_oco_siblings(
+        self, db: Session, filled_order: "ExchangeOrder"
+    ) -> list:
+        """Find linked OCO siblings via oco_group_id and/or parent_order_id + opposite role.
+
+        Never matches on NULL oco_group_id (would pull unrelated rows).
+        """
+        from app.models.exchange_order import ExchangeOrder
+
+        filled_id = getattr(filled_order, "exchange_order_id", None)
+        oco_gid = getattr(filled_order, "oco_group_id", None)
+        parent_id = getattr(filled_order, "parent_order_id", None)
+        opposite_role = self._opposite_protection_role(
+            getattr(filled_order, "order_role", None)
+        )
+
+        if not oco_gid and not (parent_id and opposite_role):
+            logger.debug(
+                "OCO: no linkage for %s (oco_group_id=%s parent_order_id=%s role=%s)",
+                filled_id,
+                oco_gid,
+                parent_id,
+                getattr(filled_order, "order_role", None),
+            )
+            return []
+
+        found: dict = {}
+
+        if oco_gid:
+            for sib in (
+                db.query(ExchangeOrder)
+                .filter(
+                    ExchangeOrder.oco_group_id == oco_gid,
+                    ExchangeOrder.exchange_order_id != filled_id,
+                )
+                .all()
+            ):
+                found[sib.exchange_order_id] = sib
+
+        if parent_id and opposite_role:
+            for sib in (
+                db.query(ExchangeOrder)
+                .filter(
+                    ExchangeOrder.parent_order_id == parent_id,
+                    ExchangeOrder.order_role == opposite_role,
+                    ExchangeOrder.exchange_order_id != filled_id,
+                )
+                .all()
+            ):
+                found.setdefault(sib.exchange_order_id, sib)
+
+        return list(found.values())
+
+    def _cancel_oco_after_protection_fill(
+        self, db: Session, filled_order: "ExchangeOrder"
+    ) -> bool:
+        """Cancel OCO sibling after a protection fill; fall back to parent/role search."""
+        oco_ok = self._cancel_oco_sibling(db, filled_order)
+        if oco_ok:
+            return True
+        try:
+            order_type = (
+                getattr(filled_order, "order_type", None)
+                or getattr(filled_order, "order_role", None)
+                or ""
+            )
+            symbol = getattr(filled_order, "symbol", None)
+            order_id = getattr(filled_order, "exchange_order_id", None)
+            if not symbol or not order_id:
+                return False
+            logger.info(
+                "OCO helper returned False for %s; trying _cancel_remaining_sl_tp fallback",
+                order_id,
+            )
+            cancelled = self._cancel_remaining_sl_tp(db, symbol, str(order_type), order_id)
+            return bool(cancelled and cancelled > 0)
+        except Exception as fallback_err:
+            logger.warning(
+                "OCO fallback cancel failed for %s: %s",
+                getattr(filled_order, "exchange_order_id", None),
+                fallback_err,
+                exc_info=True,
+            )
+            return False
+
+    def _sweep_orphaned_oco_siblings(
+        self,
+        db: Session,
+        *,
+        live_open_ids: Optional[set] = None,
+        limit: int = 20,
+    ) -> int:
+        """Cancel ACTIVE SL/TP still open on exchange whose linked sibling is FILLED.
+
+        Only cancels orders present in ``live_open_ids`` (current open-orders snapshot)
+        so phantom ACTIVE DB rows are not live-cancelled.
+        """
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        from sqlalchemy import or_
+
+        if not live_open_ids:
+            return 0
+
+        open_ids = {str(x) for x in live_open_ids if x}
+        candidates = (
+            db.query(ExchangeOrder)
+            .filter(
+                ExchangeOrder.status.in_(
+                    [
+                        OrderStatusEnum.NEW,
+                        OrderStatusEnum.ACTIVE,
+                        OrderStatusEnum.PARTIALLY_FILLED,
+                    ]
+                ),
+                or_(
+                    ExchangeOrder.order_role.in_(["TAKE_PROFIT", "STOP_LOSS"]),
+                    ExchangeOrder.order_type.in_(
+                        [
+                            "TAKE_PROFIT",
+                            "TAKE_PROFIT_LIMIT",
+                            "STOP_LOSS",
+                            "STOP_LIMIT",
+                        ]
+                    ),
+                ),
+                or_(
+                    ExchangeOrder.oco_group_id.isnot(None),
+                    ExchangeOrder.parent_order_id.isnot(None),
+                ),
+            )
+            .order_by(ExchangeOrder.updated_at.asc())
+            .limit(max(1, min(limit, 50)))
+            .all()
+        )
+
+        swept = 0
+        for orphan in candidates:
+            if str(orphan.exchange_order_id) not in open_ids:
+                continue
+            siblings = self._find_oco_siblings(db, orphan)
+            filled_sib = next(
+                (
+                    s
+                    for s in siblings
+                    if getattr(s, "status", None) == OrderStatusEnum.FILLED
+                ),
+                None,
+            )
+            if not filled_sib:
+                continue
+            if orphan.status == OrderStatusEnum.FILLED:
+                continue
+            logger.info(
+                "OCO sweep: orphan %s (%s) still open; sibling %s is FILLED — cancelling",
+                orphan.exchange_order_id,
+                orphan.order_role or orphan.order_type,
+                filled_sib.exchange_order_id,
+            )
+            try:
+                if self._cancel_oco_sibling(
+                    db, filled_sib, force_live_cancel=True
+                ):
+                    swept += 1
+            except Exception as err:
+                logger.warning(
+                    "OCO sweep cancel failed for filled=%s orphan=%s: %s",
+                    filled_sib.exchange_order_id,
+                    orphan.exchange_order_id,
+                    err,
+                    exc_info=True,
+                )
+        return swept
+
+    def _cancel_oco_sibling(
+        self,
+        db: Session,
+        filled_order: "ExchangeOrder",
+        *,
+        force_live_cancel: bool = False,
+    ) -> bool:
+        """Cancel the sibling order in an OCO pair when one leg is FILLED.
+
+        Linkage: ``oco_group_id`` and/or same ``parent_order_id`` with opposite
+        role (TAKE_PROFIT ↔ STOP_LOSS). Cancels via advanced cancel when the
+        sibling is a trigger/protection order (pass ``order_type``).
+
         Returns:
-            bool: True if sibling was successfully cancelled or already cancelled, False if cancellation failed
+            bool: True if sibling cancelled / already cancelled / already gone;
+            False if no sibling or live cancel failed (caller may fall back).
         """
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
             from app.services.brokers.crypto_com_trade import trade_client
-            from app.services.telegram_notifier import telegram_notifier
 
-            recent_fill = is_recent_exchange_event(filled_order)
-            
-            # First, find ALL siblings regardless of status (to catch already-cancelled ones)
-            all_siblings = db.query(ExchangeOrder).filter(
-                ExchangeOrder.oco_group_id == filled_order.oco_group_id,
-                ExchangeOrder.exchange_order_id != filled_order.exchange_order_id
-            ).all()
-            
+            recent_fill = is_recent_exchange_event(filled_order) or force_live_cancel
+
+            all_siblings = self._find_oco_siblings(db, filled_order)
             if not all_siblings:
-                logger.debug(f"OCO: No sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}")
-                return False  # No sibling found, fallback should be tried
-            
-            # Find active sibling first (to cancel if still active)
-            active_sibling = None
+                logger.debug(
+                    "OCO: No sibling found for %s (oco_group_id=%s parent_order_id=%s)",
+                    filled_order.exchange_order_id,
+                    getattr(filled_order, "oco_group_id", None),
+                    getattr(filled_order, "parent_order_id", None),
+                )
+                return False
+
+            # Never cancel a sibling that already filled.
             for sib in all_siblings:
-                if sib.status in [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]:
-                    active_sibling = sib
-                    break
-            
-            # If no active sibling, check if any sibling is already CANCELLED (Crypto.com auto-cancelled it)
+                if getattr(sib, "status", None) == OrderStatusEnum.FILLED:
+                    logger.info(
+                        "OCO: sibling %s already FILLED — not cancelling (filled=%s)",
+                        sib.exchange_order_id,
+                        filled_order.exchange_order_id,
+                    )
+                    return True
+
+            active_sibling = next(
+                (s for s in all_siblings if self._is_active_oco_sibling_status(s.status)),
+                None,
+            )
+
             if not active_sibling:
-                cancelled_sibling = None
-                for sib in all_siblings:
-                    if sib.status == OrderStatusEnum.CANCELLED:
-                        cancelled_sibling = sib
-                        break
-                
+                cancelled_sibling = next(
+                    (
+                        s
+                        for s in all_siblings
+                        if getattr(s, "status", None) == OrderStatusEnum.CANCELLED
+                    ),
+                    None,
+                )
                 if cancelled_sibling:
-                    # Sibling was already cancelled by Crypto.com OCO - notify only for recent fills
-                    logger.info(f"✅ OCO: Sibling {cancelled_sibling.order_role} order {cancelled_sibling.exchange_order_id} was already CANCELLED by Crypto.com OCO")
+                    logger.info(
+                        "✅ OCO: Sibling %s order %s was already CANCELLED",
+                        cancelled_sibling.order_role,
+                        cancelled_sibling.exchange_order_id,
+                    )
                     if not recent_fill:
                         logger.info(
                             "Skipping OCO already-cancelled Telegram for historical fill %s",
@@ -2220,85 +2483,180 @@ class ExchangeSyncService:
                         )
                         return True
                     try:
-                        self._send_oco_cancellation_notification(db, filled_order, cancelled_sibling, was_already_cancelled=True)
+                        self._send_oco_cancellation_notification(
+                            db,
+                            filled_order,
+                            cancelled_sibling,
+                            was_already_cancelled=True,
+                        )
                     except Exception as notify_err:
-                        logger.warning(f"Failed to send OCO notification for already-cancelled sibling: {notify_err}")
-                    return True  # Sibling already cancelled, success
-                else:
-                    # Sibling exists but in unexpected status - log warning
-                    statuses = [f"{s.exchange_order_id}: {s.status}" for s in all_siblings]
-                    logger.warning(
-                        f"OCO: No active sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}. "
-                        f"Found {len(all_siblings)} sibling(s) but none are active: {', '.join(statuses)}"
-                    )
-                    return False  # No active sibling found, fallback should be tried
-            
-            sibling = active_sibling
+                        logger.warning(
+                            "Failed to send OCO notification for already-cancelled sibling: %s",
+                            notify_err,
+                        )
+                    return True
 
-            # Historical TP/SL fills must not trigger live cancel_order / Telegram spam.
-            # DB may still show ACTIVE for long-dead siblings after a history backfill.
-            if not recent_fill:
-                sibling.status = OrderStatusEnum.CANCELLED
-                sibling.updated_at = datetime.utcnow()
-                db.commit()
-                logger.info(
-                    "OCO: marked stale ACTIVE sibling %s CANCELLED in DB for historical fill %s (no live cancel, no Telegram)",
-                    sibling.exchange_order_id,
+                statuses = [
+                    f"{s.exchange_order_id}: {s.status}" for s in all_siblings
+                ]
+                logger.warning(
+                    "OCO: No active sibling for %s (oco=%s parent=%s). "
+                    "Found %d sibling(s) but none active: %s",
                     filled_order.exchange_order_id,
+                    getattr(filled_order, "oco_group_id", None),
+                    getattr(filled_order, "parent_order_id", None),
+                    len(all_siblings),
+                    ", ".join(statuses),
                 )
-                return True
-            
-            from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
-            try:
-                assert_exchange_mutation_allowed(db, "cancel_oco_sibling", getattr(filled_order, "symbol", None), None)
-            except LiveTradingBlockedError:
-                logger.info("[HANDOFF_TOTAL] exchange_sync skipped action=cancel_oco_sibling symbol=%s", getattr(filled_order, "symbol", None))
                 return False
-            
-            logger.info(f"🔄 OCO: Cancelling sibling {sibling.order_role} order {sibling.exchange_order_id} (filled order: {filled_order.order_role})")
-            
-            # Cancel the sibling order
-            result = trade_client.cancel_order(sibling.exchange_order_id)
-            
-            if "error" not in result:
-                # Update database
+
+            sibling = active_sibling
+            cancel_type = self._cancel_order_type_for_sibling(sibling)
+
+            # Always attempt live cancel for ACTIVE siblings (late advanced-TP detection
+            # previously left orphan SLs on exchange when only DB was healed).
+            # Suppress Telegram for historical / sweeper-driven cancels.
+            send_telegram = bool(is_recent_exchange_event(filled_order)) and not force_live_cancel
+
+            from app.services.live_trading_gate import (  # pyright: ignore[reportMissingImports]
+                LiveTradingBlockedError,
+                assert_exchange_mutation_allowed,
+            )
+
+            try:
+                assert_exchange_mutation_allowed(
+                    db,
+                    "cancel_oco_sibling",
+                    getattr(filled_order, "symbol", None),
+                    None,
+                )
+            except LiveTradingBlockedError:
+                logger.info(
+                    "[HANDOFF_TOTAL] exchange_sync skipped action=cancel_oco_sibling symbol=%s",
+                    getattr(filled_order, "symbol", None),
+                )
+                return False
+
+            logger.info(
+                "🔄 OCO: Cancelling sibling %s order %s (type=%s) after filled %s %s "
+                "(oco=%s parent=%s force_live=%s)",
+                sibling.order_role,
+                sibling.exchange_order_id,
+                cancel_type,
+                filled_order.order_role,
+                filled_order.exchange_order_id,
+                getattr(filled_order, "oco_group_id", None),
+                getattr(filled_order, "parent_order_id", None),
+                force_live_cancel,
+            )
+
+            result = trade_client.cancel_order(
+                sibling.exchange_order_id, order_type=cancel_type
+            )
+
+            # If first attempt used a non-conditional type and failed, retry as advanced.
+            if (
+                "error" in result
+                and cancel_type
+                and str(cancel_type).upper()
+                not in {
+                    "STOP_LOSS",
+                    "STOP_LIMIT",
+                    "TAKE_PROFIT",
+                    "TAKE_PROFIT_LIMIT",
+                }
+            ):
+                role = (getattr(sibling, "order_role", None) or "").upper()
+                retry_type = (
+                    "STOP_LIMIT"
+                    if role == "STOP_LOSS"
+                    else "TAKE_PROFIT_LIMIT"
+                    if role == "TAKE_PROFIT"
+                    else None
+                )
+                if retry_type:
+                    logger.warning(
+                        "OCO: cancel with type=%s failed (%s); retrying as %s",
+                        cancel_type,
+                        result.get("error"),
+                        retry_type,
+                    )
+                    result = trade_client.cancel_order(
+                        sibling.exchange_order_id, order_type=retry_type
+                    )
+
+            already_gone = self._cancel_result_indicates_already_gone(result)
+            if "error" not in result or already_gone:
                 sibling.status = OrderStatusEnum.CANCELLED
                 sibling.updated_at = datetime.utcnow()
                 db.commit()
-                
-                logger.info(f"✅ OCO: Cancelled {sibling.order_role} order {sibling.exchange_order_id}")
-                
-                # Send detailed Telegram notification
-                try:
-                    self._send_oco_cancellation_notification(db, filled_order, sibling, was_already_cancelled=False)
-                except Exception as tg_err:
-                    logger.warning(f"Failed to send OCO notification: {tg_err}", exc_info=True)
-                
-                return True  # Successfully cancelled
-            else:
-                error_msg = result.get('error', 'Unknown error')
-                logger.error(f"❌ OCO: Failed to cancel sibling order {sibling.exchange_order_id}: {error_msg}")
-                
-                # Send error notification to Telegram
+                if already_gone:
+                    logger.info(
+                        "✅ OCO: Sibling %s already gone on exchange; marked CANCELLED in DB",
+                        sibling.exchange_order_id,
+                    )
+                else:
+                    logger.info(
+                        "✅ OCO: Cancelled %s order %s",
+                        sibling.order_role,
+                        sibling.exchange_order_id,
+                    )
+
+                if send_telegram:
+                    try:
+                        self._send_oco_cancellation_notification(
+                            db,
+                            filled_order,
+                            sibling,
+                            was_already_cancelled=already_gone,
+                        )
+                    except Exception as tg_err:
+                        logger.warning(
+                            "Failed to send OCO notification: %s",
+                            tg_err,
+                            exc_info=True,
+                        )
+                elif not is_recent_exchange_event(filled_order):
+                    logger.info(
+                        "OCO: cancelled sibling %s for historical fill %s (no Telegram)",
+                        sibling.exchange_order_id,
+                        filled_order.exchange_order_id,
+                    )
+                return True
+
+            error_msg = result.get("error", "Unknown error")
+            logger.error(
+                "❌ OCO: Failed to cancel sibling order %s: %s",
+                sibling.exchange_order_id,
+                error_msg,
+            )
+            if send_telegram:
                 try:
                     from app.services.telegram_notifier import telegram_notifier
+
                     telegram_notifier.send_message(
                         f"⚠️ <b>OCO: Cancellation Failed</b>\n\n"
                         f"📊 Symbol: <b>{sibling.symbol}</b>\n"
-                        f"🎯 Filled Order: {filled_order.order_role} ({filled_order.exchange_order_id})\n"
-                        f"❌ Failed to Cancel: {sibling.order_role} ({sibling.exchange_order_id})\n"
-                        f"🔗 OCO Group: <code>{filled_order.oco_group_id}</code>\n\n"
+                        f"🎯 Filled Order: {filled_order.order_role} "
+                        f"({filled_order.exchange_order_id})\n"
+                        f"❌ Failed to Cancel: {sibling.order_role} "
+                        f"({sibling.exchange_order_id})\n"
+                        f"🔗 OCO Group: <code>{filled_order.oco_group_id}</code>\n"
+                        f"🔗 Parent: <code>{filled_order.parent_order_id}</code>\n\n"
                         f"❌ Error: {error_msg}\n\n"
                         f"⚠️ Will try fallback method to cancel the order."
                     )
                 except Exception as tg_err:
-                    logger.warning(f"Failed to send OCO error notification: {tg_err}")
-                
-                return False  # Cancellation failed, fallback should be tried
-        
+                    logger.warning(
+                        "Failed to send OCO error notification: %s", tg_err
+                    )
+            return False
+
         except Exception as e:
-            logger.error(f"❌ OCO: Error cancelling sibling order: {e}", exc_info=True)
-            return False  # Exception occurred, fallback should be tried
+            logger.error(
+                "❌ OCO: Error cancelling sibling order: %s", e, exc_info=True
+            )
+            return False
 
     def _maybe_create_sl_tp_after_history_sync(
         self,
@@ -3210,8 +3568,11 @@ class ExchangeSyncService:
                         except LiveTradingBlockedError:
                             logger.info("[HANDOFF_TOTAL] exchange_sync skipped action=cancel_sl_tp_after_exec symbol=%s order_id=%s", symbol, target_order.exchange_order_id)
                             continue
-                        # Cancel the order
-                        cancel_result = trade_client.cancel_order(target_order.exchange_order_id)
+                        # Cancel via advanced endpoint when sibling is a protection/trigger order
+                        cancel_type = self._cancel_order_type_for_sibling(target_order)
+                        cancel_result = trade_client.cancel_order(
+                            target_order.exchange_order_id, order_type=cancel_type
+                        )
                         if "error" in cancel_result:
                             logger.warning(f"Failed to cancel {target_order_type} order {target_order.exchange_order_id}: {cancel_result.get('error')}")
                             continue
