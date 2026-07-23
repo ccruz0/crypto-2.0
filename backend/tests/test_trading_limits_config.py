@@ -1,11 +1,16 @@
 """Tests for trading limits config resolution and guardrail wiring."""
 
 import os
+from datetime import datetime, timezone
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.database import Base
+from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services import system_core_trade_guards as scg
 from app.services.config_loader import get_trading_limits
 from app.utils import trading_guardrails as tg
@@ -14,6 +19,44 @@ from app.utils import trading_guardrails as tg
 @pytest.fixture
 def mock_db():
     return MagicMock(spec=Session)
+
+
+@pytest.fixture
+def orders_db():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine, tables=[ExchangeOrder.__table__])
+    session = session_local()
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(bind=engine, tables=[ExchangeOrder.__table__])
+        engine.dispose()
+
+
+def _add_order(db, **kwargs) -> ExchangeOrder:
+    now = datetime.now(timezone.utc)
+    order = ExchangeOrder(
+        exchange_order_id=kwargs["exchange_order_id"],
+        symbol=kwargs.get("symbol", "ETH_USDT"),
+        side=kwargs.get("side", OrderSideEnum.BUY),
+        order_type=kwargs.get("order_type", "MARKET"),
+        status=kwargs.get("status", OrderStatusEnum.FILLED),
+        order_role=kwargs.get("order_role"),
+        parent_order_id=kwargs.get("parent_order_id"),
+        price=Decimal("1922.38"),
+        quantity=Decimal("0.0052"),
+        cumulative_quantity=Decimal("0.0052"),
+        cumulative_value=Decimal("10"),
+        avg_price=Decimal("1922.38"),
+        exchange_create_time=kwargs.get("exchange_create_time", now),
+        created_at=kwargs.get("created_at", now),
+        updated_at=now,
+    )
+    db.add(order)
+    db.commit()
+    return order
 
 
 class TestGetTradingLimits:
@@ -216,3 +259,74 @@ class TestMaxOpenPerCoinFromConfig:
         ):
             assert scg._resolve_max_open_trades() == 9
             assert scg._resolve_max_open_per_coin() == 4
+
+
+class TestDailyLimitExcludesProtectiveOrders:
+    """Regression: one entry + SL + TP must not exhaust MAX_ORDERS_PER_SYMBOL_PER_DAY=2."""
+
+    def test_entry_plus_sl_tp_counts_as_one(self, orders_db):
+        parent_id = "5755600492111379836"
+        _add_order(orders_db, exchange_order_id=parent_id, order_role=None)
+        _add_order(
+            orders_db,
+            exchange_order_id="sl-1",
+            side=OrderSideEnum.SELL,
+            order_type="STOP_LIMIT",
+            status=OrderStatusEnum.ACTIVE,
+            order_role="STOP_LOSS",
+            parent_order_id=parent_id,
+        )
+        _add_order(
+            orders_db,
+            exchange_order_id="tp-1",
+            side=OrderSideEnum.SELL,
+            order_type="TAKE_PROFIT_LIMIT",
+            status=OrderStatusEnum.ACTIVE,
+            order_role="TAKE_PROFIT",
+            parent_order_id=parent_id,
+        )
+
+        with patch.object(tg, "resolve_max_open_orders_total", return_value=10):
+            with patch(
+                "app.utils.trading_guardrails.count_total_open_positions",
+                return_value=0,
+            ):
+                with patch.object(
+                    tg, "_resolve_max_orders_per_symbol_per_day", return_value=2
+                ):
+                    allowed, reason = tg._check_risk_limits(
+                        orders_db,
+                        "ETH_USDT",
+                        10.0,
+                        "BUY",
+                        ignore_usd_limit=True,
+                        ignore_cooldown=True,
+                    )
+
+        assert allowed is True, reason
+        assert reason is None
+
+    def test_two_entries_still_block_at_limit_two(self, orders_db):
+        _add_order(orders_db, exchange_order_id="entry-1", order_role=None)
+        _add_order(orders_db, exchange_order_id="entry-2", order_role=None)
+
+        with patch.object(tg, "resolve_max_open_orders_total", return_value=10):
+            with patch(
+                "app.utils.trading_guardrails.count_total_open_positions",
+                return_value=0,
+            ):
+                with patch.object(
+                    tg, "_resolve_max_orders_per_symbol_per_day", return_value=2
+                ):
+                    allowed, reason = tg._check_risk_limits(
+                        orders_db,
+                        "ETH_USDT",
+                        10.0,
+                        "BUY",
+                        ignore_usd_limit=True,
+                        ignore_cooldown=True,
+                    )
+
+        assert allowed is False
+        assert "límite diario por símbolo" in (reason or "")
+        assert "(2/2" in (reason or "")
