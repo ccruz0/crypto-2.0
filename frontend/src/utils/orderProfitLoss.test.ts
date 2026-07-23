@@ -726,6 +726,77 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     expect(realized.has('5755600489289088548')).toBe(false);
   });
 
+  it('does not FIFO a parent-linked TP onto older lot after parent qty exhausted (BTC -8.30% regression)', () => {
+    // Prod: alert BUY 0.00016 @ 62343.84; many TPs share the same parent_order_id.
+    // First TP consumes the parent; later TP @ 65199.57 used to FIFO onto BUY @ 71100 → -8.30%.
+    const olderWrongBuy = makeOrder({
+      order_id: '5755600489289088548',
+      side: 'BUY',
+      quantity: '0.3',
+      price: '71100',
+      instrument_name: 'BTC_USD',
+      order_type: 'MARKET',
+      execution_origin: 'MANUAL',
+      has_linked_tp: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const parentBuy = makeOrder({
+      order_id: '5755600491541413116',
+      side: 'BUY',
+      quantity: '0.00016',
+      price: '62343.84',
+      instrument_name: 'BTC_USD',
+      order_type: 'MARKET',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      has_linked_sl: true,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const firstTp = makeOrder({
+      order_id: '73817490101967200',
+      side: 'SELL',
+      quantity: '0.00016',
+      price: '62967.28',
+      instrument_name: 'BTC_USD',
+      order_type: 'TAKE_PROFIT_LIMIT',
+      order_role: 'TAKE_PROFIT',
+      execution_origin: 'TAKE_PROFIT',
+      parent_order_id: '5755600491541413116',
+      create_time: 3_000,
+      update_time: 3_500,
+    });
+    const laterTp = makeOrder({
+      order_id: '73817490102011217',
+      side: 'SELL',
+      quantity: '0.00016',
+      price: '65199.57',
+      avg_price: '65239.32',
+      instrument_name: 'BTC_USD',
+      order_type: 'TAKE_PROFIT_LIMIT',
+      order_role: 'TAKE_PROFIT',
+      execution_origin: 'TAKE_PROFIT',
+      parent_order_id: '5755600491541413116',
+      create_time: 4_000,
+      update_time: 5_000,
+    });
+    const all = [olderWrongBuy, parentBuy, firstTp, laterTp];
+    const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
+
+    // Older 71100 lot must stay fully open (not nibbled by orphan sibling TPs).
+    expect(openLots.get('5755600489289088548')?.remainingQty).toBeCloseTo(0.3);
+    expect(realized.has('5755600489289088548')).toBe(false);
+
+    const laterPnl = getExecutedOrderDisplayPnl(laterTp, all, 65000, openLots, realized);
+    expect(laterPnl.available).toBe(true);
+    expect(laterPnl.isRealized).toBe(true);
+    // Attribute to OTOCO parent, not FIFO @ 71100.
+    expect(laterPnl.pnlPercent).toBeCloseTo(((65199.57 - 62343.84) / 62343.84) * 100); // +4.58%
+    expect(laterPnl.pnlPercent).not.toBeCloseTo(((65199.57 - 71100) / 71100) * 100); // not -8.30%
+  });
+
   it('shows unrealized long P/L for an open BUY vs mark price', () => {
     const buy = makeOrder({
       order_id: 'buy-open',
