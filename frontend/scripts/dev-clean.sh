@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Clean Next.js dev server processes and lock files
 
 echo "🧹 Cleaning Next.js dev server..."

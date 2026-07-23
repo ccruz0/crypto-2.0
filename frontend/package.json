@@ -3,7 +3,7 @@
   "version": "0.40.0",
   "private": true,
   "scripts": {
-    "dev:clean": "bash scripts/dev-clean.sh",
+    "dev:clean": "sh scripts/dev-clean.sh",
     "dev": "npm run dev:clean && node scripts/start-next-dev.mjs",
     "build": "next build",
     "start": "node server.js",
