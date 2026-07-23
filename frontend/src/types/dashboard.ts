@@ -11,7 +11,22 @@ export type RiskMode = 'Conservative' | 'Aggressive';
 
 /** True when strategy config fields must be read-only (Auto / learned). */
 export function isAutoPreset(preset: Preset | string | null | undefined): boolean {
-  return String(preset || '').toLowerCase() === 'auto';
+  const normalized = String(preset || '').toLowerCase();
+  // Backend may emit bare "auto" or resolved keys like "auto-conservative".
+  return normalized === 'auto' || normalized.startsWith('auto-');
+}
+
+/**
+ * Map API strategy_key / preset to a Watchlist <select> option value.
+ * Options use value="auto"; API often returns "auto-conservative" etc.
+ */
+export function toWatchlistStrategySelectValue(
+  strategyKey: string | null | undefined,
+  fallback = 'swing-conservative'
+): string {
+  if (!strategyKey || typeof strategyKey !== 'string') return fallback;
+  if (isAutoPreset(strategyKey)) return 'auto';
+  return strategyKey;
 }
 
 /** Global trading guardrails (strategy-agnostic). */
