@@ -11,7 +11,7 @@ Calculates expected take profit for open positions by:
 import logging
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
@@ -33,6 +33,10 @@ EXECUTED_STATUS = OrderStatusEnum.FILLED
 # When parent_order_id was not persisted, OTOCO child TPs are still co-created
 # within seconds of their parent BUY with matching quantity.
 OTOCO_COCREATION_MAX_SECONDS = 30
+
+# Crypto.com OTOCO can leave both an advanced BUY-leg id and a spot/parent id for
+# the same economic fill (often ~minutes apart after remapping / backfill).
+ECONOMIC_TWIN_MAX_GAP = timedelta(hours=1)
 
 
 class OpenLot:
@@ -120,6 +124,100 @@ def _tp_matches_lot_entry(db: Session, lot: OpenLot, tp: ExchangeOrder) -> bool:
     )
 
 
+def _entry_fill_qty(order: ExchangeOrder) -> Decimal:
+    return Decimal(str(order.cumulative_quantity or order.quantity or 0))
+
+
+def _entry_fill_price(order: ExchangeOrder) -> Decimal:
+    return Decimal(str(order.avg_price or order.price or 0))
+
+
+def _entry_fill_time(order: ExchangeOrder) -> Optional[datetime]:
+    return order.exchange_create_time or order.created_at
+
+
+def _economic_entry_fingerprint(order: ExchangeOrder) -> Tuple[str, OrderSideEnum, Decimal, Decimal]:
+    """Fingerprint for detecting dual-ID copies of the same economic fill."""
+    qty = _entry_fill_qty(order).quantize(Decimal("0.00000001"))
+    price = _entry_fill_price(order).quantize(Decimal("0.01"))
+    return (str(order.symbol or ""), order.side, qty, price)
+
+
+def _times_within_economic_twin_gap(a: ExchangeOrder, b: ExchangeOrder) -> bool:
+    ta = _entry_fill_time(a)
+    tb = _entry_fill_time(b)
+    if ta is None or tb is None:
+        return False
+    # Also treat "A updated when B was created" as twin remapping evidence.
+    tu = a.exchange_update_time or ta
+    gap_create = abs(ta - tb)
+    gap_remap = abs(tu - tb)
+    return min(gap_create, gap_remap) <= ECONOMIC_TWIN_MAX_GAP
+
+
+def _dedupe_economic_twin_entry_orders(
+    db: Session,
+    entries: List[ExchangeOrder],
+) -> List[ExchangeOrder]:
+    """
+    Drop shadow advanced-leg fills when a spot/parent twin exists.
+
+    Crypto.com OTOCO sync + parent backfills can persist both:
+      - advanced BUY leg id (e.g. 7381749…)
+      - spot/parent id (e.g. 5755600…) for the same qty@price fill
+    Dedup is by exchange_order_id only at sync time, so FIFO open-lot rebuild
+    would otherwise double-count inventory.
+    """
+    if len(entries) < 2:
+        return entries
+
+    entry_ids = {str(o.exchange_order_id) for o in entries if o.exchange_order_id}
+    if not entry_ids:
+        return entries
+
+    parent_ids_with_protection = {
+        str(pid)
+        for (pid,) in db.query(ExchangeOrder.parent_order_id)
+        .filter(
+            ExchangeOrder.parent_order_id.in_(entry_ids),
+            ExchangeOrder.order_role.in_(("TAKE_PROFIT", "STOP_LOSS")),
+        )
+        .distinct()
+        .all()
+        if pid
+    }
+
+    groups: Dict[Tuple[str, OrderSideEnum, Decimal, Decimal], List[ExchangeOrder]] = {}
+    for order in entries:
+        groups.setdefault(_economic_entry_fingerprint(order), []).append(order)
+
+    drop_ids: set[str] = set()
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+
+        protected = [o for o in group if str(o.exchange_order_id) in parent_ids_with_protection]
+        if not protected:
+            continue
+
+        for shadow in group:
+            shadow_id = str(shadow.exchange_order_id)
+            if shadow_id in parent_ids_with_protection:
+                continue
+            if any(_times_within_economic_twin_gap(shadow, kept) for kept in protected):
+                drop_ids.add(shadow_id)
+                logger.info(
+                    "dedupe_economic_twin: dropping shadow entry %s (keeping protected twin(s) %s)",
+                    shadow_id,
+                    [str(p.exchange_order_id) for p in protected],
+                )
+
+    if not drop_ids:
+        return entries
+
+    return [o for o in entries if str(o.exchange_order_id) not in drop_ids]
+
+
 def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     """
     Rebuild open lots from executed orders using FIFO logic.
@@ -153,6 +251,8 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
         o for o in executed_orders
         if o.side == OrderSideEnum.BUY and (o.cumulative_quantity or o.quantity)
     ]
+    # Collapse dual-ID copies of the same economic BUY fill before FIFO.
+    buys = _dedupe_economic_twin_entry_orders(db, buys)
     sells = [
         o for o in executed_orders
         if o.side == OrderSideEnum.SELL and (o.cumulative_quantity or o.quantity)
