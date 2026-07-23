@@ -340,6 +340,70 @@ class TestResolveOrderStatusFromExchange:
             assert not any((end - start) > 48 * 60 * 60 * 1000 for start, end in calls)
 
 
+class TestReconcileMisclassifiedProtectionFills:
+    def test_upgrades_cancelled_zero_qty_tp_to_filled(self):
+        from app.models.exchange_order import OrderStatusEnum
+
+        svc = ExchangeSyncService()
+        order = MagicMock()
+        order.exchange_order_id = "73817490102011217"
+        order.symbol = "BTC_USD"
+        order.status = OrderStatusEnum.CANCELLED
+        order.cumulative_quantity = 0
+        order.avg_price = None
+        order.price = 65199.57
+        order.side = MagicMock(value="SELL")
+        order.order_role = "TAKE_PROFIT"
+        order.order_type = "TAKE_PROFIT_LIMIT"
+        order.exchange_create_time = datetime(2026, 7, 19, tzinfo=timezone.utc)
+        order.created_at = order.exchange_create_time
+        order.execution_notified_at = None
+        order.parent_order_id = "5755600491541413116"
+        order.trade_signal_id = None
+
+        db = MagicMock()
+        query = MagicMock()
+        db.query.return_value = query
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.limit.return_value = query
+        query.all.return_value = [order]
+        # Watchlist lookup inside _apply_protection_fill_from_resolve
+        query.first.return_value = None
+
+        _ensure_stub(
+            "app.services.signal_monitor",
+            _emit_lifecycle_event=MagicMock(),
+        )
+        _ensure_stub(
+            "app.services.strategy_profiles",
+            resolve_strategy_profile=lambda *a, **k: ("default", "default"),
+        )
+        _ensure_stub("app.models.watchlist", WatchlistItem=MagicMock())
+
+        with patch.object(
+            svc,
+            "_resolve_advanced_order_status_from_exchange",
+            return_value={
+                "status": "FILLED",
+                "cumulative_quantity": 0.00016,
+                "price": 65239.32,
+                "quantity": 0.00016,
+            },
+        ), patch.object(
+            svc, "_maybe_notify_executed_fill_telegram"
+        ) as mock_tg, patch.object(
+            svc, "_cancel_oco_sibling"
+        ):
+            repaired = svc._reconcile_misclassified_protection_fills(db, limit=5)
+
+        assert repaired == 1
+        assert order.status == OrderStatusEnum.FILLED
+        assert order.cumulative_quantity == pytest.approx(0.00016)
+        assert order.avg_price == pytest.approx(65239.32)
+        mock_tg.assert_called_once()
+
+
 class TestMaybeNotifyExecutedFillTelegram:
     def _tp_order(self):
         order = MagicMock()

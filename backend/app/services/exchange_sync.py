@@ -878,6 +878,171 @@ class ExchangeSyncService:
             logger.debug("Advanced order history lookup failed for %s: %s", order_id, e)
             return None
     
+    def _apply_protection_fill_from_resolve(
+        self,
+        db: Session,
+        order: ExchangeOrder,
+        order_info: Dict[str, Any],
+        *,
+        source: str,
+    ) -> bool:
+        """Mark a protection order FILLED from resolved exchange payload; notify Telegram.
+
+        Returns True when status changed to FILLED.
+        """
+        resolved_status = normalize_resolved_exchange_status(order_info.get("status"))
+        if resolved_status != "FILLED":
+            return False
+        cum = float(order_info.get("cumulative_quantity") or 0)
+        if cum <= 0:
+            return False
+
+        old_status = order.status
+        order.status = OrderStatusEnum.FILLED
+        order.cumulative_quantity = cum
+        if order_info.get("price"):
+            order.avg_price = order_info["price"]
+
+        if old_status != OrderStatusEnum.FILLED:
+            try:
+                self._maybe_notify_executed_fill_telegram(
+                    db,
+                    order,
+                    source=source,
+                    price=order_info.get("price"),
+                    quantity=cum,
+                    status_str="FILLED",
+                )
+            except Exception as tg_err:
+                logger.warning(
+                    "Failed fill Telegram after %s for %s: %s",
+                    source,
+                    order.exchange_order_id,
+                    tg_err,
+                    exc_info=True,
+                )
+
+        order.exchange_update_time = datetime.now(timezone.utc)
+
+        if old_status != OrderStatusEnum.FILLED:
+            try:
+                from app.services.signal_monitor import _emit_lifecycle_event
+                from app.services.strategy_profiles import resolve_strategy_profile
+                from app.models.watchlist import WatchlistItem
+
+                watchlist_item = db.query(WatchlistItem).filter(
+                    WatchlistItem.symbol == order.symbol
+                ).first()
+                strategy_type, risk_approach = resolve_strategy_profile(
+                    order.symbol, db, watchlist_item
+                )
+                strategy_key = build_strategy_key(strategy_type, risk_approach)
+                _emit_lifecycle_event(
+                    db=db,
+                    symbol=order.symbol,
+                    strategy_key=strategy_key,
+                    side=order.side.value if hasattr(order.side, "value") else str(order.side),
+                    price=order_info.get("price")
+                    or (float(order.price) if order.price else None),
+                    event_type="ORDER_EXECUTED",
+                    event_reason=(
+                        f"order_id={order.exchange_order_id}, qty={cum}, "
+                        f"status_source={source}"
+                    ),
+                    order_id=order.exchange_order_id,
+                )
+            except Exception as emit_err:
+                logger.warning(
+                    "Failed to emit ORDER_EXECUTED for %s: %s",
+                    order.exchange_order_id,
+                    emit_err,
+                    exc_info=True,
+                )
+            try:
+                self._cancel_oco_sibling(db, order)
+            except Exception as oco_err:
+                logger.warning(
+                    "Failed to cancel OCO sibling after %s for %s: %s",
+                    source,
+                    order.exchange_order_id,
+                    oco_err,
+                    exc_info=True,
+                )
+
+        logger.info(
+            "Order %s (%s) marked FILLED via %s (was %s, avg=%s qty=%s)",
+            order.exchange_order_id,
+            order.symbol,
+            source,
+            getattr(old_status, "value", old_status),
+            order_info.get("price"),
+            cum,
+        )
+        return old_status != OrderStatusEnum.FILLED
+
+    def _reconcile_misclassified_protection_fills(
+        self, db: Session, *, limit: int = 10
+    ) -> int:
+        """Re-check CANCELLED TP/SL with zero fill qty via advanced/get-order-detail.
+
+        Spot detail cannot see Advanced Order Management IDs, so filled TPs were sometimes
+        stuck ACTIVE then wrongly CANCELLED with cumulative_quantity=0. Upgrade when the
+        exchange reports FILLED with cumulative_quantity > 0.
+        """
+        from sqlalchemy import or_
+
+        candidates = (
+            db.query(ExchangeOrder)
+            .filter(
+                ExchangeOrder.status == OrderStatusEnum.CANCELLED,
+                or_(
+                    ExchangeOrder.cumulative_quantity.is_(None),
+                    ExchangeOrder.cumulative_quantity <= 0,
+                ),
+                or_(
+                    ExchangeOrder.order_role.in_(["TAKE_PROFIT", "STOP_LOSS"]),
+                    ExchangeOrder.order_type.in_(
+                        [
+                            "TAKE_PROFIT",
+                            "TAKE_PROFIT_LIMIT",
+                            "TAKE_PROFIT_MARKET",
+                            "STOP_LOSS",
+                            "STOP_LIMIT",
+                            "STOP_MARKET",
+                            "STOP_LOSS_LIMIT",
+                        ]
+                    ),
+                ),
+            )
+            .order_by(ExchangeOrder.updated_at.desc())
+            .limit(max(1, int(limit)))
+            .all()
+        )
+        repaired = 0
+        for order in candidates:
+            try:
+                info = self._resolve_advanced_order_status_from_exchange(
+                    order.exchange_order_id,
+                    order.exchange_create_time or order.created_at,
+                )
+                if not info:
+                    continue
+                if self._apply_protection_fill_from_resolve(
+                    db,
+                    order,
+                    info,
+                    source="protection_fill_reconcile",
+                ):
+                    repaired += 1
+            except Exception as err:
+                logger.warning(
+                    "Failed reconciling protection order %s: %s",
+                    order.exchange_order_id,
+                    err,
+                    exc_info=True,
+                )
+        return repaired
+    
     def _infer_protection_order_role(self, order: ExchangeOrder) -> Optional[str]:
         """Return TAKE_PROFIT / STOP_LOSS when role or order_type indicates protection."""
         role = (getattr(order, "order_role", None) or "").upper()
@@ -1846,7 +2011,21 @@ class ExchangeSyncService:
                         ).first()
                         if order_row:
                             link_system_trade_signal_to_order(db, order_row)
-            
+
+            # Repair TP/SL rows previously misclassified as CANCELLED (cumqty=0) when
+            # spot get-order-detail could not see Advanced Order Management fills.
+            try:
+                repaired = self._reconcile_misclassified_protection_fills(db, limit=10)
+                if repaired:
+                    logger.info(
+                        "Repaired %d misclassified protection fill(s) via advanced/get-order-detail",
+                        repaired,
+                    )
+            except Exception as repair_err:
+                logger.warning(
+                    "Protection fill reconcile failed: %s", repair_err, exc_info=True
+                )
+
             db.commit()
             regular_count = fetch_result.get("regular_count", 0)
             trigger_count = fetch_result.get("trigger_count", 0)
