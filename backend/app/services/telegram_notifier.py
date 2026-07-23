@@ -20,6 +20,7 @@ so ``import app.services.telegram_notifier as m`` is the **instance**, not the m
 See docs/development/ATP_NOTIFIER_AND_DB_PATTERNS.md.
 """
 import os
+import html
 import logging
 import inspect
 import socket
@@ -39,6 +40,14 @@ from app.models.trading_settings import TradingSettings
 from app.utils.http_client import http_get, http_post, requests_exceptions
 
 logger = logging.getLogger(__name__)
+
+
+def _escape_tg_html(value: Any) -> str:
+    """Escape dynamic text for Telegram HTML parse_mode (prevents bare '<' etc.)."""
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=False)
+
 
 # Cooldown timestamp after Telegram 429 rate limit; None = no cooldown active
 _TELEGRAM_COOLDOWN_UNTIL_TS: Optional[float] = None
@@ -666,41 +675,83 @@ class TelegramNotifier:
                             str(e),
                         )
                 else:
-                    logger.error(
-                        "[TELEGRAM_RESPONSE] status=%d RESULT=FAILURE response_text=%s",
-                        status_code,
-                        response_text,
+                    # HTML parse failures: retry once as plain text so alerts still deliver
+                    parse_fail = (
+                        status_code == 400
+                        and ("can't parse entities" in response_text.lower() or "parse entities" in response_text.lower())
                     )
-                    # Persist non-200 response to DB (delivery failure — not a trade guardrail)
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        from app.utils.decision_reason import ReasonCode
+                    if parse_fail and payload.get("parse_mode"):
+                        logger.warning(
+                            "[TELEGRAM_HTML_FALLBACK] HTML parse failed; retrying without parse_mode symbol=%s",
+                            log_symbol,
+                        )
+                        plain_payload = {k: v for k, v in payload.items() if k != "parse_mode"}
+                        response = http_post(
+                            url,
+                            json=plain_payload,
+                            timeout=10,
+                            calling_module="telegram_notifier.send_telegram_message_plain_fallback",
+                        )
+                        status_code = response.status_code
+                        response_text = response.text[:500] if response.text else ""
+                        if status_code == 200:
+                            try:
+                                response_data = response.json()
+                                message_id = response_data.get("result", {}).get("message_id", "unknown")
+                                logger.info(
+                                    "[TELEGRAM_RESPONSE] status=%d RESULT=SUCCESS_PLAIN_FALLBACK message_id=%s",
+                                    status_code,
+                                    message_id,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "[TELEGRAM_RESPONSE] status=%d RESULT=SUCCESS_PLAIN_FALLBACK (json parse failed: %s)",
+                                    status_code,
+                                    str(e),
+                                )
+                        else:
+                            logger.error(
+                                "[TELEGRAM_RESPONSE] status=%d RESULT=FAILURE_AFTER_PLAIN_FALLBACK response_text=%s",
+                                status_code,
+                                response_text,
+                            )
 
-                        safe_body = _redact_telegram_secrets(response_text or "")[:120]
-                        error_preview = _truncate_telegram_text(full_message, 150)
-                        blocked_message = (
-                            f"[TELEGRAM_FAILED] {error_preview}\n\nHTTP {status_code}: {safe_body}"
+                    if status_code != 200:
+                        logger.error(
+                            "[TELEGRAM_RESPONSE] status=%d RESULT=FAILURE response_text=%s",
+                            status_code,
+                            response_text,
                         )
-                        add_telegram_message(
-                            blocked_message,
-                            symbol=symbol,
-                            blocked=True,
-                            throttle_status="TELEGRAM_FAILED",
-                            throttle_reason=_redact_telegram_secrets(
-                                f"Telegram HTTP {status_code}: {safe_body}"
-                            ),
-                            reason_code=ReasonCode.TELEGRAM_API_ERROR.value,
-                            reason_message=_redact_telegram_secrets(
-                                f"Telegram HTTP {status_code}: {safe_body}"
-                            ),
-                        )
-                        logger.info(
-                            "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_http_%d",
-                            symbol or "N/A",
-                            status_code
-                        )
-                    except Exception as db_err:
-                        logger.debug(f"Could not persist failed Telegram send to DB: {db_err}")
+                        # Persist non-200 response to DB (delivery failure — not a trade guardrail)
+                        try:
+                            from app.api.routes_monitoring import add_telegram_message
+                            from app.utils.decision_reason import ReasonCode
+
+                            safe_body = _redact_telegram_secrets(response_text or "")[:120]
+                            error_preview = _truncate_telegram_text(full_message, 150)
+                            blocked_message = (
+                                f"[TELEGRAM_FAILED] {error_preview}\n\nHTTP {status_code}: {safe_body}"
+                            )
+                            add_telegram_message(
+                                blocked_message,
+                                symbol=symbol,
+                                blocked=True,
+                                throttle_status="TELEGRAM_FAILED",
+                                throttle_reason=_redact_telegram_secrets(
+                                    f"Telegram HTTP {status_code}: {safe_body}"
+                                ),
+                                reason_code=ReasonCode.TELEGRAM_API_ERROR.value,
+                                reason_message=_redact_telegram_secrets(
+                                    f"Telegram HTTP {status_code}: {safe_body}"
+                                ),
+                            )
+                            logger.info(
+                                "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_http_%d",
+                                symbol or "N/A",
+                                status_code
+                            )
+                        except Exception as db_err:
+                            logger.debug(f"Could not persist failed Telegram send to DB: {db_err}")
                 
                 response.raise_for_status()
             except requests_exceptions.HTTPError as e:
@@ -1374,7 +1425,7 @@ class TelegramNotifier:
         if self._is_first_side_alert(throttle_reason):
             return "\n📊 Cambio desde última alerta: Primera alerta"
         if price_variation:
-            return f"\n📊 Cambio desde última alerta: {price_variation}"
+            return f"\n📊 Cambio desde última alerta: {_escape_tg_html(price_variation)}"
         if previous_price is not None and previous_price > 0:
             try:
                 change_pct = ((price - previous_price) / previous_price) * 100
@@ -1444,7 +1495,7 @@ class TelegramNotifier:
         
         # Default: show the reason as-is (simplified)
         simplified = throttle_reason.replace("THROTTLED_", "").replace("_", " ").title()
-        return f"\n📊 <b>Trigger:</b> {simplified}"
+        return f"\n📊 <b>Trigger:</b> {_escape_tg_html(simplified)}"
     
     def send_buy_signal(
         self,
@@ -1538,8 +1589,8 @@ class TelegramNotifier:
             else:
                 resolved_approach = "Conservative"
 
-        strategy_line = f"\n🎯 Strategy: <b>{resolved_strategy}</b>"
-        approach_line = f"\n⚖️ Approach: <b>{resolved_approach}</b>"
+        strategy_line = f"\n🎯 Strategy: <b>{_escape_tg_html(resolved_strategy)}</b>"
+        approach_line = f"\n⚖️ Approach: <b>{_escape_tg_html(resolved_approach)}</b>"
         
         timestamp = self._format_timestamp()
         
@@ -1564,12 +1615,14 @@ class TelegramNotifier:
         if throttle_reason:
             trigger_reason_text = self._format_trigger_reason(throttle_reason)
 
+        safe_symbol = _escape_tg_html(symbol)
+        safe_reason = _escape_tg_html(reason)
         message = f"""
 🟢 <b>BUY SIGNAL DETECTED</b>{source_text}
 
-📈 Symbol: <b>{symbol}</b>
+📈 Symbol: <b>{safe_symbol}</b>
 {price_line}{price_change_text}
-✅ Reason: {reason}{strategy_line}{approach_line}{trigger_reason_text}
+✅ Reason: {safe_reason}{strategy_line}{approach_line}{trigger_reason_text}
 📅 Time: {timestamp}
 """
         # Log TEST alert signal if origin is TEST
@@ -1706,8 +1759,8 @@ class TelegramNotifier:
             else:
                 resolved_approach = "Conservative"
 
-        strategy_line = f"\n🎯 Strategy: <b>{resolved_strategy}</b>"
-        approach_line = f"\n⚖️ Approach: <b>{resolved_approach}</b>"
+        strategy_line = f"\n🎯 Strategy: <b>{_escape_tg_html(resolved_strategy)}</b>"
+        approach_line = f"\n⚖️ Approach: <b>{_escape_tg_html(resolved_approach)}</b>"
         
         timestamp = self._format_timestamp()
         
@@ -1735,14 +1788,16 @@ class TelegramNotifier:
         # Add balance warning if provided
         balance_warning_text = ""
         if balance_warning:
-            balance_warning_text = f"\n\n{balance_warning}"
+            balance_warning_text = f"\n\n{_escape_tg_html(balance_warning)}"
         
+        safe_symbol = _escape_tg_html(symbol)
+        safe_reason = _escape_tg_html(reason)
         message = f"""
 🔴 <b>SELL SIGNAL DETECTED</b>{source_text}
 
-📈 Symbol: <b>{symbol}</b>
+📈 Symbol: <b>{safe_symbol}</b>
 {price_line}{price_change_text}
-✅ Reason: {reason}{strategy_line}{approach_line}{trigger_reason_text}{balance_warning_text}
+✅ Reason: {safe_reason}{strategy_line}{approach_line}{trigger_reason_text}{balance_warning_text}
 📅 Time: {timestamp}
 """
         # Default to AWS if origin not provided (for backward compatibility)
