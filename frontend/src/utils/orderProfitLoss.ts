@@ -277,10 +277,58 @@ function unrealizedLongPnl(
 }
 
 /**
+ * Apply authoritative OTOCO parent_order_id matches before FIFO.
+ *
+ * Close fills (SL/TP) that point at a parent entry consume that entry first.
+ * Returns remaining qty per entry order id after parent matches; mutates
+ * ``closeRemaining`` for leftover FIFO.
+ */
+function applyParentLinkedCloses(
+  entries: OpenOrder[],
+  closes: OpenOrder[],
+  closeRemaining: Map<string, number>,
+  closeKeyPrefix: string,
+  onMatch?: (entry: OpenOrder, close: OpenOrder, applied: number) => void
+): Map<string, number> {
+  const entryRemaining = new Map<string, number>();
+  const entryById = new Map<string, OpenOrder>();
+  for (const entry of entries) {
+    const id = entry.order_id || '';
+    if (!id) continue;
+    entryById.set(id, entry);
+    entryRemaining.set(id, getOrderQuantity(entry));
+  }
+
+  for (let i = 0; i < closes.length; i++) {
+    const close = closes[i];
+    const parentId = close.parent_order_id || '';
+    if (!parentId || !entryById.has(parentId)) continue;
+
+    const entry = entryById.get(parentId)!;
+    // Protection fill must not close an entry that did not exist yet.
+    if (getOrderExecutionTime(close) < getOrderExecutionTime(entry)) continue;
+
+    const closeKey = close.order_id || `${closeKeyPrefix}-${i}`;
+    const closeQty = closeRemaining.get(closeKey) ?? 0;
+    const entryQty = entryRemaining.get(parentId) ?? 0;
+    if (closeQty <= QTY_EPS || entryQty <= QTY_EPS) continue;
+
+    const applied = Math.min(closeQty, entryQty);
+    closeRemaining.set(closeKey, closeQty - applied);
+    entryRemaining.set(parentId, entryQty - applied);
+    onMatch?.(entry, close, applied);
+  }
+
+  return entryRemaining;
+}
+
+/**
  * Rebuild still-open entry lots.
  *
  * ALERT and MANUAL-with-TP/SL open inventory. Only MANUAL flatten / SL / TP
- * fills of the opposite side reduce that inventory (FIFO). Alert never closes alert.
+ * fills of the opposite side reduce that inventory. Prefer OTOCO
+ * ``parent_order_id`` linkage, then FIFO for unlinked leftovers.
+ * Alert never closes alert.
  */
 export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
   const chronological = [...orders]
@@ -312,10 +360,26 @@ export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
     closeBuyRemaining.set(key, getOrderQuantity(buy));
   });
 
+  const entryBuyRemaining = applyParentLinkedCloses(
+    entryBuys,
+    closeSells,
+    closeSellRemaining,
+    'close-sell'
+  );
+  const entrySellRemaining = applyParentLinkedCloses(
+    entrySells,
+    closeBuys,
+    closeBuyRemaining,
+    'close-buy'
+  );
+
   const openLots: OpenPositionLot[] = [];
 
   for (const buy of entryBuys) {
-    let remaining = getOrderQuantity(buy);
+    const buyId = buy.order_id || '';
+    let remaining = buyId
+      ? (entryBuyRemaining.get(buyId) ?? getOrderQuantity(buy))
+      : getOrderQuantity(buy);
     const buyTime = getOrderExecutionTime(buy);
     for (let i = 0; i < closeSells.length; i++) {
       if (remaining <= QTY_EPS) break;
@@ -335,7 +399,10 @@ export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
   }
 
   for (const sell of entrySells) {
-    let remaining = getOrderQuantity(sell);
+    const sellId = sell.order_id || '';
+    let remaining = sellId
+      ? (entrySellRemaining.get(sellId) ?? getOrderQuantity(sell))
+      : getOrderQuantity(sell);
     const sellTime = getOrderExecutionTime(sell);
     for (let i = 0; i < closeBuys.length; i++) {
       if (remaining <= QTY_EPS) break;
@@ -733,7 +800,8 @@ function addRealized(accum: Map<string, RealizedAccum>, orderId: string, pnl: nu
 }
 
 /**
- * FIFO entry↔close pairing for realized P/L (same netting as rebuildOpenLots).
+ * Entry↔close pairing for realized P/L (same netting as rebuildOpenLots).
+ * Prefer OTOCO ``parent_order_id`` linkage, then FIFO for leftovers.
  * Alert never pairs with alert. Only MANUAL / SL / TP closes realize P/L.
  */
 export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, OrderProfitLoss> {
@@ -772,11 +840,48 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
 
     const accum = new Map<string, RealizedAccum>();
 
-    // Long exit: entry BUY closed by MANUAL/SL/TP SELL (close at/after entry)
-    for (const buy of entryBuys) {
-      let remaining = getOrderQuantity(buy);
+    const recordLongExit = (buy: OpenOrder, sell: OpenOrder, applied: number) => {
       const buyPrice = getOrderPrice(buy);
+      const sellPrice = getOrderPrice(sell);
+      if (!(applied > QTY_EPS) || !(buyPrice > 0) || !(sellPrice > 0)) return;
+      const matchPnl = (sellPrice - buyPrice) * applied;
+      const basis = buyPrice * applied;
+      addRealized(accum, buy.order_id || '', matchPnl, basis);
+      addRealized(accum, sell.order_id || '', matchPnl, basis);
+    };
+
+    const recordShortCover = (sell: OpenOrder, buy: OpenOrder, applied: number) => {
+      const sellPrice = getOrderPrice(sell);
+      const buyPrice = getOrderPrice(buy);
+      if (!(applied > QTY_EPS) || !(buyPrice > 0) || !(sellPrice > 0)) return;
+      const matchPnl = (sellPrice - buyPrice) * applied;
+      const basis = sellPrice * applied;
+      addRealized(accum, sell.order_id || '', matchPnl, basis);
+      addRealized(accum, buy.order_id || '', matchPnl, basis);
+    };
+
+    // 1) Authoritative OTOCO parent→child pairing (same as Expected TP backend)
+    const entryBuyRemaining = applyParentLinkedCloses(
+      entryBuys,
+      closeSells,
+      closeSellRemaining,
+      'close-sell',
+      recordLongExit
+    );
+    const entrySellRemaining = applyParentLinkedCloses(
+      entrySells,
+      closeBuys,
+      closeBuyRemaining,
+      'close-buy',
+      recordShortCover
+    );
+
+    // 2) FIFO leftovers: entry BUY closed by MANUAL/SL/TP SELL (close at/after entry)
+    for (const buy of entryBuys) {
       const buyId = buy.order_id || '';
+      let remaining = buyId
+        ? (entryBuyRemaining.get(buyId) ?? getOrderQuantity(buy))
+        : getOrderQuantity(buy);
       const buyTime = getOrderExecutionTime(buy);
 
       for (let i = 0; i < closeSells.length; i++) {
@@ -787,25 +892,19 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
         const sellQty = closeSellRemaining.get(key) ?? 0;
         if (sellQty <= QTY_EPS) continue;
 
-        const sellPrice = getOrderPrice(sell);
         const applied = Math.min(remaining, sellQty);
         remaining -= applied;
         closeSellRemaining.set(key, sellQty - applied);
-
-        if (!(applied > QTY_EPS) || !(buyPrice > 0) || !(sellPrice > 0)) continue;
-
-        const matchPnl = (sellPrice - buyPrice) * applied;
-        const basis = buyPrice * applied;
-        addRealized(accum, buyId, matchPnl, basis);
-        addRealized(accum, sell.order_id || '', matchPnl, basis);
+        recordLongExit(buy, sell, applied);
       }
     }
 
-    // Short cover: entry SELL closed by MANUAL/SL/TP BUY (close at/after entry)
+    // 3) FIFO leftovers: entry SELL closed by MANUAL/SL/TP BUY
     for (const sell of entrySells) {
-      let remaining = getOrderQuantity(sell);
-      const sellPrice = getOrderPrice(sell);
       const sellId = sell.order_id || '';
+      let remaining = sellId
+        ? (entrySellRemaining.get(sellId) ?? getOrderQuantity(sell))
+        : getOrderQuantity(sell);
       const sellTime = getOrderExecutionTime(sell);
 
       for (let i = 0; i < closeBuys.length; i++) {
@@ -816,17 +915,10 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
         const buyQty = closeBuyRemaining.get(key) ?? 0;
         if (buyQty <= QTY_EPS) continue;
 
-        const buyPrice = getOrderPrice(buy);
         const applied = Math.min(remaining, buyQty);
         remaining -= applied;
         closeBuyRemaining.set(key, buyQty - applied);
-
-        if (!(applied > QTY_EPS) || !(buyPrice > 0) || !(sellPrice > 0)) continue;
-
-        const matchPnl = (sellPrice - buyPrice) * applied;
-        const basis = sellPrice * applied;
-        addRealized(accum, sellId, matchPnl, basis);
-        addRealized(accum, buy.order_id || '', matchPnl, basis);
+        recordShortCover(sell, buy, applied);
       }
     }
 

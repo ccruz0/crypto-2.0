@@ -669,6 +669,63 @@ describe('rebuildOpenLots / open-position filter', () => {
 });
 
 describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
+  it('prefers OTOCO parent_order_id over older FIFO buy (BTC 0.3 TP regression)', () => {
+    // Mirrors production: TP 73817490102011214 linked to BUY @ 60500, but an
+    // older protected BUY @ 71100 would steal the fill under pure FIFO → -7.20%.
+    const olderWrongBuy = makeOrder({
+      order_id: '5755600489289088548',
+      side: 'BUY',
+      quantity: '0.3',
+      price: '71100',
+      instrument_name: 'BTC_USD',
+      order_type: 'MARKET',
+      execution_origin: 'MANUAL',
+      has_linked_tp: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const correctParentBuy = makeOrder({
+      order_id: '5755600489811716124',
+      side: 'BUY',
+      quantity: '0.3',
+      price: '60500',
+      instrument_name: 'BTC_USD',
+      order_type: 'MARKET',
+      execution_origin: 'MANUAL',
+      has_linked_tp: true,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const tp = makeOrder({
+      order_id: '73817490102011214',
+      side: 'SELL',
+      quantity: '0.3',
+      price: '65945',
+      instrument_name: 'BTC_USD',
+      order_type: 'TAKE_PROFIT_LIMIT',
+      order_role: 'TAKE_PROFIT',
+      execution_origin: 'TAKE_PROFIT',
+      parent_order_id: '5755600489811716124',
+      create_time: 3_000,
+      update_time: 4_000,
+    });
+    const all = [olderWrongBuy, correctParentBuy, tp];
+    const openLots = buildOpenLotsByOrderId(all);
+    const realized = buildRealizedPnlByOrderId(all);
+
+    const tpPnl = getExecutedOrderDisplayPnl(tp, all, 66000, openLots, realized);
+    expect(tpPnl.available).toBe(true);
+    expect(tpPnl.isRealized).toBe(true);
+    expect(tpPnl.pnlPercent).toBeCloseTo(((65945 - 60500) / 60500) * 100); // +9.00%
+    expect(tpPnl.pnl).toBeCloseTo((65945 - 60500) * 0.3);
+
+    // Parent lot fully closed; older unrelated buy stays open.
+    expect(openLots.has('5755600489811716124')).toBe(false);
+    expect(openLots.has('5755600489289088548')).toBe(true);
+    expect(realized.get('5755600489811716124')?.pnlPercent).toBeCloseTo(9);
+    expect(realized.has('5755600489289088548')).toBe(false);
+  });
+
   it('shows unrealized long P/L for an open BUY vs mark price', () => {
     const buy = makeOrder({
       order_id: 'buy-open',
