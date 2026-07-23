@@ -276,12 +276,20 @@ function unrealizedLongPnl(
   return { pnl, pnlPercent, isRealized: false, available: true };
 }
 
+/** True when a close fill is exclusively bound to an OTOCO parent entry. */
+function hasParentOrderLink(order: OpenOrder): boolean {
+  return Boolean(order.parent_order_id && String(order.parent_order_id).trim());
+}
+
 /**
  * Apply authoritative OTOCO parent_order_id matches before FIFO.
  *
  * Close fills (SL/TP) that point at a parent entry consume that entry first.
  * Returns remaining qty per entry order id after parent matches; mutates
  * ``closeRemaining`` for leftover FIFO.
+ *
+ * Parent-linked leftovers must NOT fall through to FIFO against unrelated
+ * lots (that produced false -8.30% TP rows when many TPs shared one parent).
  */
 function applyParentLinkedCloses(
   entries: OpenOrder[],
@@ -384,6 +392,8 @@ export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
     for (let i = 0; i < closeSells.length; i++) {
       if (remaining <= QTY_EPS) break;
       const sell = closeSells[i];
+      // OTOCO-linked closes only match their parent (handled above), never FIFO.
+      if (hasParentOrderLink(sell)) continue;
       // SL/TP/manual must be after (or with) the entry they close.
       if (getOrderExecutionTime(sell) < buyTime) continue;
       const key = sell.order_id || `close-sell-${i}`;
@@ -407,6 +417,7 @@ export function rebuildOpenLots(orders: OpenOrder[]): OpenPositionLot[] {
     for (let i = 0; i < closeBuys.length; i++) {
       if (remaining <= QTY_EPS) break;
       const buy = closeBuys[i];
+      if (hasParentOrderLink(buy)) continue;
       if (getOrderExecutionTime(buy) < sellTime) continue;
       const key = buy.order_id || `close-buy-${i}`;
       const buyQty = closeBuyRemaining.get(key) ?? 0;
@@ -876,7 +887,8 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
       recordShortCover
     );
 
-    // 2) FIFO leftovers: entry BUY closed by MANUAL/SL/TP SELL (close at/after entry)
+    // 2) FIFO leftovers: entry BUY closed by MANUAL/SL/TP SELL (close at/after entry).
+    // Skip OTOCO-linked closes — they must not steal unrelated older lots.
     for (const buy of entryBuys) {
       const buyId = buy.order_id || '';
       let remaining = buyId
@@ -887,6 +899,7 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
       for (let i = 0; i < closeSells.length; i++) {
         if (remaining <= QTY_EPS) break;
         const sell = closeSells[i];
+        if (hasParentOrderLink(sell)) continue;
         if (getOrderExecutionTime(sell) < buyTime) continue;
         const key = sell.order_id || `close-sell-${i}`;
         const sellQty = closeSellRemaining.get(key) ?? 0;
@@ -910,6 +923,7 @@ export function buildRealizedPnlByOrderId(orders: OpenOrder[]): Map<string, Orde
       for (let i = 0; i < closeBuys.length; i++) {
         if (remaining <= QTY_EPS) break;
         const buy = closeBuys[i];
+        if (hasParentOrderLink(buy)) continue;
         if (getOrderExecutionTime(buy) < sellTime) continue;
         const key = buy.order_id || `close-buy-${i}`;
         const buyQty = closeBuyRemaining.get(key) ?? 0;
@@ -970,6 +984,32 @@ export function getExecutedOrderDisplayPnl(
   }
 
   if (lifecycle === 'close') {
+    // Parent-linked SL/TP whose parent qty was already consumed by an earlier
+    // sibling: still attribute the row to the OTOCO parent (never FIFO).
+    const parentId = order.parent_order_id || '';
+    if (parentId) {
+      const parent = allOrders.find(
+        (o) =>
+          o.order_id === parentId &&
+          (o.status || '').toUpperCase() === 'FILLED' &&
+          isFilledEntryOrder(o)
+      );
+      if (parent) {
+        const closeQty = getOrderQuantity(order);
+        const closePrice = getOrderPrice(order);
+        const parentPrice = getOrderPrice(parent);
+        const parentSide = (parent.side || '').toUpperCase();
+        const closeSide = (order.side || '').toUpperCase();
+        if (closeQty > QTY_EPS && closePrice > 0 && parentPrice > 0) {
+          if (parentSide === 'BUY' && closeSide === 'SELL') {
+            return realizedLongExitPnl(closePrice, parentPrice, closeQty);
+          }
+          if (parentSide === 'SELL' && closeSide === 'BUY') {
+            return realizedShortCoverPnl(parentPrice, closePrice, closeQty);
+          }
+        }
+      }
+    }
     // Unmatched manual/SL/TP: no inventada "orden cerrada" vs another alert.
     return unavailable('closed_without_counterpart');
   }
