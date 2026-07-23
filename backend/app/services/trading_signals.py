@@ -10,6 +10,7 @@ import logging
 
 from app.services.strategy_profiles import StrategyType, RiskApproach
 from app.services.config_loader import get_strategy_rules
+from app.utils.indicator_format import format_indicator_value as _iv
 
 logger = logging.getLogger(__name__)
 
@@ -202,36 +203,36 @@ def should_trigger_buy_signal(
             # FIXED: If MAs are equal (flat market), don't block BUY
             if abs(ma50 - ema10) < 0.0001:  # Essentially equal (flat market)
                 condition_flags["ma_ok"] = True
-                reasons.append(f"MA50 {ma50:.2f} ≈ EMA10 {ema10:.2f} (flat market, allowed)")
+                reasons.append(f"MA50 {_iv(ma50)} ≈ EMA10 {_iv(ema10)} (flat market, allowed)")
             elif ma50 <= ema10:
                 condition_flags["ma_ok"] = False
-                return conclude(False, f"MA50 {ma50:.2f} ≤ EMA10 {ema10:.2f} (required by config)")
+                return conclude(False, f"MA50 {_iv(ma50)} ≤ EMA10 {_iv(ema10)} (required by config)")
             else:
                 condition_flags["ma_ok"] = True
-                reasons.append(f"MA50 {ma50:.2f} > EMA10 {ema10:.2f} (from config)")
+                reasons.append(f"MA50 {_iv(ma50)} > EMA10 {_iv(ema10)} (from config)")
         else:
             # Only MA50 checked: require Price > MA50 (with tolerance)
             price_diff_pct = ((price - ma50) / ma50) * 100 if ma50 > 0 else 0
             if price <= ma50 and price_diff_pct < -MA_TOLERANCE_PCT:
                 condition_flags["ma_ok"] = False
-                return conclude(False, f"Price {price:.2f} ≤ MA50 {ma50:.2f} (diff {price_diff_pct:.2f}% < -{MA_TOLERANCE_PCT}%)")
+                return conclude(False, f"Price {_iv(price)} ≤ MA50 {_iv(ma50)} (diff {price_diff_pct:.2f}% < -{MA_TOLERANCE_PCT}%)")
             condition_flags["ma_ok"] = True
             if price > ma50:
-                reasons.append(f"Price {price:.2f} > MA50 {ma50:.2f} (from config)")
+                reasons.append(f"Price {_iv(price)} > MA50 {_iv(ma50)} (from config)")
             else:
-                reasons.append(f"Price {price:.2f} ≈ MA50 {ma50:.2f} (within {MA_TOLERANCE_PCT}% tolerance)")
+                reasons.append(f"Price {_iv(price)} ≈ MA50 {_iv(ma50)} (within {MA_TOLERANCE_PCT}% tolerance)")
     
     # MA200 check: Price > MA200 (with tolerance)
     if check_ma200 and ma200 is not None:
         price_diff_pct = ((price - ma200) / ma200) * 100 if ma200 > 0 else 0
         if price <= ma200 and price_diff_pct < -MA_TOLERANCE_PCT:
             condition_flags["ma_ok"] = False
-            return conclude(False, f"Price {price:.2f} ≤ MA200 {ma200:.2f} (diff {price_diff_pct:.2f}% < -{MA_TOLERANCE_PCT}%)")
+            return conclude(False, f"Price {_iv(price)} ≤ MA200 {_iv(ma200)} (diff {price_diff_pct:.2f}% < -{MA_TOLERANCE_PCT}%)")
         condition_flags["ma_ok"] = True
         if price > ma200:
-            reasons.append(f"Price {price:.2f} > MA200 {ma200:.2f} (from config)")
+            reasons.append(f"Price {_iv(price)} > MA200 {_iv(ma200)} (from config)")
         else:
-            reasons.append(f"Price {price:.2f} ≈ MA200 {ma200:.2f} (within {MA_TOLERANCE_PCT}% tolerance)")
+            reasons.append(f"Price {_iv(price)} ≈ MA200 {_iv(ma200)} (within {MA_TOLERANCE_PCT}% tolerance)")
     
     # EMA10 check: Price > EMA10 (if EMA10 is checked but MA50 is not) (with tolerance)
     # CRITICAL: Only check EMA10 if it's explicitly enabled in config (check_ema10 = True)
@@ -245,12 +246,12 @@ def should_trigger_buy_signal(
         price_diff_pct = ((price - ema10) / ema10) * 100 if ema10 > 0 else 0
         if price <= ema10 and price_diff_pct < -tolerance_pct:
             condition_flags["ma_ok"] = False
-            return conclude(False, f"Price {price:.2f} ≤ EMA10 {ema10:.2f} (diff {price_diff_pct:.2f}% < -{tolerance_pct}%)")
+            return conclude(False, f"Price {_iv(price)} ≤ EMA10 {_iv(ema10)} (diff {price_diff_pct:.2f}% < -{tolerance_pct}%)")
         condition_flags["ma_ok"] = True
         if price > ema10:
-            reasons.append(f"Price {price:.2f} > EMA10 {ema10:.2f} (from config)")
+            reasons.append(f"Price {_iv(price)} > EMA10 {_iv(ema10)} (from config)")
         else:
-            reasons.append(f"Price {price:.2f} ≈ EMA10 {ema10:.2f} (within {tolerance_pct}% tolerance)")
+            reasons.append(f"Price {_iv(price)} ≈ EMA10 {_iv(ema10)} (within {tolerance_pct}% tolerance)")
     elif check_ema10 and ema10 is None and not check_ma50:
         # EMA10 is required by config but not available
         missing.append("EMA10")
@@ -266,11 +267,11 @@ def should_trigger_buy_signal(
     # Apply trend filters (additional gating beyond basic MA checks)
     if require_price_above_ma200 and ma200 is not None:
         if price <= ma200:
-            blocked_reasons.append(f"Price {price:.2f} ≤ MA200 {ma200:.2f} (trend filter requires price above MA200)")
+            blocked_reasons.append(f"Price {_iv(price)} ≤ MA200 {_iv(ma200)} (trend filter requires price above MA200)")
             condition_flags["trend_filters_ok"] = False
             return conclude(False, blocked_reasons[-1])
         condition_flags["trend_filters_ok"] = True
-        reasons.append(f"Price {price:.2f} > MA200 {ma200:.2f} (trend filter)")
+        reasons.append(f"Price {_iv(price)} > MA200 {_iv(ma200)} (trend filter)")
     elif require_price_above_ma200 and ma200 is None:
         missing.append("MA200 (required by trend filter)")
         condition_flags["trend_filters_ok"] = False
@@ -280,11 +281,11 @@ def should_trigger_buy_signal(
     
     if require_ema10_above_ma50 and ema10 is not None and ma50 is not None:
         if ema10 <= ma50:
-            blocked_reasons.append(f"EMA10 {ema10:.2f} ≤ MA50 {ma50:.2f} (trend filter requires EMA10 above MA50)")
+            blocked_reasons.append(f"EMA10 {_iv(ema10)} ≤ MA50 {_iv(ma50)} (trend filter requires EMA10 above MA50)")
             condition_flags["trend_filters_ok"] = False
             return conclude(False, blocked_reasons[-1])
         condition_flags["trend_filters_ok"] = True
-        reasons.append(f"EMA10 {ema10:.2f} > MA50 {ma50:.2f} (trend filter)")
+        reasons.append(f"EMA10 {_iv(ema10)} > MA50 {_iv(ma50)} (trend filter)")
     elif require_ema10_above_ma50:
         if ema10 is None:
             missing.append("EMA10 (required by trend filter)")
@@ -320,11 +321,11 @@ def should_trigger_buy_signal(
     # Candle confirmation: Check if close is above EMA10
     if require_close_above_ema10 and ema10 is not None:
         if price <= ema10:
-            blocked_reasons.append(f"Price {price:.2f} ≤ EMA10 {ema10:.2f} (candle confirmation requires close above EMA10)")
+            blocked_reasons.append(f"Price {_iv(price)} ≤ EMA10 {_iv(ema10)} (candle confirmation requires close above EMA10)")
             condition_flags["candle_confirmation_ok"] = False
             return conclude(False, blocked_reasons[-1])
         condition_flags["candle_confirmation_ok"] = True
-        reasons.append(f"Price {price:.2f} > EMA10 {ema10:.2f} (candle confirmation)")
+        reasons.append(f"Price {_iv(price)} > EMA10 {_iv(ema10)} (candle confirmation)")
     elif require_close_above_ema10 and ema10 is None:
         missing.append("EMA10 (required for candle confirmation)")
         condition_flags["candle_confirmation_ok"] = False
@@ -560,10 +561,10 @@ def calculate_trading_signals(
     target_reason = None
     if buy_target is not None:
         if price <= buy_target:
-            target_reason = f"Price {price:.2f} <= buy target {buy_target:.2f}"
+            target_reason = f"Price {_iv(price)} <= buy target {buy_target:.2f}"
         else:
             buy_target_allows = False
-            target_reason = f"Price {price:.2f} > buy target {buy_target:.2f}"
+            target_reason = f"Price {_iv(price)} > buy target {buy_target:.2f}"
     strategy_state["reasons"]["buy_target_ok"] = buy_target_allows if buy_target is not None else True
     
     # Volume check: require minVolumeRatio (configurable from Signal Config, default 0.5x).
@@ -906,9 +907,9 @@ def calculate_trading_signals(
         sell_conditions.append(True)
         if requires_ma_reversal:
             if ma_reversal:
-                sell_reasons.append(f"MA trend reversal: MA50 {ma50:.2f} < EMA10 {ema10:.2f}")
+                sell_reasons.append(f"MA trend reversal: MA50 {_iv(ma50)} < EMA10 {_iv(ema10)}")
             if price_below_ma10w:
-                sell_reasons.append(f"Price {price:.2f} < MA10w {ma10w:.2f}")
+                sell_reasons.append(f"Price {_iv(price)} < MA10w {_iv(ma10w)}")
         else:
             if ma_reversal:
                 sell_reasons.append("Optional MA reversal observed")
@@ -980,7 +981,7 @@ def calculate_trading_signals(
             result["sl"] = round(last_buy_price * 0.97, 4)  # Default SL if not set
         
         result["rationale"].append(
-            f"Position: entry {last_buy_price:.2f} → current {price:.2f} "
+            f"Position: entry {last_buy_price:.2f} → current {_iv(price)} "
             f"({pnl_pct:+.2f}%)"
         )
     

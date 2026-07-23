@@ -13,6 +13,7 @@ from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
+from app.utils.indicator_format import format_indicator_value as _iv
 from app.api.routes_signals import get_signals
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import resolve_strategy_profile
@@ -743,8 +744,8 @@ class SignalMonitorService:
                         # Send Telegram alert (always send if alert_enabled = true, which we already filtered)
                         try:
                             price_variation = self._format_price_variation(prev_buy_price, current_price)
-                            ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                            ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                            ma50_text = _iv(ma50) if ma50 is not None else "N/A"
+                            ema10_text = _iv(ema10) if ema10 is not None else "N/A"
                             ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
                             reason_text = (
                                 f"{strategy_type.value.title()}/{risk_approach.value.title()} | "
@@ -922,8 +923,8 @@ class SignalMonitorService:
                                 f"📊 Symbol: <b>{symbol}</b>\n"
                                 f"💵 Price: ${current_price:,.4f}\n"
                                 f"📈 RSI: {rsi:.1f}\n"
-                                f"📊 MA50: ${ma50:.2f}\n"
-                                f"📊 EMA10: ${ema10:.2f}\n"
+                                f"📊 MA50: ${_iv(ma50)}\n"
+                                f"📊 EMA10: ${_iv(ema10)}\n"
                                 f"⚠️ SELL signals only generate alerts, no orders are created automatically"
                             )
                             logger.info(f"✅ SELL alert sent for {symbol} - {reason}")

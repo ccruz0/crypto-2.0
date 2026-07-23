@@ -58,6 +58,69 @@ def _compute_sl_tp_from_entry(
     return sl_price, tp_price
 
 
+def _classify_open_protection_leg(order: dict) -> Optional[str]:
+    """Classify an open exchange order as 'SL', 'TP', or None.
+
+    Advanced TP/SL (SPOT_ATTACH / TAKE_PROFIT_LIMIT / STOP_LIMIT) must be
+    detected here — spot-only open-order endpoints miss them.
+    """
+    order_type = (order.get("order_type") or order.get("type") or "").upper()
+    role = (order.get("order_role") or "").upper()
+    contingency = (
+        order.get("contingency_type") or order.get("contingencyType") or ""
+    ).upper()
+    side = (order.get("side") or "").upper()
+    trigger_price = (
+        order.get("trigger_price")
+        or order.get("ref_price")
+        or order.get("stop_price")
+    )
+
+    if role == "TAKE_PROFIT" or "TAKE_PROFIT" in order_type or "TAKE-PROFIT" in order_type:
+        return "TP"
+    if "PROFIT" in order_type and "TAKE" in order_type:
+        return "TP"
+    if role == "STOP_LOSS" or any(
+        term in order_type for term in ("STOP_LOSS", "STOP_LIMIT", "STOP-LOSS")
+    ):
+        return "SL"
+    if order_type in ("STOP",) or (
+        "STOP" in order_type and "TAKE_PROFIT" not in order_type
+    ):
+        return "SL"
+    if contingency in ("STOP_LOSS", "OCO_STOP"):
+        return "SL"
+    if contingency in ("TAKE_PROFIT", "OCO_TAKE_PROFIT"):
+        return "TP"
+    # Legacy Crypto.com pattern: LIMIT + trigger SELL on a long = stop loss
+    if order_type == "LIMIT" and trigger_price and side == "SELL":
+        return "SL"
+    return None
+
+
+def _order_matches_symbol_variants(order: dict, symbol_variants: List[str]) -> bool:
+    order_instrument = order.get("instrument_name") or order.get("symbol") or ""
+    order_symbol_normalized = str(order_instrument).replace("/", "_").upper()
+    variant_normalized = [v.upper() for v in symbol_variants]
+    if order_symbol_normalized in variant_normalized:
+        return True
+    return any(v.replace("_", "/") == order_instrument for v in symbol_variants)
+
+
+def _is_active_open_order_status(order: dict) -> bool:
+    order_status = (
+        order.get("order_status", "") or order.get("status", "")
+    ).upper()
+    return order_status in ("ACTIVE", "NEW", "PENDING", "PARTIALLY_FILLED") or not order_status
+
+
+def _quantity_matches_position(order: dict, position_balance: float) -> bool:
+    order_quantity = float(order.get("quantity", 0) or order.get("qty", 0) or 0)
+    if order_quantity <= 0 or position_balance <= 0:
+        return True  # no qty info → assume match (legacy)
+    return abs(order_quantity - position_balance) / position_balance <= 0.05
+
+
 class SLTPCheckerService:
     """Service to check open positions for missing SL/TP orders and OCO integrity"""
     
@@ -327,6 +390,35 @@ class SLTPCheckerService:
             
             # For each position, check if there are active SL/TP orders
             positions_missing_sl_tp = []
+
+            # Fetch once: regular + trigger + advanced (spot-only misses advanced TPs)
+            all_orders_data: List[dict] = []
+            try:
+                fetch_result = fetch_unified_open_orders(trade_client)
+                all_orders_data = list(fetch_result.get("all_raw_orders") or [])
+                if not fetch_result.get("data_verified"):
+                    logger.warning(
+                        "Unified open orders not fully verified for SL/TP position check: %s",
+                        fetch_result.get("error_message"),
+                    )
+                logger.info(
+                    "Retrieved %s unified open orders for SL/TP position check "
+                    "(trigger=%s advanced=%s)",
+                    len(all_orders_data),
+                    fetch_result.get("trigger_orders_status"),
+                    fetch_result.get("advanced_orders_status"),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Unified open orders fetch failed for SL/TP check, falling back to spot: %s",
+                    e,
+                )
+                try:
+                    all_open_orders = trade_client.get_open_orders()
+                    all_orders_data = all_open_orders.get("data", []) or []
+                except Exception as spot_err:
+                    logger.warning("Spot open orders fallback also failed: %s", spot_err)
+                    all_orders_data = []
             
             for position in open_positions:
                 currency = position['currency']
@@ -364,126 +456,74 @@ class SLTPCheckerService:
                 has_tp = False
                 
                 try:
-                    # Get ALL open orders (trigger orders may not be filtered by symbol in the API)
-                    all_open_orders = trade_client.get_open_orders()
-                    all_orders_data = all_open_orders.get('data', [])
+                    open_orders_data = [
+                        order
+                        for order in all_orders_data
+                        if _order_matches_symbol_variants(order, symbol_variants)
+                    ]
                     
-                    logger.debug(f"Retrieved {len(all_orders_data)} total open orders from Exchange")
-                    if all_orders_data:
-                        # Log sample to understand format
-                        sample_order = all_orders_data[0] if len(all_orders_data) > 0 else {}
-                        logger.debug(f"Sample order: instrument={sample_order.get('instrument_name')}, type={sample_order.get('order_type')}, symbol_variants={symbol_variants}")
+                    logger.debug(
+                        f"Filtered {len(open_orders_data)} orders for {symbol} "
+                        f"from {len(all_orders_data)} total orders"
+                    )
                     
-                    # Filter orders for this symbol and variants
-                    # Handle both BONK/USD (with slash) and BONK_USD (with underscore)
-                    open_orders_data = []
-                    for order in all_orders_data:
-                        order_instrument = order.get('instrument_name', '')
-                        # Normalize: convert slash to underscore for comparison
-                        order_symbol_normalized = order_instrument.replace('/', '_').upper()
-                        variant_normalized = [v.upper() for v in symbol_variants]
-                        
-                        # Check if this order matches our symbol or variants
-                        if order_symbol_normalized in variant_normalized or \
-                           any(v.replace('_', '/') == order_instrument for v in symbol_variants):
-                            open_orders_data.append(order)
-                            logger.debug(f"Matched order: {order_instrument} (normalized: {order_symbol_normalized}) for {symbol}")
-                    
-                    logger.debug(f"Filtered {len(open_orders_data)} orders for {symbol} from {len(all_orders_data)} total orders")
-                    
-                    # Filter for SL/TP orders with flexible matching
                     sl_orders_open = []
                     tp_orders_open = []
                     
                     for o in open_orders_data:
-                        order_type = o.get('order_type', '')
-                        order_type_lower = order_type.lower()
-                        order_type_upper = order_type.upper()
-                        trigger_price = o.get('trigger_price')
-                        side = o.get('side', '')
-                        
-                        # Check for SL orders (Stop Loss / Stop Limit)
-                        # Also check if it's a LIMIT order with trigger_price and side SELL (indicating SL)
-                        is_sl_order = False
-                        if any(sl_term in order_type_lower for sl_term in ['stop', 'stop_loss', 'stop_loss_limit']):
-                            is_sl_order = True
-                        elif order_type_upper == 'LIMIT' and trigger_price and side.upper() == 'SELL':
-                            # LIMIT order with trigger_price is a Stop Loss order in Crypto.com
-                            # Only consider it SL if it's a SELL order (closing a long position)
-                            is_sl_order = True
-                        
-                        if is_sl_order:
+                        leg = _classify_open_protection_leg(o)
+                        if leg == "SL":
                             sl_orders_open.append(o)
-                            logger.debug(f"Found SL order for {symbol}: {order_type} (trigger_price={trigger_price}, side={side}) - {o.get('order_id')}")
-                        
-                        # Check for TP orders (Take Profit)
-                        if any(tp_term in order_type_lower for tp_term in ['take-profit', 'take_profit', 'take profit', 'profit_limit']) or \
-                           ('profit' in order_type_lower and 'take' in order_type_lower):
+                            logger.debug(
+                                f"Found SL order for {symbol}: "
+                                f"{o.get('order_type')} id={o.get('order_id')}"
+                            )
+                        elif leg == "TP":
                             tp_orders_open.append(o)
-                            logger.debug(f"Found TP order for {symbol}: {order_type} - {o.get('order_id')}")
+                            logger.debug(
+                                f"Found TP order for {symbol}: "
+                                f"{o.get('order_type')} id={o.get('order_id')}"
+                            )
                     
-                    logger.info(f"Position {symbol}: Filtered {len(sl_orders_open)} SL and {len(tp_orders_open)} TP orders from {len(open_orders_data)} matched orders")
+                    logger.info(
+                        f"Position {symbol}: Filtered {len(sl_orders_open)} SL and "
+                        f"{len(tp_orders_open)} TP orders from {len(open_orders_data)} matched orders"
+                    )
                     
-                    # CRITICAL: Check order status - only count ACTIVE orders, not CANCELLED or FILLED
-                    # Crypto.com API may return orders with status 'CANCELLED' or 'FILLED' in get_open_orders()
-                    active_sl_orders = []
-                    active_tp_orders = []
-                    
-                    # Get current position balance for comparison
                     position_balance = position.get('balance', 0)
-                    
+                    active_sl_orders = [
+                        o for o in sl_orders_open
+                        if _is_active_open_order_status(o)
+                        and _quantity_matches_position(o, position_balance)
+                    ]
+                    active_tp_orders = [
+                        o for o in tp_orders_open
+                        if _is_active_open_order_status(o)
+                        and _quantity_matches_position(o, position_balance)
+                    ]
+                    # Log exclusions for qty mismatch
                     for o in sl_orders_open:
-                        order_status = o.get('order_status', '').upper() or o.get('status', '').upper()
-                        order_quantity = float(o.get('quantity', 0) or o.get('qty', 0) or 0)
-                        
-                        # Only count orders that are ACTIVE, NEW, or PENDING
-                        if order_status in ['ACTIVE', 'NEW', 'PENDING'] or not order_status:
-                            # CRITICAL: Verify order quantity matches position balance (within 5% tolerance)
-                            # This ensures we're not counting old orders from previous positions
-                            if order_quantity > 0 and position_balance > 0:
-                                quantity_match = abs(order_quantity - position_balance) / position_balance <= 0.05
-                                if quantity_match:
-                                    active_sl_orders.append(o)
-                                    logger.debug(f"Position {symbol}: Including SL order {o.get('order_id')} - qty={order_quantity}, position={position_balance}, match={quantity_match}")
-                                else:
-                                    logger.info(f"Position {symbol}: Excluding SL order {o.get('order_id')} - qty={order_quantity} doesn't match position={position_balance} (diff: {abs(order_quantity - position_balance)})")
-                            else:
-                                # If no quantity info, assume active (legacy behavior)
-                                active_sl_orders.append(o)
-                                logger.debug(f"Position {symbol}: Including SL order {o.get('order_id')} - no quantity info, assuming active")
-                        else:
-                            logger.debug(f"Position {symbol}: Excluding SL order {o.get('order_id')} - status: {order_status}")
-                    
+                        if _is_active_open_order_status(o) and not _quantity_matches_position(o, position_balance):
+                            logger.info(
+                                f"Position {symbol}: Excluding SL order {o.get('order_id')} - "
+                                f"qty mismatch vs position={position_balance}"
+                            )
                     for o in tp_orders_open:
-                        order_status = o.get('order_status', '').upper() or o.get('status', '').upper()
-                        order_quantity = float(o.get('quantity', 0) or o.get('qty', 0) or 0)
-                        
-                        # Only count orders that are ACTIVE, NEW, or PENDING
-                        if order_status in ['ACTIVE', 'NEW', 'PENDING'] or not order_status:
-                            # CRITICAL: Verify order quantity matches position balance (within 5% tolerance)
-                            # This ensures we're not counting old orders from previous positions
-                            if order_quantity > 0 and position_balance > 0:
-                                quantity_match = abs(order_quantity - position_balance) / position_balance <= 0.05
-                                if quantity_match:
-                                    active_tp_orders.append(o)
-                                    logger.debug(f"Position {symbol}: Including TP order {o.get('order_id')} - qty={order_quantity}, position={position_balance}, match={quantity_match}")
-                                else:
-                                    logger.info(f"Position {symbol}: Excluding TP order {o.get('order_id')} - qty={order_quantity} doesn't match position={position_balance} (diff: {abs(order_quantity - position_balance)})")
-                            else:
-                                # If no quantity info, assume active (legacy behavior)
-                                active_tp_orders.append(o)
-                                logger.debug(f"Position {symbol}: Including TP order {o.get('order_id')} - no quantity info, assuming active")
-                        else:
-                            logger.debug(f"Position {symbol}: Excluding TP order {o.get('order_id')} - status: {order_status}")
+                        if _is_active_open_order_status(o) and not _quantity_matches_position(o, position_balance):
+                            logger.info(
+                                f"Position {symbol}: Excluding TP order {o.get('order_id')} - "
+                                f"qty mismatch vs position={position_balance}"
+                            )
                     
                     has_sl = len(active_sl_orders) > 0
                     has_tp = len(active_tp_orders) > 0
                     
-                    logger.info(f"Position {symbol}: Found {len(active_sl_orders)} active SL and {len(active_tp_orders)} active TP orders matching position balance={position_balance} (total found: {len(sl_orders_open)} SL, {len(tp_orders_open)} TP)")
-                    if sl_orders_open:
-                        logger.info(f"SL orders for {symbol}: {[(o.get('order_id'), o.get('order_status') or o.get('status', 'NO_STATUS'), o.get('quantity') or o.get('qty', 'NO_QTY')) for o in sl_orders_open]}")
-                    if tp_orders_open:
-                        logger.info(f"TP orders for {symbol}: {[(o.get('order_id'), o.get('order_status') or o.get('status', 'NO_STATUS'), o.get('quantity') or o.get('qty', 'NO_QTY')) for o in tp_orders_open]}")
+                    logger.info(
+                        f"Position {symbol}: Found {len(active_sl_orders)} active SL and "
+                        f"{len(active_tp_orders)} active TP orders matching position "
+                        f"balance={position_balance} (total found: {len(sl_orders_open)} SL, "
+                        f"{len(tp_orders_open)} TP)"
+                    )
                 except Exception as e:
                     logger.warning(f"Error checking open orders from Exchange API for {symbol}: {e}")
                     # Fallback to database check
@@ -526,7 +566,9 @@ class SLTPCheckerService:
                 
                 logger.info(f"Position {symbol}: has_sl={has_sl}, has_tp={has_tp}, skip_reminder={skip_reminder}, will_include={((not has_sl or not has_tp) and not skip_reminder)}")
                 
-                if (not has_sl or not has_tp) and not skip_reminder:
+                # Always include unprotected positions for auto-create (even if reminder skipped).
+                # skip_reminder only suppresses Telegram nudge buttons, not protection.
+                if not has_sl or not has_tp:
                     # Get SL/TP prices from watchlist if available
                     sl_price = watchlist_item.sl_price if watchlist_item else None
                     tp_price = watchlist_item.tp_price if watchlist_item else None
@@ -539,6 +581,7 @@ class SLTPCheckerService:
                         'has_tp': has_tp,
                         'sl_price': sl_price,
                         'tp_price': tp_price,
+                        'skip_reminder': skip_reminder,
                         'watchlist_item': watchlist_item
                     })
             
@@ -562,26 +605,127 @@ class SLTPCheckerService:
                 'error': str(e)
             }
     
+    def ensure_missing_protection(self, db: Session) -> Dict:
+        """
+        Always create missing SL and/or TP for open positions.
+
+        Age of the entry fill does not matter — open balance without both
+        legs is unprotected and must be healed.
+        """
+        result = self.check_positions_for_sl_tp(db)
+        positions_missing = result.get("positions_missing_sl_tp", [])
+        created: List[Dict] = []
+        failed: List[Dict] = []
+        still_missing: List[Dict] = []
+
+        for pos in positions_missing:
+            symbol = pos["symbol"]
+            create_sl = not pos.get("has_sl")
+            create_tp = not pos.get("has_tp")
+            if not create_sl and not create_tp:
+                continue
+            logger.info(
+                "Auto-creating missing protection for %s (create_sl=%s create_tp=%s)",
+                symbol,
+                create_sl,
+                create_tp,
+            )
+            try:
+                creation = self._create_protection_order(
+                    db,
+                    symbol,
+                    create_sl=create_sl,
+                    create_tp=create_tp,
+                    force=True,
+                    source="auto_ensure",
+                )
+            except Exception as exc:
+                logger.error(
+                    "Auto-create protection failed for %s: %s",
+                    symbol,
+                    exc,
+                    exc_info=True,
+                )
+                failed.append({"symbol": symbol, "error": str(exc), **pos})
+                still_missing.append(pos)
+                continue
+
+            if creation.get("success"):
+                created.append(
+                    {
+                        "symbol": symbol,
+                        "sl_order_id": creation.get("sl_order_id"),
+                        "tp_order_id": creation.get("tp_order_id"),
+                    }
+                )
+            else:
+                failed.append(
+                    {
+                        "symbol": symbol,
+                        "error": creation.get("error")
+                        or creation.get("sl_error")
+                        or creation.get("tp_error"),
+                        **pos,
+                    }
+                )
+                # Keep for Telegram reminder if still unprotected
+                still_pos = dict(pos)
+                if creation.get("sl_order_id"):
+                    still_pos["has_sl"] = True
+                if creation.get("tp_order_id"):
+                    still_pos["has_tp"] = True
+                if not still_pos.get("has_sl") or not still_pos.get("has_tp"):
+                    still_missing.append(still_pos)
+
+        return {
+            "checked_at": result.get("checked_at"),
+            "total_positions": result.get("total_positions", 0),
+            "oco_issues": result.get("oco_issues", {}),
+            "created": created,
+            "failed": failed,
+            "still_missing": still_missing,
+            "positions_missing_sl_tp": still_missing,
+        }
+
     def send_sl_tp_reminder(self, db: Session) -> bool:
         """
-        Check positions and send Telegram reminder - one message per position
+        Ensure every open position has SL/TP, then remind only if still missing.
         Also sends OCO issues alerts
         
         Returns:
             bool: True if reminder was sent, False otherwise
         """
         try:
-            # Check positions
-            result = self.check_positions_for_sl_tp(db)
-            positions_missing = result.get('positions_missing_sl_tp', [])
-            oco_issues = result.get('oco_issues', {})
+            # Always auto-create missing legs first (no age gate)
+            ensure_result = self.ensure_missing_protection(db)
+            positions_missing = [
+                p for p in ensure_result.get("still_missing", [])
+                if not p.get("skip_reminder")
+            ]
+            oco_issues = ensure_result.get('oco_issues', {})
+
+            if ensure_result.get("created"):
+                logger.info(
+                    "Auto-created protection for %s position(s): %s",
+                    len(ensure_result["created"]),
+                    [c.get("symbol") for c in ensure_result["created"]],
+                )
+            if ensure_result.get("failed"):
+                logger.warning(
+                    "Failed auto-create protection for %s position(s): %s",
+                    len(ensure_result["failed"]),
+                    [
+                        f"{f.get('symbol')}: {f.get('error')}"
+                        for f in ensure_result["failed"]
+                    ],
+                )
 
             # Always alert on orphan/stale OCO issues even when all positions are protected.
             oco_alerts_sent = self._send_oco_alerts(oco_issues)
 
             if not positions_missing:
                 logger.info("All positions have SL/TP orders, no position reminders needed")
-                return oco_alerts_sent > 0
+                return oco_alerts_sent > 0 or bool(ensure_result.get("created"))
 
             # Send one message per position with specific options
             reminders_sent = 0
@@ -609,7 +753,7 @@ class SLTPCheckerService:
                 close_key = f"{symbol}:LONG"
                 message = f"⚠️ <b>POSICIÓN SIN PROTECCIÓN: {symbol}</b>\n\n"
                 message += (
-                    "⚠️ <b>Problema:</b> hay una posición abierta "
+                    "⚠️ <b>Problema:</b> auto-creación falló; la posición sigue "
                     f"<b>sin {' y '.join(missing_items)}</b>.\n"
                     "Sin esa protección la posición queda expuesta.\n\n"
                 )
@@ -794,7 +938,7 @@ class SLTPCheckerService:
         """
         return self._create_protection_order(db, symbol, create_sl=False, create_tp=True, force=force)
     
-    def _create_protection_order(self, db: Session, symbol: str, create_sl: bool = True, create_tp: bool = True, force: bool = False) -> Dict:
+    def _create_protection_order(self, db: Session, symbol: str, create_sl: bool = True, create_tp: bool = True, force: bool = False, source: str = "manual") -> Dict:
         """
         Internal method to create SL and/or TP orders for a position
         
@@ -919,9 +1063,9 @@ class SLTPCheckerService:
             )
             
             # Calculate from percentages if prices not available, or when tp_percentage is set
+            entry_price = None
+            entry_side = "BUY"
             if (create_sl and not sl_price) or (create_tp and (not tp_price or prefer_tp_from_pct)):
-                entry_price = None
-                entry_side = "BUY"
                 recent_order = _find_recent_entry_order(db, symbol)
 
                 if recent_order:
@@ -1098,7 +1242,7 @@ class SLTPCheckerService:
                         parent_order_id=parent_order_id,
                         oco_group_id=oco_group_id,
                         dry_run=dry_run_mode,
-                        source="manual",
+                        source=source,
                     )
                     sl_order_id = sl_result.get("order_id")
                     sl_error = sl_result.get("error")
@@ -1131,7 +1275,7 @@ class SLTPCheckerService:
                         parent_order_id=parent_order_id,
                         oco_group_id=oco_group_id,
                         dry_run=dry_run_mode,
-                        source="manual",
+                        source=source,
                     )
                     tp_order_id = tp_result.get("order_id")
                     tp_error = tp_result.get("error")

@@ -36,6 +36,7 @@ from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusE
 from app.models.watchlist_signal_state import WatchlistSignalState
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
+from app.utils.indicator_format import format_indicator_value as _iv
 from app.services.alert_emitter import emit_alert
 from app.core.runtime import get_runtime_origin
 from app.utils.symbols import normalize_symbol_for_exchange
@@ -1918,10 +1919,10 @@ class SignalMonitorService:
         min_volume_ratio = signals.get("min_volume_ratio") if signals else None
 
         rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
-        price_text = f"{current_price:.4f}" if current_price is not None else "N/A"
-        ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-        ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-        ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+        price_text = _iv(current_price) if current_price is not None else "N/A"
+        ma50_text = _iv(ma50) if ma50 is not None else "N/A"
+        ema10_text = _iv(ema10) if ema10 is not None else "N/A"
+        ma200_text = _iv(ma200) if ma200 is not None else "N/A"
         vol_suffix = ""
         if volume_ratio is not None and min_volume_ratio is not None:
             vol_suffix = f", Vol={volume_ratio:.2f}x (min {min_volume_ratio}x)"
@@ -2765,7 +2766,7 @@ class SignalMonitorService:
             tp_price = signals.get("tp")
             
             # Log signal detection for debugging (include MA values if available)
-            ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
+            ma_info = f", MA50={_iv(ma50)}, EMA10={_iv(ema10)}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
             logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f}{ma_info}")
             
             # Determine current signal state
@@ -4097,9 +4098,9 @@ class SignalMonitorService:
                         # Send Telegram alert (throttling already verified by should_emit_signal)
                         try:
                             price_variation = self._format_price_variation(prev_buy_price, current_price)
-                            ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                            ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-                            ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                            ma50_text = _iv(ma50) if ma50 is not None else "N/A"
+                            ema10_text = _iv(ema10) if ema10 is not None else "N/A"
+                            ma200_text = _iv(ma200) if ma200 is not None else "N/A"
                             reason_text = self._build_strategy_alert_reason(
                                 signals,
                                 "BUY",
@@ -5501,7 +5502,7 @@ class SignalMonitorService:
                     return  # Exit - cannot create order without MAs
                 
                 # Log MA values for verification
-                logger.info(f"✅ MA validation passed for {symbol}: MA50={ma50:.2f}, EMA10={ema10:.2f}, MA50>EMA10={ma50 > ema10}")
+                logger.info(f"✅ MA validation passed for {symbol}: MA50={_iv(ma50)}, EMA10={_iv(ema10)}, MA50>EMA10={ma50 > ema10}")
                 
                 # Check portfolio value limit: Skip BUY orders if portfolio_value > 3x trade_amount_usd
                 # NOTE: Alert was already sent above, this check only affects order creation
@@ -6231,9 +6232,9 @@ class SignalMonitorService:
                                     )
                         
                         price_variation = self._format_price_variation(prev_sell_price, current_price)
-                        ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                        ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-                        ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                        ma50_text = _iv(ma50) if ma50 is not None else "N/A"
+                        ema10_text = _iv(ema10) if ema10 is not None else "N/A"
+                        ma200_text = _iv(ma200) if ma200 is not None else "N/A"
                         reason_text = self._build_strategy_alert_reason(
                             signals,
                             "SELL",
