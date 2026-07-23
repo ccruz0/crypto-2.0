@@ -483,3 +483,68 @@ def test_summary_btc_usd_includes_large_long_tp_profit(db_session):
         row.get("symbol") == "BTC_USD" and row.get("position_side") == "SHORT"
         for row in summary.values()
     )
+
+
+def test_rebuild_open_lots_dedupes_otoco_advanced_and_spot_parent_twins(db_session):
+    """Same 1.3@59100 fill under advanced leg + spot parent must not double-count.
+
+    Production pattern (BTC_USD):
+      - 73817490101952836 advanced BUY leg (create 14:53, update 15:05)
+      - 5755600491091887888 spot/parent BUY (create 15:05) linked to TP
+    """
+    t_adv = datetime(2026, 6, 29, 14, 53, 44, tzinfo=timezone.utc)
+    t_parent = datetime(2026, 6, 29, 15, 5, 15, tzinfo=timezone.utc)
+
+    shadow = _add_order(
+        db_session,
+        exchange_order_id="73817490101952836",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="59100",
+        quantity="1.3",
+        exchange_create_time=t_adv,
+    )
+    shadow.exchange_update_time = t_parent
+    db_session.commit()
+
+    parent = _add_order(
+        db_session,
+        exchange_order_id="5755600491091887888",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="59100",
+        quantity="1.3",
+        exchange_create_time=t_parent,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490101952837",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="67000",
+        quantity="1.3",
+        cumulative_quantity="0",
+        parent_order_id=parent.exchange_order_id,
+        exchange_create_time=t_adv,
+    )
+    # Unrelated second fill at same size/price days later must still count.
+    t_later = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
+    _add_order(
+        db_session,
+        exchange_order_id="5755600491999999999",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="59100",
+        quantity="1.3",
+        exchange_create_time=t_later,
+    )
+
+    lots = rebuild_open_lots(db_session, "BTC_USD")
+    lot_ids = {lot.buy_order_id for lot in lots}
+    assert "5755600491091887888" in lot_ids
+    assert "73817490101952836" not in lot_ids
+    assert "5755600491999999999" in lot_ids
+    assert sum(float(lot.lot_qty) for lot in lots) == pytest.approx(2.6)
