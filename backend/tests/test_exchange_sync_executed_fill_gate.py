@@ -16,6 +16,10 @@ def _order(
     exchange_update_time=None,
     exchange_create_time=None,
     execution_notified_at=None,
+    order_role=None,
+    order_type=None,
+    exchange_order_id="oid-1",
+    symbol="BTC_USD",
 ):
     o = MagicMock()
     o.trade_signal_id = trade_signal_id
@@ -23,6 +27,10 @@ def _order(
     o.exchange_update_time = exchange_update_time
     o.exchange_create_time = exchange_create_time
     o.execution_notified_at = execution_notified_at
+    o.order_role = order_role
+    o.order_type = order_type
+    o.exchange_order_id = exchange_order_id
+    o.symbol = symbol
     return o
 
 
@@ -186,3 +194,46 @@ def test_no_timestamp_blocks():
     )
     assert allowed is False
     assert "historical" in reason.lower() or "timestamp" in reason.lower()
+
+
+def test_take_profit_role_notifies_even_if_old():
+    """TP/SL protection fills are system orders and should notify (deduped elsewhere)."""
+    now = datetime.now(timezone.utc)
+    filled_at = now - timedelta(days=5)
+    order = _order(
+        trade_signal_id=None,
+        parent_order_id=None,
+        exchange_update_time=filled_at,
+        exchange_create_time=filled_at,
+        execution_notified_at=None,
+        order_role="TAKE_PROFIT",
+        order_type="TAKE_PROFIT_LIMIT",
+    )
+    allowed, reason = should_notify_executed_fill(
+        db=MagicMock(),
+        order=order,
+        now_utc=now,
+        source="sync_open_orders_resolve",
+        requested_by_admin=False,
+    )
+    assert allowed is True
+    assert "system" in reason.lower()
+
+
+def test_stop_loss_type_notifies_even_if_old():
+    now = datetime.now(timezone.utc)
+    filled_at = now - timedelta(days=2)
+    order = _order(
+        order_type="STOP_LIMIT",
+        exchange_update_time=filled_at,
+        exchange_create_time=filled_at,
+    )
+    allowed, reason = should_notify_executed_fill(
+        db=MagicMock(),
+        order=order,
+        now_utc=now,
+        source="sync_order_history",
+        requested_by_admin=False,
+    )
+    assert allowed is True
+    assert "system" in reason.lower()

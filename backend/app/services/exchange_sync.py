@@ -8,7 +8,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, not_, text
 from app.database import SessionLocal
@@ -123,6 +123,14 @@ def _to_decimal(x: Union[Decimal, int, float, str, None]) -> Decimal:
 # 1 hour: only notify for fills within this window unless order was created by system or admin resync
 RECENT_FILL_WINDOW_SECONDS = 3600
 
+_PROTECTIVE_ORDER_TYPES = (
+    "STOP_LIMIT",
+    "STOP_LOSS",
+    "STOP_LOSS_LIMIT",
+    "TAKE_PROFIT",
+    "TAKE_PROFIT_LIMIT",
+)
+
 
 def should_notify_executed_fill(
     *,
@@ -135,7 +143,7 @@ def should_notify_executed_fill(
     """Gate for executed-fill Telegram notifications. Prevents history-sync spam.
     Returns (allowed, reason).
     A) requested_by_admin -> allow (unless already notified, then dedup).
-    B) Order created by this system (trade_signal_id or parent_order_id for SL/TP) -> allow.
+    B) Order created by this system (signal / parent / protection role / intent) -> allow.
     C) Else allow only if fill is recent (within RECENT_FILL_WINDOW_SECONDS).
     D) If we already sent notification for this order -> block.
     """
@@ -143,9 +151,13 @@ def should_notify_executed_fill(
         return (False, "already notified")
     if requested_by_admin:
         return (True, "admin resync")
+    role = (getattr(order, "order_role", None) or "").upper()
+    order_type = (getattr(order, "order_type", None) or "").upper()
+    is_protection = role in ("TAKE_PROFIT", "STOP_LOSS") or order_type in _PROTECTIVE_ORDER_TYPES
     is_system_order = (
         getattr(order, "trade_signal_id", None) is not None
         or getattr(order, "parent_order_id", None) is not None
+        or is_protection
     )
     if is_system_order:
         return (True, "system order")
@@ -158,15 +170,6 @@ def should_notify_executed_fill(
     if age_seconds > RECENT_FILL_WINDOW_SECONDS:
         return (False, "historical fill: outside window")
     return (True, "recent fill")
-
-
-_PROTECTIVE_ORDER_TYPES = (
-    "STOP_LIMIT",
-    "STOP_LOSS",
-    "STOP_LOSS_LIMIT",
-    "TAKE_PROFIT",
-    "TAKE_PROFIT_LIMIT",
-)
 
 
 def _count_open_entry_buy_orders(db: Session, symbol: str) -> int:
@@ -455,6 +458,77 @@ ORDER_HISTORY_EMPTY_WINDOWS_STOP = int(os.environ.get("ORDER_HISTORY_EMPTY_WINDO
 ORDER_HISTORY_PRIORITY_MAX = int(os.environ.get("ORDER_HISTORY_PRIORITY_MAX", "8"))
 ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN = int(os.environ.get("ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN", "3"))
 
+_RESOLVED_STATUS_ALIASES = {
+    "EXECUTED": "FILLED",
+    "COMPLETE": "FILLED",
+    "CLOSED": "FILLED",
+    "CANCELED": "CANCELLED",
+}
+
+
+def quote_instrument_variants(symbol: Optional[str]) -> List[str]:
+    """Return symbol plus USD/USDT twin so BTC_USD fills are not missed when only BTC_USDT is listed."""
+    if not symbol:
+        return []
+    key = str(symbol).strip().upper()
+    if not key:
+        return []
+    variants = [key]
+    if key.endswith("_USDT"):
+        variants.append(f"{key[:-5]}_USD")
+    elif key.endswith("_USD"):
+        variants.append(f"{key[:-4]}_USDT")
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in variants:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def expand_symbols_with_quote_variants(symbols: List[str]) -> List[str]:
+    """Deduped expansion of a symbol list with USD/USDT twins, preserving first-seen order."""
+    seen: set[str] = set()
+    out: List[str] = []
+    for sym in symbols:
+        for variant in quote_instrument_variants(sym):
+            if variant not in seen:
+                seen.add(variant)
+                out.append(variant)
+    return out
+
+
+def normalize_resolved_exchange_status(status_str: Optional[str]) -> str:
+    """Normalize exchange status strings to our OrderStatusEnum names."""
+    raw = (status_str or "").strip().upper()
+    return _RESOLVED_STATUS_ALIASES.get(raw, raw)
+
+
+def parse_resolved_order_payload(order_data: Optional[Dict[str, Any]], order_id: str) -> Optional[Dict[str, Any]]:
+    """Extract status/qty/price from get-order-detail or history row payloads."""
+    if not isinstance(order_data, dict):
+        return None
+    oid = order_data.get("order_id") or order_data.get("orderId") or order_data.get("id")
+    if oid is not None and str(oid) != str(order_id):
+        return None
+    status_str = normalize_resolved_exchange_status(str(order_data.get("status", "") or ""))
+    if not status_str:
+        return None
+    cumulative_qty = float(order_data.get("cumulative_quantity", 0) or 0)
+    price = order_data.get("avg_price") or order_data.get("limit_price") or order_data.get("price")
+    quantity = float(order_data.get("quantity", 0) or 0)
+    payload: Dict[str, Any] = {
+        "status": status_str,
+        "cumulative_quantity": cumulative_qty,
+        "price": float(price) if price not in (None, "") else None,
+        "quantity": quantity,
+    }
+    reject_reason = order_data.get("reject_reason")
+    if reject_reason:
+        payload["reject_reason"] = reject_reason
+    return payload
+
 
 def _protection_order_price(order: ExchangeOrder) -> Optional[float]:
     """Best-effort limit/trigger price from a persisted SL/TP order row."""
@@ -502,69 +576,127 @@ class ExchangeSyncService:
         if stale_ids:
             logger.debug(f"Purged {len(stale_ids)} stale processed order IDs")
     
-    def _resolve_order_status_from_exchange(self, order_id: str, order_created_at: Optional[datetime] = None) -> Optional[Dict]:
+    def _resolve_order_status_from_exchange(
+        self,
+        order_id: str,
+        order_created_at: Optional[datetime] = None,
+        instrument_name: Optional[str] = None,
+    ) -> Optional[Dict]:
         """
-        Resolve order status from exchange by querying order history.
-        
-        Args:
-            order_id: Exchange order ID to look up
-            order_created_at: Optional order creation time to limit search window
-            
-        Returns:
-            Dict with 'status', 'cumulative_quantity', 'price', 'quantity' if found, None otherwise
+        Resolve order status from exchange.
+
+        Prefer get-order-detail (exact order_id). Fall back to per-instrument order
+        history — Crypto.com often returns empty without instrument_name — then
+        advanced/trigger history.
         """
         try:
-            # Calculate time window: last 24 hours or since order creation (whichever is more recent)
-            from datetime import timedelta
+            # Prefer explicit symbol; otherwise recover from DB so history queries can filter.
+            if not instrument_name:
+                try:
+                    db = SessionLocal()
+                    try:
+                        row = (
+                            db.query(ExchangeOrder)
+                            .filter(ExchangeOrder.exchange_order_id == str(order_id))
+                            .first()
+                        )
+                        if row and row.symbol:
+                            instrument_name = row.symbol
+                    finally:
+                        db.close()
+                except Exception:
+                    instrument_name = instrument_name
+
+            # 1) Exact order detail — most reliable for filled TP/SL that left open orders
+            try:
+                detail = trade_client.get_order_detail(str(order_id))
+                result = detail.get("result") if isinstance(detail, dict) else None
+                parsed = parse_resolved_order_payload(
+                    result if isinstance(result, dict) else None,
+                    str(order_id),
+                )
+                if parsed:
+                    logger.info(
+                        "Found order %s via get-order-detail: status=%s cumulative_qty=%s",
+                        order_id,
+                        parsed["status"],
+                        parsed["cumulative_quantity"],
+                    )
+                    return parsed
+            except Exception as detail_err:
+                logger.debug("get-order-detail failed for %s: %s", order_id, detail_err)
+
             end_time_ms = int(time.time() * 1000)
-            
             if order_created_at:
-                # Search from order creation time to now (with 1 hour buffer before creation)
                 start_time = order_created_at - timedelta(hours=1)
                 start_time_ms = int(start_time.timestamp() * 1000)
             else:
-                # Default: last 24 hours
                 start_time_ms = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
-            
-            # Query order history (first page should be enough for recent orders)
-            response = trade_client.get_order_history(
-                page_size=200,
-                page=0,
-                start_time=start_time_ms,
-                end_time=end_time_ms
-            )
-            
-            if not response or 'data' not in response:
-                logger.debug(f"Order history query failed for {order_id}")
-                return None
-            
-            orders = response.get('data', [])
-            
-            # Search for the specific order_id
-            for order_data in orders:
-                if str(order_data.get('order_id', '')) == order_id:
-                    status_str = order_data.get('status', '').upper()
-                    cumulative_qty = float(order_data.get('cumulative_quantity', 0) or 0)
-                    price = order_data.get('limit_price') or order_data.get('price') or order_data.get('avg_price')
-                    quantity = float(order_data.get('quantity', 0) or 0)
-                    
-                    logger.info(f"Found order {order_id} in exchange history: status={status_str}, cumulative_qty={cumulative_qty}")
-                    
-                    return {
-                        'status': status_str,
-                        'cumulative_quantity': cumulative_qty,
-                        'price': float(price) if price else None,
-                        'quantity': quantity
+
+            # 2) Per-instrument history (USD/USDT twins), then unscoped as last history attempt
+            instruments_to_try = quote_instrument_variants(instrument_name) + [None]
+            seen_instruments: set[str] = set()
+            for instrument in instruments_to_try:
+                key = instrument or "__ALL__"
+                if key in seen_instruments:
+                    continue
+                seen_instruments.add(key)
+                try:
+                    kwargs: Dict[str, Any] = {
+                        "page_size": 200,
+                        "page": 0,
+                        "start_time": start_time_ms,
+                        "end_time": end_time_ms,
                     }
-            
-            logger.debug(f"Order {order_id} not found in exchange order history (searched last 24h)")
-            advanced_info = self._resolve_advanced_order_status_from_exchange(order_id, order_created_at)
+                    if instrument:
+                        kwargs["instrument_name"] = instrument
+                    response = trade_client.get_order_history(**kwargs)
+                except Exception as hist_err:
+                    logger.debug(
+                        "Order history query failed for %s instrument=%s: %s",
+                        order_id,
+                        instrument,
+                        hist_err,
+                    )
+                    continue
+
+                if not response or "data" not in response:
+                    continue
+
+                for order_data in response.get("data", []) or []:
+                    parsed = parse_resolved_order_payload(
+                        order_data if isinstance(order_data, dict) else None,
+                        str(order_id),
+                    )
+                    if parsed:
+                        logger.info(
+                            "Found order %s in exchange history (instrument=%s): status=%s cumulative_qty=%s",
+                            order_id,
+                            instrument or "ALL",
+                            parsed["status"],
+                            parsed["cumulative_quantity"],
+                        )
+                        return parsed
+
+            logger.debug(
+                "Order %s not found in spot order history; trying advanced/trigger history",
+                order_id,
+            )
+            advanced_info = self._resolve_advanced_order_status_from_exchange(
+                order_id, order_created_at
+            )
             if advanced_info:
+                advanced_info["status"] = normalize_resolved_exchange_status(
+                    advanced_info.get("status")
+                )
                 return advanced_info
             return None
-            
+
         except Exception as e:
-            logger.warning(f"Error resolving order status from exchange for {order_id}: {e}", exc_info=True)
+            logger.warning(
+                f"Error resolving order status from exchange for {order_id}: {e}",
+                exc_info=True,
+            )
             return None
 
     def _resolve_advanced_order_status_from_exchange(
@@ -597,36 +729,241 @@ class ExchangeSyncService:
                 start_time_ms = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
 
             params: Dict[str, Any] = {"limit": 200, "start_time": start_time_ms, "end_time": end_time_ms}
-            if instrument_name:
-                params["instrument_name"] = instrument_name
-            response = trade_client.get_advanced_order_history(**params)
-            if not response or "data" not in response:
-                return None
-            for order_data in response.get("data", []) or []:
-                if str(order_data.get("order_id", "")) == order_id:
-                    status_str = str(order_data.get("status", "")).upper()
-                    cumulative_qty = float(order_data.get("cumulative_quantity", 0) or 0)
-                    price = order_data.get("limit_price") or order_data.get("price") or order_data.get("avg_price")
-                    quantity = float(order_data.get("quantity", 0) or 0)
-                    reject_reason = order_data.get("reject_reason")
-                    logger.info(
-                        "Found advanced order %s in history: status=%s reject_reason=%s",
-                        order_id,
-                        status_str,
-                        reject_reason,
+            instruments = quote_instrument_variants(instrument_name) or [None]
+            for instrument in instruments:
+                query_params = dict(params)
+                if instrument:
+                    query_params["instrument_name"] = instrument
+                response = trade_client.get_advanced_order_history(**query_params)
+                if not response or "data" not in response:
+                    continue
+                for order_data in response.get("data", []) or []:
+                    parsed = parse_resolved_order_payload(
+                        order_data if isinstance(order_data, dict) else None,
+                        str(order_id),
                     )
-                    return {
-                        "status": status_str,
-                        "cumulative_quantity": cumulative_qty,
-                        "price": float(price) if price else None,
-                        "quantity": quantity,
-                        "reject_reason": reject_reason,
-                    }
+                    if parsed:
+                        if order_data.get("reject_reason"):
+                            parsed["reject_reason"] = order_data.get("reject_reason")
+                        logger.info(
+                            "Found advanced order %s in history: status=%s reject_reason=%s instrument=%s",
+                            order_id,
+                            parsed["status"],
+                            parsed.get("reject_reason"),
+                            instrument,
+                        )
+                        return parsed
             return None
         except Exception as e:
             logger.debug("Advanced order history lookup failed for %s: %s", order_id, e)
             return None
     
+    def _infer_protection_order_role(self, order: ExchangeOrder) -> Optional[str]:
+        """Return TAKE_PROFIT / STOP_LOSS when role or order_type indicates protection."""
+        role = (getattr(order, "order_role", None) or "").upper()
+        if role in ("TAKE_PROFIT", "STOP_LOSS"):
+            return role
+        order_type = (getattr(order, "order_type", None) or "").upper()
+        if order_type in ("TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT_MARKET"):
+            return "TAKE_PROFIT"
+        if order_type in ("STOP_LOSS", "STOP_LIMIT", "STOP_MARKET", "STOP_LOSS_LIMIT"):
+            return "STOP_LOSS"
+        return None
+
+    def _lookup_entry_price_for_protection(
+        self, db: Session, order: ExchangeOrder
+    ) -> Optional[float]:
+        """Find parent/entry fill price for TP/SL profit display."""
+        if order.parent_order_id:
+            parent = (
+                db.query(ExchangeOrder)
+                .filter(ExchangeOrder.exchange_order_id == order.parent_order_id)
+                .first()
+            )
+            if parent:
+                price = parent.avg_price if parent.avg_price else parent.price
+                if price is not None:
+                    return float(price)
+
+        side = order.side.value if hasattr(order.side, "value") else str(order.side or "")
+        side = side.upper()
+        opposite = OrderSideEnum.BUY if side == "SELL" else OrderSideEnum.SELL
+        q = db.query(ExchangeOrder).filter(
+            ExchangeOrder.symbol == order.symbol,
+            ExchangeOrder.side == opposite,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+            ExchangeOrder.exchange_order_id != order.exchange_order_id,
+        )
+        if order.exchange_create_time:
+            q = q.filter(ExchangeOrder.exchange_create_time <= order.exchange_create_time)
+        original = q.order_by(ExchangeOrder.exchange_update_time.desc()).first()
+        if original:
+            price = original.avg_price if original.avg_price else original.price
+            if price is not None:
+                return float(price)
+        return None
+
+    def _maybe_notify_executed_fill_telegram(
+        self,
+        db: Session,
+        order: ExchangeOrder,
+        *,
+        source: str,
+        price: Optional[float] = None,
+        quantity: Optional[float] = None,
+        status_str: str = "FILLED",
+    ) -> bool:
+        """Send ORDER EXECUTED Telegram for entry/TP/SL fills when gating allows.
+
+        Used by order-history sync and by open-orders resolve (orders that left
+        open orders as FILLED). Does not notify historical spam: relies on
+        should_notify_executed_fill + fill_dedup + execution_notified_at.
+        """
+        try:
+            from app.services.telegram_notifier import telegram_notifier
+
+            fill_status = normalize_resolved_exchange_status(status_str)
+            if fill_status not in ("FILLED", "PARTIALLY_FILLED"):
+                return False
+
+            fill_qty = quantity
+            if fill_qty is None:
+                fill_qty = float(order.cumulative_quantity or order.quantity or 0)
+            else:
+                fill_qty = float(fill_qty)
+            if fill_qty <= 0:
+                return False
+
+            fill_price = price
+            if fill_price is None:
+                fill_price = float(order.avg_price or order.price or 0)
+            else:
+                fill_price = float(fill_price)
+
+            gate_ok, gate_reason = should_notify_executed_fill(
+                db=db,
+                order=order,
+                now_utc=datetime.now(timezone.utc),
+                source=source,
+                requested_by_admin=False,
+            )
+            fill_dedup = get_fill_dedup(db)
+            if not gate_ok:
+                fill_dedup.record_fill(
+                    order_id=str(order.exchange_order_id),
+                    filled_qty=fill_qty,
+                    status=fill_status,
+                    notification_sent=False,
+                )
+                logger.debug(
+                    "Skipping fill Telegram for %s (%s): %s",
+                    order.exchange_order_id,
+                    order.symbol,
+                    gate_reason,
+                )
+                return False
+
+            should_notify, notify_reason = fill_dedup.should_notify_fill(
+                order_id=str(order.exchange_order_id),
+                current_filled_qty=fill_qty,
+                status=fill_status,
+            )
+            if not should_notify:
+                logger.debug(
+                    "Skipping fill Telegram for %s: %s",
+                    order.exchange_order_id,
+                    notify_reason,
+                )
+                return False
+
+            if order.trade_signal_id is None:
+                link_system_trade_signal_to_order(db, order)
+
+            inferred_role = self._infer_protection_order_role(order)
+            entry_price = None
+            if inferred_role:
+                entry_price = self._lookup_entry_price_for_protection(db, order)
+
+            side = order.side.value if hasattr(order.side, "value") else str(order.side or "BUY")
+            total_usd = fill_price * fill_qty if fill_price and fill_qty else 0.0
+            open_orders_count = _count_open_entry_buy_orders(db, order.symbol)
+
+            audit_log = make_json_safe(
+                {
+                    "event": "ORDER_EXECUTED_NOTIFICATION",
+                    "symbol": order.symbol,
+                    "side": side,
+                    "order_id": str(order.exchange_order_id),
+                    "status": fill_status,
+                    "cumulative_quantity": fill_qty,
+                    "price": fill_price,
+                    "order_type": order.order_type,
+                    "order_role": inferred_role,
+                    "trade_signal_id": order.trade_signal_id,
+                    "parent_order_id": order.parent_order_id,
+                    "notify_reason": notify_reason,
+                    "handler": source,
+                }
+            )
+            logger.info("[FILL_NOTIFICATION] %s", json.dumps(audit_log))
+
+            result = telegram_notifier.send_executed_order(
+                symbol=order.symbol,
+                side=side,
+                price=fill_price or 0,
+                quantity=fill_qty,
+                total_usd=total_usd,
+                order_id=str(order.exchange_order_id),
+                order_type=order.order_type or "LIMIT",
+                entry_price=entry_price,
+                open_orders_count=open_orders_count,
+                order_role=inferred_role,
+                trade_signal_id=order.trade_signal_id,
+                parent_order_id=order.parent_order_id,
+            )
+            if result:
+                order.execution_notified_at = datetime.now(timezone.utc)
+                try:
+                    db.flush()
+                except Exception as flush_err:
+                    logger.warning(
+                        "Failed to flush execution_notified_at for %s: %s",
+                        order.exchange_order_id,
+                        flush_err,
+                    )
+                fill_dedup.record_fill(
+                    order_id=str(order.exchange_order_id),
+                    filled_qty=fill_qty,
+                    status=fill_status,
+                    notification_sent=True,
+                )
+                logger.info(
+                    "Sent Telegram notification for executed order: %s %s - %s (source=%s reason=%s)",
+                    order.symbol,
+                    side,
+                    order.exchange_order_id,
+                    source,
+                    notify_reason,
+                )
+                return True
+
+            logger.warning(
+                "Failed to send Telegram notification for executed order: %s %s - %s",
+                order.symbol,
+                side,
+                order.exchange_order_id,
+            )
+            return False
+        except Exception as telegram_err:
+            logger.warning(
+                "Failed to send fill Telegram for %s: %s",
+                getattr(order, "exchange_order_id", None),
+                telegram_err,
+                exc_info=True,
+            )
+            return False
+
     def _mark_order_processed(self, order_id: str):
         """Mark an order as processed with current timestamp"""
         self.processed_order_ids[order_id] = time.time()
@@ -942,12 +1279,15 @@ class ExchangeSyncService:
                         # "Order not found in Open Orders" ≠ "Order canceled" - order may have been FILLED
                         order_info = self._resolve_order_status_from_exchange(
                             order.exchange_order_id,
-                            order.exchange_create_time or order.created_at
+                            order.exchange_create_time or order.created_at,
+                            instrument_name=order.symbol,
                         )
                         
                         if order_info:
                             # Order found in exchange history - use confirmed status
-                            resolved_status = order_info['status']
+                            resolved_status = normalize_resolved_exchange_status(
+                                order_info.get("status")
+                            )
                             old_status = order.status
                             
                             if resolved_status == 'FILLED':
@@ -956,8 +1296,30 @@ class ExchangeSyncService:
                                 order.cumulative_quantity = order_info.get('cumulative_quantity', order.quantity)
                                 if order_info.get('price'):
                                     order.avg_price = order_info['price']
-                                order.exchange_update_time = datetime.now(timezone.utc)
                                 logger.info(f"Order {order.exchange_order_id} ({order.symbol}) confirmed as FILLED via exchange history")
+
+                                # Telegram BEFORE bumping exchange_update_time so the
+                                # historical-fill gate still uses create/prior update time
+                                # (system TP/SL with parent_order_id still notify).
+                                if old_status != OrderStatusEnum.FILLED:
+                                    try:
+                                        self._maybe_notify_executed_fill_telegram(
+                                            db,
+                                            order,
+                                            source="sync_open_orders_resolve",
+                                            price=order_info.get("price"),
+                                            quantity=order_info.get("cumulative_quantity"),
+                                            status_str="FILLED",
+                                        )
+                                    except Exception as tg_err:
+                                        logger.warning(
+                                            "Failed fill Telegram after open-orders resolve for %s: %s",
+                                            order.exchange_order_id,
+                                            tg_err,
+                                            exc_info=True,
+                                        )
+
+                                order.exchange_update_time = datetime.now(timezone.utc)
                                 
                                 # Emit ORDER_EXECUTED event
                                 if old_status != OrderStatusEnum.FILLED:
@@ -986,6 +1348,29 @@ class ExchangeSyncService:
                                         )
                                     except Exception as emit_err:
                                         logger.warning(f"Failed to emit ORDER_EXECUTED event for {order.exchange_order_id}: {emit_err}", exc_info=True)
+
+                                # TP/SL fill via open-orders orphan path must cancel the sibling
+                                # (history sync already does this; without it SL stays orphaned).
+                                try:
+                                    if order.order_role in ("TAKE_PROFIT", "STOP_LOSS") or (
+                                        order.order_type
+                                        and str(order.order_type).upper()
+                                        in (
+                                            "TAKE_PROFIT",
+                                            "TAKE_PROFIT_LIMIT",
+                                            "STOP_LOSS",
+                                            "STOP_LIMIT",
+                                            "STOP_MARKET",
+                                        )
+                                    ):
+                                        self._cancel_oco_sibling(db, order)
+                                except Exception as oco_err:
+                                    logger.warning(
+                                        "Failed to cancel OCO sibling after fill resolve for %s: %s",
+                                        order.exchange_order_id,
+                                        oco_err,
+                                        exc_info=True,
+                                    )
                                 
                                 # Don't add to cancelled_orders - order was executed
                                 continue
@@ -2965,7 +3350,7 @@ class ExchangeSyncService:
 
         seen: set[str] = set()
         all_symbols: List[str] = []
-        for sym in (
+        for sym in expand_symbols_with_quote_variants(
             list(REQUIRED_ORDER_HISTORY_SYMBOLS)
             + recent_traded
             + open_symbols
@@ -2979,7 +3364,9 @@ class ExchangeSyncService:
 
         priority_seen: set[str] = set()
         priority_symbols: List[str] = []
-        for sym in list(REQUIRED_ORDER_HISTORY_SYMBOLS) + recent_traded + open_symbols:
+        for sym in expand_symbols_with_quote_variants(
+            list(REQUIRED_ORDER_HISTORY_SYMBOLS) + recent_traded + open_symbols
+        ):
             key = sym.upper()
             if key and key not in priority_seen:
                 priority_seen.add(key)
