@@ -73,6 +73,43 @@ class MarginInfoService:
                 return self._all_instruments
             return None
     
+    @staticmethod
+    def _symbol_lookup_candidates(symbol_upper: str) -> list:
+        """
+        Deterministic instrument candidates for margin lookup.
+
+        Exact symbol first. For bare base currencies (no quote separator),
+        try _USD then _USDT — same order as CryptoComTradeClient._instrument_symbol_candidates.
+        Paired symbols (BTC_USD, ALGO_USDT) are unchanged: exact match only.
+        """
+        candidates = [symbol_upper]
+        if symbol_upper and "_" not in symbol_upper and "-" not in symbol_upper:
+            candidates.extend([f"{symbol_upper}_USD", f"{symbol_upper}_USDT"])
+        return candidates
+
+    def _find_matching_instrument(self, symbol_upper: str, instruments: list):
+        """
+        Find instrument for symbol_upper, falling back to quote-pair candidates
+        when the watchlist stores a bare base (e.g. ALGO → ALGO_USD).
+
+        Returns (matching_instrument dict | None, matched_instrument_name | None).
+        """
+        # Crypto.com API v1 uses "symbol" field (e.g., "ADA_USDT"), not "instrument_name"
+        for candidate in self._symbol_lookup_candidates(symbol_upper):
+            for inst in instruments:
+                inst_symbol = (inst.get("symbol") or "").upper()
+                inst_name = (inst.get("instrument_name") or "").upper()
+                if inst_symbol == candidate or inst_name == candidate:
+                    matched_name = inst_symbol or inst_name or candidate
+                    if candidate != symbol_upper:
+                        logger.info(
+                            "Resolved bare symbol %s → %s for margin info",
+                            symbol_upper,
+                            matched_name,
+                        )
+                    return inst, matched_name
+        return None, None
+
     def get_margin_info_for_symbol(self, symbol: str) -> MarginInfo:
         """
         Get margin information for a given symbol.
@@ -84,11 +121,12 @@ class MarginInfoService:
         - cached_at: float
         
         Uses in-memory cache with TTL to avoid hammering the API.
+        Bare base symbols (e.g. ALGO) resolve to quote pairs (_USD, then _USDT).
         """
         # Normalize symbol (uppercase, ensure format matches API)
         symbol_upper = symbol.upper()
         
-        # Check cache first
+        # Check cache first (keyed by requested symbol, including bare bases)
         if symbol_upper in self._cache:
             cached_info = self._cache[symbol_upper]
             cache_age = time.time() - cached_info.cached_at
@@ -114,16 +152,9 @@ class MarginInfoService:
             self._cache[symbol_upper] = default_info
             return default_info
         
-        # Find matching instrument
-        # Crypto.com API v1 uses "symbol" field (e.g., "ADA_USDT"), not "instrument_name"
-        matching_instrument = None
-        for inst in instruments:
-            # Try both "symbol" and "instrument_name" fields
-            inst_symbol = inst.get("symbol", "").upper()
-            inst_name = inst.get("instrument_name", "").upper()
-            if inst_symbol == symbol_upper or inst_name == symbol_upper:
-                matching_instrument = inst
-                break
+        matching_instrument, matched_name = self._find_matching_instrument(
+            symbol_upper, instruments
+        )
         
         if not matching_instrument:
             logger.warning(f"Instrument {symbol_upper} not found in API response")
@@ -166,11 +197,13 @@ class MarginInfoService:
                 except (ValueError, TypeError):
                     max_leverage = None
         
-        # Create and cache the result
+        resolved_name = matched_name or symbol_upper
+
+        # Create and cache under the *requested* key (so ALGO hits cache after resolve)
         margin_info = MarginInfo(
             margin_trading_enabled=margin_trading_enabled,
             max_leverage=max_leverage,
-            instrument_name=symbol_upper,
+            instrument_name=resolved_name,
             cached_at=time.time()
         )
         
@@ -178,7 +211,7 @@ class MarginInfoService:
         
         logger.info(
             f"✅ Margin info for {symbol_upper}: enabled={margin_trading_enabled}, "
-            f"max_leverage={max_leverage}"
+            f"max_leverage={max_leverage}, instrument={resolved_name}"
         )
         
         return margin_info
