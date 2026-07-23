@@ -177,19 +177,15 @@ def _btc_usd_regular_order():
     }
 
 
-def test_fetch_unified_open_orders_regular_ok_trigger_50001_non_fatal():
+def test_fetch_unified_open_orders_regular_ok_without_legacy_trigger_endpoint():
     from app.services.unified_open_orders_fetch import fetch_unified_open_orders
-    from app.services.crypto_com_sync_errors import build_private_api_error, build_private_api_success
+    from app.services.crypto_com_sync_errors import build_private_api_success
     from app.services.brokers.crypto_com_trade import CryptoComTradeClient
 
     real_client = CryptoComTradeClient.__new__(CryptoComTradeClient)
     mock_client = MagicMock()
     mock_client.get_open_orders.return_value = build_private_api_success([_btc_usd_regular_order()])
-    mock_client.get_trigger_orders.return_value = build_private_api_error(
-        sync_status="api_error",
-        error_message="Invalid request",
-        error_code=50001,
-    )
+    mock_client.get_advanced_open_orders.return_value = build_private_api_success([])
     mock_client._map_incoming_order.side_effect = lambda raw, is_trigger=False: real_client._map_incoming_order(
         raw, is_trigger
     )
@@ -203,8 +199,9 @@ def test_fetch_unified_open_orders_regular_ok_trigger_50001_non_fatal():
     assert result["orders"][0].side == "SELL"
     assert result["orders"][0].status == "ACTIVE"
     assert result["orders"][0].order_type == "LIMIT"
-    assert result["trigger_orders_status"] == "api_error"
-    assert result["trigger_orders_error_code"] == 50001
+    assert result["trigger_orders_status"] == "ok"
+    assert result["trigger_orders_error_code"] is None
+    mock_client.get_trigger_orders.assert_not_called()
 
 
 def test_exchange_sync_updates_cache_when_trigger_orders_fail():

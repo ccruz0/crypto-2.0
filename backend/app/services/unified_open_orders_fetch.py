@@ -154,7 +154,7 @@ def fetch_unified_open_orders(trade_client: Any | None = None) -> dict[str, Any]
 
     Rules:
     - Regular open orders success => sync_status=ok, data_verified=True
-    - Trigger orders failure (e.g. 50001) is non-fatal; exposed separately
+    - Trigger (TP/SL) orders come from advanced open orders (legacy get-trigger-orders skipped)
     - Advanced orders supplement margin SPOT_ATTACH and trigger orders
     - instrument_name preserved exactly as returned (aside from .upper())
     - failed_auth / missing_credentials only when regular fetch fails
@@ -204,41 +204,12 @@ def fetch_unified_open_orders(trade_client: Any | None = None) -> dict[str, Any]
             break
         page += 1
 
+    # Legacy private/get-trigger-orders returns ERR_INTERNAL (50001) for some accounts and
+    # is unused here. TP/SL orders are covered by private/advanced/get-open-orders below.
     trigger_raw: list[dict[str, Any]] = []
     trigger_status: str | None = "ok"
     trigger_error: str | None = None
     trigger_error_code: int | None = None
-
-    page = 0
-    try:
-        while True:
-            response = trade_client.get_trigger_orders(page=page, page_size=PAGE_SIZE)
-            if is_sync_failure_response(response):
-                failure = extract_sync_failure(response)
-                trigger_status = failure.get("sync_status") or "api_error"
-                trigger_error = failure.get("error_message")
-                trigger_error_code = failure.get("error_code")
-                logger.warning(
-                    "Trigger orders fetch failed (%s): %s — continuing with regular/advanced open orders",
-                    trigger_status,
-                    trigger_error,
-                )
-                break
-
-            batch = _extract_orders(response)
-            if not batch:
-                break
-            trigger_raw.extend(batch)
-            if len(batch) < PAGE_SIZE:
-                break
-            page += 1
-    except Exception as exc:
-        trigger_status = "api_error"
-        trigger_error = str(exc)
-        logger.warning(
-            "Trigger orders fetch raised %s — continuing with regular/advanced open orders only",
-            exc,
-        )
 
     advanced_raw: list[dict[str, Any]] = []
     advanced_status: str | None = "ok"

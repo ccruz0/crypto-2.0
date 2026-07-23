@@ -115,11 +115,6 @@ def test_unified_fetch_includes_advanced_margin_buy_and_tp_orders():
     real_client = CryptoComTradeClient.__new__(CryptoComTradeClient)
     mock_client = MagicMock()
     mock_client.get_open_orders.return_value = build_private_api_success([_legacy_sell_82k()])
-    mock_client.get_trigger_orders.return_value = build_private_api_error(
-        sync_status="api_error",
-        error_message="ERR_INTERNAL",
-        error_code=50001,
-    )
     mock_client.get_advanced_open_orders.return_value = build_private_api_success(
         [
             _advanced_margin_buy_59k(),
@@ -154,7 +149,6 @@ def test_unified_fetch_dedups_legacy_and_advanced_sell_82k():
 
     mock_client = MagicMock()
     mock_client.get_open_orders.return_value = build_private_api_success([legacy])
-    mock_client.get_trigger_orders.return_value = build_private_api_success([])
     mock_client.get_advanced_open_orders.return_value = build_private_api_success([advanced_duplicate])
     mock_client._map_incoming_order.side_effect = lambda raw, is_trigger=False: real_client._map_incoming_order(
         raw, is_trigger
@@ -179,17 +173,12 @@ def test_classify_advanced_take_profit_limit_is_trigger():
     assert is_trigger is True
 
 
-def test_unified_fetch_trigger_50001_advanced_success_non_fatal():
+def test_unified_fetch_advanced_covers_trigger_orders_without_legacy_endpoint():
     from app.services.brokers.crypto_com_trade import CryptoComTradeClient
 
     real_client = CryptoComTradeClient.__new__(CryptoComTradeClient)
     mock_client = MagicMock()
     mock_client.get_open_orders.return_value = build_private_api_success([_legacy_sell_82k()])
-    mock_client.get_trigger_orders.return_value = build_private_api_error(
-        sync_status="api_error",
-        error_message="ERR_INTERNAL",
-        error_code=50001,
-    )
     mock_client.get_advanced_open_orders.return_value = build_private_api_success(
         [_advanced_margin_buy_59k(), _advanced_tp("tp-71000", "71000"), _advanced_tp("tp-78000", "78000")]
     )
@@ -201,9 +190,10 @@ def test_unified_fetch_trigger_50001_advanced_success_non_fatal():
 
     assert result["sync_status"] == "ok"
     assert result["data_verified"] is True
-    assert result["trigger_orders_status"] == "api_error"
-    assert result["trigger_orders_error_code"] == 50001
-    assert result["trigger_orders_error"] == "ERR_INTERNAL"
+    assert result["trigger_orders_status"] == "ok"
+    assert result["trigger_orders_error_code"] is None
+    assert result["trigger_orders_error"] is None
+    mock_client.get_trigger_orders.assert_not_called()
 
 
 def test_ghost_order_protection_advanced_only_live_order_in_merged_id_set():
@@ -307,11 +297,6 @@ def test_advanced_triggers_with_exchange_order_id_zero_are_unique():
 
     mock_client = MagicMock()
     mock_client.get_open_orders.return_value = build_private_api_success([_legacy_sell_82k()])
-    mock_client.get_trigger_orders.return_value = build_private_api_error(
-        sync_status="api_error",
-        error_message="ERR_INTERNAL",
-        error_code=50001,
-    )
     mock_client.get_advanced_open_orders.return_value = build_private_api_success(
         [_advanced_margin_buy_59k(), *triggers]
     )
