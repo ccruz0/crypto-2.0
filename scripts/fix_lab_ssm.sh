@@ -7,6 +7,7 @@
 #   - Uses EC2 Instance Connect ephemeral key (not printed); no secrets dumped
 #   - Does NOT reboot by default (pass --reboot to force)
 #   - Does NOT touch PROD trading stack
+#   - After SSH: frees root disk (logs/cache/docker) so SSM can write again
 #
 # Run from Mac with an admin AWS profile that can:
 #   ec2:Authorize/RevokeSecurityGroupIngress, Describe*
@@ -14,8 +15,9 @@
 #   ssm:DescribeInstanceInformation
 #
 # Usage:
+#   bash scripts/fix_lab_ssm.sh
 #   bash scripts/fix_lab_ssm.sh --profile YOUR_ADMIN_PROFILE
-#   bash scripts/fix_lab_ssm.sh --profile YOUR_ADMIN_PROFILE --reboot
+#   bash scripts/fix_lab_ssm.sh --reboot
 #   AWS_PROFILE=admin bash scripts/fix_lab_ssm.sh
 #
 set -euo pipefail
@@ -26,11 +28,12 @@ REGION="${AWS_REGION:-ap-southeast-1}"
 OS_USER="${LAB_OS_USER:-ubuntu}"
 PROFILE=""
 DO_REBOOT=0
-POLL_SECONDS="${SSM_POLL_SECONDS:-120}"
+# Agent often needs several minutes after disk reclaim + restart
+POLL_SECONDS="${SSM_POLL_SECONDS:-240}"
 POLL_INTERVAL=10
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -156,25 +159,113 @@ echo "Pushing ephemeral key via EC2 Instance Connect..."
 
 SSH_OPTS=(-o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$KEY_DIR/key")
 
-echo "Restarting amazon-ssm-agent over SSH..."
+# EIC keys expire ~60s; re-push before long remote work if needed
+echo "Disk cleanup + restart amazon-ssm-agent over SSH..."
 ssh "${SSH_OPTS[@]}" "${OS_USER}@${PUBLIC_IP}" bash -s <<'REMOTE'
 set -euo pipefail
 echo "hostname=$(hostname) id=$(id -un)"
+echo "=== df BEFORE cleanup ==="
+df -h / || true
+df -i / || true
+
+# Guard: never touch crypto-2.0 tree or user project data
+PROTECTED="/home/ubuntu/crypto-2.0"
+if [[ -e "$PROTECTED" ]]; then
+  echo "Protected path present (will not delete): $PROTECTED"
+fi
+
+echo "--- journal vacuum (to 100M / 2d) ---"
+sudo journalctl --vacuum-size=100M 2>/dev/null || true
+sudo journalctl --vacuum-time=2d 2>/dev/null || true
+
+echo "--- SSM / amazon agent logs (truncate + remove huge rotated) ---"
+# Root cause was: no space left writing amazon-ssm-agent.log / identity_config.json
+for d in /var/log/amazon/ssm /var/log/amazon /var/lib/amazon/ssm; do
+  if [[ -d "$d" ]]; then
+    sudo find "$d" -type f \( -name '*.log' -o -name '*.log.*' -o -name '*.gz' -o -name '*.1' \) \
+      -exec truncate -s 0 {} \; 2>/dev/null || true
+    sudo find "$d" -type f \( -name '*.log.*' -o -name '*.gz' \) -size +1M -delete 2>/dev/null || true
+  fi
+done
+# Classic package log path variants
+sudo truncate -s 0 /var/log/amazon/ssm/amazon-ssm-agent.log 2>/dev/null || true
+sudo truncate -s 0 /var/log/amazon/ssm/errors.log 2>/dev/null || true
+sudo rm -f /var/log/amazon/ssm/*.log.[0-9]* /var/log/amazon/ssm/*.gz 2>/dev/null || true
+
+echo "--- other large system logs ---"
+sudo truncate -s 0 /var/log/syslog 2>/dev/null || true
+sudo truncate -s 0 /var/log/auth.log 2>/dev/null || true
+sudo find /var/log -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) -delete 2>/dev/null || true
+sudo find /var/log -type f -name '*.log' -size +50M -exec truncate -s 0 {} \; 2>/dev/null || true
+
+echo "--- apt cache ---"
+sudo apt-get clean 2>/dev/null || true
+sudo rm -rf /var/cache/apt/archives/*.deb 2>/dev/null || true
+
+echo "--- /tmp and /var/tmp junk (keep crypto-2.0 alone) ---"
+sudo find /tmp -xdev -type f -mtime +1 -delete 2>/dev/null || true
+sudo find /var/tmp -xdev -type f -mtime +1 -delete 2>/dev/null || true
+# Drop common build leftovers under /tmp only
+sudo rm -rf /tmp/npm-* /tmp/node-compile-cache /tmp/pip-* /tmp/tmp.* 2>/dev/null || true
+
+echo "--- snap old revisions (safe: keeps current only) ---"
+if command -v snap >/dev/null 2>&1; then
+  snap list --all 2>/dev/null | awk '/disabled/{print $1, $3}' | while read -r name rev; do
+    sudo snap remove "$name" --revision="$rev" 2>/dev/null || true
+  done
+fi
+
+echo "--- old kernels (keep running + newest; only if free space still tight) ---"
+AVAIL_KB=$(df -Pk / | awk 'NR==2{print $4}')
+if [[ "${AVAIL_KB:-0}" -lt 1048576 ]]; then
+  # < ~1 GiB free: try autoremove of old kernels
+  sudo apt-get -y autoremove --purge 2>/dev/null || true
+fi
+
+echo "--- docker prune (if docker present; unused only) ---"
+if command -v docker >/dev/null 2>&1; then
+  # Do not remove volumes (may hold LAB data)
+  sudo docker system prune -af 2>/dev/null || true
+  sudo docker builder prune -af 2>/dev/null || true
+fi
+
+echo "--- optional: large caches under /home/ubuntu (NOT crypto-2.0) ---"
+# npm / pip / playwright caches only — never delete the repo
+for cache in \
+  /home/ubuntu/.npm/_cacache \
+  /home/ubuntu/.cache/pip \
+  /home/ubuntu/.cache/ms-playwright \
+  /home/ubuntu/.cache/yarn \
+  /var/cache/snapd; do
+  if [[ -d "$cache" ]]; then
+    echo "  clearing $cache"
+    sudo rm -rf "$cache" 2>/dev/null || true
+  fi
+done
+
+echo "=== df AFTER cleanup ==="
+df -h / || true
+df -i / || true
+du -sh /var/log/amazon/ssm 2>/dev/null || true
+
+echo "--- restart amazon-ssm-agent ---"
 # Prefer snap unit on Ubuntu 22.04+, fall back to classic package
 if systemctl list-unit-files 2>/dev/null | grep -q 'snap.amazon-ssm-agent.amazon-ssm-agent'; then
+  sudo systemctl reset-failed snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null || true
   sudo systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service
   sudo systemctl is-active snap.amazon-ssm-agent.amazon-ssm-agent.service || true
 elif systemctl list-unit-files 2>/dev/null | grep -q '^amazon-ssm-agent'; then
+  sudo systemctl reset-failed amazon-ssm-agent 2>/dev/null || true
   sudo systemctl restart amazon-ssm-agent
   sudo systemctl is-active amazon-ssm-agent || true
 else
-  # Last resort: start whatever is present
   sudo systemctl restart amazon-ssm-agent 2>/dev/null || true
   sudo systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null || true
 fi
+
 # Quick health hint (no secrets)
-sudo journalctl -u snap.amazon-ssm-agent.amazon-ssm-agent.service -n 15 --no-pager 2>/dev/null \
-  || sudo journalctl -u amazon-ssm-agent -n 15 --no-pager 2>/dev/null \
+sudo journalctl -u snap.amazon-ssm-agent.amazon-ssm-agent.service -n 20 --no-pager 2>/dev/null \
+  || sudo journalctl -u amazon-ssm-agent -n 20 --no-pager 2>/dev/null \
   || true
 echo "agent-restart-done"
 REMOTE
@@ -193,6 +284,7 @@ while (( SECONDS < deadline )); do
 done
 
 echo "FAILED: SSM still $FINAL after ${POLL_SECONDS}s." >&2
-echo "Hints: check IAM instance profile atp-lab-builder-ssm-role, VPC endpoints / egress to SSM," >&2
-echo "  and agent logs on the host. Re-run with --reboot if needed." >&2
+echo "Hints: root cause was often disk full (SSM cannot write logs/config)." >&2
+echo "  Re-check df -h / on LAB; IAM profile atp-lab-builder-ssm-role; VPC egress to SSM." >&2
+echo "  Re-run with --reboot if needed." >&2
 exit 1
