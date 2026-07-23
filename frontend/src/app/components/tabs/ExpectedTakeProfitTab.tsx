@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPEntryOrder } from '@/app/api';
+import { ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPEntryOrder, createProtectionSmart } from '@/app/api';
 import { formatDateTime, formatNumber } from '@/utils/formatting';
 import {
   positionBadgeClass,
@@ -67,6 +67,8 @@ export default function ExpectedTakeProfitTab({
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [expandedEntryRows, setExpandedEntryRows] = useState<Set<string>>(new Set());
   const [highlightOrderId, setHighlightOrderId] = useState<string | null>(null);
+  const [creatingKey, setCreatingKey] = useState<string | null>(null);
+  const [createMessage, setCreateMessage] = useState<string | null>(null);
   const deepLinkRequestedRef = useRef(false);
 
   const toggleEntryRow = (rowKey: string) => {
@@ -134,6 +136,41 @@ export default function ExpectedTakeProfitTab({
       return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200';
     }
     return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200';
+  };
+
+  const handleCreateProtection = async (
+    entry: ExpectedTPEntryOrder,
+    opts: { create_sl: boolean; create_tp: boolean },
+  ) => {
+    if (!entry.order_id) return;
+    const key = `${entry.order_id}:${opts.create_sl ? 'sl' : ''}${opts.create_tp ? 'tp' : ''}`;
+    setCreatingKey(key);
+    setCreateMessage(null);
+    try {
+      const result = await createProtectionSmart({
+        order_id: entry.order_id,
+        create_sl: opts.create_sl,
+        create_tp: opts.create_tp,
+        quantity: entry.qty,
+      });
+      const created = (result.created || []).map((c) => c.role).join(', ') || 'none';
+      const errText = (result.errors || [])
+        .map((e) => `${e.role}: ${JSON.stringify(e.error)}`)
+        .join('; ');
+      setCreateMessage(
+        result.ok
+          ? `Created: ${created}`
+          : `Partial/failed — created: ${created}${errText ? ` | ${errText}` : ''}`,
+      );
+      if (expectedTPDetailsSymbol) {
+        await onFetchExpectedTakeProfitDetails(expectedTPDetailsSymbol);
+      }
+      await onFetchExpectedTakeProfitSummary();
+    } catch (err) {
+      setCreateMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingKey(null);
+    }
   };
 
   // Fetch expected take profit summary on mount (Strict Mode safe)
@@ -571,6 +608,11 @@ export default function ExpectedTakeProfitTab({
                 ✕
               </button>
             </div>
+            {createMessage && (
+              <div className="mb-3 text-sm rounded px-3 py-2 bg-slate-100 dark:bg-slate-700 text-gray-800 dark:text-gray-100">
+                {createMessage}
+              </div>
+            )}
             {expectedTPDetailsLoading ? (
               <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                 <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -716,13 +758,28 @@ export default function ExpectedTakeProfitTab({
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Entry Time
                             </th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                              Acción
+                            </th>
                           </tr>
                         </thead>
                         <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">
                           {entryOrders.map((entry, index) => {
                             const rowKey = entry.order_id || `entry-${index}`;
                             const isExpanded = expandedEntryRows.has(rowKey);
-                            const hasChildren = entry.take_profits.length > 0 || entry.stop_loss !== null;
+                            const hasTp = entry.take_profits.length > 0;
+                            const hasSl = entry.stop_loss !== null;
+                            const hasChildren = hasTp || hasSl;
+                            const needSl = !hasSl;
+                            const needTp = !hasTp;
+                            const canCreate = Boolean(entry.order_id) && (needSl || needTp) && !entry.cost_basis_unknown;
+                            const createKey = `${entry.order_id || ''}:${needSl ? 'sl' : ''}${needTp ? 'tp' : ''}`;
+                            const createBusy = creatingKey === createKey;
+                            const createLabel = needSl && needTp ? 'Create SL/TP' : needSl ? 'Create SL' : 'Create TP';
+                            const strategy = expectedTPDetails?.strategy;
+                            const createTitle = strategy
+                              ? `Strategy SL ${strategy.sl_percentage}% / TP ${strategy.tp_percentage}% from buy price. If market already passed the level, places just above/below current.`
+                              : 'Create missing protection from strategy %';
 
                             return (
                               <React.Fragment key={rowKey}>
@@ -775,7 +832,60 @@ export default function ExpectedTakeProfitTab({
                                   <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                                     {entry.entry_time ? formatDateTime(new Date(entry.entry_time)) : 'N/A'}
                                   </td>
+                                  <td className="px-4 py-3 whitespace-nowrap text-right text-sm">
+                                    {canCreate ? (
+                                      <button
+                                        type="button"
+                                        title={createTitle}
+                                        disabled={createBusy || !!creatingKey}
+                                        onClick={() =>
+                                          handleCreateProtection(entry, {
+                                            create_sl: needSl,
+                                            create_tp: needTp,
+                                          })
+                                        }
+                                        className={`px-2 py-1 rounded text-xs font-semibold ${
+                                          createBusy
+                                            ? 'bg-gray-300 text-gray-500 cursor-wait'
+                                            : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                        }`}
+                                      >
+                                        {createBusy ? 'Creating…' : createLabel}
+                                      </button>
+                                    ) : (
+                                      <span className="text-gray-400 text-xs">
+                                        {needSl || needTp ? (entry.cost_basis_unknown ? 'No entry' : '—') : 'OK'}
+                                      </span>
+                                    )}
+                                  </td>
                                 </tr>
+
+                                {!hasChildren && (needSl || needTp) && (
+                                  <>
+                                    {needTp && (
+                                      <tr className="bg-orange-50/50 dark:bg-orange-950/20">
+                                        <td className="px-4 py-2" />
+                                        <td className="px-4 py-2 whitespace-nowrap text-sm pl-8 text-orange-700 dark:text-orange-300" colSpan={3}>
+                                          <span className="font-semibold mr-2">TP</span>
+                                          <span className="text-gray-400">—</span>
+                                        </td>
+                                        <td className="px-4 py-2 text-sm text-gray-400" colSpan={3}>Missing</td>
+                                        <td className="px-4 py-2" />
+                                      </tr>
+                                    )}
+                                    {needSl && (
+                                      <tr className="bg-orange-50/50 dark:bg-orange-950/20">
+                                        <td className="px-4 py-2" />
+                                        <td className="px-4 py-2 whitespace-nowrap text-sm pl-8 text-orange-700 dark:text-orange-300" colSpan={3}>
+                                          <span className="font-semibold mr-2">SL</span>
+                                          <span className="text-gray-400">—</span>
+                                        </td>
+                                        <td className="px-4 py-2 text-sm text-gray-400" colSpan={3}>Missing</td>
+                                        <td className="px-4 py-2" />
+                                      </tr>
+                                    )}
+                                  </>
+                                )}
 
                                 {isExpanded && hasChildren && (
                                   <>

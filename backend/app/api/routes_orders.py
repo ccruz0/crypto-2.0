@@ -843,6 +843,213 @@ class CreateSLTPForOrderRequest(BaseModel):
     tp_percentage: Optional[float] = None
 
 
+class CreateProtectionSmartRequest(BaseModel):
+    """Create missing SL and/or TP using strategy % from purchase price, adjusting if market already passed."""
+    order_id: str
+    create_sl: bool = True
+    create_tp: bool = True
+    force: bool = True
+    place_live: bool = True
+    buffer_pct: float = 0.15
+    quantity: Optional[float] = None
+
+
+@router.post("/orders/create-protection-smart")
+def create_protection_smart(
+    request: CreateProtectionSmartRequest,
+    db: Session = Depends(get_db),
+    current_user=None if _should_disable_auth() else Depends(get_current_user),
+):
+    """
+    Create missing SL/TP for a filled entry order:
+    - Prices from watchlist strategy % on purchase (avg) price
+    - If market already passed the level, place just above/below current price
+    - Only creates the missing side(s)
+    """
+    from datetime import datetime, timezone
+    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+    from app.models.watchlist import WatchlistItem
+    from app.models.trading_settings import TradingSettings
+    from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
+    from app.services.sl_tp_price_adjust import compute_strategy_sl_tp_prices, resolve_watchlist_percentages
+    from app.utils.live_trading import get_live_trading_status
+    from app.utils.http_client import http_get
+
+    prev_live = False
+    live_toggled = False
+    order_id = request.order_id
+
+    try:
+        order = db.query(ExchangeOrder).filter(ExchangeOrder.exchange_order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
+        if order.status != OrderStatusEnum.FILLED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Order {order_id} is not FILLED (status={order.status})",
+            )
+
+        symbol = order.symbol
+        side = order.side.value if hasattr(order.side, "value") else str(order.side)
+        entry_price = float(order.avg_price or order.price or 0)
+        qty = float(
+            request.quantity
+            if request.quantity and request.quantity > 0
+            else (order.cumulative_quantity or order.quantity or 0)
+        )
+        if entry_price <= 0 or qty <= 0:
+            raise HTTPException(status_code=400, detail=f"Invalid entry/qty for {order_id}")
+
+        open_prot = db.query(ExchangeOrder).filter(
+            ExchangeOrder.parent_order_id == order_id,
+            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+            ExchangeOrder.status.in_(
+                [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+            ),
+        ).all()
+        has_sl = any(o.order_role == "STOP_LOSS" for o in open_prot)
+        has_tp = any(o.order_role == "TAKE_PROFIT" for o in open_prot)
+        want_sl = bool(request.create_sl) and not has_sl
+        want_tp = bool(request.create_tp) and not has_tp
+        if not want_sl and not want_tp:
+            return {
+                "ok": True,
+                "message": "Already has requested protection",
+                "order_id": order_id,
+                "has_sl": has_sl,
+                "has_tp": has_tp,
+                "created": [],
+            }
+
+        wl = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+        if not wl:
+            for alt in (symbol.replace("_USDT", "_USD"), symbol.replace("_USD", "_USDT")):
+                wl = db.query(WatchlistItem).filter(WatchlistItem.symbol == alt).first()
+                if wl:
+                    break
+        sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
+
+        current_price = None
+        try:
+            ticker_response = http_get(
+                "https://api.crypto.com/v2/public/get-ticker",
+                params={"instrument_name": symbol},
+                timeout=5,
+                calling_module="create_protection_smart",
+            )
+            if ticker_response.status_code == 200:
+                data = ticker_response.json().get("result", {}).get("data") or []
+                if data:
+                    current_price = float(data[0].get("a") or data[0].get("b") or data[0].get("k") or 0) or None
+        except Exception as ticker_err:
+            logger.warning("create_protection_smart ticker failed: %s", ticker_err)
+
+        sl_price, tp_price, price_meta = compute_strategy_sl_tp_prices(
+            entry_side=side,
+            entry_price=entry_price,
+            sl_pct=sl_pct,
+            tp_pct=tp_pct,
+            current_price=current_price,
+            buffer_pct=request.buffer_pct,
+        )
+
+        prev_live = get_live_trading_status(db)
+        if request.place_live and not prev_live:
+            setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
+            if setting:
+                setattr(setting, "setting_value", "true")
+                setattr(setting, "updated_at", datetime.now(timezone.utc))
+                db.commit()
+            os.environ["LIVE_TRADING"] = "true"
+            live_toggled = True
+
+        is_margin = bool(wl.trade_on_margin) if wl else False
+        leverage_raw = getattr(wl, "leverage", None) if wl else None
+        leverage = float(leverage_raw) if leverage_raw not in (None, "") else None
+        oco = next((o.oco_group_id for o in open_prot if o.oco_group_id), None)
+        created = []
+        errors = []
+
+        if want_tp:
+            tp_res = create_take_profit_order(
+                db=db,
+                symbol=symbol,
+                side=side,
+                tp_price=tp_price,
+                quantity=qty,
+                entry_price=entry_price,
+                parent_order_id=order_id,
+                oco_group_id=oco,
+                is_margin=is_margin,
+                leverage=leverage,
+                dry_run=False,
+                source="manual",
+            )
+            if tp_res.get("order_id"):
+                created.append({"role": "TAKE_PROFIT", "order_id": tp_res["order_id"], "price": tp_price})
+                oco = oco or tp_res.get("oco_group_id")
+            else:
+                errors.append({"role": "TAKE_PROFIT", "error": tp_res.get("error") or tp_res})
+
+        if want_sl:
+            sl_res = create_stop_loss_order(
+                db=db,
+                symbol=symbol,
+                side=side,
+                sl_price=sl_price,
+                quantity=qty,
+                entry_price=entry_price,
+                parent_order_id=order_id,
+                oco_group_id=oco,
+                is_margin=is_margin,
+                leverage=leverage,
+                dry_run=False,
+                source="manual",
+            )
+            if sl_res.get("order_id"):
+                created.append({"role": "STOP_LOSS", "order_id": sl_res["order_id"], "price": sl_price})
+            else:
+                errors.append({"role": "STOP_LOSS", "error": sl_res.get("error") or sl_res})
+
+        return {
+            "ok": len(created) > 0 and not errors,
+            "order_id": order_id,
+            "symbol": symbol,
+            "entry_price": entry_price,
+            "quantity": qty,
+            "strategy": {"sl_percentage": sl_pct, "tp_percentage": tp_pct, "sl_tp_mode": mode},
+            "prices": price_meta,
+            "created": created,
+            "errors": errors,
+            "message": (
+                f"Created {len(created)} protection order(s)"
+                if created
+                else "No protection orders created"
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("create_protection_smart failed for %s", order_id)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if request.place_live and live_toggled:
+            try:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
+                if setting:
+                    setattr(setting, "setting_value", "true" if prev_live else "false")
+                    setattr(setting, "updated_at", datetime.now(timezone.utc))
+                    db.commit()
+                os.environ["LIVE_TRADING"] = "true" if prev_live else "false"
+            except Exception as restore_err:
+                logger.error("Failed to restore LIVE_TRADING: %s", restore_err, exc_info=True)
+
+
 @router.post("/orders/create-sl-tp-with-details")
 def create_sl_tp_with_order_details(
     request: CreateSLTPForOrderRequest,
