@@ -1738,6 +1738,44 @@ class CryptoComTradeClient:
         except Exception:
             return None
 
+    def get_advanced_order_detail(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch conditional/advanced order detail (private/advanced/get-order-detail).
+
+        Spot ``get-order-detail`` returns empty for TP/SL trigger ids (e.g. 73817...).
+        Advanced detail is the authoritative source for those fills.
+        """
+        if not order_id or not self.api_key or not self.api_secret:
+            return None
+        try:
+            method = "private/advanced/get-order-detail"
+            params = {"order_id": str(order_id)}
+            if self.use_proxy:
+                result = self._call_proxy(method, params)
+            else:
+                payload = self.sign_request(method, params, _suppress_log=True)
+                url = f"{self.base_url}/{method}"
+                resp = http_post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10,
+                    calling_module="crypto_com_trade.get_advanced_order_detail",
+                )
+                if resp.status_code != 200:
+                    return None
+                result = resp.json()
+            if not isinstance(result, dict) or result.get("code") not in (0, None, "0"):
+                return None
+            # Normalize to the same shape as get_order_detail: {code, result: {...}}
+            if isinstance(result.get("result"), dict) and result["result"]:
+                return result
+            # Some proxy paths may already unwrap the order body
+            if result.get("order_id") or result.get("status"):
+                return {"code": 0, "result": result}
+            return None
+        except Exception:
+            return None
+
     def get_open_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get all open/pending orders"""
         skip = require_aws_or_skip("get_open_orders")
