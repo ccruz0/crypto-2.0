@@ -1852,6 +1852,11 @@ export interface ExpectedTPDetails {
     label: string;
   };
   orphaned_protection_only?: boolean;
+  strategy?: {
+    sl_percentage: number;
+    tp_percentage: number;
+    sl_tp_mode: string;
+  };
 }
 
 export async function getExpectedTakeProfitDetails(symbol: string): Promise<ExpectedTPDetails> {
@@ -1867,6 +1872,39 @@ export async function getExpectedTakeProfitDetails(symbol: string): Promise<Expe
     );
     throw error;
   }
+}
+
+export interface CreateProtectionSmartResult {
+  ok: boolean;
+  message?: string;
+  order_id?: string;
+  symbol?: string;
+  created?: Array<{ role: string; order_id: string; price?: number }>;
+  errors?: Array<{ role: string; error: unknown }>;
+  prices?: Record<string, unknown>;
+  strategy?: { sl_percentage: number; tp_percentage: number; sl_tp_mode: string };
+}
+
+export async function createProtectionSmart(params: {
+  order_id: string;
+  create_sl?: boolean;
+  create_tp?: boolean;
+  quantity?: number;
+  force?: boolean;
+  place_live?: boolean;
+}): Promise<CreateProtectionSmartResult> {
+  return fetchAPI<CreateProtectionSmartResult>('/orders/create-protection-smart', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      order_id: params.order_id,
+      create_sl: params.create_sl ?? true,
+      create_tp: params.create_tp ?? true,
+      quantity: params.quantity,
+      force: params.force ?? true,
+      place_live: params.place_live ?? true,
+    }),
+  });
 }
 
 // Telegram Messages API

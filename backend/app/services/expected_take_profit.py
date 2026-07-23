@@ -2792,6 +2792,20 @@ def get_expected_take_profit_details(
             if max_proximity is None or prox > max_proximity:
                 max_proximity = prox
 
+    from app.models.watchlist import WatchlistItem
+    from app.services.sl_tp_price_adjust import resolve_watchlist_percentages
+
+    wl = (
+        db.query(WatchlistItem)
+        .filter(
+            WatchlistItem.symbol.in_(
+                [symbol, symbol.replace("_USDT", "_USD"), symbol.replace("_USD", "_USDT")]
+            )
+        )
+        .first()
+    )
+    sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
+
     return {
         "symbol": symbol,
         "position_side": position_side,
@@ -2810,5 +2824,10 @@ def get_expected_take_profit_details(
         "has_uncovered": uncovered_qty > 0,
         "cost_basis_unknown": cost_basis_unknown,
         "orphaned_protection_only": orphaned_protection_only,
+        "strategy": {
+            "sl_percentage": sl_pct,
+            "tp_percentage": tp_pct,
+            "sl_tp_mode": mode,
+        },
     }
 
