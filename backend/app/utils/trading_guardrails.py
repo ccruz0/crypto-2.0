@@ -49,15 +49,19 @@ _TRADE_BLOCK_ALERT_COOLDOWN_SECONDS = int(
 )
 
 
-def _normalize_trade_block_reason_for_dedup(reason: str) -> str:
+def normalize_trade_block_reason_for_dedup(reason: str) -> str:
     """Strip volatile counters so (22/10) and (23/10) dedupe to the same key."""
-    normalized = re.sub(r"\(\d+/\d+\)", "", reason)
+    normalized = re.sub(r"\(\d+/\d+\)", "", reason or "")
     return " ".join(normalized.split()).strip().lower()
+
+
+# Backward-compatible private alias
+_normalize_trade_block_reason_for_dedup = normalize_trade_block_reason_for_dedup
 
 
 def _trade_block_alert_dedup_key(symbol: str, side: str, *reasons: Optional[str]) -> str:
     primary_reason = next((r for r in reasons if r), "")
-    normalized = _normalize_trade_block_reason_for_dedup(primary_reason)
+    normalized = normalize_trade_block_reason_for_dedup(primary_reason)
     return f"{symbol.upper()}:{side.upper()}:{normalized}"
 
 

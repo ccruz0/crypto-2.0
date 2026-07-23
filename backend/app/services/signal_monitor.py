@@ -106,6 +106,7 @@ def _emit_lifecycle_event(
     sl_order_id: Optional[str] = None,
     tp_order_id: Optional[str] = None,
     decision_reason: Optional[Any] = None,  # DecisionReason object (optional for backward compatibility)
+    persist_monitoring_message: bool = True,
 ) -> None:
     """
     Emit a lifecycle event to both throttle (SignalThrottleState) and monitoring (TelegramMessage).
@@ -125,6 +126,8 @@ def _emit_lifecycle_event(
         sl_order_id: Optional SL order ID (for SLTP events)
         tp_order_id: Optional TP order ID (for SLTP events)
         decision_reason: Optional DecisionReason object with structured decision information
+        persist_monitoring_message: When False, skip TelegramMessage UI row (still records SignalThrottleState).
+            Used with order-failure claim so repeats do not refill ATP Control / monitoring feed.
     """
     from app.utils.decision_reason import DecisionReason as DecisionReasonType
     try:
@@ -162,27 +165,48 @@ def _emit_lifecycle_event(
         # Build message based on event type
         if event_type == "TRADE_BLOCKED":
             from app.utils.trading_guardrails import should_notify_trade_block_to_telegram
+            from app.services.trade_block_telegram_policy import (
+                suppress_live_trade_block_telegram,
+            )
+            from app.services.order_failure_telegram_policy import (
+                claim_trade_block_monitoring_row,
+            )
 
             if should_notify_trade_block_to_telegram(event_reason, reason_message):
-                message = f"🚫 TRADE BLOCKED: {symbol} {side} - {event_reason}"
-                if error_message:
-                    message += f"\nError: {error_message}"
-                if reason_message:
-                    message += f"\nReason: {reason_message}"
-                add_telegram_message(
-                    message=message,
-                    symbol=symbol,
-                    blocked=True,
-                    throttle_status="TRADE_BLOCKED",
-                    throttle_reason=event_reason,
-                    decision_type=decision_type or "SKIPPED",
-                    reason_code=reason_code or "GUARDRAIL_BLOCKED",
-                    reason_message=reason_message or event_reason,
-                    context_json=context_json,
-                    exchange_error_snippet=exchange_error_snippet,
-                    correlation_id=correlation_id,
-                    db=db,
-                )
+                chronic = suppress_live_trade_block_telegram(event_reason, reason_message)
+                if not claim_trade_block_monitoring_row(
+                    db,
+                    symbol,
+                    side,
+                    event_reason or reason_message,
+                    chronic=chronic,
+                ):
+                    logger.info(
+                        "TRADE_BLOCKED monitoring row suppressed (dedup): %s %s — %s",
+                        symbol,
+                        side,
+                        event_reason,
+                    )
+                else:
+                    message = f"🚫 TRADE BLOCKED: {symbol} {side} - {event_reason}"
+                    if error_message:
+                        message += f"\nError: {error_message}"
+                    if reason_message:
+                        message += f"\nReason: {reason_message}"
+                    add_telegram_message(
+                        message=message,
+                        symbol=symbol,
+                        blocked=True,
+                        throttle_status="TRADE_BLOCKED",
+                        throttle_reason=event_reason,
+                        decision_type=decision_type or "SKIPPED",
+                        reason_code=reason_code or "GUARDRAIL_BLOCKED",
+                        reason_message=reason_message or event_reason,
+                        context_json=context_json,
+                        exchange_error_snippet=exchange_error_snippet,
+                        correlation_id=correlation_id,
+                        db=db,
+                    )
             else:
                 logger.info(
                     "TRADE_BLOCKED notification suppressed (expected): %s %s — %s",
@@ -191,6 +215,8 @@ def _emit_lifecycle_event(
                     event_reason,
                 )
         elif event_type == "ORDER_ATTEMPT":
+            if not persist_monitoring_message:
+                return
             message = f"🔄 ORDER_ATTEMPT: {symbol} {side} - {event_reason}"
             add_telegram_message(
                 message=message,
@@ -200,6 +226,8 @@ def _emit_lifecycle_event(
                 db=db,
             )
         elif event_type == "ORDER_CREATED":
+            if not persist_monitoring_message:
+                return
             message = f"✅ ORDER_CREATED: {symbol} {side} - order_id={order_id}"
             add_telegram_message(
                 message=message,
@@ -209,6 +237,14 @@ def _emit_lifecycle_event(
                 db=db,
             )
         elif event_type == "ORDER_FAILED":
+            if not persist_monitoring_message:
+                logger.info(
+                    "ORDER_FAILED monitoring row suppressed (dedup): %s %s — %s",
+                    symbol,
+                    side,
+                    event_reason,
+                )
+                return
             message = f"❌ ORDER_FAILED: {symbol} {side} - {event_reason}"
             if error_message:
                 message += f"\nError: {error_message}"
@@ -516,6 +552,26 @@ class SignalMonitorService:
                 exc,
             )
             return True
+
+    def _claim_order_failure_telegram(
+        self,
+        db: Session,
+        symbol: str,
+        failure_kind: str,
+        *,
+        side: str = "BUY",
+        ttl_minutes: int = 6 * 60,
+    ) -> bool:
+        """Claim once-per-incident Telegram for repeated exchange/order failures."""
+        from app.services.order_failure_telegram_policy import claim_order_failure_telegram
+
+        return claim_order_failure_telegram(
+            db,
+            symbol,
+            failure_kind,
+            side=side,
+            ttl_minutes=ttl_minutes,
+        )
 
     def _validate_trade_enabled_from_db(self, db: Session, symbol: str) -> bool:
         """
@@ -8149,7 +8205,11 @@ class SignalMonitorService:
                         correlation_id=correlation_id,
                     )
                     logger.error(f"[DECISION] symbol={symbol} decision=FAILED reason={decision_reason.reason_code} exchange_error={(error_msg or '')[:200]}")
-                    # Emit ORDER_FAILED event
+                    # Claim once per symbol+reason so retries do not spam Telegram / Control feed.
+                    notify_order_failure = self._claim_order_failure_telegram(
+                        db, symbol, reason_code, side="BUY"
+                    )
+                    # Emit ORDER_FAILED event (always updates SignalThrottleState; UI row only on claim)
                     _emit_lifecycle_event(
                         db=db,
                         symbol=symbol,
@@ -8160,6 +8220,7 @@ class SignalMonitorService:
                         event_reason="order_placement_failed",
                         error_message=error_msg,
                         decision_reason=decision_reason,
+                        persist_monitoring_message=notify_order_failure,
                     )
                     
                     # CRITICAL: Update the original BUY SIGNAL message with decision tracing (BR-4)
@@ -8200,7 +8261,11 @@ class SignalMonitorService:
                         if current_trade_enabled is not None:
                             trade_status_note = f"\n📊 Trade enabled status: {current_trade_enabled} (order was attempted because trade_enabled=True at that time)"
 
-                        if self._telegram_send_enabled() and not is_guardrail_block:
+                        if (
+                            notify_order_failure
+                            and self._telegram_send_enabled()
+                            and not is_guardrail_block
+                        ):
                             telegram_notifier.send_message(
                                 f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -8213,6 +8278,12 @@ class SignalMonitorService:
                         elif is_guardrail_block:
                             logger.info(
                                 f"ℹ️ [GUARDRAIL_BLOCK] {symbol} BUY - Order blocked by guardrail (not notifying): {error_details}"
+                            )
+                        elif not notify_order_failure:
+                            logger.info(
+                                "order_fail telegram suppressed (dedup) symbol=%s side=BUY kind=%s",
+                                symbol,
+                                reason_code,
                             )
                     except Exception as notify_err:
                         logger.warning(f"Failed to send Telegram error notification: {notify_err}")
@@ -9932,7 +10003,9 @@ class SignalMonitorService:
             
             # Send error notification to Telegram
             try:
-                if self._telegram_send_enabled():
+                if self._telegram_send_enabled() and self._claim_config_failure_telegram(
+                    db, symbol, "amount_usd_missing"
+                ):
                     telegram_notifier.send_message(
                         f"❌ <b>ORDER CREATION FAILED</b>\n\n"
                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -9940,10 +10013,10 @@ class SignalMonitorService:
                         f"❌ Error: {error_message}"
                     )
                 else:
-                    logger.debug("Telegram notifier is disabled - skipping error notification")
+                    logger.debug("Telegram notifier is disabled or deduped - skipping error notification")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram error notification: {e}")
-            
+
             raise ValueError(error_message)
         
         amount_usd = _trade_amount_usd
@@ -10193,7 +10266,9 @@ class SignalMonitorService:
                     )
                     # Send specific authentication error notification
                     try:
-                        if self._telegram_send_enabled():
+                        if self._telegram_send_enabled() and self._claim_config_failure_telegram(
+                            db, symbol, "authentication"
+                        ):
                             telegram_notifier.send_message(
                                 f"🔐 <b>AUTOMATIC SELL ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -10381,6 +10456,9 @@ class SignalMonitorService:
                         source="exchange",
                         correlation_id=correlation_id,
                     )
+                    notify_order_failure = self._claim_order_failure_telegram(
+                        db, symbol, reason_code_str, side="SELL"
+                    )
                     _emit_lifecycle_event(
                         db=db,
                         symbol=symbol,
@@ -10391,11 +10469,12 @@ class SignalMonitorService:
                         event_reason=fail_reason.reason_message,
                         error_message=fail_reason.exchange_error,
                         decision_reason=fail_reason,
+                        persist_monitoring_message=notify_order_failure,
                     )
                     
                     # Send Telegram notification about the error
                     try:
-                        if self._telegram_send_enabled():
+                        if notify_order_failure and self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -10406,9 +10485,15 @@ class SignalMonitorService:
                                 f"🔍 Reason Code: {getattr(fail_reason, 'reason_code', '')}\n"
                                 f"📝 Reason: {getattr(fail_reason, 'reason_message', '')}"
                             )
+                        elif not notify_order_failure:
+                            logger.info(
+                                "order_fail telegram suppressed (dedup) symbol=%s side=SELL kind=%s",
+                                symbol,
+                                reason_code_str,
+                            )
                     except Exception as notify_err:
                         logger.warning(f"Failed to send Telegram error notification: {notify_err}")
-                    
+
                     return {"error": "order_placement", "error_type": "order_placement", "message": str(error_msg)}
             
             # Get order_id from result
