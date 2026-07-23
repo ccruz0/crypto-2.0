@@ -1061,6 +1061,40 @@ class SLTPCheckerService:
                 and watchlist_item.tp_percentage is not None
                 and watchlist_item.tp_percentage > 0
             )
+            # Absolute SL ages; if it is on the wrong side of market, force % recalculation.
+            prefer_sl_from_pct = (
+                create_sl
+                and watchlist_item.sl_percentage is not None
+                and watchlist_item.sl_percentage > 0
+            )
+            if create_sl and sl_price and prefer_sl_from_pct:
+                try:
+                    from app.utils.sl_trigger_guard import (
+                        fetch_last_price,
+                        is_sl_trigger_valid,
+                    )
+
+                    preview_side = "BUY"
+                    recent_for_side = _find_recent_entry_order(db, symbol)
+                    if recent_for_side:
+                        preview_side = _entry_side_from_order(recent_for_side)
+                    last = fetch_last_price(symbol)
+                    if last and not is_sl_trigger_valid(
+                        preview_side, float(sl_price), last
+                    ):
+                        logger.warning(
+                            "Ignoring stale watchlist sl_price=%s for %s "
+                            "(invalid vs last=%s); will recompute from sl_percentage=%s",
+                            sl_price,
+                            symbol,
+                            last,
+                            watchlist_item.sl_percentage,
+                        )
+                        sl_price = None
+                except Exception as guard_err:
+                    logger.debug(
+                        "SL absolute-price guard skipped for %s: %s", symbol, guard_err
+                    )
             
             # Calculate from percentages if prices not available, or when tp_percentage is set
             entry_price = None
@@ -1243,6 +1277,11 @@ class SLTPCheckerService:
                         oco_group_id=oco_group_id,
                         dry_run=dry_run_mode,
                         source=source,
+                        sl_percentage=(
+                            float(watchlist_item.sl_percentage)
+                            if watchlist_item.sl_percentage is not None
+                            else None
+                        ),
                     )
                     sl_order_id = sl_result.get("order_id")
                     sl_error = sl_result.get("error")
