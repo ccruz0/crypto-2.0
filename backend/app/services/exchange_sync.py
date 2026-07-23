@@ -122,6 +122,8 @@ def _to_decimal(x: Union[Decimal, int, float, str, None]) -> Decimal:
 
 # 1 hour: only notify for fills within this window unless order was created by system or admin resync
 RECENT_FILL_WINDOW_SECONDS = 3600
+# OCO sibling cancel Telegram: never re-announce the same sibling within this TTL
+OCO_CANCEL_TELEGRAM_TTL_MINUTES = 7 * 24 * 60
 
 _PROTECTIVE_ORDER_TYPES = (
     "STOP_LIMIT",
@@ -130,6 +132,35 @@ _PROTECTIVE_ORDER_TYPES = (
     "TAKE_PROFIT",
     "TAKE_PROFIT_LIMIT",
 )
+
+
+def is_recent_exchange_event(
+    order: ExchangeOrder,
+    *,
+    now_utc: Optional[datetime] = None,
+    window_seconds: int = RECENT_FILL_WINDOW_SECONDS,
+) -> bool:
+    """True when exchange create/update time is within the recent window."""
+    now = now_utc or datetime.now(timezone.utc)
+    event_at = getattr(order, "exchange_update_time", None) or getattr(
+        order, "exchange_create_time", None
+    )
+    if not event_at:
+        return False
+    if event_at.tzinfo is None:
+        event_at = event_at.replace(tzinfo=timezone.utc)
+    return (now - event_at).total_seconds() <= window_seconds
+
+
+def should_notify_oco_sibling_cancel(
+    filled_order: ExchangeOrder,
+    *,
+    now_utc: Optional[datetime] = None,
+) -> tuple[bool, str]:
+    """Gate OCO-cancel Telegram so history sync does not re-spam old TP/SL fills."""
+    if is_recent_exchange_event(filled_order, now_utc=now_utc):
+        return (True, "recent fill")
+    return (False, "historical fill: outside window")
 
 
 def should_notify_executed_fill(
@@ -1855,7 +1886,36 @@ class ExchangeSyncService:
         try:
             from datetime import timezone
             from app.services.telegram_notifier import telegram_notifier
+            from app.services.telegram_event_dedup import claim_telegram_event
             from app.models.exchange_order import ExchangeOrder
+
+            allow, reason = should_notify_oco_sibling_cancel(filled_order)
+            if not allow:
+                logger.info(
+                    "Skipping OCO cancel Telegram for %s (filled=%s sibling=%s): %s",
+                    getattr(cancelled_sibling, "symbol", None),
+                    getattr(filled_order, "exchange_order_id", None),
+                    getattr(cancelled_sibling, "exchange_order_id", None),
+                    reason,
+                )
+                return
+
+            dedup_key = (
+                f"oco_sibling_cancel:"
+                f"{filled_order.exchange_order_id}:{cancelled_sibling.exchange_order_id}"
+            )
+            if not claim_telegram_event(
+                db,
+                dedup_key,
+                symbol=getattr(cancelled_sibling, "symbol", None),
+                ttl_minutes=OCO_CANCEL_TELEGRAM_TTL_MINUTES,
+            ):
+                logger.info(
+                    "Skipping duplicate OCO cancel Telegram for %s (%s)",
+                    cancelled_sibling.symbol,
+                    dedup_key,
+                )
+                return
             
             # Get filled order details
             filled_order_type = filled_order.order_type or "UNKNOWN"
@@ -1943,6 +2003,8 @@ class ExchangeSyncService:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
             from app.services.brokers.crypto_com_trade import trade_client
             from app.services.telegram_notifier import telegram_notifier
+
+            recent_fill = is_recent_exchange_event(filled_order)
             
             # First, find ALL siblings regardless of status (to catch already-cancelled ones)
             all_siblings = db.query(ExchangeOrder).filter(
@@ -1970,9 +2032,14 @@ class ExchangeSyncService:
                         break
                 
                 if cancelled_sibling:
-                    # Sibling was already cancelled by Crypto.com OCO - just notify
+                    # Sibling was already cancelled by Crypto.com OCO - notify only for recent fills
                     logger.info(f"✅ OCO: Sibling {cancelled_sibling.order_role} order {cancelled_sibling.exchange_order_id} was already CANCELLED by Crypto.com OCO")
-                    # Still send notification to inform user
+                    if not recent_fill:
+                        logger.info(
+                            "Skipping OCO already-cancelled Telegram for historical fill %s",
+                            filled_order.exchange_order_id,
+                        )
+                        return True
                     try:
                         self._send_oco_cancellation_notification(db, filled_order, cancelled_sibling, was_already_cancelled=True)
                     except Exception as notify_err:
@@ -1988,6 +2055,19 @@ class ExchangeSyncService:
                     return False  # No active sibling found, fallback should be tried
             
             sibling = active_sibling
+
+            # Historical TP/SL fills must not trigger live cancel_order / Telegram spam.
+            # DB may still show ACTIVE for long-dead siblings after a history backfill.
+            if not recent_fill:
+                sibling.status = OrderStatusEnum.CANCELLED
+                sibling.updated_at = datetime.utcnow()
+                db.commit()
+                logger.info(
+                    "OCO: marked stale ACTIVE sibling %s CANCELLED in DB for historical fill %s (no live cancel, no Telegram)",
+                    sibling.exchange_order_id,
+                    filled_order.exchange_order_id,
+                )
+                return True
             
             from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
             try:
@@ -2766,10 +2846,10 @@ class ExchangeSyncService:
         """Cancel the remaining SL or TP order when one is executed"""
         try:
             # Determine which order type we need to cancel
-            if executed_order_type.upper() == 'STOP_LIMIT':
+            if executed_order_type.upper() in ('STOP_LIMIT', 'STOP_LOSS'):
                 # If SL was executed, cancel TP
                 target_order_type = 'TAKE_PROFIT_LIMIT'
-            elif executed_order_type.upper() == 'TAKE_PROFIT_LIMIT':
+            elif executed_order_type.upper() in ('TAKE_PROFIT_LIMIT', 'TAKE_PROFIT'):
                 # If TP was executed, cancel SL
                 target_order_type = 'STOP_LIMIT'
             else:
@@ -2779,6 +2859,7 @@ class ExchangeSyncService:
             executed_order = db.query(ExchangeOrder).filter(
                 ExchangeOrder.exchange_order_id == executed_order_id
             ).first()
+            recent_fill = bool(executed_order) and is_recent_exchange_event(executed_order)
             
             # Find open SL/TP orders of the opposite type for the same symbol
             # Try multiple strategies to find the matching SL/TP order:
@@ -2929,6 +3010,17 @@ class ExchangeSyncService:
             for target_order in target_orders:
                 try:
                     logger.info(f"Canceling {target_order_type} order {target_order.exchange_order_id} (remaining after {executed_order_type} {executed_order_id} was executed)")
+
+                    # Historical fills: heal DB only — no live cancel_order, no Telegram.
+                    if not recent_fill:
+                        target_order.status = OrderStatusEnum.CANCELLED
+                        target_order.updated_at = datetime.utcnow()
+                        logger.info(
+                            "Marked stale ACTIVE sibling %s CANCELLED for historical fill %s (no live cancel)",
+                            target_order.exchange_order_id,
+                            executed_order_id,
+                        )
+                        continue
                     
                     if not live_trading:
                         logger.info(f"DRY_RUN: Would cancel {target_order_type} order {target_order.exchange_order_id}")
@@ -3050,10 +3142,10 @@ class ExchangeSyncService:
         """Notify when an SL/TP order was already cancelled by the exchange (OCO auto-cancellation)"""
         try:
             # Determine which order type we're looking for
-            if executed_order_type.upper() == 'STOP_LIMIT':
+            if executed_order_type.upper() in ('STOP_LIMIT', 'STOP_LOSS'):
                 # If SL was executed, check for cancelled TP
                 target_order_type = 'TAKE_PROFIT_LIMIT'
-            elif executed_order_type.upper() == 'TAKE_PROFIT_LIMIT':
+            elif executed_order_type.upper() in ('TAKE_PROFIT_LIMIT', 'TAKE_PROFIT'):
                 # If TP was executed, check for cancelled SL
                 target_order_type = 'STOP_LIMIT'
             else:
@@ -3065,6 +3157,16 @@ class ExchangeSyncService:
             ).first()
             
             if not executed_order:
+                return
+
+            allow, reason = should_notify_oco_sibling_cancel(executed_order)
+            if not allow:
+                logger.info(
+                    "Skipping already-cancelled SL/TP Telegram for %s (%s): %s",
+                    symbol,
+                    executed_order_id,
+                    reason,
+                )
                 return
             
             # Find CANCELLED SL/TP orders of the opposite type for the same symbol
@@ -3806,6 +3908,7 @@ class ExchangeSyncService:
                     # Update order data from API
                     # STRICT FILL-ONLY: Notifications are handled separately using fill tracker
                     needs_update = False
+                    status_before_sync = existing.status
                     
                     # Update status if changed
                     if status_str in ('FILLED', 'PARTIALLY_FILLED', 'NEW', 'ACTIVE', 'CANCELLED', 'REJECTED', 'EXPIRED'):
@@ -4192,37 +4295,48 @@ class ExchangeSyncService:
                         )
                         
                         if is_sl_tp_executed:
-                            # CRITICAL: Always attempt to cancel the sibling order
-                            # Try OCO group ID method first (most reliable if OCO group ID exists)
-                            oco_success = False
-                            if existing.oco_group_id:
-                                try:
-                                    logger.info(f"Attempting to cancel OCO sibling for order {order_id} (group: {existing.oco_group_id})")
-                                    oco_success = self._cancel_oco_sibling(db, existing)
-                                    if oco_success:
-                                        logger.info(f"✅ OCO cancellation succeeded for order {order_id}")
-                                    else:
-                                        logger.warning(f"⚠️ OCO cancellation returned False for order {order_id}, will try fallback")
-                                except Exception as oco_err:
-                                    logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
-                                    oco_success = False
-                            
-                            # ALWAYS try the fallback method if OCO method didn't succeed
-                            # This will search by parent_order_id, order_role, time window, or symbol+type
-                            # This ensures cancellation works for both BUY and SELL orders
-                            if not oco_success:
-                                try:
-                                    logger.info(f"Attempting fallback cancellation for sibling of {order_id} (symbol: {symbol or existing.symbol}, type: {order_type_from_history or order_type_from_db.upper()})")
-                                    cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                    if cancelled_count > 0:
-                                        logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method")
-                                    elif cancelled_count == 0:
-                                        # If no active SL/TP found to cancel, check if there's already a CANCELLED one
-                                        # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
-                                        logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
-                                        self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                except Exception as cancel_err:
-                                    logger.error(f"❌ Error canceling remaining SL/TP for {order_id}: {cancel_err}", exc_info=True)
+                            # History sync re-visits old FILLED TPs every cycle; only act on
+                            # recent fills (live OCO) — never re-Telegram / live-cancel history.
+                            if (
+                                status_before_sync == OrderStatusEnum.FILLED
+                                and not is_recent_exchange_event(existing)
+                            ):
+                                logger.debug(
+                                    "Skipping OCO sibling handling for historical already-FILLED %s",
+                                    order_id,
+                                )
+                            else:
+                                # CRITICAL: Always attempt to cancel the sibling order
+                                # Try OCO group ID method first (most reliable if OCO group ID exists)
+                                oco_success = False
+                                if existing.oco_group_id:
+                                    try:
+                                        logger.info(f"Attempting to cancel OCO sibling for order {order_id} (group: {existing.oco_group_id})")
+                                        oco_success = self._cancel_oco_sibling(db, existing)
+                                        if oco_success:
+                                            logger.info(f"✅ OCO cancellation succeeded for order {order_id}")
+                                        else:
+                                            logger.warning(f"⚠️ OCO cancellation returned False for order {order_id}, will try fallback")
+                                    except Exception as oco_err:
+                                        logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
+                                        oco_success = False
+                                
+                                # ALWAYS try the fallback method if OCO method didn't succeed
+                                # This will search by parent_order_id, order_role, time window, or symbol+type
+                                # This ensures cancellation works for both BUY and SELL orders
+                                if not oco_success:
+                                    try:
+                                        logger.info(f"Attempting fallback cancellation for sibling of {order_id} (symbol: {symbol or existing.symbol}, type: {order_type_from_history or order_type_from_db.upper()})")
+                                        cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                        if cancelled_count > 0:
+                                            logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method")
+                                        elif cancelled_count == 0:
+                                            # If no active SL/TP found to cancel, check if there's already a CANCELLED one
+                                            # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
+                                            logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
+                                            self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                    except Exception as cancel_err:
+                                        logger.error(f"❌ Error canceling remaining SL/TP for {order_id}: {cancel_err}", exc_info=True)
                         
                         # If this is a SELL LIMIT order that closes a position, cancel remaining SL orders
                         elif is_sell_limit_that_closes_position:
