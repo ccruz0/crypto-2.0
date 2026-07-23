@@ -332,7 +332,8 @@ def create_stop_loss_order(
     is_margin: bool = False,
     leverage: Optional[float] = None,
     dry_run: bool = False,
-    source: str = "auto"  # "auto" or "manual" to track the source
+    source: str = "auto",  # "auto" or "manual" to track the source
+    sl_percentage: Optional[float] = None,
 ) -> Dict:
     """
     Create a Stop Loss order using the same logic as automatic SL creation.
@@ -347,6 +348,7 @@ def create_stop_loss_order(
         parent_order_id: Parent order ID (optional, for linking)
         oco_group_id: OCO group ID (optional, for linking SL/TP)
         dry_run: Whether to run in dry-run mode
+        sl_percentage: Optional SL %% used to repair triggers on the wrong side of market
         
     Returns:
         Dict with 'order_id' (if successful) or 'error' (if failed)
@@ -359,9 +361,15 @@ def create_stop_loss_order(
     # - Preserves trailing zeros (per Rule 4)
     # No pre-formatting needed here - pass raw price to place_stop_loss_order
     from app.utils.http_client import http_get, http_post
+    from app.utils.sl_trigger_guard import (
+        compute_market_relative_sl,
+        derive_sl_percentage,
+        ensure_valid_sl_trigger,
+        error_is_invalid_trigger_price,
+        fetch_last_price,
+    )
     
     # IMPORTANT: trigger_price must be equal to sl_price for STOP_LIMIT orders
-    sl_trigger = sl_price  # trigger_price equals sl_price
     entry_side = side.upper()  # Ensure uppercase
     sl_side = get_closing_side_from_entry(entry_side)
     watchlist_is_margin, watchlist_leverage = resolve_sltp_margin_context(db, symbol)
@@ -369,6 +377,30 @@ def create_stop_loss_order(
         is_margin = watchlist_is_margin
     if leverage is None:
         leverage = watchlist_leverage
+
+    if sl_percentage is None:
+        try:
+            from app.models.watchlist import WatchlistItem
+
+            wl = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+            if wl and wl.sl_percentage is not None and float(wl.sl_percentage) > 0:
+                sl_percentage = float(wl.sl_percentage)
+        except Exception as wl_err:
+            logger.debug("Could not read watchlist sl_percentage for %s: %s", symbol, wl_err)
+
+    # Reject stale absolute SL on the wrong side of market (INVALID_TRIGGER_PRICE)
+    last_price = None if dry_run else fetch_last_price(symbol)
+    sl_price, adjust_reason = ensure_valid_sl_trigger(
+        entry_side=entry_side,
+        sl_price=float(sl_price),
+        last_price=last_price,
+        sl_percentage=sl_percentage,
+        entry_price=float(entry_price) if entry_price else None,
+    )
+    if adjust_reason:
+        logger.warning("[%s_SL] Adjusted SL for %s: %s", source.upper(), symbol, adjust_reason)
+
+    sl_trigger = sl_price  # trigger_price equals sl_price
 
     if parent_order_id and not dry_run:
         from app.services.sl_tp_protection import get_active_protection_order
@@ -530,6 +562,38 @@ def create_stop_loss_order(
             dry_run=dry_run,
             source=source  # Propagate source to HTTP logging
         )
+
+        if "error" in sl_order and error_is_invalid_trigger_price(sl_order.get("error")):
+            retry_last = fetch_last_price(symbol) or last_price
+            if retry_last and retry_last > 0:
+                pct = derive_sl_percentage(
+                    entry_side, entry_price, sl_price, sl_percentage
+                )
+                retry_price = compute_market_relative_sl(entry_side, retry_last, pct)
+                logger.warning(
+                    "[%s_SL] INVALID_TRIGGER_PRICE for %s @ %s — retrying once @ %s "
+                    "(last=%s pct=%s)",
+                    source.upper(),
+                    symbol,
+                    sl_price,
+                    retry_price,
+                    retry_last,
+                    pct,
+                )
+                sl_price = retry_price
+                sl_trigger = retry_price
+                sl_order = trade_client.place_stop_loss_order(
+                    symbol=symbol,
+                    side=sl_side,
+                    price=sl_price,
+                    qty=quantity,
+                    trigger_price=sl_trigger,
+                    entry_price=entry_price,
+                    is_margin=is_margin,
+                    leverage=leverage,
+                    dry_run=dry_run,
+                    source=source,
+                )
         
         if "error" not in sl_order:
             sl_order_id = sl_order.get("order_id") or sl_order.get("client_order_id")
