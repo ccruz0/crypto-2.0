@@ -101,6 +101,24 @@ class TestNormalizeAndParse:
         assert parsed["cumulative_quantity"] == pytest.approx(0.00016)
         assert parsed["price"] == pytest.approx(65199.57)
 
+    def test_parse_cancelled_with_fill_qty_becomes_filled(self):
+        parsed = parse_resolved_order_payload(
+            {
+                "order_id": "73817490102011214",
+                "status": "CANCELLED",
+                "cumulative_quantity": "0.30000",
+                "avg_price": "65960.21",
+                "quantity": "0.30000",
+                "contingency_type": "TAKE_PROFIT",
+                "exchange_order_id": "5755600492041405464",
+            },
+            "73817490102011214",
+        )
+        assert parsed is not None
+        assert parsed["status"] == "FILLED"
+        assert parsed["contingency_type"] == "TAKE_PROFIT"
+        assert parsed["child_exchange_order_id"] == "5755600492041405464"
+
     def test_parse_rejects_other_order_id(self):
         assert (
             parse_resolved_order_payload(
@@ -109,6 +127,23 @@ class TestNormalizeAndParse:
             )
             is None
         )
+
+
+class TestProtectionRoleFromOrderData:
+    def test_contingency_take_profit(self):
+        from app.services.exchange_sync import protection_role_from_order_data
+
+        assert (
+            protection_role_from_order_data(
+                {"order_type": "LIMIT", "contingency_type": "TAKE_PROFIT"}
+            )
+            == "TAKE_PROFIT"
+        )
+
+    def test_order_type_stop_limit(self):
+        from app.services.exchange_sync import protection_role_from_order_data
+
+        assert protection_role_from_order_data({"order_type": "STOP_LIMIT"}) == "STOP_LOSS"
 
 
 class TestResolveOrderStatusFromExchange:
@@ -140,6 +175,39 @@ class TestResolveOrderStatusFromExchange:
             mock_detail.assert_called_once_with("tp-1")
             mock_hist.assert_not_called()
 
+    def test_falls_back_to_advanced_detail_when_spot_empty(self):
+        svc = ExchangeSyncService()
+        adv_detail = {
+            "code": 0,
+            "result": {
+                "order_id": "73817490102011214",
+                "status": "FILLED",
+                "cumulative_quantity": "0.30000",
+                "avg_price": "65960.21",
+                "quantity": "0.30000",
+                "contingency_type": "TAKE_PROFIT",
+            },
+        }
+        with patch(
+            "app.services.exchange_sync.trade_client.get_order_detail",
+            return_value={"code": 0},
+        ), patch(
+            "app.services.exchange_sync.trade_client.get_advanced_order_detail",
+            return_value=adv_detail,
+        ) as mock_adv, patch(
+            "app.services.exchange_sync.trade_client.get_order_history"
+        ) as mock_hist:
+            result = svc._resolve_order_status_from_exchange(
+                "73817490102011214",
+                datetime(2026, 7, 19, 10, 24, tzinfo=timezone.utc),
+                instrument_name="BTC_USD",
+            )
+            assert result is not None
+            assert result["status"] == "FILLED"
+            assert result["cumulative_quantity"] == pytest.approx(0.3)
+            mock_adv.assert_called_once_with("73817490102011214")
+            mock_hist.assert_not_called()
+
     def test_falls_back_to_instrument_history_when_detail_empty(self):
         svc = ExchangeSyncService()
         history = {
@@ -161,6 +229,9 @@ class TestResolveOrderStatusFromExchange:
 
         with patch(
             "app.services.exchange_sync.trade_client.get_order_detail",
+            return_value=None,
+        ), patch(
+            "app.services.exchange_sync.trade_client.get_advanced_order_detail",
             return_value=None,
         ), patch(
             "app.services.exchange_sync.trade_client.get_order_history",
@@ -204,6 +275,9 @@ class TestResolveOrderStatusFromExchange:
             "app.services.exchange_sync.trade_client.get_order_detail",
             return_value=None,
         ), patch(
+            "app.services.exchange_sync.trade_client.get_advanced_order_detail",
+            return_value=None,
+        ), patch(
             "app.services.exchange_sync.trade_client.get_order_history",
             side_effect=history_side_effect,
         ), patch.object(
@@ -215,6 +289,55 @@ class TestResolveOrderStatusFromExchange:
             )
             assert result["status"] == "FILLED"
             assert "BTC_USD" in calls
+
+    def test_advanced_resolve_uses_narrow_windows_not_create_to_now(self):
+        svc = ExchangeSyncService()
+        create_at = datetime(2026, 7, 19, 10, 24, tzinfo=timezone.utc)
+        calls = []
+
+        def adv_hist(**kwargs):
+            calls.append((kwargs.get("start_time"), kwargs.get("end_time")))
+            start = kwargs.get("start_time") or 0
+            end = kwargs.get("end_time") or 0
+            # Only the first ~24h window around create contains the fill.
+            create_ms = int(create_at.timestamp() * 1000)
+            if start <= create_ms <= end:
+                return {
+                    "data": [
+                        {
+                            "order_id": "73817490102011214",
+                            "status": "FILLED",
+                            "cumulative_quantity": "0.30000",
+                            "avg_price": "65960.21",
+                            "quantity": "0.30000",
+                            "contingency_type": "TAKE_PROFIT",
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        with patch(
+            "app.services.exchange_sync.trade_client.get_advanced_order_detail",
+            return_value=None,
+        ), patch(
+            "app.services.exchange_sync.trade_client.get_advanced_order_history",
+            side_effect=adv_hist,
+        ), patch(
+            "app.database.SessionLocal",
+            side_effect=Exception("no db"),
+        ):
+            result = svc._resolve_advanced_order_status_from_exchange(
+                "73817490102011214",
+                create_at,
+            )
+            assert result is not None
+            assert result["status"] == "FILLED"
+            assert calls, "expected narrow window history calls"
+            # Every window must be <= 24h (+1s tolerance)
+            for start, end in calls:
+                assert (end - start) <= 24 * 60 * 60 * 1000 + 1000
+            # Must not use a single create→now mega-window
+            assert not any((end - start) > 48 * 60 * 60 * 1000 for start, end in calls)
 
 
 class TestMaybeNotifyExecutedFillTelegram:

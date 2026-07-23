@@ -516,8 +516,17 @@ def parse_resolved_order_payload(order_data: Optional[Dict[str, Any]], order_id:
     if not status_str:
         return None
     cumulative_qty = float(order_data.get("cumulative_quantity", 0) or 0)
-    price = order_data.get("avg_price") or order_data.get("limit_price") or order_data.get("price")
     quantity = float(order_data.get("quantity", 0) or 0)
+    # Crypto.com often returns CANCELLED/CANCELED for fully filled advanced TP/SL legs;
+    # prefer fill evidence over the raw cancel label.
+    mapped = map_exchange_order_status(
+        status_str,
+        cumulative_quantity=cumulative_qty,
+        quantity=quantity,
+    )
+    if mapped in (OrderStatusEnum.FILLED, OrderStatusEnum.PARTIALLY_FILLED):
+        status_str = mapped.value
+    price = order_data.get("avg_price") or order_data.get("limit_price") or order_data.get("price")
     payload: Dict[str, Any] = {
         "status": status_str,
         "cumulative_quantity": cumulative_qty,
@@ -527,7 +536,30 @@ def parse_resolved_order_payload(order_data: Optional[Dict[str, Any]], order_id:
     reject_reason = order_data.get("reject_reason")
     if reject_reason:
         payload["reject_reason"] = reject_reason
+    contingency = order_data.get("contingency_type") or order_data.get("contingencyType")
+    if contingency:
+        payload["contingency_type"] = str(contingency).upper()
+    child_exchange_id = order_data.get("exchange_order_id")
+    if child_exchange_id not in (None, "", "0", 0):
+        payload["child_exchange_order_id"] = str(child_exchange_id)
     return payload
+
+
+def protection_role_from_order_data(order_data: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Infer TAKE_PROFIT / STOP_LOSS from advanced contingency or trigger order_type."""
+    if not isinstance(order_data, dict):
+        return None
+    contingency = str(
+        order_data.get("contingency_type") or order_data.get("contingencyType") or ""
+    ).upper()
+    if contingency in ("TAKE_PROFIT", "STOP_LOSS"):
+        return contingency
+    order_type = str(order_data.get("order_type") or order_data.get("type") or "").upper()
+    if order_type in ("TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT_MARKET"):
+        return "TAKE_PROFIT"
+    if order_type in ("STOP_LOSS", "STOP_LIMIT", "STOP_MARKET", "STOP_LOSS_LIMIT"):
+        return "STOP_LOSS"
+    return None
 
 
 def _protection_order_price(order: ExchangeOrder) -> Optional[float]:
@@ -607,7 +639,7 @@ class ExchangeSyncService:
                 except Exception:
                     instrument_name = instrument_name
 
-            # 1) Exact order detail — most reliable for filled TP/SL that left open orders
+            # 1) Exact order detail — spot first, then advanced (TP/SL ids are not on spot detail)
             try:
                 detail = trade_client.get_order_detail(str(order_id))
                 result = detail.get("result") if isinstance(detail, dict) else None
@@ -625,6 +657,26 @@ class ExchangeSyncService:
                     return parsed
             except Exception as detail_err:
                 logger.debug("get-order-detail failed for %s: %s", order_id, detail_err)
+
+            try:
+                adv_detail_fn = getattr(trade_client, "get_advanced_order_detail", None)
+                if callable(adv_detail_fn):
+                    adv_detail = adv_detail_fn(str(order_id))
+                    adv_result = adv_detail.get("result") if isinstance(adv_detail, dict) else None
+                    parsed = parse_resolved_order_payload(
+                        adv_result if isinstance(adv_result, dict) else None,
+                        str(order_id),
+                    )
+                    if parsed:
+                        logger.info(
+                            "Found order %s via advanced/get-order-detail: status=%s cumulative_qty=%s",
+                            order_id,
+                            parsed["status"],
+                            parsed["cumulative_quantity"],
+                        )
+                        return parsed
+            except Exception as adv_detail_err:
+                logger.debug("advanced get-order-detail failed for %s: %s", order_id, adv_detail_err)
 
             end_time_ms = int(time.time() * 1000)
             if order_created_at:
@@ -702,7 +754,11 @@ class ExchangeSyncService:
     def _resolve_advanced_order_status_from_exchange(
         self, order_id: str, order_created_at: Optional[datetime] = None
     ) -> Optional[Dict]:
-        """Resolve conditional/advanced order status (includes REJECTED + reject_reason)."""
+        """Resolve conditional/advanced order status (includes REJECTED + reject_reason).
+
+        Crypto.com advanced history returns empty for wide time ranges (often >~48h),
+        so we query narrow 24h windows around create_time instead of create→now.
+        """
         try:
             from datetime import timedelta
 
@@ -721,38 +777,71 @@ class ExchangeSyncService:
             except Exception:
                 instrument_name = None
 
-            end_time_ms = int(time.time() * 1000)
-            if order_created_at:
-                start_time = order_created_at - timedelta(hours=1)
-                start_time_ms = int(start_time.timestamp() * 1000)
-            else:
-                start_time_ms = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
-
-            params: Dict[str, Any] = {"limit": 200, "start_time": start_time_ms, "end_time": end_time_ms}
-            instruments = quote_instrument_variants(instrument_name) or [None]
-            for instrument in instruments:
-                query_params = dict(params)
-                if instrument:
-                    query_params["instrument_name"] = instrument
-                response = trade_client.get_advanced_order_history(**query_params)
-                if not response or "data" not in response:
-                    continue
-                for order_data in response.get("data", []) or []:
+            # Prefer exact advanced detail when available (no window-size trap).
+            try:
+                adv_detail_fn = getattr(trade_client, "get_advanced_order_detail", None)
+                if callable(adv_detail_fn):
+                    adv_detail = adv_detail_fn(str(order_id))
+                    adv_result = adv_detail.get("result") if isinstance(adv_detail, dict) else None
                     parsed = parse_resolved_order_payload(
-                        order_data if isinstance(order_data, dict) else None,
+                        adv_result if isinstance(adv_result, dict) else None,
                         str(order_id),
                     )
                     if parsed:
-                        if order_data.get("reject_reason"):
-                            parsed["reject_reason"] = order_data.get("reject_reason")
                         logger.info(
-                            "Found advanced order %s in history: status=%s reject_reason=%s instrument=%s",
+                            "Found advanced order %s via get-order-detail: status=%s cumulative_qty=%s",
                             order_id,
                             parsed["status"],
-                            parsed.get("reject_reason"),
-                            instrument,
+                            parsed["cumulative_quantity"],
                         )
                         return parsed
+            except Exception as adv_detail_err:
+                logger.debug("advanced get-order-detail failed for %s: %s", order_id, adv_detail_err)
+
+            # Narrow windows: Crypto.com advanced history goes empty on multi-day spans.
+            window_ms = 24 * 60 * 60 * 1000
+            max_windows = 14
+            if order_created_at:
+                anchor_ms = int(order_created_at.timestamp() * 1000)
+            else:
+                anchor_ms = int((datetime.now(timezone.utc) - timedelta(hours=12)).timestamp() * 1000)
+            now_ms = int(time.time() * 1000)
+
+            instruments = quote_instrument_variants(instrument_name) or [None]
+            for instrument in instruments:
+                for i in range(max_windows):
+                    window_start = anchor_ms - (60 * 60 * 1000) + (i * window_ms)
+                    window_end = min(now_ms, window_start + window_ms)
+                    if window_start >= now_ms:
+                        break
+                    query_params: Dict[str, Any] = {
+                        "limit": 200,
+                        "start_time": window_start,
+                        "end_time": window_end,
+                    }
+                    if instrument:
+                        query_params["instrument_name"] = instrument
+                    response = trade_client.get_advanced_order_history(**query_params)
+                    if not response or "data" not in response:
+                        continue
+                    for order_data in response.get("data", []) or []:
+                        parsed = parse_resolved_order_payload(
+                            order_data if isinstance(order_data, dict) else None,
+                            str(order_id),
+                        )
+                        if parsed:
+                            if order_data.get("reject_reason"):
+                                parsed["reject_reason"] = order_data.get("reject_reason")
+                            logger.info(
+                                "Found advanced order %s in history: status=%s reject_reason=%s instrument=%s window=%s..%s",
+                                order_id,
+                                parsed["status"],
+                                parsed.get("reject_reason"),
+                                instrument,
+                                window_start,
+                                window_end,
+                            )
+                            return parsed
             return None
         except Exception as e:
             logger.debug("Advanced order history lookup failed for %s: %s", order_id, e)
@@ -3260,13 +3349,46 @@ class ExchangeSyncService:
                 if oid and str(oid) not in seen_ids:
                     seen_ids.add(str(oid))
                     all_orders.append(o)
+
+            # Advanced/conditional TP-SL fills live only on advanced history (spot history
+            # often omits them). Keep the same narrow window — wide ranges return empty.
+            try:
+                adv_response = trade_client.get_advanced_order_history(
+                    instrument_name=instrument_name,
+                    limit=limit,
+                    start_time=window_start,
+                    end_time=window_end,
+                )
+                adv_orders = adv_response.get("data", []) if adv_response else []
+            except Exception as adv_err:
+                logger.debug(
+                    "Advanced order history window fetch failed instrument=%s: %s",
+                    instrument_name,
+                    adv_err,
+                )
+                adv_orders = []
+            adv_added = 0
+            for o in adv_orders:
+                if not isinstance(o, dict):
+                    continue
+                oid = o.get("order_id")
+                if not oid or str(oid) in seen_ids:
+                    continue
+                # Normalize so sync_order_history treats contingency fills as protection.
+                enriched = dict(o)
+                if not enriched.get("contingency_type") and enriched.get("contingencyType"):
+                    enriched["contingency_type"] = enriched.get("contingencyType")
+                seen_ids.add(str(oid))
+                all_orders.append(enriched)
+                adv_added += 1
             logger.info(
-                "Order history window result: instrument=%s fetched=%s stored=%s",
+                "Order history window result: instrument=%s fetched=%s advanced_added=%s stored=%s",
                 instrument_name,
                 fetched,
+                adv_added,
                 len(all_orders),
             )
-            if fetched == 0:
+            if fetched == 0 and adv_added == 0:
                 consecutive_empty += 1
                 if consecutive_empty >= ORDER_HISTORY_EMPTY_WINDOWS_STOP:
                     logger.info(
@@ -3595,20 +3717,34 @@ class ExchangeSyncService:
                     continue
                 
                 # Process filled orders, and also CANCELED orders that were partially/fully executed
-                status_str = order_data.get('status', '').upper()
+                status_str = normalize_resolved_exchange_status(
+                    str(order_data.get("status", "") or "")
+                )
                 
                 # Check if order was executed (cumulative_quantity > 0)
                 # Handle both string and numeric cumulative_quantity
                 cumulative_qty_raw = order_data.get('cumulative_quantity', 0) or 0
                 cumulative_qty = float(cumulative_qty_raw) if cumulative_qty_raw else 0
                 original_qty = float(order_data.get('quantity', 0) or 0)
+
+                mapped_status = map_exchange_order_status(
+                    status_str,
+                    cumulative_quantity=cumulative_qty,
+                    quantity=original_qty,
+                )
+                if mapped_status in (OrderStatusEnum.FILLED, OrderStatusEnum.PARTIALLY_FILLED):
+                    status_str = mapped_status.value
                 
                 # Process FILLED orders, or CANCELED orders that were executed
                 # IMPORTANT: If status is FILLED, always process it (even if cumulative_qty is 0 in edge cases)
                 # This ensures orders marked as FILLED in Crypto.com are always processed
                 is_executed = (
                     status_str == 'FILLED' or  # Always process FILLED orders
-                    (cumulative_qty > 0 and status_str == 'CANCELED' and cumulative_qty >= original_qty * 0.99)  # At least 99% executed
+                    (
+                        cumulative_qty > 0
+                        and status_str in ('CANCELLED', 'CANCELED', 'PARTIALLY_FILLED')
+                        and cumulative_qty >= original_qty * 0.99
+                    )
                 )
                 
                 if not is_executed:
@@ -3673,7 +3809,11 @@ class ExchangeSyncService:
                     
                     # Update status if changed
                     if status_str in ('FILLED', 'PARTIALLY_FILLED', 'NEW', 'ACTIVE', 'CANCELLED', 'REJECTED', 'EXPIRED'):
-                        if existing.status != OrderStatusEnum(status_str):
+                        try:
+                            new_status_enum = OrderStatusEnum(status_str)
+                        except ValueError:
+                            new_status_enum = None
+                        if new_status_enum is not None and existing.status != new_status_enum:
                             needs_update = True
                             logger.debug(f"Order {order_id} status changed: {existing.status.value if existing.status else 'UNKNOWN'} -> {status_str}")
                     
@@ -3702,6 +3842,10 @@ class ExchangeSyncService:
                     if new_cumulative_qty != _to_decimal(existing.cumulative_quantity):
                         needs_update = True
                         existing.cumulative_quantity = new_cumulative_qty
+
+                    protection_role = protection_role_from_order_data(order_data)
+                    if protection_role and existing.order_role != protection_role:
+                        needs_update = True
                     
                     if needs_update:
                         # Update existing order with new status and execution data from Crypto.com history
@@ -3710,7 +3854,10 @@ class ExchangeSyncService:
                         # Update status if provided and valid
                         old_status = existing.status
                         if status_str in ('FILLED', 'PARTIALLY_FILLED', 'NEW', 'ACTIVE', 'CANCELLED', 'REJECTED', 'EXPIRED'):
-                            existing.status = OrderStatusEnum(status_str)
+                            try:
+                                existing.status = OrderStatusEnum(status_str)
+                            except ValueError:
+                                pass
                             
                             # Emit ORDER_CANCELED event if status changed to CANCELLED
                             if status_str == 'CANCELLED' and old_status != OrderStatusEnum.CANCELLED:
@@ -3741,6 +3888,8 @@ class ExchangeSyncService:
                                 except Exception as emit_err:
                                     logger.warning(f"Failed to emit ORDER_CANCELED event for {order_id}: {emit_err}", exc_info=True)
                         # Always use data from Crypto.com history (more accurate)
+                        if protection_role:
+                            existing.order_role = protection_role
                         existing.price = order_price_float if order_price_float else existing.price
                         existing.quantity = executed_qty if executed_qty > 0 else (quantity_float if quantity_float > 0 else existing.quantity)
                         cumulative_val_from_api = order_data.get('cumulative_value', '0') or '0'
@@ -4024,9 +4173,15 @@ class ExchangeSyncService:
                     if is_executed:
                         order_type_from_history = order_data.get('order_type', '').upper()
                         order_type_from_db = existing.order_type or ''
+                        protection_role = protection_role_from_order_data(order_data) or (
+                            (existing.order_role or "").upper()
+                            if (existing.order_role or "").upper() in ("TAKE_PROFIT", "STOP_LOSS")
+                            else None
+                        )
                         is_sl_tp_executed = (
-                            order_type_from_history in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'] or 
-                            order_type_from_db.upper() in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
+                            protection_role is not None
+                            or order_type_from_history in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
+                            or order_type_from_db.upper() in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
                         )
                         
                         # If this is a SELL LIMIT order (not TP/SL) that closes a position, cancel remaining SL
@@ -4086,9 +4241,16 @@ class ExchangeSyncService:
                         order_type_from_db = existing.order_type or ''
                         
                         # Check if this is a SL/TP order - if so, do NOT create new SL/TP
+                        # Advanced history returns LIMIT + contingency_type=TAKE_PROFIT after TP fills.
+                        protection_role = protection_role_from_order_data(order_data) or (
+                            (existing.order_role or "").upper()
+                            if (existing.order_role or "").upper() in ("TAKE_PROFIT", "STOP_LOSS")
+                            else None
+                        )
                         is_sl_tp_order = (
-                            order_type_from_history in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT'] or 
-                            order_type_from_db.upper() in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']
+                            protection_role is not None
+                            or order_type_from_history in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
+                            or order_type_from_db.upper() in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
                         )
                         
                         # Create SL/TP only for LIMIT and MARKET orders (not for STOP_LIMIT or TAKE_PROFIT_LIMIT)
@@ -4140,13 +4302,22 @@ class ExchangeSyncService:
                 oco_group_id_from_existing = existing_order_for_oco.oco_group_id if existing_order_for_oco else None
                 
                 # For new orders from history, delta is the full executed qty (no previous state)
+                protection_role = protection_role_from_order_data(order_data)
+                raw_order_type = str(order_data.get('order_type', 'LIMIT') or 'LIMIT').upper()
+                # Keep protection semantics when advanced history rewrites type to LIMIT after fill.
+                if protection_role == "TAKE_PROFIT" and raw_order_type == "LIMIT":
+                    stored_order_type = "TAKE_PROFIT_LIMIT"
+                elif protection_role == "STOP_LOSS" and raw_order_type in ("LIMIT", "STOP_LIMIT"):
+                    stored_order_type = "STOP_LIMIT"
+                else:
+                    stored_order_type = raw_order_type
                 delta_qty = _to_decimal(executed_qty)
                 new_order = ExchangeOrder(
                     exchange_order_id=order_id,
                     client_oid=order_data.get('client_oid'),
                     symbol=symbol,
                     side=OrderSideEnum.BUY if side == 'BUY' else OrderSideEnum.SELL,
-                    order_type=order_data.get('order_type', 'LIMIT'),
+                    order_type=stored_order_type,
                     status=OrderStatusEnum.FILLED,
                     price=order_price_float,  # Will use avg_price for MARKET orders
                     quantity=executed_qty,  # Use cumulative_quantity (executed amount)
@@ -4155,7 +4326,8 @@ class ExchangeSyncService:
                     avg_price=float(order_data.get('avg_price')) if order_data.get('avg_price') else order_price_float,
                     exchange_create_time=create_time,
                     exchange_update_time=update_time,
-                    oco_group_id=oco_group_id_from_existing  # Preserve OCO group ID if it exists
+                    oco_group_id=oco_group_id_from_existing,  # Preserve OCO group ID if it exists
+                    order_role=protection_role,
                 )
                 db.add(new_order)
                 logger.debug("[EXCHANGE_ORDERS_OWNER] exchange_sync upsert (history) order_id=%s symbol=%s", order_id, symbol)
@@ -4163,8 +4335,10 @@ class ExchangeSyncService:
                 link_system_trade_signal_to_order(db, new_order)
 
                 # Check if this is a SL or TP order that was executed - cancel the other one
-                order_type_upper = order_data.get('order_type', '').upper()
-                is_sl_tp_executed = order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
+                order_type_upper = stored_order_type
+                is_sl_tp_executed = protection_role is not None or order_type_upper in [
+                    'STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'
+                ]
                 
                 if is_sl_tp_executed:
                     # CRITICAL: Always attempt to cancel the sibling order
@@ -4204,10 +4378,11 @@ class ExchangeSyncService:
                 # Create SL/TP for both LIMIT and MARKET orders when they are filled
                 # (not for STOP_LIMIT or TAKE_PROFIT_LIMIT)
                 # BUT: Only create SL/TP if the order was filled within the last hour
-                order_type = order_data.get('order_type', '').upper()
+                order_type = stored_order_type
                 
                 # IMPORTANT: NEVER create SL/TP for STOP_LIMIT or TAKE_PROFIT_LIMIT orders
-                if order_type in ['LIMIT', 'MARKET']:
+                # (including advanced contingency fills that arrive as LIMIT + contingency_type)
+                if order_type in ['LIMIT', 'MARKET'] and not protection_role:
                     order_filled_time = update_time or create_time
                     fill_price = order_price_float or 0
                     self._maybe_create_sl_tp_after_history_sync(
@@ -4221,7 +4396,7 @@ class ExchangeSyncService:
                         order_filled_time=order_filled_time,
                         order_type_label="new_main",
                     )
-                elif order_type in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
+                elif order_type in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT'] or protection_role:
                     logger.debug(f"Skipping SL/TP creation for {order_type} order {order_id} - SL/TP orders should not create new SL/TP")
                 
                 # STRICT FILL-ONLY NOTIFICATION LOGIC for new orders
