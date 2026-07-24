@@ -679,8 +679,9 @@ def create_app(role: str = "legacy") -> FastAPI:
                         "Daily report loop skipped (RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate work)"
                     )
 
-                # Daily Position Review: prompt the operator to close each open position,
-                # with a 30-day per-position snooze. Only the poller instance runs it so
+                # Daily Position Review: alert only when an open position is missing
+                # SL and/or TP (fully protected positions are skipped). 30-day
+                # per-position snooze. Only the poller instance runs it so
                 # standby/canary don't duplicate the alert.
                 if _run_poller:
                     try:
