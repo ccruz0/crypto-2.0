@@ -144,6 +144,16 @@ ADVANCED_CANCEL_ORDER_ENDPOINT = "private/advanced/cancel-order"
 DEFAULT_REF_PRICE_TYPE = "MARK_PRICE"
 
 
+def take_profit_trigger_operator(closing_side: str) -> str:
+    """Comparator for TAKE_PROFIT trigger_condition from the closing side.
+
+    Long close (SELL TP above market): fire when mark rises to TP → ``>=``.
+    Short close (BUY TP below market): fire when mark falls to TP → ``<=``.
+    """
+    side = (closing_side or "").strip().upper()
+    return ">=" if side == "SELL" else "<="
+
+
 def _is_conditional_order_type(order_type: Optional[str]) -> bool:
     """True if order_type is a conditional/trigger type routed to the advanced endpoint."""
     return bool(order_type) and str(order_type).strip().upper() in CONDITIONAL_ORDER_TYPES
@@ -5874,8 +5884,7 @@ class CryptoComTradeClient:
         
         # For TAKE_PROFIT_LIMIT, ref_price MUST be the TP PRICE (same as trigger_price and price)
         # Based on error 229 (INVALID_REF_PRICE) analysis, Crypto.com expects ref_price = TP price
-        # trigger_condition = ">= {TP_price}" where TP_price is the TP price
-        # This ensures the order activates when price reaches the TP level
+        # trigger_condition is side-aware: SELL (long TP) uses ">=", BUY (short TP) uses "<=".
         # ref_price will be set to the TP price (same as trigger_price) in the loop below
         
         # Always use ref_price for TAKE_PROFIT_LIMIT (required by API)
@@ -5920,6 +5929,7 @@ class CryptoComTradeClient:
             for side_fmt in unique_sides:
                 # Both price and trigger_price must be the TP price (same value, same format)
                 tp_price_formatted = price_fmt  # This is the TP price formatted
+                tp_op = take_profit_trigger_operator(side_fmt)
 
                 # For TAKE_PROFIT_LIMIT, keep price/trigger_price/ref_price EXACTLY the same string.
                 # This avoids mismatches that can lead to API rejections and ensures Trigger Condition displays the TP price.
@@ -5942,11 +5952,11 @@ class CryptoComTradeClient:
                 # Build trigger_condition variations (some endpoints are strict about spacing).
                 # The advanced endpoint derives the trigger from ref_price/ref_price_type and does not
                 # require trigger_condition, so try WITHOUT it first (matches the verified payload),
-                # then fall back to the spaced/unspaced string forms.
+                # then fall back to the spaced/unspaced string forms with the side-aware operator.
                 trigger_condition_variations = [
                     None,
-                    f">= {tp_price_formatted}",
-                    f">={tp_price_formatted}",
+                    f"{tp_op} {tp_price_formatted}",
+                    f"{tp_op}{tp_price_formatted}",
                 ]
                 
                 # Add leverage if margin trading
