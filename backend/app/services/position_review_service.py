@@ -1,11 +1,11 @@
-"""Daily Position Review — prompt the operator about open positions (close / protect / snooze).
+"""Daily Position Review — prompt the operator about unprotected open positions.
 
-Once a day a Telegram message is sent for every open position (long or short). When the
-position is missing SL and/or TP, the message states that problem clearly and offers:
-**Crear SL**, **Crear TP**, and **Cerrar** (market sell for LONG / buy for SHORT). Fully
-protected positions still get a simple close/snooze prompt. **Mantener 30 días** snoozes
-prompts for that position for 30 days. A position that is closed and later re-opened is
-treated as a NEW case and prompted again even if the old one was snoozed.
+Once a day a Telegram message is sent for every open position (long or short) that is
+missing SL and/or TP. The message states that problem clearly and offers **Crear SL**,
+**Crear TP**, and **Cerrar** (market sell for LONG / buy for SHORT). Fully protected
+positions (both SL and TP present) are skipped — no daily close nudge. **Mantener 30 días**
+snoozes prompts for that position for 30 days. A position that is closed and later
+re-opened is treated as a NEW case and prompted again even if the old one was snoozed.
 
 Design notes
 ------------
@@ -154,7 +154,11 @@ def evaluate_positions(
       - closed since last run (was open, now absent)  -> reset snooze, last_seen_qty=0
       - new or re-opened (last_seen_qty == 0, now open) -> clear snooze -> ALERT
       - snoozed and continuously open                  -> skip
+      - fully protected (has_sl and has_tp)            -> skip (still track qty)
       - otherwise                                      -> ALERT
+
+    When ``has_sl`` / ``has_tp`` are absent (unit tests), treat as unprotected so the
+    existing snooze/reopen tests keep working without enrichment.
     """
     from app.models.position_review_state import PositionReviewState
 
@@ -180,8 +184,9 @@ def evaluate_positions(
         if reopened_or_new:
             row.snoozed_until = None  # fresh case: never inherit an old snooze
 
+        fully_protected = bool(p.get("has_sl")) and bool(p.get("has_tp"))
         snoozed = row.snoozed_until is not None and _as_aware(row.snoozed_until) > now
-        if not snoozed:
+        if not snoozed and not fully_protected:
             row.last_alerted_at = now
             to_alert.append(p)
 
@@ -444,10 +449,10 @@ def send_review_alerts(positions: List[Dict[str, Any]]) -> int:
 
 
 def run_review(db: Session, now: Optional[datetime] = None) -> Dict[str, Any]:
-    """Enumerate positions, update state, and send prompts for the non-snoozed ones."""
+    """Enumerate positions, skip fully protected ones, send prompts for the rest."""
     positions = enumerate_open_positions(db)
+    positions = enrich_positions_with_protection(db, positions)
     to_alert = evaluate_positions(db, positions, now=now)
-    to_alert = enrich_positions_with_protection(db, to_alert)
     sent = send_review_alerts(to_alert)
     logger.info("posrev: reviewed %d positions, alerted %d, sent %d", len(positions), len(to_alert), sent)
     return {"open": len(positions), "alerted": len(to_alert), "sent": sent}

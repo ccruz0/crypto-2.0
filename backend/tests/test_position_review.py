@@ -179,6 +179,19 @@ def test_execute_close_flat_returns_error(db):
 
 
 # --- alert copy / keyboard (unprotected vs protected) ----------------------
+def test_fully_protected_position_is_not_alerted(db):
+    pos = {**_pos("DOT_USD", "SHORT"), "has_sl": True, "has_tp": True}
+    assert prs.evaluate_positions(db, [pos]) == []
+    row = db.query(PositionReviewState).filter_by(position_key="DOT_USD:SHORT").first()
+    assert row is not None and float(row.last_seen_qty) == 10.0
+    assert row.last_alerted_at is None
+
+
+def test_partial_protection_still_alerts(db):
+    pos = {**_pos("DOT_USD", "SHORT"), "has_sl": True, "has_tp": False}
+    assert [p["key"] for p in prs.evaluate_positions(db, [pos])] == ["DOT_USD:SHORT"]
+
+
 def test_format_alert_unprotected_states_problem_and_options():
     text = prs._format_alert({
         **_pos("DOT_USD", "SHORT", qty=22.4, mv=-19.4),
@@ -207,6 +220,8 @@ def test_format_alert_long_close_says_sell():
 
 
 def test_format_alert_protected_keeps_simple_close_prompt():
+    # Formatter still supports the protected copy (e.g. manual/callback paths);
+    # the daily loop no longer sends these when both SL and TP exist.
     text = prs._format_alert({
         **_pos("ETH_USD", "LONG", qty=1.0, mv=2000.0),
         "has_sl": True,
