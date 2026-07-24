@@ -214,11 +214,52 @@ def _is_active_open_order_status(order: dict) -> bool:
     return order_status in ("ACTIVE", "NEW", "PENDING", "PARTIALLY_FILLED") or not order_status
 
 
+def _order_protection_qty(order: dict) -> float:
+    """Remaining protective qty when available; else declared order quantity."""
+    for key in ("remaining_quantity", "quantity", "qty"):
+        raw = order.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            qty = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            return qty
+    return 0.0
+
+
 def _quantity_matches_position(order: dict, position_balance: float) -> bool:
-    order_quantity = float(order.get("quantity", 0) or order.get("qty", 0) or 0)
+    """True when a single protection order size matches the wallet balance (±5%)."""
+    order_quantity = _order_protection_qty(order)
     if order_quantity <= 0 or position_balance <= 0:
         return True  # no qty info → assume match (legacy)
     return abs(order_quantity - position_balance) / position_balance <= 0.05
+
+
+def _protection_quantities_cover_position(
+    orders: List[dict], position_balance: float, tolerance: float = 0.05
+) -> bool:
+    """True when active protection qtys cover the wallet (single full-size or multi-lot sum).
+
+    Multi-lot positions place one SL/TP per entry lot. Each leg is a fraction of the
+    wallet balance, so per-order ±5% matching falsely flags them as unprotected even
+    when the sum of legs covers the bag (observed AAVE_USD: 0.105+0.104+0.104 ≈ 0.313).
+    """
+    if position_balance <= 0:
+        return True
+    active = [o for o in orders if _is_active_open_order_status(o)]
+    if not active:
+        return False
+    qtys = [_order_protection_qty(o) for o in active]
+    if all(q <= 0 for q in qtys):
+        return True  # no qty info → assume match (legacy)
+    for q in qtys:
+        if q > 0 and abs(q - position_balance) / position_balance <= tolerance:
+            return True
+    covered = sum(q for q in qtys if q > 0)
+    # Allow slight undershoot (fees/rounding) and any overshoot (duplicate legs).
+    return covered >= position_balance * (1.0 - tolerance)
 
 
 class SLTPCheckerService:
@@ -624,37 +665,45 @@ class SLTPCheckerService:
                     
                     position_balance = position.get('balance', 0)
                     active_sl_orders = [
-                        o for o in sl_orders_open
-                        if _is_active_open_order_status(o)
-                        and _quantity_matches_position(o, position_balance)
+                        o for o in sl_orders_open if _is_active_open_order_status(o)
                     ]
                     active_tp_orders = [
-                        o for o in tp_orders_open
-                        if _is_active_open_order_status(o)
-                        and _quantity_matches_position(o, position_balance)
+                        o for o in tp_orders_open if _is_active_open_order_status(o)
                     ]
-                    # Log exclusions for qty mismatch
-                    for o in sl_orders_open:
-                        if _is_active_open_order_status(o) and not _quantity_matches_position(o, position_balance):
-                            logger.info(
-                                f"Position {symbol}: Excluding SL order {o.get('order_id')} - "
-                                f"qty mismatch vs position={position_balance}"
-                            )
-                    for o in tp_orders_open:
-                        if _is_active_open_order_status(o) and not _quantity_matches_position(o, position_balance):
-                            logger.info(
-                                f"Position {symbol}: Excluding TP order {o.get('order_id')} - "
-                                f"qty mismatch vs position={position_balance}"
-                            )
-                    
-                    has_sl = len(active_sl_orders) > 0
-                    has_tp = len(active_tp_orders) > 0
-                    
+                    sl_covered_qty = sum(_order_protection_qty(o) for o in active_sl_orders)
+                    tp_covered_qty = sum(_order_protection_qty(o) for o in active_tp_orders)
+                    has_sl = _protection_quantities_cover_position(
+                        active_sl_orders, position_balance
+                    )
+                    has_tp = _protection_quantities_cover_position(
+                        active_tp_orders, position_balance
+                    )
+                    if active_sl_orders and not has_sl:
+                        logger.info(
+                            "Position %s: SL qty under-covered "
+                            "sum=%s balance=%s orders=%s",
+                            symbol,
+                            sl_covered_qty,
+                            position_balance,
+                            [o.get("order_id") for o in active_sl_orders],
+                        )
+                    if active_tp_orders and not has_tp:
+                        logger.info(
+                            "Position %s: TP qty under-covered "
+                            "sum=%s balance=%s orders=%s",
+                            symbol,
+                            tp_covered_qty,
+                            position_balance,
+                            [o.get("order_id") for o in active_tp_orders],
+                        )
+
                     logger.info(
-                        f"Position {symbol}: Found {len(active_sl_orders)} active SL and "
-                        f"{len(active_tp_orders)} active TP orders matching position "
-                        f"balance={position_balance} (total found: {len(sl_orders_open)} SL, "
-                        f"{len(tp_orders_open)} TP)"
+                        f"Position {symbol}: SL covered={has_sl} "
+                        f"(sum={sl_covered_qty}/{len(active_sl_orders)} legs) "
+                        f"TP covered={has_tp} "
+                        f"(sum={tp_covered_qty}/{len(active_tp_orders)} legs) "
+                        f"balance={position_balance} "
+                        f"(raw found: {len(sl_orders_open)} SL, {len(tp_orders_open)} TP)"
                     )
                 except Exception as e:
                     logger.warning(f"Error checking open orders from Exchange API for {symbol}: {e}")
