@@ -79,6 +79,22 @@ def _order_symbol_scope(symbol: str) -> List[str]:
     return [symbol, f"{symbol}_USDT", f"{symbol}_USD"]
 
 
+def rebuild_open_lots_for_details(db: Session, symbol: str) -> List[OpenLot]:
+    """Rebuild open lots for Expected TP details.
+
+    Summary rebuilds on the base asset (BTC) so USD and USDT closes net together,
+    then groups by pair. Details historically called rebuild_open_lots(pair), which
+    only loaded one book and resurrected sold BTC_USDT buys closed via BTC_USD
+    sells. Mirror summary: FIFO on base, then keep lots for the requested pair.
+    """
+    symbol = (symbol or "").upper()
+    if "_" not in symbol:
+        return rebuild_open_lots(db, symbol)
+    base = symbol.split("_")[0]
+    open_lots = rebuild_open_lots(db, base)
+    return [lot for lot in open_lots if (lot.symbol or "").upper() == symbol]
+
+
 def _group_lots_by_pair(open_lots: List[OpenLot]) -> Dict[str, List[OpenLot]]:
     """Split open lots by exact pair symbol (BTC_USD vs BTC_USDT never merge)."""
     grouped: Dict[str, List[OpenLot]] = {}
@@ -2216,8 +2232,9 @@ def get_expected_take_profit_details(
         Dict with summary and detailed lot data
     """
     orphaned_protection_only = False
-    # Rebuild open lots
-    open_lots = rebuild_open_lots(db, symbol)
+    # Rebuild open lots like summary (base-asset FIFO), then keep this pair only.
+    # Pair-strict rebuild resurrects buys closed on the sister USD/USDT book.
+    open_lots = rebuild_open_lots_for_details(db, symbol)
     
     # If no open lots found, check if there are active TP orders
     # In that case, create a virtual lot from portfolio balance and TP order
@@ -2795,16 +2812,29 @@ def get_expected_take_profit_details(
     from app.models.watchlist import WatchlistItem
     from app.services.sl_tp_price_adjust import resolve_watchlist_percentages
 
-    wl = (
-        db.query(WatchlistItem)
-        .filter(
-            WatchlistItem.symbol.in_(
-                [symbol, symbol.replace("_USDT", "_USD"), symbol.replace("_USD", "_USDT")]
+    try:
+        wl = (
+            db.query(WatchlistItem)
+            .filter(
+                WatchlistItem.symbol.in_(
+                    [symbol, symbol.replace("_USDT", "_USD"), symbol.replace("_USD", "_USDT")]
+                )
             )
+            .first()
         )
-        .first()
-    )
-    sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
+        sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
+        strategy = {
+            "sl_percentage": sl_pct,
+            "tp_percentage": tp_pct,
+            "sl_tp_mode": mode,
+        }
+    except Exception as exc:
+        logger.debug("Expected TP Details: strategy lookup skipped for %s: %s", symbol, exc)
+        strategy = {
+            "sl_percentage": 3.0,
+            "tp_percentage": 3.0,
+            "sl_tp_mode": "conservative",
+        }
 
     return {
         "symbol": symbol,
@@ -2824,10 +2854,6 @@ def get_expected_take_profit_details(
         "has_uncovered": uncovered_qty > 0,
         "cost_basis_unknown": cost_basis_unknown,
         "orphaned_protection_only": orphaned_protection_only,
-        "strategy": {
-            "sl_percentage": sl_pct,
-            "tp_percentage": tp_pct,
-            "sl_tp_mode": mode,
-        },
+        "strategy": strategy,
     }
 
