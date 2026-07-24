@@ -631,13 +631,18 @@ def create_stop_loss_order(
             if "quantity_below_min" in sl_order_error or "below min_quantity" in sl_order_error:
                 logger.warning(f"⚠️ Small position detected for {symbol}: quantity {quantity} cannot be protected")
 
-                # PART C: Send Telegram alert with corrected top-up suggestion math
+                # Persist to Monitoring; suppress live Telegram (expected dust / below-min qty).
                 try:
+                    from app.services.trade_block_telegram_policy import (
+                        suppress_small_position_unprotected_telegram,
+                    )
+                    from app.api.routes_monitoring import add_telegram_message
+
                     # Fetch instrument rules (should already be fetched above, but fetch again for safety)
                     inst_meta = trade_client._get_instrument_metadata(symbol)
                     if not inst_meta:
                         logger.warning(f"⚠️ Cannot calculate top-up for {symbol}: instrument rules unavailable")
-                        telegram_notifier.send_message(
+                        alert_body = (
                             f"⚠️ <b>SMALL POSITION UNPROTECTED</b>\n\n"
                             f"Symbol: {symbol}\n"
                             f"Executed Qty: {quantity}\n\n"
@@ -708,7 +713,7 @@ def create_stop_loss_order(
                         # Calculate estimated USD notional
                         estimated_usd_notional = topup_qty_rounded * last_price
                         
-                        telegram_notifier.send_message(
+                        alert_body = (
                             f"⚠️ <b>SMALL POSITION UNPROTECTED</b>\n\n"
                             f"Symbol: {symbol}\n"
                             f"Executed Qty: {quantity:.8f}\n"
@@ -721,7 +726,26 @@ def create_stop_loss_order(
                             f"Position cannot be protected with SL/TP.\n"
                             f"Consider manual top-up or accept risk."
                         )
-                        logger.info(f"✅ Sent alert for unprotected small position: {symbol} (topup_qty={topup_qty_rounded:.8f}, usd=${estimated_usd_notional:.2f})")
+
+                    # Always persist for Monitoring; never page Telegram for this expected case.
+                    if suppress_small_position_unprotected_telegram(alert_body, sl_order_error):
+                        add_telegram_message(
+                            alert_body.replace("<b>", "").replace("</b>", ""),
+                            symbol=symbol,
+                            blocked=False,
+                            sltp_failed=True,
+                            error_message=sl_order_error,
+                            throttle_status="SMALL_POSITION_UNPROTECTED",
+                            throttle_reason="quantity_below_min",
+                        )
+                        logger.info(
+                            "SMALL POSITION UNPROTECTED Telegram suppressed (Monitoring only): %s qty=%s",
+                            symbol,
+                            quantity,
+                        )
+                    else:
+                        telegram_notifier.send_message(alert_body)
+                        logger.info(f"✅ Sent alert for unprotected small position: {symbol}")
                 except Exception as telegram_err:
                     logger.warning(f"Failed to send small position alert: {telegram_err}", exc_info=True)
 

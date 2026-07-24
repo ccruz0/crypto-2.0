@@ -1514,6 +1514,7 @@ class TelegramNotifier:
         db: Optional[Any] = None,
         persist_only: bool = False,  # If True, only persist to DB (no Telegram send); used for dry_run
         correlation_id: Optional[str] = None,
+        persist_label: str = "DRY_RUN",
     ):
         """Send a buy signal alert
         
@@ -1538,7 +1539,8 @@ class TelegramNotifier:
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 price_change_display = price_variation or "N/A"
-                sent_message = f"[DRY_RUN] BUY SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                label = (persist_label or "DRY_RUN").strip() or "DRY_RUN"
+                sent_message = f"[{label}] BUY SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
                 message_id = add_telegram_message(
                     sent_message,
                     symbol=symbol,
@@ -1684,6 +1686,7 @@ class TelegramNotifier:
         db: Optional[Any] = None,
         persist_only: bool = False,
         correlation_id: Optional[str] = None,
+        persist_label: str = "DRY_RUN",
     ):
         """Send a sell signal alert
         
@@ -1707,7 +1710,8 @@ class TelegramNotifier:
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 price_change_display = price_variation or "N/A"
-                sent_message = f"[DRY_RUN] SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                label = (persist_label or "DRY_RUN").strip() or "DRY_RUN"
+                sent_message = f"[{label}] SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
                 is_blocked = (throttle_status or "SENT").upper() == "BLOCKED"
                 message_id = add_telegram_message(
                     sent_message,

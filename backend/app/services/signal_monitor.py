@@ -3866,7 +3866,7 @@ class SignalMonitorService:
                 if should_block_order_creation:
                     logger.warning(
                         f"ℹ️  LÍMITE ALCANZADO para {symbol}: {base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}. "
-                        f"La alerta se enviará, pero la creación de órdenes estará bloqueada."
+                        f"BUY SIGNAL irá a Monitoring sin Telegram; creación de órdenes bloqueada."
                     )
                     self._upsert_watchlist_signal_state(
                         db,
@@ -4136,6 +4136,8 @@ class SignalMonitorService:
                                 evaluation_id=evaluation_id,
                                 strategy_key=strategy_key,
                                 thresholds=threshold_context,
+                                # Coin / open-order limit: Monitoring only, no live Telegram.
+                                persist_only=bool(should_block_order_creation),
                             )
                             # PHASE 0: Structured logging for Telegram send attempt
                             message_id = None
@@ -4471,9 +4473,22 @@ class SignalMonitorService:
                                                     correlation_id=str(uuid_module.uuid4()),
                                                 )
                                             
-                                                # Send Telegram failure message (required - Step 4)
+                                                # Send Telegram failure message — suppress expected capacity limits
                                                 try:
-                                                    if self._telegram_send_enabled():
+                                                    from app.services.trade_block_telegram_policy import (
+                                                        suppress_order_failure_telegram,
+                                                    )
+                                                    if suppress_order_failure_telegram(
+                                                        error_msg, reason_code=reason_code
+                                                    ):
+                                                        logger.info(
+                                                            "ORDER FAILED Telegram suppressed (expected limit): "
+                                                            "%s BUY reason_code=%s error=%s",
+                                                            symbol,
+                                                            reason_code,
+                                                            (error_msg or "")[:200],
+                                                        )
+                                                    elif self._telegram_send_enabled():
                                                         telegram_notifier.send_message(
                                                             format_order_failed_telegram(
                                                                 symbol=symbol,
@@ -4500,13 +4515,19 @@ class SignalMonitorService:
                                                 except Exception as store_err:
                                                     logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                                                 try:
-                                                    from app.services.notion_tasks import create_bug_task
-                                                    create_bug_task(
-                                                        title="Order placement system failure",
-                                                        project="Crypto Trading",
-                                                        details=f"symbol={symbol} side=BUY error={error_msg[:300]}.",
+                                                    from app.services.trade_block_telegram_policy import (
+                                                        suppress_order_failure_telegram,
                                                     )
-                                                    logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY)")
+                                                    if not suppress_order_failure_telegram(
+                                                        error_msg, reason_code=reason_code
+                                                    ):
+                                                        from app.services.notion_tasks import create_bug_task
+                                                        create_bug_task(
+                                                            title="Order placement system failure",
+                                                            project="Crypto Trading",
+                                                            details=f"symbol={symbol} side=BUY error={error_msg[:300]}.",
+                                                        )
+                                                        logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY)")
                                                 except Exception as notion_err:
                                                     logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
                                             else:
@@ -4619,9 +4640,22 @@ class SignalMonitorService:
                                                 correlation_id=str(uuid_module.uuid4()),
                                             )
                                         
-                                            # Send Telegram failure message (required - Step 4)
+                                            # Send Telegram failure message — suppress expected capacity limits
                                             try:
-                                                if self._telegram_send_enabled():
+                                                from app.services.trade_block_telegram_policy import (
+                                                    suppress_order_failure_telegram,
+                                                )
+                                                if suppress_order_failure_telegram(
+                                                    error_msg, reason_code=reason_code
+                                                ):
+                                                    logger.info(
+                                                        "ORDER FAILED Telegram suppressed (expected limit): "
+                                                        "%s BUY reason_code=%s error=%s",
+                                                        symbol,
+                                                        reason_code,
+                                                        (error_msg or "")[:200],
+                                                    )
+                                                elif self._telegram_send_enabled():
                                                     telegram_notifier.send_message(
                                                         format_order_failed_telegram(
                                                             symbol=symbol,
@@ -4648,13 +4682,19 @@ class SignalMonitorService:
                                             except Exception as store_err:
                                                 logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                                             try:
-                                                from app.services.notion_tasks import create_bug_task
-                                                create_bug_task(
-                                                    title="Order placement system failure",
-                                                    project="Crypto Trading",
-                                                    details=f"symbol={symbol} side=BUY exception: {error_msg[:300]}.",
+                                                from app.services.trade_block_telegram_policy import (
+                                                    suppress_order_failure_telegram,
                                                 )
-                                                logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY exception)")
+                                                if not suppress_order_failure_telegram(
+                                                    error_msg, reason_code=reason_code
+                                                ):
+                                                    from app.services.notion_tasks import create_bug_task
+                                                    create_bug_task(
+                                                        title="Order placement system failure",
+                                                        project="Crypto Trading",
+                                                        details=f"symbol={symbol} side=BUY exception: {error_msg[:300]}.",
+                                                    )
+                                                    logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY exception)")
                                             except Exception as notion_err:
                                                 logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
                             except Exception as orchestrator_err:
@@ -6582,9 +6622,22 @@ class SignalMonitorService:
                                                     correlation_id=str(uuid_module.uuid4()),
                                                 )
                                             
-                                                # Send Telegram failure message (required)
+                                                # Send Telegram failure message — suppress expected capacity limits
                                                 try:
-                                                    if self._telegram_send_enabled():
+                                                    from app.services.trade_block_telegram_policy import (
+                                                        suppress_order_failure_telegram,
+                                                    )
+                                                    if suppress_order_failure_telegram(
+                                                        error_msg, reason_code=reason_code
+                                                    ):
+                                                        logger.info(
+                                                            "ORDER FAILED Telegram suppressed (expected limit): "
+                                                            "%s SELL reason_code=%s error=%s",
+                                                            symbol,
+                                                            reason_code,
+                                                            (error_msg or "")[:200],
+                                                        )
+                                                    elif self._telegram_send_enabled():
                                                         telegram_notifier.send_message(
                                                             format_order_failed_telegram(
                                                                 symbol=symbol,
@@ -6611,13 +6664,19 @@ class SignalMonitorService:
                                                 except Exception as store_err:
                                                     logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                                                 try:
-                                                    from app.services.notion_tasks import create_bug_task
-                                                    create_bug_task(
-                                                        title="Order placement system failure",
-                                                        project="Crypto Trading",
-                                                        details=f"symbol={symbol} side=SELL error={error_msg[:300]}.",
+                                                    from app.services.trade_block_telegram_policy import (
+                                                        suppress_order_failure_telegram,
                                                     )
-                                                    logger.info("Trading failure triggered Notion bug task: Order placement system failure (SELL)")
+                                                    if not suppress_order_failure_telegram(
+                                                        error_msg, reason_code=reason_code
+                                                    ):
+                                                        from app.services.notion_tasks import create_bug_task
+                                                        create_bug_task(
+                                                            title="Order placement system failure",
+                                                            project="Crypto Trading",
+                                                            details=f"symbol={symbol} side=SELL error={error_msg[:300]}.",
+                                                        )
+                                                        logger.info("Trading failure triggered Notion bug task: Order placement system failure (SELL)")
                                                 except Exception as notion_err:
                                                     logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
                                             else:
@@ -6704,9 +6763,22 @@ class SignalMonitorService:
                                                 correlation_id=str(uuid_module.uuid4()),
                                             )
                                         
-                                            # Send Telegram failure message (required)
+                                            # Send Telegram failure message — suppress expected capacity limits
                                             try:
-                                                if self._telegram_send_enabled():
+                                                from app.services.trade_block_telegram_policy import (
+                                                    suppress_order_failure_telegram,
+                                                )
+                                                if suppress_order_failure_telegram(
+                                                    error_msg, reason_code=reason_code
+                                                ):
+                                                    logger.info(
+                                                        "ORDER FAILED Telegram suppressed (expected limit): "
+                                                        "%s SELL reason_code=%s error=%s",
+                                                        symbol,
+                                                        reason_code,
+                                                        (error_msg or "")[:200],
+                                                    )
+                                                elif self._telegram_send_enabled():
                                                     telegram_notifier.send_message(
                                                         format_order_failed_telegram(
                                                             symbol=symbol,
@@ -8243,6 +8315,9 @@ class SignalMonitorService:
                     
                     # Send Telegram notification about the error (only if it's a REAL error, not a guardrail)
                     try:
+                        from app.services.trade_block_telegram_policy import (
+                            suppress_order_failure_telegram,
+                        )
                         error_details = error_msg or ""
 
                         # Check if this is a guardrail block (not a real error)
@@ -8266,6 +8341,9 @@ class SignalMonitorService:
                             notify_order_failure
                             and self._telegram_send_enabled()
                             and not is_guardrail_block
+                            and not suppress_order_failure_telegram(
+                                error_details, reason_code=reason_code
+                            )
                         ):
                             telegram_notifier.send_message(
                                 f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
@@ -8276,6 +8354,14 @@ class SignalMonitorService:
                             f"❌ Error: {error_details}{trade_status_note}\n\n"
                             f"⚠️ The symbol remains in your watchlist. Please check the configuration and try again."
                         )
+                        elif suppress_order_failure_telegram(
+                            error_details, reason_code=reason_code
+                        ):
+                            logger.info(
+                                "order_fail telegram suppressed (expected limit) symbol=%s side=BUY kind=%s",
+                                symbol,
+                                reason_code,
+                            )
                         elif is_guardrail_block:
                             logger.info(
                                 f"ℹ️ [GUARDRAIL_BLOCK] {symbol} BUY - Order blocked by guardrail (not notifying): {error_details}"
@@ -10475,7 +10561,18 @@ class SignalMonitorService:
                     
                     # Send Telegram notification about the error
                     try:
-                        if notify_order_failure and self._telegram_send_enabled():
+                        from app.services.trade_block_telegram_policy import (
+                            suppress_order_failure_telegram,
+                        )
+                        if suppress_order_failure_telegram(
+                            error_msg, reason_code=reason_code_str
+                        ):
+                            logger.info(
+                                "order_fail telegram suppressed (expected limit) symbol=%s side=SELL kind=%s",
+                                symbol,
+                                reason_code_str,
+                            )
+                        elif notify_order_failure and self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"

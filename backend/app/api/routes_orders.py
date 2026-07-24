@@ -140,11 +140,15 @@ def place_order(
                 allowed = True
         
         if not allowed:
-            # Send Telegram alert only for unexpected blocks
+            # Send Telegram alert only for unexpected blocks (not expected capacity limits).
             try:
                 from app.utils.trading_guardrails import should_send_trade_block_telegram_alert, mark_trade_block_telegram_sent
+                from app.services.trade_block_telegram_policy import suppress_live_trade_block_telegram
 
-                if should_send_trade_block_telegram_alert(request.symbol, request.side.value, block_reason):
+                if (
+                    not suppress_live_trade_block_telegram(block_reason)
+                    and should_send_trade_block_telegram_alert(request.symbol, request.side.value, block_reason)
+                ):
                     value_text = f"💵 Value: ${order_usd_value:.2f}\n" if order_usd_value else ""
                     telegram_notifier.send_message(
                         f"🚫 <b>TRADE BLOCKED</b>\n\n"
@@ -156,6 +160,13 @@ def place_order(
                         symbol=request.symbol,
                     )
                     mark_trade_block_telegram_sent(request.symbol, request.side.value, block_reason)
+                elif suppress_live_trade_block_telegram(block_reason):
+                    logger.info(
+                        "TRADE_BLOCKED Telegram suppressed (expected limit): %s %s — %s",
+                        request.symbol,
+                        request.side.value,
+                        block_reason,
+                    )
             except Exception as e:
                 logger.warning(f"Failed to send Telegram alert for blocked order: {e}")
             
