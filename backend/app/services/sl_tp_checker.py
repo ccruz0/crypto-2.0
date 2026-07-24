@@ -18,13 +18,62 @@ from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 
 logger = logging.getLogger(__name__)
 
+# Align with system_core / recover_missing_tps dust floor (USD notional).
+_MIN_ENSURE_POSITION_USD = float(os.getenv("SL_TP_MIN_POSITION_USD", os.getenv("SYSTEM_CORE_MIN_POSITION_USD", "5")))
+
+
+def _entry_symbol_variants(symbol: str) -> List[str]:
+    """USD/USDT (and bare) variants so fills on AKT_USD are found for AKT_USDT ensure."""
+    symbol = (symbol or "").upper().strip()
+    if not symbol:
+        return []
+    variants = [symbol]
+    if "_" not in symbol:
+        variants.extend([f"{symbol}_USDT", f"{symbol}_USD"])
+    elif symbol.endswith("_USDT"):
+        variants.append(symbol.replace("_USDT", "_USD"))
+    elif symbol.endswith("_USD"):
+        variants.append(symbol.replace("_USD", "_USDT"))
+    seen = set()
+    out: List[str] = []
+    for v in variants:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _order_entry_price(order: ExchangeOrder) -> Optional[float]:
+    """Best available fill price from an ExchangeOrder row."""
+    price = order.avg_price or order.price
+    if (not price or float(price) <= 0) and order.cumulative_value and order.cumulative_quantity:
+        try:
+            cq = float(order.cumulative_quantity)
+            cv = float(order.cumulative_value)
+            if cq > 0 and cv > 0:
+                price = cv / cq
+        except (TypeError, ValueError):
+            price = None
+    if price is None:
+        return None
+    try:
+        p = float(price)
+        return p if p > 0 else None
+    except (TypeError, ValueError):
+        return None
+
 
 def _find_recent_entry_order(db: Session, symbol: str) -> Optional[ExchangeOrder]:
-    """Most recent filled entry order (BUY long or SELL short), excluding protection orders."""
+    """Most recent filled entry order (BUY long or SELL short), excluding protection orders.
+
+    Searches USD/USDT symbol variants — Crypto.com often fills on *_USD while
+    watchlist/ensure defaults bare balances to *_USDT.
+    """
+    variants = _entry_symbol_variants(symbol)
     return (
         db.query(ExchangeOrder)
         .filter(
-            ExchangeOrder.symbol == symbol,
+            ExchangeOrder.symbol.in_(variants),
             ExchangeOrder.status == OrderStatusEnum.FILLED,
             ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]),
         )
@@ -37,10 +86,61 @@ def _find_recent_entry_order(db: Session, symbol: str) -> Optional[ExchangeOrder
     )
 
 
+def _fetch_mark_price(symbol: str) -> Optional[float]:
+    """Mark/last price via simple_price_fetcher (correct API; module has no get_price())."""
+    try:
+        from simple_price_fetcher import price_fetcher
+
+        for variant in _entry_symbol_variants(symbol):
+            result = price_fetcher.get_price(variant)
+            if result and getattr(result, "success", False) and result.price and float(result.price) > 0:
+                return float(result.price)
+    except Exception as exc:
+        logger.warning("Mark price fetch failed for %s: %s", symbol, exc)
+    return None
+
+
 def _entry_side_from_order(order: ExchangeOrder) -> str:
     if order.side == OrderSideEnum.SELL:
         return "SELL"
     return "BUY"
+
+
+def _derive_entry_from_abs_prices(
+    *,
+    entry_side: str,
+    sl_price: Optional[float],
+    tp_price: Optional[float],
+    sl_percentage: Optional[float],
+    tp_percentage: Optional[float],
+) -> Optional[float]:
+    """Back-solve entry from absolute SL/TP + configured percentages when fills are missing."""
+    try:
+        if tp_price and tp_percentage and float(tp_percentage) > 0:
+            tp_pct = abs(float(tp_percentage)) / 100.0
+            tp = float(tp_price)
+            if entry_side == "SELL":
+                denom = 1.0 - tp_pct
+            else:
+                denom = 1.0 + tp_pct
+            if denom > 0:
+                entry = tp / denom
+                if entry > 0:
+                    return entry
+        if sl_price and sl_percentage and float(sl_percentage) > 0:
+            sl_pct = abs(float(sl_percentage)) / 100.0
+            sl = float(sl_price)
+            if entry_side == "SELL":
+                denom = 1.0 + sl_pct
+            else:
+                denom = 1.0 - sl_pct
+            if denom > 0:
+                entry = sl / denom
+                if entry > 0:
+                    return entry
+    except (TypeError, ValueError):
+        return None
+    return None
 
 
 def _compute_sl_tp_from_entry(
@@ -367,9 +467,23 @@ class SLTPCheckerService:
                     base_currency = currency.split('_')[0]
                     symbol = currency  # Keep full symbol for later use
                 else:
-                    # Format is just currency like "ETH" - assume USDT pair
+                    # Format is just currency like "ETH" - prefer watchlist / fill pair
                     base_currency = currency
                     symbol = f"{currency}_USDT"
+                    for preferred in (f"{currency}_USD", f"{currency}_USDT"):
+                        wl = (
+                            db.query(WatchlistItem)
+                            .filter(WatchlistItem.symbol == preferred)
+                            .first()
+                        )
+                        if wl:
+                            symbol = preferred
+                            break
+                    # Prefer the pair that actually has a recent filled entry
+                    for preferred in (f"{currency}_USD", f"{currency}_USDT"):
+                        if _find_recent_entry_order(db, preferred):
+                            symbol = preferred
+                            break
                 
                 # Skip stablecoins (USDT, USD, USDC, etc.) and fiat (EUR, GBP, JPY, etc.)
                 stablecoins = ['USDT', 'USD', 'USDC', 'BUSD', 'DAI', 'TUSD']
@@ -377,6 +491,24 @@ class SLTPCheckerService:
                 if base_currency in stablecoins or base_currency in fiat:
                     logger.debug(f"Skipping stablecoin/fiat: {base_currency}")
                     continue
+
+                # Skip dust leftovers (AKT/ATOM/CRO/LINK residual balances) — cannot protect
+                # meaningfully and entry fills are usually gone after the position was closed.
+                if _MIN_ENSURE_POSITION_USD > 0:
+                    mark = _fetch_mark_price(symbol)
+                    if mark and mark > 0:
+                        notional = abs(balance) * mark
+                        if notional < _MIN_ENSURE_POSITION_USD:
+                            logger.info(
+                                "Skipping dust position %s balance=%s mark=%s notional=$%.4f "
+                                "(min=$%s)",
+                                symbol,
+                                balance,
+                                mark,
+                                notional,
+                                _MIN_ENSURE_POSITION_USD,
+                            )
+                            continue
                 
                 open_positions.append({
                     'currency': base_currency,
@@ -1006,24 +1138,34 @@ class SLTPCheckerService:
                     'error': f'No open position found for {symbol}. Please verify you have balance in {base_currency}.'
                 }
             
-            # Get watchlist item (if exists)
-            watchlist_item = db.query(WatchlistItem).filter(
-                WatchlistItem.symbol == symbol
-            ).first()
+            # Get watchlist item (if exists) — try USD/USDT variants
+            watchlist_item = None
+            for variant in _entry_symbol_variants(symbol):
+                watchlist_item = db.query(WatchlistItem).filter(
+                    WatchlistItem.symbol == variant
+                ).first()
+                if watchlist_item:
+                    if variant != symbol:
+                        logger.info(
+                            "Using watchlist item %s for ensure of %s",
+                            variant,
+                            symbol,
+                        )
+                    break
             
             # If no watchlist item, create one with default values
             if not watchlist_item:
                 logger.info(f"Watchlist item not found for {symbol}, creating with default values")
                 
                 # Get current price for calculations (skip if async - will get from order instead)
-                current_price = None
+                current_price = _fetch_mark_price(symbol)
                 
                 # Try to get entry price from most recent filled entry order
                 entry_price = None
                 try:
                     recent_order = _find_recent_entry_order(db, symbol)
                     if recent_order:
-                        entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
+                        entry_price = _order_entry_price(recent_order)
                         logger.info(f"Found entry price from recent order: {entry_price}")
                 except Exception as e:
                     logger.warning(f"Could not get entry price from orders: {e}")
@@ -1099,16 +1241,19 @@ class SLTPCheckerService:
             # Calculate from percentages if prices not available, or when tp_percentage is set
             entry_price = None
             entry_side = "BUY"
-            if (create_sl and not sl_price) or (create_tp and (not tp_price or prefer_tp_from_pct)):
+            need_sl_calc = create_sl and not sl_price
+            need_tp_calc = create_tp and (not tp_price or prefer_tp_from_pct)
+            if need_sl_calc or need_tp_calc:
                 recent_order = _find_recent_entry_order(db, symbol)
 
                 if recent_order:
-                    entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
+                    entry_price = _order_entry_price(recent_order)
                     entry_side = _entry_side_from_order(recent_order)
                     if entry_price:
                         logger.info(
                             f"✅ Using entry price from filled {entry_side} order for {symbol}: "
-                            f"{entry_price} (Order ID: {recent_order.exchange_order_id})"
+                            f"{entry_price} (Order ID: {recent_order.exchange_order_id}, "
+                            f"order_symbol={recent_order.symbol})"
                         )
                     else:
                         logger.warning(
@@ -1127,22 +1272,37 @@ class SLTPCheckerService:
                     entry_price = watchlist_item.price
                     if entry_price:
                         logger.info(f"Using last known price from watchlist for {symbol}: {entry_price} (no filled BUY order or purchase_price found)")
+
+                # 3b. Derive entry from absolute SL/TP + percentages (watchlist often has both)
+                if not entry_price:
+                    derived = _derive_entry_from_abs_prices(
+                        entry_side=entry_side,
+                        sl_price=watchlist_item.sl_price,
+                        tp_price=watchlist_item.tp_price,
+                        sl_percentage=watchlist_item.sl_percentage,
+                        tp_percentage=watchlist_item.tp_percentage,
+                    )
+                    if derived:
+                        entry_price = derived
+                        logger.info(
+                            "Derived entry price for %s from abs SL/TP + percentages: %s",
+                            symbol,
+                            entry_price,
+                        )
                 
                 # 4. Final fallback: if we have an open position but no entry price, use current market price
                 # This handles cases where position exists but order history is missing
                 if not entry_price and position_balance > 0:
                     try:
-                        import sys
-                        # Add parent directory to path to import simple_price_fetcher
-                        # os is already imported at the top of the file
-                        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                        if parent_dir not in sys.path:
-                            sys.path.insert(0, parent_dir)
-                        from simple_price_fetcher import get_price
-                        current_market_price = get_price(symbol)
+                        current_market_price = _fetch_mark_price(symbol)
                         if current_market_price and current_market_price > 0:
                             entry_price = current_market_price
-                            logger.warning(f"⚠️ Using current market price as entry price for {symbol}: {entry_price} (position exists but no BUY order found in database)")
+                            logger.warning(
+                                "⚠️ Using current market price as entry price for %s: %s "
+                                "(position exists but no entry fill found in database)",
+                                symbol,
+                                entry_price,
+                            )
                             # Update watchlist_item with current price for future use
                             watchlist_item.price = entry_price
                             if not watchlist_item.purchase_price:
@@ -1152,14 +1312,39 @@ class SLTPCheckerService:
                         logger.warning(f"Could not fetch current market price for {symbol}: {e}")
                 
                 if not entry_price:
-                    return {
-                        'success': False,
-                        'error': (
-                            f'Cannot determine entry price for {symbol}. No filled entry order found in database. '
-                            f'Please ensure there is a recent filled BUY or SELL entry order, or configure '
-                            f'purchase_price/price in watchlist.'
+                    # Prefer-tp-from-% but absolute prices already cover needed legs —
+                    # keep abs prices rather than failing the whole ensure.
+                    can_keep_abs = (
+                        (not need_sl_calc or sl_price)
+                        and (not create_tp or tp_price)
+                    )
+                    if can_keep_abs:
+                        logger.warning(
+                            "No entry price for %s; keeping existing absolute SL/TP "
+                            "(sl=%s tp=%s) instead of failing ensure",
+                            symbol,
+                            sl_price,
+                            tp_price,
                         )
-                    }
+                        need_sl_calc = False
+                        need_tp_calc = False
+                        # Order creators still require an entry_price argument — use mark.
+                        entry_price = _fetch_mark_price(symbol)
+                        if entry_price:
+                            logger.info(
+                                "Using mark price as entry metadata for %s: %s",
+                                symbol,
+                                entry_price,
+                            )
+                    else:
+                        return {
+                            'success': False,
+                            'error': (
+                                f'Cannot determine entry price for {symbol}. No filled entry order found in database. '
+                                f'Please ensure there is a recent filled BUY or SELL entry order, or configure '
+                                f'purchase_price/price in watchlist.'
+                            )
+                        }
                 
                 # Get strategy mode and percentages
                 strategy_mode = watchlist_item.sl_tp_mode or "conservative"
@@ -1189,20 +1374,21 @@ class SLTPCheckerService:
                     tp_percentage = 3.0 if strategy_mode == "conservative" else 2.0
                     logger.info(f"Using default TP percentage: {tp_percentage}% (watchlist had: {watchlist_item.tp_percentage})")
                 
-                logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, entry_side={entry_side}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
-                
-                # Calculate SL/TP from entry price using strategy percentages (side-aware)
-                if create_sl and not sl_price:
-                    sl_price, _ = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
-                    logger.info(f"Calculated SL price for {symbol}: {sl_price} (entry: {entry_price}, side={entry_side}, {sl_percentage}%)")
-                
-                if create_tp and (not tp_price or prefer_tp_from_pct):
-                    _, tp_price = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
-                    logger.info(
-                        f"Calculated TP price for {symbol}: {tp_price} "
-                        f"(entry: {entry_price}, side={entry_side}, {tp_percentage}%, "
-                        f"prefer_pct={prefer_tp_from_pct})"
-                    )
+                if entry_price and (need_sl_calc or need_tp_calc):
+                    logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, entry_side={entry_side}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
+                    
+                    # Calculate SL/TP from entry price using strategy percentages (side-aware)
+                    if need_sl_calc:
+                        sl_price, _ = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
+                        logger.info(f"Calculated SL price for {symbol}: {sl_price} (entry: {entry_price}, side={entry_side}, {sl_percentage}%)")
+                    
+                    if need_tp_calc:
+                        _, tp_price = _compute_sl_tp_from_entry(entry_price, entry_side, sl_percentage, tp_percentage)
+                        logger.info(
+                            f"Calculated TP price for {symbol}: {tp_price} "
+                            f"(entry: {entry_price}, side={entry_side}, {tp_percentage}%, "
+                            f"prefer_pct={prefer_tp_from_pct})"
+                        )
             
             # Round prices to reasonable precision before passing to exchange
             # The exchange will further format according to instrument tick size
@@ -1221,13 +1407,19 @@ class SLTPCheckerService:
             if not entry_price:
                 recent_order = _find_recent_entry_order(db, symbol)
                 if recent_order:
-                    entry_price = float(recent_order.avg_price) if recent_order.avg_price else float(recent_order.price) if recent_order.price else None
+                    entry_price = _order_entry_price(recent_order)
                     entry_side = _entry_side_from_order(recent_order)
                     if entry_price:
                         logger.info(
                             f"✅ Using entry price from filled {entry_side} order for {symbol}: "
                             f"{entry_price} (Order ID: {recent_order.exchange_order_id})"
                         )
+            if not entry_price:
+                entry_price = (
+                    watchlist_item.purchase_price
+                    or watchlist_item.price
+                    or _fetch_mark_price(symbol)
+                )
             
             # Get parent order ID from most recent filled entry order (for linking TP/SL)
             parent_order_id = None
