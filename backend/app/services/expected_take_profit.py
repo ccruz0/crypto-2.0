@@ -2,8 +2,9 @@
 Expected Take Profit Service
 
 Calculates expected take profit for open positions by:
-1. Rebuilding open lots from executed orders (FIFO netting of buys vs sells)
-2. Matching TP orders to lots by real OTOCO parent linkage first
+1. Rebuilding open lots from executed orders (parent-linked TP/SL closes
+   first, then FIFO netting of unlinked buys vs sells)
+2. Matching active TP orders to lots by real OTOCO parent linkage first
    (tp.parent_order_id -> buy.exchange_order_id), then OCO group id, then
    FIFO time-order as a last-resort fallback
 3. Calculating expected profit per lot and aggregated
@@ -416,9 +417,23 @@ def _dedupe_economic_twin_entry_orders(
     return [o for o in entries if str(o.exchange_order_id) not in drop_ids]
 
 
+def _order_exec_time(order: ExchangeOrder) -> datetime:
+    return order.exchange_create_time or order.created_at or datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _parent_order_id(order: ExchangeOrder) -> Optional[str]:
+    parent = (order.parent_order_id or "").strip()
+    return parent or None
+
+
 def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     """
-    Rebuild open lots from executed orders using FIFO logic.
+    Rebuild open lots from executed orders.
+
+    Prefer OTOCO ``parent_order_id`` closes (filled TP/SL) before FIFO, matching
+    the frontend Executed Orders / Portfolio inventory rules. Parent-linked
+    leftovers must not FIFO onto unrelated lots (that left sold BTC entries
+    showing as uncovered Missing SL/TP).
     
     Args:
         db: Database session
@@ -463,6 +478,13 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
         if sell.exchange_order_id in protected_entry_ids
     }
 
+    buy_by_id = {buy.exchange_order_id: buy for buy in buys}
+    sell_by_id = {sell.exchange_order_id: sell for sell in sells}
+    buy_remaining = {
+        buy.exchange_order_id: Decimal(str(buy.cumulative_quantity or buy.quantity))
+        for buy in buys
+    }
+
     # Track remaining sell quantities (don't modify original objects).
     # Margin shorts with active OTOCO SL/TP must not FIFO-net against long buys.
     sell_remaining = {}
@@ -473,55 +495,112 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
             sell_remaining[sell_id] = Decimal("0")
         else:
             sell_remaining[sell_id] = qty
-    
-    # Apply FIFO: track remaining quantity on each buy
+
     open_lots: List[OpenLot] = []
-    
-    logger.info(f"rebuild_open_lots: Processing {len(buys)} buy orders and {len(sells)} sell orders for {symbol}")
-    
+
+    logger.info(
+        f"rebuild_open_lots: Processing {len(buys)} buy orders and {len(sells)} sell orders for {symbol}"
+    )
+
+    # 1) Authoritative OTOCO parent linkage before FIFO (filled TP/SL closes).
+    for sell in sells:
+        sell_id = sell.exchange_order_id
+        if sell_id in protected_entry_ids:
+            continue
+        parent_id = _parent_order_id(sell)
+        if not parent_id or parent_id not in buy_remaining:
+            continue
+        parent = buy_by_id[parent_id]
+        if _order_exec_time(sell) < _order_exec_time(parent):
+            continue
+        sell_qty = sell_remaining.get(sell_id, Decimal("0"))
+        buy_qty = buy_remaining.get(parent_id, Decimal("0"))
+        if sell_qty <= 0 or buy_qty <= 0:
+            continue
+        applied = min(sell_qty, buy_qty)
+        sell_remaining[sell_id] = sell_qty - applied
+        buy_remaining[parent_id] = buy_qty - applied
+
+    # 1b) Parent-linked BUY covers close short SELL entries first.
     for buy in buys:
-        remaining_qty = Decimal(str(buy.cumulative_quantity or buy.quantity))
-        
-        # Apply sells in FIFO order (oldest first)
+        parent_id = _parent_order_id(buy)
+        if not parent_id or parent_id not in sell_by_id:
+            continue
+        parent = sell_by_id[parent_id]
+        if _order_exec_time(buy) < _order_exec_time(parent):
+            continue
+        cover_qty = Decimal(str(buy.cumulative_quantity or buy.quantity))
+        if cover_qty <= 0:
+            continue
+        if parent_id in protected_entry_ids:
+            avail = protected_sell_qty.get(parent_id, Decimal("0"))
+            applied = min(cover_qty, avail)
+            protected_sell_qty[parent_id] = avail - applied
+        else:
+            avail = sell_remaining.get(parent_id, Decimal("0"))
+            applied = min(cover_qty, avail)
+            sell_remaining[parent_id] = avail - applied
+        # Cover buys are closes, not long entries.
+        buy_remaining[buy.exchange_order_id] = Decimal("0")
+
+    # 2) FIFO leftovers: only unlinked closes may net against unrelated entries.
+    for buy in buys:
+        buy_id = buy.exchange_order_id
+        # Cover buys already zeroed above; never reopen them as long inventory.
+        if _parent_order_id(buy) and _parent_order_id(buy) in sell_by_id:
+            continue
+
+        remaining_qty = buy_remaining.get(buy_id, Decimal("0"))
+        buy_time = _order_exec_time(buy)
+
         for sell in sells:
             if remaining_qty <= 0:
                 break
             if sell.exchange_order_id in protected_entry_ids:
                 continue
-            
+            # Parent-linked closes only match their parent (handled above).
+            if _parent_order_id(sell):
+                continue
+            if _order_exec_time(sell) < buy_time:
+                continue
+
             sell_id = sell.exchange_order_id
             sell_qty = sell_remaining.get(sell_id, Decimal("0"))
-            
             if sell_qty <= 0:
                 continue
-            
-            # How much of this sell applies to this buy?
+
             qty_to_apply = min(remaining_qty, sell_qty)
             remaining_qty -= qty_to_apply
             sell_remaining[sell_id] = sell_qty - qty_to_apply
-        
-        # If there's remaining quantity, it's an open lot
+
+        buy_remaining[buy_id] = remaining_qty
+
         if remaining_qty > 0:
             buy_price = Decimal(str(buy.price or buy.avg_price or 0))
-            buy_time = buy.exchange_create_time or buy.created_at
-            
-            if buy_price > 0:  # Only add if we have a valid price
-                # Use the actual symbol from the order, not the input symbol
+            buy_time_raw = buy.exchange_create_time or buy.created_at
+
+            if buy_price > 0:
                 order_symbol = buy.symbol
                 open_lots.append(OpenLot(
-                    symbol=order_symbol,  # Use order's symbol for consistency
+                    symbol=order_symbol,
                     buy_order_id=buy.exchange_order_id,
-                    buy_time=buy_time,
+                    buy_time=buy_time_raw,
                     buy_price=buy_price,
                     lot_qty=remaining_qty,
                     parent_order_id=buy.parent_order_id,
                     oco_group_id=buy.oco_group_id,
                 ))
-                logger.debug(f"rebuild_open_lots: Found open lot - {order_symbol} qty={remaining_qty} price={buy_price} order_id={buy.exchange_order_id[:15]}...")
+                logger.debug(
+                    f"rebuild_open_lots: Found open lot - {order_symbol} qty={remaining_qty} "
+                    f"price={buy_price} order_id={buy.exchange_order_id[:15]}..."
+                )
 
-    # Remaining sell quantity after FIFO => open short lots (SELL entry).
+    # Remaining sell quantity after parent+FIFO => open short lots (SELL entry).
     for sell in sells:
         sell_id = sell.exchange_order_id
+        # Filled TP/SL (or any parent-linked close) must not invent short inventory.
+        if _parent_order_id(sell) and _parent_order_id(sell) in buy_by_id:
+            continue
         if sell_id in protected_entry_ids:
             remaining_qty = protected_sell_qty.get(sell_id, Decimal("0"))
         else:
