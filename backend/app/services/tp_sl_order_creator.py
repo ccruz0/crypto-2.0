@@ -56,6 +56,179 @@ def get_closing_side_from_entry(entry_side: str) -> str:
     raise ValueError(f"Invalid entry_side for TP/SL closing order: {entry_side}")
 
 
+def is_native_oco_enabled() -> bool:
+    """Feature flag: post-fill spot SL+TP via private/advanced/create-oco (default on)."""
+    return os.getenv("SLTP_NATIVE_OCO", "true").strip().lower() in ("1", "true", "yes", "on")
+
+
+def create_oco_protection_orders(
+    db: Session,
+    symbol: str,
+    side: str,
+    tp_price: float,
+    sl_price: float,
+    quantity: float,
+    entry_price: float,
+    parent_order_id: Optional[str] = None,
+    dry_run: bool = False,
+    source: str = "auto",
+) -> Dict:
+    """
+    Create SL+TP as a native Crypto.com OCO (LIMIT TP + STOP_LIMIT SL).
+
+    Persists both legs with ``oco_group_id = exchange list_id``. Spot only —
+    callers must not use this for margin (use standalone creators instead).
+
+    Returns keys aligned with ``_create_sl_tp_impl`` consumers:
+    ``sl_result``, ``tp_result``, ``oco_group_id``, plus ``error`` on failure.
+    """
+    entry_side = side.upper()
+    closing_side = get_closing_side_from_entry(entry_side)
+
+    if parent_order_id and not dry_run:
+        from app.services.sl_tp_protection import get_active_protection_order
+
+        existing_sl = get_active_protection_order(db, parent_order_id, "STOP_LOSS")
+        existing_tp = get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
+        if existing_sl and existing_tp:
+            return {
+                "sl_result": {"order_id": existing_sl.exchange_order_id, "error": None},
+                "tp_result": {"order_id": existing_tp.exchange_order_id, "error": None},
+                "oco_group_id": existing_sl.oco_group_id or existing_tp.oco_group_id,
+                "error": None,
+                "status": "already_protected",
+            }
+
+    if not dry_run:
+        order_usd_value = float(entry_price) * float(quantity)
+        allowed, block_reason = can_place_real_order(
+            db=db,
+            symbol=symbol,
+            order_usd_value=order_usd_value,
+            side=closing_side,
+            ignore_trade_yes=True,
+            ignore_daily_limit=True,
+            ignore_usd_limit=True,
+            ignore_cooldown=True,
+        )
+        if not allowed:
+            err = f"Guardrail blocked native OCO: {block_reason}"
+            logger.warning("[%s_OCO] %s", source.upper(), err)
+            return {
+                "sl_result": {"order_id": None, "error": err},
+                "tp_result": {"order_id": None, "error": err},
+                "oco_group_id": None,
+                "error": err,
+            }
+
+    logger.info(
+        "[%s_OCO] Creating native OCO: %s closing_side=%s qty=%s tp=%s sl=%s entry=%s",
+        source.upper(),
+        symbol,
+        closing_side,
+        quantity,
+        tp_price,
+        sl_price,
+        entry_price,
+    )
+
+    try:
+        oco = trade_client.place_oco_sl_tp(
+            symbol=symbol,
+            side=closing_side,
+            tp_price=float(tp_price),
+            sl_price=float(sl_price),
+            qty=float(quantity),
+            dry_run=dry_run,
+            source=source,
+        )
+    except Exception as exc:
+        err = str(exc)
+        logger.error("[%s_OCO] place_oco_sl_tp raised: %s", source.upper(), err, exc_info=True)
+        return {
+            "sl_result": {"order_id": None, "error": err},
+            "tp_result": {"order_id": None, "error": err},
+            "oco_group_id": None,
+            "error": err,
+        }
+
+    if oco.get("error"):
+        err = str(oco.get("error"))
+        logger.error("[%s_OCO] Failed for %s: %s", source.upper(), symbol, err)
+        return {
+            "sl_result": {"order_id": None, "error": err},
+            "tp_result": {"order_id": None, "error": err},
+            "oco_group_id": None,
+            "error": err,
+        }
+
+    list_id = oco.get("list_id")
+    oco_group_id = str(list_id) if list_id is not None else None
+    # Prefer resolved child ids; fall back to stable placeholders tied to list_id
+    # so Telegram/DB linkage works until sync reconciles real exchange order ids.
+    tp_order_id = oco.get("tp_order_id") or (f"oco_tp_{oco_group_id}" if oco_group_id else None)
+    sl_order_id = oco.get("sl_order_id") or (f"oco_sl_{oco_group_id}" if oco_group_id else None)
+    tp_order_type = oco.get("tp_order_type") or "LIMIT"
+    sl_order_type = oco.get("sl_order_type") or "STOP_LIMIT"
+    closing_enum = OrderSideEnum.SELL if entry_side == "BUY" else OrderSideEnum.BUY
+
+    if parent_order_id and oco_group_id:
+        try:
+            if sl_order_id:
+                db.add(
+                    ExchangeOrder(
+                        exchange_order_id=str(sl_order_id),
+                        symbol=symbol,
+                        side=closing_enum,
+                        order_type=str(sl_order_type),
+                        status=OrderStatusEnum.NEW,
+                        price=sl_price,
+                        quantity=quantity,
+                        parent_order_id=parent_order_id,
+                        oco_group_id=oco_group_id,
+                        order_role="STOP_LOSS",
+                        exchange_create_time=datetime.utcnow(),
+                    )
+                )
+            if tp_order_id:
+                db.add(
+                    ExchangeOrder(
+                        exchange_order_id=str(tp_order_id),
+                        symbol=symbol,
+                        side=closing_enum,
+                        order_type=str(tp_order_type),
+                        status=OrderStatusEnum.NEW,
+                        price=tp_price,
+                        quantity=quantity,
+                        parent_order_id=parent_order_id,
+                        oco_group_id=oco_group_id,
+                        order_role="TAKE_PROFIT",
+                        exchange_create_time=datetime.utcnow(),
+                    )
+                )
+            db.commit()
+            logger.info(
+                "[%s_OCO] Saved OCO legs for %s list_id=%s sl=%s tp=%s",
+                source.upper(),
+                symbol,
+                oco_group_id,
+                sl_order_id,
+                tp_order_id,
+            )
+        except Exception as db_err:
+            logger.warning("[%s_OCO] Failed to save OCO legs: %s", source.upper(), db_err)
+            db.rollback()
+
+    return {
+        "sl_result": {"order_id": sl_order_id, "error": None},
+        "tp_result": {"order_id": tp_order_id, "error": None},
+        "oco_group_id": oco_group_id,
+        "error": None,
+        "sl_newly_created": bool(sl_order_id),
+        "tp_newly_created": bool(tp_order_id),
+    }
+
+
 def create_take_profit_order(
     db: Session,
     symbol: str,

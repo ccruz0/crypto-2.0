@@ -139,9 +139,21 @@ ALLOWED_VERIFIED_NONZERO_CODES = {140001}
 CONDITIONAL_ORDER_TYPES = {"STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}
 ADVANCED_CREATE_ORDER_ENDPOINT = "private/advanced/create-order"
 ADVANCED_CANCEL_ORDER_ENDPOINT = "private/advanced/cancel-order"
+ADVANCED_CREATE_OCO_ENDPOINT = "private/advanced/create-oco"
+ADVANCED_CANCEL_OCO_ENDPOINT = "private/advanced/cancel-oco"
 # `ref_price_type` is required by the advanced endpoint for conditional orders.
 # Allowed values: MARK_PRICE / LAST_PRICE / INDEX_PRICE.
 DEFAULT_REF_PRICE_TYPE = "MARK_PRICE"
+
+
+def looks_like_exchange_list_id(oco_group_id: Optional[str]) -> bool:
+    """True when oco_group_id is an exchange list_id (not synthetic ``oco_*``)."""
+    if oco_group_id is None:
+        return False
+    s = str(oco_group_id).strip()
+    if not s or s.lower().startswith("oco_"):
+        return False
+    return s.isdigit() and len(s) >= 10
 
 
 def _is_conditional_order_type(order_type: Optional[str]) -> bool:
@@ -4962,6 +4974,272 @@ class CryptoComTradeClient:
         except Exception as e:
             logger.error(f"Error cancelling order: {e}")
             return {"error": str(e)}
+
+    def _resolve_oco_child_orders(
+        self,
+        *,
+        list_id: str,
+        symbol: str,
+        client_oid_tp: str,
+        client_oid_sl: str,
+        polls: int = 5,
+        sleep_s: float = 0.4,
+    ) -> Dict[str, Optional[str]]:
+        """Poll advanced (+ regular) open orders for OCO legs after create-oco.
+
+        Returns keys: tp_order_id, sl_order_id (may be None if still resolving).
+        """
+        list_id_s = str(list_id)
+        tp_id: Optional[str] = None
+        sl_id: Optional[str] = None
+
+        def _classify(order: dict) -> None:
+            nonlocal tp_id, sl_id
+            if not isinstance(order, dict):
+                return
+            oid = order.get("order_id") or order.get("orderId")
+            if oid is None:
+                return
+            oid_s = str(oid)
+            o_list = str(order.get("list_id") or order.get("listId") or "")
+            coid = str(order.get("client_oid") or order.get("client_order_id") or "")
+            otype = str(order.get("order_type") or order.get("type") or "").upper()
+            instr = str(order.get("instrument_name") or order.get("symbol") or "")
+            if instr and instr != symbol and o_list != list_id_s and coid not in (client_oid_tp, client_oid_sl):
+                return
+            matches_list = o_list == list_id_s
+            matches_tp_oid = coid == client_oid_tp
+            matches_sl_oid = coid == client_oid_sl
+            if not (matches_list or matches_tp_oid or matches_sl_oid):
+                return
+            if matches_tp_oid or otype in ("LIMIT", "LIMIT_MAKER", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"):
+                if matches_tp_oid or otype in ("LIMIT", "LIMIT_MAKER"):
+                    tp_id = tp_id or oid_s
+                elif otype in ("TAKE_PROFIT", "TAKE_PROFIT_LIMIT") and not matches_sl_oid:
+                    tp_id = tp_id or oid_s
+            if matches_sl_oid or otype in ("STOP_LOSS", "STOP_LIMIT"):
+                sl_id = sl_id or oid_s
+
+        for attempt in range(max(1, polls)):
+            try:
+                advanced = self.get_advanced_open_orders()
+                for row in advanced.get("data") or []:
+                    _classify(row if isinstance(row, dict) else {})
+            except Exception as exc:
+                logger.debug("OCO resolve: advanced open orders poll failed: %s", exc)
+            try:
+                regular = self.get_open_orders()
+                for row in regular.get("data") or []:
+                    _classify(row if isinstance(row, dict) else {})
+            except Exception as exc:
+                logger.debug("OCO resolve: open orders poll failed: %s", exc)
+            if tp_id and sl_id:
+                break
+            if attempt + 1 < polls:
+                time.sleep(sleep_s)
+
+        return {"tp_order_id": tp_id, "sl_order_id": sl_id}
+
+    def place_oco_sl_tp(
+        self,
+        symbol: str,
+        side: str,
+        tp_price: float,
+        sl_price: float,
+        qty: float,
+        *,
+        dry_run: bool = True,
+        source: str = "unknown",
+        sl_order_type: str = "STOP_LIMIT",
+    ) -> dict:
+        """Place native spot OCO: LIMIT (TP) + STOP_* (SL) via private/advanced/create-oco.
+
+        Crypto.com OCO requires exactly two legs: one LIMIT and one stop/take-profit trigger.
+        Post-fill protection uses LIMIT @ TP + STOP_LIMIT @ SL so both share one reservation
+        (avoids INSUFFICIENT_ACC_BALANCE from two standalone full-qty triggers).
+
+        Spot only. Response is async ``list_id``; we briefly poll for child order ids.
+        """
+        self._refresh_runtime_flags()
+        actual_dry_run = self._resolve_actual_dry_run(dry_run)
+        side_upper = (side or "").strip().upper()
+        sl_type = (sl_order_type or "STOP_LIMIT").strip().upper()
+        if sl_type not in ("STOP_LIMIT", "STOP_LOSS"):
+            sl_type = "STOP_LIMIT"
+
+        if actual_dry_run:
+            list_id = f"dry_oco_{int(time.time())}"
+            logger.info(
+                "DRY_RUN: place_oco_sl_tp - %s %s qty=%s tp=%s sl=%s list_id=%s source=%s",
+                symbol,
+                side_upper,
+                qty,
+                tp_price,
+                sl_price,
+                list_id,
+                source,
+            )
+            return {
+                "list_id": list_id,
+                "tp_order_id": f"dry_oco_tp_{int(time.time())}",
+                "sl_order_id": f"dry_oco_sl_{int(time.time())}",
+                "tp_order_type": "LIMIT",
+                "sl_order_type": sl_type,
+                "status": "OPEN",
+            }
+
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
+
+        require_mutation_allowed_for_broker("place_oco_sl_tp", symbol)
+
+        inst_meta = self._get_instrument_metadata(symbol)
+        if not inst_meta:
+            return {
+                "error": f"Instrument metadata unavailable for {symbol}",
+                "status": "FAILED",
+                "reason": "instrument_metadata_unavailable",
+            }
+        try:
+            from app.core.exchange_formatting_week6 import format_price_for_exchange, format_qty_for_exchange
+        except ImportError:
+            return {"error": "Formatting module unavailable", "status": "FAILED", "reason": "config"}
+
+        tp_price_str = format_price_for_exchange(inst_meta, tp_price, round_up=True)
+        sl_price_str = format_price_for_exchange(inst_meta, sl_price, round_up=False)
+        qty_str = format_qty_for_exchange(inst_meta, qty)
+        min_qty_str = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "0"
+        if Decimal(str(qty_str)) < Decimal(str(min_qty_str)):
+            return {
+                "error": f"Quantity {qty_str} for {symbol} below min_quantity {min_qty_str}",
+                "status": "FAILED",
+                "reason": "quantity_below_min",
+            }
+
+        client_oid_tp = str(uuid.uuid4())
+        client_oid_sl = str(uuid.uuid4())
+
+        def _build_order_list(stop_type: str) -> list:
+            tp_leg = {
+                "instrument_name": symbol,
+                "side": side_upper,
+                "type": "LIMIT",
+                "price": tp_price_str,
+                "quantity": qty_str,
+                "client_oid": client_oid_tp,
+                "time_in_force": "GOOD_TILL_CANCEL",
+            }
+            sl_leg: Dict[str, Any] = {
+                "instrument_name": symbol,
+                "side": side_upper,
+                "type": stop_type,
+                "quantity": qty_str,
+                "ref_price": sl_price_str,
+                "ref_price_type": DEFAULT_REF_PRICE_TYPE,
+                "client_oid": client_oid_sl,
+            }
+            if stop_type == "STOP_LIMIT":
+                sl_leg["price"] = sl_price_str
+            return [tp_leg, sl_leg]
+
+        method = ADVANCED_CREATE_OCO_ENDPOINT
+
+        def _post_oco(order_list: list) -> dict:
+            params = {"order_list": order_list}
+            if self.use_proxy:
+                result = self._call_proxy(method, params)
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {"error": result.get("reason") or "proxy_skipped", "raw": result}
+                return result if isinstance(result, dict) else {"error": "unexpected_proxy_response"}
+            if not self.api_key or not self.api_secret:
+                return {"error": "API credentials not configured"}
+            payload = self.sign_request(method, params)
+            if isinstance(payload, dict) and payload.get("skipped"):
+                return {"error": payload.get("reason") or "sign_skipped", "raw": payload}
+            url = f"{self.base_url.rstrip('/')}/{method}"
+            resp = http_post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+                calling_module="crypto_com_trade.place_oco_sl_tp",
+            )
+            try:
+                body = resp.json() if resp.text else {}
+            except Exception:
+                body = {"error": f"HTTP {resp.status_code}", "raw_text": (resp.text or "")[:200]}
+            if not isinstance(body, dict):
+                return {"error": f"unexpected_body HTTP {resp.status_code}"}
+            body["_http_status"] = resp.status_code
+            return body
+
+        logger.info(
+            "[ORDER_PLACEMENT] Preparing native OCO  Symbol: %s Side: %s qty=%s tp=%s sl=%s source=%s",
+            symbol,
+            side_upper,
+            qty_str,
+            tp_price_str,
+            sl_price_str,
+            source,
+        )
+
+        last_error: Optional[str] = None
+        list_id: Optional[str] = None
+        used_sl_type = sl_type
+        for stop_type in (sl_type, "STOP_LOSS") if sl_type == "STOP_LIMIT" else (sl_type,):
+            used_sl_type = stop_type
+            body = _post_oco(_build_order_list(stop_type))
+            if body.get("error") and body.get("code") is None and "result" not in body:
+                last_error = str(body.get("error"))
+                logger.warning("OCO create transport/error for %s (%s): %s", symbol, stop_type, last_error)
+                continue
+            code = body.get("code")
+            if isinstance(code, str) and code.isdigit():
+                code = int(code)
+            if code in (0, None) and isinstance(body.get("result"), dict):
+                raw_list = body["result"].get("list_id")
+                if raw_list is not None:
+                    list_id = str(raw_list)
+                    break
+            last_error = str(body.get("message") or body.get("error") or f"code={code}")
+            logger.warning(
+                "OCO create rejected for %s stop_type=%s code=%s msg=%s",
+                symbol,
+                stop_type,
+                code,
+                last_error,
+            )
+
+        if not list_id:
+            return {
+                "error": last_error or "create-oco failed",
+                "status": "FAILED",
+                "reason": "oco_create_failed",
+            }
+
+        children = self._resolve_oco_child_orders(
+            list_id=list_id,
+            symbol=symbol,
+            client_oid_tp=client_oid_tp,
+            client_oid_sl=client_oid_sl,
+        )
+        logger.info(
+            "✅ Native OCO created for %s list_id=%s tp_id=%s sl_id=%s sl_type=%s",
+            symbol,
+            list_id,
+            children.get("tp_order_id"),
+            children.get("sl_order_id"),
+            used_sl_type,
+        )
+        return {
+            "list_id": list_id,
+            "tp_order_id": children.get("tp_order_id"),
+            "sl_order_id": children.get("sl_order_id"),
+            "tp_order_type": "LIMIT",
+            "sl_order_type": used_sl_type,
+            "client_oid_tp": client_oid_tp,
+            "client_oid_sl": client_oid_sl,
+            "status": "OPEN",
+        }
     
     def place_stop_loss_order(
         self,
