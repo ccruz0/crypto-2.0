@@ -47,7 +47,22 @@ interface WatchlistTabProps {
   maxOpenOrdersPerCoin?: number | null;
 }
 
-type SortField = 'symbol' | 'last_price' | 'rsi' | 'ema10' | 'ma50' | 'ma200' | 'volume' | 'amount_usd';
+type SortField =
+  | 'symbol'
+  | 'strategy'
+  | 'last_price'
+  | 'rsi'
+  | 'ema10'
+  | 'ma50'
+  | 'ma200'
+  | 'volume'
+  | 'amount_usd'
+  | 'orders'
+  | 'sl_percent'
+  | 'tp_percent'
+  | 'trade'
+  | 'margin'
+  | 'alerts';
 type SortDirection = 'asc' | 'desc';
 
 export default function WatchlistTab({
@@ -160,64 +175,6 @@ export default function WatchlistTab({
     
     return filtered;
   }, [topCoins, watchlistFilter]);
-
-  // Sort coins
-  const sortedCoins = useMemo(() => {
-    if (!sortField) return filteredCoins;
-    
-    const sorted = [...filteredCoins].sort((a, b) => {
-      let aValue: number | string = 0;
-      let bValue: number | string = 0;
-      
-      switch (sortField) {
-        case 'symbol':
-          aValue = (a.instrument_name || '').toLowerCase();
-          bValue = (b.instrument_name || '').toLowerCase();
-          break;
-        case 'last_price':
-          aValue = a.current_price || 0;
-          bValue = b.current_price || 0;
-          break;
-        case 'rsi':
-          aValue = signals[a.instrument_name]?.rsi || 0;
-          bValue = signals[b.instrument_name]?.rsi || 0;
-          break;
-        case 'ema10':
-          aValue = signals[a.instrument_name]?.ema10 || 0;
-          bValue = signals[b.instrument_name]?.ema10 || 0;
-          break;
-        case 'ma50':
-          aValue = signals[a.instrument_name]?.ma50 || 0;
-          bValue = signals[b.instrument_name]?.ma50 || 0;
-          break;
-        case 'ma200':
-          aValue = signals[a.instrument_name]?.ma200 || 0;
-          bValue = signals[b.instrument_name]?.ma200 || 0;
-          break;
-        case 'volume':
-          aValue = signals[a.instrument_name]?.volume_ratio || 0;
-          bValue = signals[b.instrument_name]?.volume_ratio || 0;
-          break;
-        case 'amount_usd':
-          aValue = parseFloat(coinAmounts[normalizeSymbolKey(a.instrument_name)] || '0');
-          bValue = parseFloat(coinAmounts[normalizeSymbolKey(b.instrument_name)] || '0');
-          break;
-      }
-      
-      if (typeof aValue === 'string' && typeof bValue === 'string') {
-        // Case-insensitive (matches Executed Orders / page.tsx sortData)
-        return sortDirection === 'asc'
-          ? aValue.localeCompare(bValue, undefined, { sensitivity: 'base' })
-          : bValue.localeCompare(aValue, undefined, { sensitivity: 'base' });
-      }
-      
-      return sortDirection === 'asc'
-        ? (aValue as number) - (bValue as number)
-        : (bValue as number) - (aValue as number);
-    });
-    
-    return sorted;
-  }, [filteredCoins, sortField, sortDirection, signals, coinAmounts]);
 
   const perCoinLimit =
     typeof maxOpenOrdersPerCoin === 'number' && maxOpenOrdersPerCoin > 0
@@ -1092,11 +1049,124 @@ export default function WatchlistTab({
     return lines.join('\n');
   }, [formatStrategyName, coinSLPercent, coinTPPercent, calculateSLTPPercent]);
 
-  const SortableHeader: React.FC<{ field: SortField; children: React.ReactNode }> = ({ field, children }) => (
+  // Sort after helpers so Strategy / Orders / SL% / TP% / Trade use the same values as the cells.
+  const sortedCoins = useMemo(() => {
+    if (!sortField) return filteredCoins;
+
+    const parsePercent = (value: string | null | undefined): number => {
+      if (value == null || value === '') return 0;
+      const n = parseFloat(value);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const sorted = [...filteredCoins].sort((a, b) => {
+      let aValue: number | string = 0;
+      let bValue: number | string = 0;
+
+      switch (sortField) {
+        case 'symbol':
+          aValue = (a.instrument_name || '').toLowerCase();
+          bValue = (b.instrument_name || '').toLowerCase();
+          break;
+        case 'strategy':
+          aValue = (getCoinStrategy(a, signals[a.instrument_name]) || 'swing-conservative').toLowerCase();
+          bValue = (getCoinStrategy(b, signals[b.instrument_name]) || 'swing-conservative').toLowerCase();
+          break;
+        case 'last_price': {
+          const aLive = a.instrument_name ? getLivePrice(a.instrument_name) : undefined;
+          const bLive = b.instrument_name ? getLivePrice(b.instrument_name) : undefined;
+          aValue = aLive ?? a.current_price ?? 0;
+          bValue = bLive ?? b.current_price ?? 0;
+          break;
+        }
+        case 'rsi':
+          aValue = signals[a.instrument_name]?.rsi || 0;
+          bValue = signals[b.instrument_name]?.rsi || 0;
+          break;
+        case 'ema10':
+          aValue = signals[a.instrument_name]?.ema10 || 0;
+          bValue = signals[b.instrument_name]?.ema10 || 0;
+          break;
+        case 'ma50':
+          aValue = signals[a.instrument_name]?.ma50 || 0;
+          bValue = signals[b.instrument_name]?.ma50 || 0;
+          break;
+        case 'ma200':
+          aValue = signals[a.instrument_name]?.ma200 || 0;
+          bValue = signals[b.instrument_name]?.ma200 || 0;
+          break;
+        case 'volume':
+          aValue = signals[a.instrument_name]?.volume_ratio || 0;
+          bValue = signals[b.instrument_name]?.volume_ratio || 0;
+          break;
+        case 'amount_usd':
+          aValue = parseFloat(coinAmounts[normalizeSymbolKey(a.instrument_name)] || '0') || 0;
+          bValue = parseFloat(coinAmounts[normalizeSymbolKey(b.instrument_name)] || '0') || 0;
+          break;
+        case 'orders':
+          // Same per-coin limit for all rows → count and ratio order identically.
+          aValue = getOpenCountForCoin(a.instrument_name);
+          bValue = getOpenCountForCoin(b.instrument_name);
+          break;
+        case 'sl_percent':
+          aValue = parsePercent(getDisplayedSLTP(a, normalizeSymbolKey(a.instrument_name)).slPercent);
+          bValue = parsePercent(getDisplayedSLTP(b, normalizeSymbolKey(b.instrument_name)).slPercent);
+          break;
+        case 'tp_percent':
+          aValue = parsePercent(getDisplayedSLTP(a, normalizeSymbolKey(a.instrument_name)).tpPercent);
+          bValue = parsePercent(getDisplayedSLTP(b, normalizeSymbolKey(b.instrument_name)).tpPercent);
+          break;
+        case 'trade':
+          aValue = coinTradeStatus[normalizeSymbolKey(a.instrument_name)] ? 1 : 0;
+          bValue = coinTradeStatus[normalizeSymbolKey(b.instrument_name)] ? 1 : 0;
+          break;
+        case 'margin':
+          aValue = coinMarginStatus[normalizeSymbolKey(a.instrument_name)] ? 1 : 0;
+          bValue = coinMarginStatus[normalizeSymbolKey(b.instrument_name)] ? 1 : 0;
+          break;
+        case 'alerts':
+          aValue = coinAlertStatus[normalizeSymbolKey(a.instrument_name)] ? 1 : 0;
+          bValue = coinAlertStatus[normalizeSymbolKey(b.instrument_name)] ? 1 : 0;
+          break;
+      }
+
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        // Case-insensitive (matches Executed Orders / page.tsx sortData)
+        return sortDirection === 'asc'
+          ? aValue.localeCompare(bValue, undefined, { sensitivity: 'base' })
+          : bValue.localeCompare(aValue, undefined, { sensitivity: 'base' });
+      }
+
+      return sortDirection === 'asc'
+        ? (aValue as number) - (bValue as number)
+        : (bValue as number) - (aValue as number);
+    });
+
+    return sorted;
+  }, [
+    filteredCoins,
+    sortField,
+    sortDirection,
+    signals,
+    coinAmounts,
+    coinTradeStatus,
+    coinMarginStatus,
+    coinAlertStatus,
+    getCoinStrategy,
+    getDisplayedSLTP,
+    getLivePrice,
+    openPositionCounts,
+  ]);
+
+  const SortableHeader: React.FC<{
+    field: SortField;
+    children: React.ReactNode;
+    title?: string;
+  }> = ({ field, children, title }) => (
     <th
       className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
       onClick={() => handleSort(field)}
-      title={`Sort by ${typeof children === 'string' ? children : field}`}
+      title={title ?? `Sort by ${typeof children === 'string' ? children : field}`}
       aria-sort={sortField === field ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       <div className="flex items-center gap-1">
@@ -1189,7 +1259,7 @@ export default function WatchlistTab({
             <thead className="bg-gray-50 dark:bg-gray-900">
               <tr>
                 <SortableHeader field="symbol">Symbol</SortableHeader>
-                <th className="px-4 py-2 text-left">Strategy</th>
+                <SortableHeader field="strategy">Strategy</SortableHeader>
                 <SortableHeader field="last_price">Price</SortableHeader>
                 <SortableHeader field="rsi">RSI</SortableHeader>
                 <SortableHeader field="ema10">EMA10</SortableHeader>
@@ -1197,17 +1267,17 @@ export default function WatchlistTab({
                 <SortableHeader field="ma200">MA200</SortableHeader>
                 <SortableHeader field="volume">Volume</SortableHeader>
                 <SortableHeader field="amount_usd">Amount USD</SortableHeader>
-                <th
-                  className="px-4 py-2 text-left"
-                  title={`Open positions for this coin vs per-coin limit (${perCoinLimit})`}
+                <SortableHeader
+                  field="orders"
+                  title={`Sort by open positions vs per-coin limit (${perCoinLimit})`}
                 >
                   Orders
-                </th>
-                <th className="px-4 py-2 text-left">SL%</th>
-                <th className="px-4 py-2 text-left">TP%</th>
-                <th className="px-4 py-2 text-left">Trade</th>
-                <th className="px-4 py-2 text-left">Margin</th>
-                <th className="px-4 py-2 text-left">Alerts</th>
+                </SortableHeader>
+                <SortableHeader field="sl_percent">SL%</SortableHeader>
+                <SortableHeader field="tp_percent">TP%</SortableHeader>
+                <SortableHeader field="trade">Trade</SortableHeader>
+                <SortableHeader field="margin">Margin</SortableHeader>
+                <SortableHeader field="alerts">Alerts</SortableHeader>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
