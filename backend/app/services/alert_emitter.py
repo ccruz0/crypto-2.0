@@ -24,6 +24,7 @@ def emit_alert(
     throttle_status: Optional[str] = None,
     throttle_reason: Optional[str] = None,
     db: Optional[Any] = None,
+    persist_only: bool = False,
     **kwargs: Any,
 ) -> bool:
     """
@@ -31,6 +32,8 @@ def emit_alert(
 
     - Logs the decision with [ALERT_DECISION]
     - Optionally skips sending if dry_run is True (logs [ALERT_SKIP])
+    - persist_only=True: write Monitoring row only (no live Telegram) — used when
+      coin/open-order limits already block new orders
     - Persists in DB via telegram_notifier
     - Sends Telegram message
     - Logs success with [ALERT_ENQUEUED]
@@ -47,6 +50,7 @@ def emit_alert(
         price_variation: Optional price variation text
         throttle_status: Optional throttle status
         throttle_reason: Optional throttle reason
+        persist_only: If True, persist Monitoring only (no Telegram send)
 
     Returns:
         True if alert was sent successfully, False otherwise
@@ -101,11 +105,12 @@ def emit_alert(
 
     # Log the decision (include correlation_id for traceability)
     logger.info(
-        "[ALERT_DECISION] symbol=%s side=%s reason=%s dry_run=%s origin=%s correlation_id=%s context=%s",
+        "[ALERT_DECISION] symbol=%s side=%s reason=%s dry_run=%s persist_only=%s origin=%s correlation_id=%s context=%s",
         symbol,
         side,
         reason,
         dry_run,
+        persist_only,
         origin,
         correlation_id,
         context or {},
@@ -128,16 +133,19 @@ def emit_alert(
     except Exception as _:
         pass  # Do not fail alert on event publish
 
-    # Dry run: persist to DB only (no Telegram send, no order) for regression proof
-    if dry_run:
+    # Dry run / monitoring-only: persist to DB only (no Telegram send)
+    if dry_run or persist_only:
+        skip_reason = "dry run" if dry_run else "persist_only (expected limit)"
         logger.info(
-            "[ALERT_SKIP] symbol=%s side=%s reason=%s (dry run, persisting to DB only) correlation_id=%s",
+            "[ALERT_SKIP] symbol=%s side=%s reason=%s (%s, persisting to DB only) correlation_id=%s",
             symbol,
             side,
             reason,
+            skip_reason,
             correlation_id,
         )
         try:
+            persist_label = "DRY_RUN" if dry_run else "MONITORING_ONLY"
             if side == "BUY":
                 result = telegram_notifier.send_buy_signal(
                     symbol=symbol,
@@ -153,6 +161,7 @@ def emit_alert(
                     db=db,
                     persist_only=True,
                     correlation_id=correlation_id,
+                    persist_label=persist_label,
                 )
             else:
                 result = telegram_notifier.send_sell_signal(
@@ -169,20 +178,25 @@ def emit_alert(
                     db=db,
                     persist_only=True,
                     correlation_id=correlation_id,
+                    persist_label=persist_label,
                 )
             logger.info(
-                "[ALERT_ENQUEUED] symbol=%s side=%s dry_run=True persisted=%s correlation_id=%s",
+                "[ALERT_ENQUEUED] symbol=%s side=%s dry_run=%s persist_only=%s persisted=%s correlation_id=%s",
                 symbol,
                 side,
+                dry_run,
+                persist_only,
                 result,
                 correlation_id,
             )
             return result
         except Exception as e:
             logger.error(
-                "[ALERT_ENQUEUED] symbol=%s side=%s dry_run=True persisted=False error=%s correlation_id=%s",
+                "[ALERT_ENQUEUED] symbol=%s side=%s dry_run=%s persist_only=%s persisted=False error=%s correlation_id=%s",
                 symbol,
                 side,
+                dry_run,
+                persist_only,
                 str(e),
                 correlation_id,
                 exc_info=True,
@@ -246,4 +260,3 @@ def emit_alert(
             exc_info=True,
         )
         return False
-
