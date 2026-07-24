@@ -41,9 +41,13 @@ class TestShortProtectionFormulas(unittest.TestCase):
 
 
 class TestExchangeSyncShortImpl(unittest.TestCase):
+    @patch("app.services.exchange_sync.get_active_protection_order", return_value=None)
+    @patch("app.services.tp_sl_order_creator.is_native_oco_enabled", return_value=False)
     @patch("app.services.tp_sl_order_creator.create_take_profit_order")
     @patch("app.services.tp_sl_order_creator.create_stop_loss_order")
-    def test_create_sl_tp_impl_sell_uses_inverted_prices(self, mock_sl_create, mock_tp_create):
+    def test_create_sl_tp_impl_sell_uses_inverted_prices(
+        self, mock_sl_create, mock_tp_create, _native_oco_off, _no_existing
+    ):
         mock_sl_create.return_value = {"order_id": "sl-short"}
         mock_tp_create.return_value = {"order_id": "tp-short"}
 
@@ -52,6 +56,8 @@ class TestExchangeSyncShortImpl(unittest.TestCase):
         watchlist_item.sl_tp_mode = "conservative"
         watchlist_item.sl_percentage = 3.0
         watchlist_item.tp_percentage = 3.0
+        watchlist_item.trade_on_margin = False
+        watchlist_item.leverage = None
         db.query.return_value.filter.return_value.first.return_value = watchlist_item
 
         svc = ExchangeSyncService()

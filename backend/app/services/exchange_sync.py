@@ -2349,6 +2349,9 @@ class ExchangeSyncService:
         ot = (getattr(sibling, "order_type", None) or "").strip().upper()
         if ot in {"STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
             return ot
+        # Native OCO TP leg is a plain LIMIT (not TAKE_PROFIT_LIMIT).
+        if ot in {"LIMIT", "LIMIT_MAKER"}:
+            return ot
         role = (getattr(sibling, "order_role", None) or "").upper()
         if role == "STOP_LOSS":
             return "STOP_LIMIT"
@@ -2653,10 +2656,62 @@ class ExchangeSyncService:
             # Suppress Telegram for historical / sweeper-driven cancels.
             send_telegram = bool(is_recent_exchange_event(filled_order)) and not force_live_cancel
 
+            from app.services.brokers.crypto_com_trade import looks_like_exchange_list_id
             from app.services.live_trading_gate import (  # pyright: ignore[reportMissingImports]
                 LiveTradingBlockedError,
                 assert_exchange_mutation_allowed,
             )
+
+            # Native exchange OCO: sibling is often already cancelled by the exchange when
+            # one leg fills. Soft-check before forcing another cancel (avoids noise).
+            oco_gid = getattr(filled_order, "oco_group_id", None) or getattr(
+                sibling, "oco_group_id", None
+            )
+            if looks_like_exchange_list_id(oco_gid) and sibling.exchange_order_id:
+                try:
+                    detail = trade_client.get_order_detail(str(sibling.exchange_order_id))
+                    status_raw = None
+                    if isinstance(detail, dict):
+                        res = detail.get("result") if isinstance(detail.get("result"), dict) else detail
+                        if isinstance(res, dict):
+                            status_raw = res.get("status") or res.get("order_status")
+                    status_u = str(status_raw or "").upper()
+                    already_gone = detail is None or status_u in {
+                        "CANCELLED",
+                        "CANCELED",
+                        "REJECTED",
+                        "EXPIRED",
+                    }
+                    if already_gone:
+                        logger.info(
+                            "OCO: native list_id=%s sibling %s already %s on exchange — soft cancel",
+                            oco_gid,
+                            sibling.exchange_order_id,
+                            status_u or "absent",
+                        )
+                        sibling.status = OrderStatusEnum.CANCELLED
+                        sibling.updated_at = datetime.now(timezone.utc)
+                        db.add(sibling)
+                        db.commit()
+                        if send_telegram:
+                            try:
+                                self._send_oco_cancellation_notification(
+                                    db,
+                                    filled_order,
+                                    sibling,
+                                    was_already_cancelled=True,
+                                )
+                            except Exception as notify_err:
+                                logger.warning(
+                                    "Failed OCO soft-cancel Telegram: %s", notify_err
+                                )
+                        return True
+                except Exception as soft_err:
+                    logger.debug(
+                        "OCO soft-check failed for sibling %s: %s",
+                        sibling.exchange_order_id,
+                        soft_err,
+                    )
 
             try:
                 assert_exchange_mutation_allowed(
@@ -3361,7 +3416,13 @@ class ExchangeSyncService:
     ):
         """Actual SL/TP creation (only call when skip_gate=True from ProtectionOrderService). Uses tp_sl_order_creator."""
         from app.models.watchlist import WatchlistItem
-        from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
+        from app.services.tp_sl_order_creator import (
+            create_stop_loss_order,
+            create_take_profit_order,
+            create_oco_protection_orders,
+            is_native_oco_enabled,
+            resolve_sltp_margin_context,
+        )
 
         default_result = {"sl_result": {"order_id": None, "error": None}, "tp_result": {"order_id": None, "error": None}, "oco_group_id": None, "sl_price": None, "tp_price": None, "skip_tp_creation": False, "skip_tp_reason": None}
         existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
@@ -3413,6 +3474,58 @@ class ExchangeSyncService:
                 tp_price = filled_price_f * (1 - tp_pct / 100)
         sl_price = round(sl_price, 2) if sl_price >= 100 else round(sl_price, 4)
         tp_price = round(tp_price, 2) if tp_price >= 100 else round(tp_price, 4)
+
+        is_margin, _leverage = resolve_sltp_margin_context(db, symbol)
+        # Native OCO: both legs missing, spot only, feature flag on.
+        # Avoids INSUFFICIENT_ACC_BALANCE from two standalone full-qty triggers.
+        if (
+            not existing_sl
+            and not existing_tp
+            and not is_margin
+            and is_native_oco_enabled()
+        ):
+            oco_res = create_oco_protection_orders(
+                db=db,
+                symbol=symbol,
+                side=side_upper,
+                tp_price=tp_price,
+                sl_price=sl_price,
+                quantity=filled_qty,
+                entry_price=filled_price_f,
+                parent_order_id=order_id,
+                dry_run=False,
+                source=source,
+            )
+            if not oco_res.get("error") and (
+                (oco_res.get("sl_result") or {}).get("order_id")
+                or oco_res.get("oco_group_id")
+            ):
+                logger.info(
+                    "[SLTP_NATIVE_OCO] parent=%s symbol=%s list_id=%s sl=%s tp=%s",
+                    order_id,
+                    symbol,
+                    oco_res.get("oco_group_id"),
+                    (oco_res.get("sl_result") or {}).get("order_id"),
+                    (oco_res.get("tp_result") or {}).get("order_id"),
+                )
+                return {
+                    "sl_result": oco_res.get("sl_result") or {"order_id": None, "error": None},
+                    "tp_result": oco_res.get("tp_result") or {"order_id": None, "error": None},
+                    "oco_group_id": oco_res.get("oco_group_id"),
+                    "sl_price": sl_price,
+                    "tp_price": tp_price,
+                    "skip_tp_creation": False,
+                    "skip_tp_reason": None,
+                    "sl_newly_created": bool(oco_res.get("sl_newly_created")),
+                    "tp_newly_created": bool(oco_res.get("tp_newly_created")),
+                }
+            logger.warning(
+                "[SLTP_NATIVE_OCO] failed for parent=%s symbol=%s err=%s — falling back to dual create-order",
+                order_id,
+                symbol,
+                oco_res.get("error"),
+            )
+
         # When backfilling a missing leg, reuse the surviving leg's OCO group so Jarvis
         # and OCO checks do not treat the new TP/SL as an incomplete orphan group.
         existing_sl_oco = getattr(existing_sl, "oco_group_id", None) if existing_sl else None
