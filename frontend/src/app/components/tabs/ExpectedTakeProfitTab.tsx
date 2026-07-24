@@ -489,12 +489,38 @@ export default function ExpectedTakeProfitTab({
                     {item.symbol}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
-                    <span
-                      className={`px-2 py-1 rounded text-xs font-semibold ${positionBadgeClass(item.position_side)}`}
-                      title={positionDirectionEs(item.position_side)}
-                    >
-                      {positionLabel(item.position_side)}
-                    </span>
+                    <div className="flex flex-col gap-1 items-start">
+                      <span
+                        className={`px-2 py-1 rounded text-xs font-semibold ${positionBadgeClass(item.position_side)}`}
+                        title={positionDirectionEs(item.position_side)}
+                      >
+                        {positionLabel(item.position_side)}
+                      </span>
+                      {item.wallet_qty_warning === 'lots_exceed_wallet' && (
+                        <span
+                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                          title="FIFO lots exceeded wallet; net qty capped to exchange balance"
+                        >
+                          qty capped to wallet
+                        </span>
+                      )}
+                      {item.wallet_qty_warning === 'ghost_short_vs_long' && (
+                        <span
+                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
+                          title="Stale short lots disagreed with a long wallet balance"
+                        >
+                          ghost SHORT vs wallet
+                        </span>
+                      )}
+                      {item.wallet_qty_warning === 'ghost_long_vs_short' && (
+                        <span
+                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
+                          title="Stale long lots disagreed with a short wallet balance"
+                        >
+                          ghost LONG vs wallet
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {formatNumber(item.net_qty)}

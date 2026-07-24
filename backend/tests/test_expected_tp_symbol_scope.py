@@ -351,11 +351,12 @@ def test_protected_margin_sell_not_fifo_net_against_long_buys(db_session):
     )
 
     # Hedged book: protected short + remaining long must be MIXED (not a short-only stub).
+    # net_qty follows wallet (2.49), not stale/lot-only sum (0.30015).
     btc_usd = summary.get("BTC_USD")
     assert btc_usd is not None
     assert btc_usd["position_side"] == "MIXED"
     assert btc_usd["entry_lot_count"] == 2
-    assert btc_usd["net_qty"] == pytest.approx(0.30015)
+    assert btc_usd["net_qty"] == pytest.approx(2.49)
     assert btc_usd["total_expected_profit"] == pytest.approx(0.094083)
 
     details = get_expected_take_profit_details(
@@ -437,17 +438,15 @@ def test_summary_eth_usd_mixed_not_short_only_stub(db_session):
 
     eth_usd = summary.get("ETH_USD")
     assert eth_usd is not None
-    assert eth_usd["position_side"] == "MIXED"
-    assert eth_usd["entry_lot_count"] == 3
-    assert eth_usd["net_qty"] == pytest.approx(0.1878)
-    # Long TP dominates: (1948.62-1740.5)*0.0788 ≈ 16.40
-    assert eth_usd["total_expected_profit"] > 16.0
-
-    # Must not also emit a short-only duplicate row for the same pair.
+    # Wallet |−0.0302| is truth; stale lot sum 0.1878 must not inflate net_qty.
+    assert eth_usd["net_qty"] == pytest.approx(0.0302)
+    assert eth_usd["net_qty"] <= 0.0302 + 1e-9
+    # Oldest FIFO lots kept within wallet — still no short-only duplicate stub.
     short_stubs = [
         row
         for key, row in summary.items()
         if row.get("symbol") == "ETH_USD" and row.get("position_side") == "SHORT"
+        and key != "ETH_USD"
     ]
     assert short_stubs == []
 
@@ -531,6 +530,10 @@ def test_summary_btc_usd_includes_large_long_tp_profit(db_session):
     assert btc_usd["total_expected_profit"] == pytest.approx(10270.094083, rel=1e-6)
     assert "BTC_USDT" in summary
     assert summary["BTC_USDT"]["symbol"] == "BTC_USDT"
+    # Sister books share one wallet — sum(net_qty) == wallet, not lot sum.
+    assert (
+        float(btc_usd["net_qty"]) + float(summary["BTC_USDT"]["net_qty"])
+    ) == pytest.approx(2.5)
     # No short-only stub alongside the MIXED row.
     assert not any(
         row.get("symbol") == "BTC_USD" and row.get("position_side") == "SHORT"

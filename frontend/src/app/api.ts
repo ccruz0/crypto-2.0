@@ -1739,6 +1739,14 @@ export interface ExpectedTPSummaryItem {
   max_tp_fill_proximity_pct?: number | null;
   cost_basis_unknown?: boolean; // true when buy price is the current-price fallback (no real BUY orders)
   orphaned_protection_only?: boolean; // true when SL/TP remain but portfolio balance <= 0
+  /** Signed exchange wallet balance for the base asset when known */
+  wallet_balance?: number | null;
+  /** Set when FIFO lots disagree with wallet (trimmed or ghost direction) */
+  wallet_qty_warning?:
+    | 'lots_exceed_wallet'
+    | 'ghost_short_vs_long'
+    | 'ghost_long_vs_short'
+    | null;
 }
 
 export interface ExpectedTPSummary {
@@ -1852,6 +1860,12 @@ export interface ExpectedTPDetails {
     label: string;
   };
   orphaned_protection_only?: boolean;
+  wallet_balance?: number | null;
+  wallet_qty_warning?:
+    | 'lots_exceed_wallet'
+    | 'ghost_short_vs_long'
+    | 'ghost_long_vs_short'
+    | null;
   strategy?: {
     sl_percentage: number;
     tp_percentage: number;

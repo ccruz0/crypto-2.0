@@ -106,6 +106,188 @@ def _group_lots_by_pair(open_lots: List[OpenLot]) -> Dict[str, List[OpenLot]]:
     return grouped
 
 
+def _clone_open_lot(lot: OpenLot, lot_qty: Optional[Decimal] = None) -> OpenLot:
+    """Shallow copy of an open lot, optionally with a reduced quantity."""
+    cloned = OpenLot(
+        symbol=lot.symbol,
+        buy_order_id=lot.buy_order_id,
+        buy_time=lot.buy_time,
+        buy_price=lot.buy_price,
+        lot_qty=lot.lot_qty if lot_qty is None else lot_qty,
+        parent_order_id=lot.parent_order_id,
+        oco_group_id=lot.oco_group_id,
+        cost_basis_unknown=getattr(lot, "cost_basis_unknown", False),
+    )
+    cloned.matched_tp = lot.matched_tp
+    cloned.match_origin = lot.match_origin
+    if getattr(lot, "_additional_tp_orders", None):
+        cloned._additional_tp_orders = list(lot._additional_tp_orders)
+    if getattr(lot, "orphaned_protection", False):
+        cloned.orphaned_protection = True
+    return cloned
+
+
+def _trim_lots_to_wallet_qty(
+    open_lots: List[OpenLot],
+    wallet_abs: Decimal,
+    *,
+    sort_key=None,
+) -> Tuple[List[OpenLot], bool]:
+    """Keep preferred FIFO lots until |wallet| is exhausted; drop excess stale qty.
+
+    Returns (trimmed_lots, was_trimmed).
+    """
+    wallet_abs = abs(Decimal(str(wallet_abs or 0)))
+    if wallet_abs <= 0:
+        return [], True
+    if not open_lots:
+        return [], False
+
+    total = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
+    if total <= wallet_abs:
+        return [_clone_open_lot(lot) for lot in open_lots], False
+
+    remaining = wallet_abs
+    trimmed: List[OpenLot] = []
+    ordered = sorted(
+        open_lots,
+        key=sort_key
+        if sort_key is not None
+        else (lambda item: item.buy_time or datetime.min.replace(tzinfo=timezone.utc)),
+    )
+    for lot in ordered:
+        if remaining <= 0:
+            break
+        if lot.lot_qty <= remaining:
+            trimmed.append(_clone_open_lot(lot))
+            remaining -= lot.lot_qty
+        else:
+            trimmed.append(_clone_open_lot(lot, remaining))
+            remaining = Decimal("0")
+    return trimmed, True
+
+
+def _drop_ghost_direction_lots(
+    db: Session,
+    open_lots: List[OpenLot],
+    wallet_balance: Decimal,
+) -> Tuple[List[OpenLot], Optional[str]]:
+    """Drop one-sided ghost lots that contradict wallet sign.
+
+    - Long wallet + only SELL lots → ghost SHORT (e.g. DGB)
+    - Short wallet + only BUY lots → ghost LONG
+    MIXED hedges (both sides present) are kept and trimmed separately.
+    """
+    if not open_lots or wallet_balance == 0:
+        return open_lots, None
+
+    long_lots: List[OpenLot] = []
+    short_lots: List[OpenLot] = []
+    for lot in open_lots:
+        if _entry_side_for_lot(db, lot) == OrderSideEnum.SELL:
+            short_lots.append(lot)
+        else:
+            long_lots.append(lot)
+
+    if wallet_balance > 0 and short_lots and not long_lots:
+        return [], "ghost_short_vs_long"
+    if wallet_balance < 0 and long_lots and not short_lots:
+        return [], "ghost_long_vs_short"
+    return open_lots, None
+
+
+def _align_open_lots_to_wallet(
+    db: Session,
+    open_lots: List[OpenLot],
+    wallet_balance: Decimal,
+) -> Tuple[List[OpenLot], Optional[str]]:
+    """Align FIFO lots to wallet truth: drop ghosts, then trim to |balance|.
+
+    Returns (aligned_lots, warning) where warning is one of:
+    ghost_short_vs_long, ghost_long_vs_short, lots_exceed_wallet, or None.
+    """
+    wallet_balance = Decimal(str(wallet_balance or 0))
+    filtered, ghost_warning = _drop_ghost_direction_lots(db, open_lots, wallet_balance)
+    if ghost_warning:
+        return [], ghost_warning
+
+    wallet_abs = abs(wallet_balance)
+    if wallet_abs <= 0:
+        return list(filtered), None
+
+    # Prefer lots that match wallet direction so a short wallet does not keep
+    # oldest long lots and flip the reported side (DOGE inflate regression).
+    def _trim_sort_key(lot: OpenLot):
+        side = _entry_side_for_lot(db, lot)
+        aligns = (
+            (wallet_balance > 0 and side == OrderSideEnum.BUY)
+            or (wallet_balance < 0 and side == OrderSideEnum.SELL)
+            or wallet_balance == 0
+        )
+        return (
+            0 if aligns else 1,
+            lot.buy_time or datetime.min.replace(tzinfo=timezone.utc),
+        )
+
+    trimmed, was_trimmed = _trim_lots_to_wallet_qty(
+        filtered, wallet_abs, sort_key=_trim_sort_key
+    )
+    warning = "lots_exceed_wallet" if was_trimmed else None
+    return trimmed, warning
+
+
+def _emit_wallet_aligned_pair_summaries(
+    db: Session,
+    *,
+    open_lots: List[OpenLot],
+    wallet_balance: Decimal,
+    current_price: float,
+    results: Dict[str, Dict],
+) -> None:
+    """Emit one summary row per pair with net_qty allocated from a single wallet."""
+    wallet_balance = Decimal(str(wallet_balance or 0))
+    aligned, warning = _align_open_lots_to_wallet(db, open_lots, wallet_balance)
+    if not aligned:
+        if warning:
+            logger.info(
+                "Expected TP: Skipping wallet-aligned emit (warning=%s, wallet=%s, lots=%s)",
+                warning,
+                wallet_balance,
+                len(open_lots),
+            )
+        return
+
+    wallet_abs = abs(wallet_balance)
+    lots_by_pair = _group_lots_by_pair(aligned)
+    lot_total = sum((lot.lot_qty for lot in aligned), Decimal("0"))
+    leftover = max(Decimal("0"), wallet_abs - lot_total)
+
+    # Largest pair absorbs leftover uncovered wallet so sister books do not
+    # each claim the full balance (BTC_USD + BTC_USDT double-count).
+    pairs_sorted = sorted(
+        lots_by_pair.items(),
+        key=lambda item: sum((lot.lot_qty for lot in item[1]), Decimal("0")),
+        reverse=True,
+    )
+    for index, (pair_symbol, pair_lots) in enumerate(pairs_sorted):
+        pair_lot_qty = sum((lot.lot_qty for lot in pair_lots), Decimal("0"))
+        pair_share = pair_lot_qty + (leftover if index == 0 else Decimal("0"))
+        signed_balance = -pair_share if wallet_balance < 0 else pair_share
+        summary_row = _compute_expected_tp_for_lots(
+            db,
+            pair_symbol,
+            pair_lots,
+            signed_balance,
+            current_price,
+        )
+        if not summary_row:
+            continue
+        summary_row["wallet_balance"] = float(wallet_balance)
+        if warning:
+            summary_row["wallet_qty_warning"] = warning
+        results[pair_symbol] = summary_row
+
+
 def _symbols_equivalent_for_matching(lot_symbol: str, tp_symbol: str) -> bool:
     """True when a protection order may attach to a lot's symbol."""
     lot_symbol = (lot_symbol or "").upper()
@@ -1356,14 +1538,19 @@ def _append_protected_short_summary_rows(
     db: Session,
     results: Dict[str, Dict],
     market_prices: Dict[str, float],
+    wallet_by_base: Optional[Dict[str, Decimal]] = None,
 ) -> None:
     """Add summary rows for pairs with protected margin shorts missing from results.
 
     Uses *all* open lots on the pair (long + short) so hedged books surface as
     MIXED with full expected profit — never a short-only stub that drops large
     protected longs (BTC_USD / ETH_USD regression).
+
+    Skips bases with a long (positive) wallet — those are not short positions and
+    must not surface as ghost SHORT rows from stale SELL lots.
     """
     existing_symbols = {row.get("symbol") for row in results.values()}
+    wallet_by_base = wallet_by_base or {}
 
     protection_orders = (
         db.query(ExchangeOrder)
@@ -1403,6 +1590,16 @@ def _append_protected_short_summary_rows(
     for pair in sorted(short_pairs):
         if pair in existing_symbols:
             continue
+        base = _normalize_symbol(pair)
+        wallet_balance = Decimal(str(wallet_by_base.get(base, 0) or 0))
+        if wallet_balance > 0:
+            logger.info(
+                "Expected TP: Skipping protected-short stub for %s — wallet %s is long",
+                pair,
+                wallet_balance,
+            )
+            continue
+
         open_lots = rebuild_open_lots(db, pair)
         if not open_lots:
             continue
@@ -1413,6 +1610,22 @@ def _append_protected_short_summary_rows(
         )
         if not has_short:
             continue
+
+        # Prefer abs(wallet) when known; otherwise fall back to lot qty only for
+        # true wallet-missing shorts.
+        if wallet_balance < 0:
+            _emit_wallet_aligned_pair_summaries(
+                db,
+                open_lots=open_lots,
+                wallet_balance=wallet_balance,
+                current_price=_resolve_current_price(
+                    pair, abs(wallet_balance), market_prices
+                ),
+                results=results,
+            )
+            existing_symbols = {row.get("symbol") for row in results.values()}
+            continue
+
         pair_qty = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
         current_price = _resolve_current_price(pair, pair_qty, market_prices)
         summary_row = _compute_expected_tp_for_lots(
@@ -1508,12 +1721,15 @@ def _compute_expected_tp_for_lots(
     uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched)
     total_lot_qty = sum(float(lot.lot_qty) for lot in open_lots)
 
+    # Wallet (|balance|) is the source of truth. Never invent a position larger
+    # than the exchange balance via stale FIFO lots (max(balance, lots) bug).
+    wallet_abs = abs(float(balance or 0))
     if orphaned_protection_only:
-        net_qty = max(float(balance), 0.0)
-        if net_qty <= 0:
-            net_qty = total_lot_qty
+        net_qty = wallet_abs if wallet_abs > 0 else total_lot_qty
+    elif wallet_abs > 0:
+        net_qty = wallet_abs
     else:
-        net_qty = max(float(balance), total_lot_qty)
+        net_qty = total_lot_qty
 
     total_expected_profit = Decimal("0")
     actual_position_value = Decimal("0")
@@ -1559,6 +1775,10 @@ def _compute_expected_tp_for_lots(
                     continue
                 if max_proximity is None or prox > max_proximity:
                     max_proximity = prox
+
+    # Cap covered to net_qty so coverage never exceeds wallet truth.
+    covered_qty = min(covered_qty, net_qty) if net_qty > 0 else covered_qty
+    uncovered_qty = max(0.0, net_qty - covered_qty)
 
     return {
         "symbol": actual_symbol,
@@ -1774,6 +1994,7 @@ def get_expected_take_profit_summary(
         Dict mapping symbol to summary data
     """
     results = {}
+    wallet_by_base: Dict[str, Decimal] = {}
     logger.info(f"Expected TP: Processing {len(portfolio_assets)} portfolio assets")
     
     for asset in portfolio_assets:
@@ -1787,6 +2008,8 @@ def get_expected_take_profit_summary(
         if base_currency in ['USD', 'EUR', 'USDT']:
             logger.debug(f"Expected TP: Skipping {symbol} - fiat/stablecoin as base currency (we don't trade with these)")
             continue
+
+        wallet_by_base[base_currency] = balance
 
         if balance < 0:
             current_price = _resolve_current_price(symbol, balance, market_prices, asset)
@@ -1806,19 +2029,15 @@ def get_expected_take_profit_summary(
                 )
                 continue
 
-            # Keep long + short lots per pair (do not strip BUY lots → false SHORT).
-            # Base-currency balances rebuild USD and USDT together; emit one row each.
-            for pair_symbol, pair_lots in _group_lots_by_pair(open_lots).items():
-                pair_qty = sum((lot.lot_qty for lot in pair_lots), Decimal("0"))
-                summary_row = _compute_expected_tp_for_lots(
-                    db,
-                    pair_symbol,
-                    pair_lots,
-                    pair_qty,
-                    current_price,
-                )
-                if summary_row:
-                    results[summary_row["symbol"]] = summary_row
+            # Wallet abs(balance) is truth — never pass pair_qty as balance (DOGE inflate).
+            # Keep long + short lots; trim/allocate across sister books to |wallet|.
+            _emit_wallet_aligned_pair_summaries(
+                db,
+                open_lots=open_lots,
+                wallet_balance=balance,
+                current_price=current_price,
+                results=results,
+            )
             continue
 
         if balance == 0:
@@ -2162,28 +2381,23 @@ def get_expected_take_profit_summary(
                 continue
         
         # Base-currency balances (e.g. "BTC") rebuild USD + USDT books together.
-        # Emit one summary row per exact pair so BTC_USD longs/TPs are not collapsed
-        # into a BTC_USDT row (which then shows coverage 0% / profit $0).
-        lots_by_pair = _group_lots_by_pair(open_lots)
+        # Align to wallet then emit one row per pair so sister books cannot each
+        # claim more than the single wallet base (BTC_USD + BTC_USDT inflate).
         logger.info(
             "Expected TP: Found %s open lots for %s across pairs %s",
             len(open_lots),
             symbol,
-            list(lots_by_pair.keys()),
+            list(_group_lots_by_pair(open_lots).keys()),
         )
-        for pair_symbol, pair_lots in lots_by_pair.items():
-            pair_qty = sum((lot.lot_qty for lot in pair_lots), Decimal("0"))
-            summary_row = _compute_expected_tp_for_lots(
-                db,
-                pair_symbol,
-                pair_lots,
-                pair_qty,
-                current_price,
-            )
-            if summary_row:
-                results[pair_symbol] = summary_row
+        _emit_wallet_aligned_pair_summaries(
+            db,
+            open_lots=open_lots,
+            wallet_balance=balance,
+            current_price=current_price,
+            results=results,
+        )
     
-    _append_protected_short_summary_rows(db, results, market_prices)
+    _append_protected_short_summary_rows(db, results, market_prices, wallet_by_base)
 
     for orphan_symbol in discover_symbols_with_orphaned_protection(db):
         symbol_base = _normalize_symbol(orphan_symbol)
@@ -2543,6 +2757,62 @@ def get_expected_take_profit_details(
                     "orphaned_protection_only": False,
                 }
     
+    # Resolve wallet early and trim FIFO lots before matching so details cannot
+    # report oversized entry lots / profits vs the exchange balance.
+    early_balance = float(portfolio_balance) if portfolio_balance != 0 else 0.0
+    _align_warning = None
+    if early_balance == 0 and portfolio_summary:
+        balances = portfolio_summary.get("balances", []) or []
+        assets = portfolio_summary.get("assets", []) or []
+        base = symbol.split("_")[0] if "_" in symbol else symbol
+        for bal in balances:
+            currency = (bal.get("currency") or "").upper()
+            if currency in (symbol, base):
+                early_balance = float(bal.get("balance", 0) or 0)
+                if early_balance != 0:
+                    break
+        if early_balance == 0:
+            for asset in assets:
+                coin = (asset.get("coin") or "").upper()
+                if coin in (symbol, base):
+                    early_balance = float(asset.get("balance", 0) or 0)
+                    if early_balance != 0:
+                        break
+    if early_balance != 0 and not orphaned_protection_only:
+        aligned_lots, _align_warning = _align_open_lots_to_wallet(
+            db, open_lots, Decimal(str(early_balance))
+        )
+        if aligned_lots:
+            open_lots = aligned_lots
+        elif _align_warning:
+            logger.info(
+                "Expected TP Details: %s dropped lots after wallet align (%s, wallet=%s)",
+                symbol,
+                _align_warning,
+                early_balance,
+            )
+            open_lots = []
+
+    if not open_lots:
+        return {
+            "symbol": symbol,
+            "net_qty": abs(early_balance) if early_balance else 0,
+            "current_price": current_price,
+            "position_value": abs(early_balance) * current_price if early_balance and current_price else 0,
+            "actual_position_value": 0,
+            "avg_entry_price": None,
+            "entry_lot_count": 0,
+            "covered_qty": 0,
+            "uncovered_qty": abs(early_balance) if early_balance else 0,
+            "total_expected_profit": 0,
+            "matched_lots": [],
+            "entry_orders": [],
+            "cost_basis_unknown": False,
+            "orphaned_protection_only": False,
+            "wallet_balance": early_balance if early_balance else None,
+            "wallet_qty_warning": _align_warning if early_balance != 0 else None,
+        }
+
     lot_symbol = open_lots[0].symbol if open_lots else symbol
     tp_orders = get_active_tp_orders(db, lot_symbol)
     if not tp_orders and lot_symbol != symbol:
@@ -2742,6 +3012,7 @@ def get_expected_take_profit_details(
                     actual_balance = float(asset.get("balance", 0) or 0)
                     break
     
+    wallet_warning = None
     if orphaned_protection_only:
         net_qty = total_lot_qty
         uncovered_qty = uncovered_from_lots
@@ -2751,29 +3022,34 @@ def get_expected_take_profit_details(
             net_qty,
             float(total_covered_qty),
         )
-    elif actual_balance < 0:
-        net_qty = max(abs(actual_balance), total_lot_qty)
-        uncovered_qty = uncovered_from_lots + max(0, net_qty - total_lot_qty)
+    elif actual_balance != 0:
+        # Wallet is truth — never inflate via max(|balance|, lots).
+        net_qty = abs(actual_balance)
+        covered_cap = min(float(total_covered_qty), net_qty)
+        uncovered_qty = max(0.0, net_qty - covered_cap)
+        total_covered_qty = Decimal(str(covered_cap))
+        if total_lot_qty > net_qty + 1e-12:
+            wallet_warning = "lots_exceed_wallet"
+        position_side_preview = resolve_position_side(db, open_lots)
+        if actual_balance > 0 and position_side_preview == "SHORT":
+            wallet_warning = "ghost_short_vs_long"
+        elif actual_balance < 0 and position_side_preview == "LONG":
+            wallet_warning = "ghost_long_vs_short"
         logger.info(
-            "Expected TP Details: %s short - Balance=%s, TotalLots=%s, NetQty=%s",
+            "Expected TP Details: %s wallet-aligned - Balance=%s, TotalLots=%s, NetQty=%s, warning=%s",
             symbol,
             actual_balance,
             total_lot_qty,
             net_qty,
+            wallet_warning,
         )
-    elif actual_balance > 0:
-        # Use portfolio balance (which includes all holdings, not just lots with TP orders)
-        net_qty = max(actual_balance, total_lot_qty)
-        # Uncovered quantity = lots without TP + any portfolio balance not in lots
-        # If net_qty > total_lot_qty, there's portfolio balance not accounted for in any lot
-        uncovered_qty = uncovered_from_lots + max(0, net_qty - total_lot_qty)
-        logger.info(f"Expected TP Details: {symbol} - Balance={actual_balance}, TotalLots={total_lot_qty}, NetQty={net_qty}, UncoveredFromLots={uncovered_from_lots}, UncoveredQty={uncovered_qty}")
     else:
         # Fallback to lot quantity if balance not provided
         net_qty = total_lot_qty
         uncovered_qty = uncovered_from_lots
         logger.warning(f"Expected TP Details: {symbol} - No balance provided, using lot quantity only. NetQty={net_qty}, UncoveredQty={uncovered_qty}")
-    
+
+    details_wallet_balance = actual_balance if actual_balance != 0 else None    
     # Verify: covered_qty + uncovered_qty should equal net_qty (portfolio balance)
     # This ensures the breakdown is correct
     calculated_total = float(total_covered_qty) + uncovered_qty
@@ -2855,5 +3131,7 @@ def get_expected_take_profit_details(
         "cost_basis_unknown": cost_basis_unknown,
         "orphaned_protection_only": orphaned_protection_only,
         "strategy": strategy,
+        "wallet_balance": details_wallet_balance,
+        "wallet_qty_warning": wallet_warning,
     }
 
