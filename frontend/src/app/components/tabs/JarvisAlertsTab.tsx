@@ -8,6 +8,21 @@ import {
   type JarvisAlertSummary,
 } from '@/app/api';
 
+const STATUS_OPTIONS = [
+  { value: 'open', label: 'Open' },
+  { value: 'acknowledged', label: 'Acknowledged' },
+  { value: 'resolved', label: 'Resolved' },
+  { value: 'suppressed', label: 'Suppressed' },
+  { value: '', label: 'All statuses' },
+] as const;
+
+const SEVERITY_OPTIONS = [
+  { value: '', label: 'All severities' },
+  { value: 'CRITICAL', label: 'CRITICAL' },
+  { value: 'WARNING', label: 'WARNING' },
+  { value: 'INFO', label: 'INFO' },
+] as const;
+
 function SeverityBadge({ severity }: { severity: string }) {
   const normalized = severity.toUpperCase();
   const variant =
@@ -49,24 +64,49 @@ function formatTs(value: string | null | undefined): string {
   }
 }
 
+function isInfoNoise(alert: JarvisAlertSummary): boolean {
+  if (alert.severity.toUpperCase() === 'INFO') return true;
+  return /completed successfully/i.test(alert.title || '');
+}
+
 export default function JarvisAlertsTab() {
   const [alerts, setAlerts] = useState<JarvisAlertSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionId, setActionId] = useState<string | null>(null);
+  // Default: open alerts only — avoids flooding the tab with resolved noise.
+  const [statusFilter, setStatusFilter] = useState<string>('open');
+  // Empty = all severities (API); hideInfo then drops INFO client-side.
+  const [severityFilter, setSeverityFilter] = useState<string>('');
+  // Default hide INFO / "completed successfully" investigation noise.
+  const [hideInfo, setHideInfo] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getJarvisAlerts(100);
-      setAlerts(data.alerts || []);
+      const data = await getJarvisAlerts({
+        limit: 100,
+        status: statusFilter || undefined,
+        // When hideInfo is on and no explicit severity, omit API severity so we can
+        // still show CRITICAL+WARNING from one request (API is equality-only).
+        severity: severityFilter || undefined,
+      });
+      let rows = data.alerts || [];
+      if (hideInfo && !severityFilter) {
+        rows = rows.filter((alert) => !isInfoNoise(alert));
+      } else if (hideInfo && severityFilter.toUpperCase() === 'INFO') {
+        // Explicit INFO + hideInfo is contradictory; honor severity filter.
+      } else if (hideInfo) {
+        rows = rows.filter((alert) => !/completed successfully/i.test(alert.title || ''));
+      }
+      setAlerts(rows);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load alerts');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [statusFilter, severityFilter, hideInfo]);
 
   useEffect(() => {
     refresh();
@@ -117,6 +157,46 @@ export default function JarvisAlertsTab() {
         </button>
       </div>
 
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-xs text-gray-600 dark:text-gray-400">
+          Status
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-900 p-2 text-sm text-gray-900 dark:text-gray-100 min-w-[10rem]"
+          >
+            {STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value || 'all'} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-gray-600 dark:text-gray-400">
+          Severity
+          <select
+            value={severityFilter}
+            onChange={(e) => setSeverityFilter(e.target.value)}
+            className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-900 p-2 text-sm text-gray-900 dark:text-gray-100 min-w-[10rem]"
+          >
+            {SEVERITY_OPTIONS.map((opt) => (
+              <option key={opt.value || 'all'} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 pb-2">
+          <input
+            type="checkbox"
+            checked={hideInfo}
+            onChange={(e) => setHideInfo(e.target.checked)}
+            className="rounded border-gray-300"
+          />
+          Hide INFO / completed-successfully noise
+        </label>
+      </div>
+
       {error && (
         <div className="p-3 rounded border border-red-200 bg-red-50 text-red-800 text-sm dark:bg-red-900/20 dark:border-red-800 dark:text-red-200">
           {error}
@@ -141,7 +221,7 @@ export default function JarvisAlertsTab() {
             {alerts.length === 0 && !loading && (
               <tr>
                 <td colSpan={8} className="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
-                  No alerts yet.
+                  No alerts match the current filters.
                 </td>
               </tr>
             )}
