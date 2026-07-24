@@ -90,6 +90,59 @@ def test_rebuild_open_lots_eth_usdt_excludes_eth_usd_book(db_session):
     assert resolve_position_side(db_session, lots) == "SHORT"
 
 
+def test_details_hides_buys_closed_on_sister_quote_book(db_session):
+    """BTC_USDT buys closed via BTC_USD sells must not appear as open entry lots."""
+    t_buy = datetime(2025, 11, 15, 21, 54, 55, tzinfo=timezone.utc)
+    t_sell = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t_keep = datetime(2026, 6, 1, 15, 0, 0, tzinfo=timezone.utc)
+
+    sold = _add_order(
+        db_session,
+        exchange_order_id="btc-usdt-nov",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.BUY,
+        price="95173.08",
+        quantity="0.0105",
+        exchange_create_time=t_buy,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="btc-usd-close",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        price="95000",
+        quantity="0.0105",
+        exchange_create_time=t_sell,
+    )
+    keep = _add_order(
+        db_session,
+        exchange_order_id="btc-usdt-open",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.BUY,
+        price="60000",
+        quantity="0.3",
+        exchange_create_time=t_keep,
+    )
+
+    # Pair-strict rebuild incorrectly resurrects the sold Nov buy.
+    pair_strict = rebuild_open_lots(db_session, "BTC_USDT")
+    assert {lot.buy_order_id for lot in pair_strict} == {
+        sold.exchange_order_id,
+        keep.exchange_order_id,
+    }
+
+    details = get_expected_take_profit_details(
+        db_session,
+        "BTC_USDT",
+        current_price=65000.0,
+        portfolio_balance=0.3,
+    )
+    entry_ids = {e["order_id"] for e in details.get("entry_orders") or []}
+    assert sold.exchange_order_id not in entry_ids
+    assert keep.exchange_order_id in entry_ids
+    assert details["entry_lot_count"] == 1
+
+
 def test_rebuild_open_lots_base_symbol_still_searches_quote_variants(db_session):
     _add_order(
         db_session,
