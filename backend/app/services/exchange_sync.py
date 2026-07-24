@@ -622,6 +622,9 @@ class ExchangeSyncService:
         self.last_open_orders_sync: Optional[datetime] = None
         self.processed_order_ids: Dict[str, float] = {}  # Track already processed executed orders {order_id: timestamp}
         self.latest_unified_open_orders: List[UnifiedOpenOrder] = []
+        # Advanced detail confirmed these CANCELLED/REJECTED protection rows are not fills;
+        # skip re-polling them every open-orders cycle (process-lifetime).
+        self._protection_reconcile_exhausted: set[str] = set()
     
     def _purge_stale_processed_orders(self):
         """Remove processed order IDs older than 10 minutes"""
@@ -651,47 +654,57 @@ class ExchangeSyncService:
         Prefer get-order-detail (exact order_id). Fall back to per-instrument order
         history — Crypto.com often returns empty without instrument_name — then
         advanced/trigger history.
+
+        For TP/SL protection rows, try advanced detail first: spot get-order-detail
+        returns empty or misleading CANCELLED for Advanced Order Management ids.
         """
         try:
+            prefer_advanced = False
             # Prefer explicit symbol; otherwise recover from DB so history queries can filter.
-            if not instrument_name:
+            try:
+                db = SessionLocal()
                 try:
-                    db = SessionLocal()
-                    try:
-                        row = (
-                            db.query(ExchangeOrder)
-                            .filter(ExchangeOrder.exchange_order_id == str(order_id))
-                            .first()
-                        )
-                        if row and row.symbol:
-                            instrument_name = row.symbol
-                    finally:
-                        db.close()
-                except Exception:
-                    instrument_name = instrument_name
-
-            # 1) Exact order detail — spot first, then advanced (TP/SL ids are not on spot detail)
-            try:
-                detail = trade_client.get_order_detail(str(order_id))
-                result = detail.get("result") if isinstance(detail, dict) else None
-                parsed = parse_resolved_order_payload(
-                    result if isinstance(result, dict) else None,
-                    str(order_id),
-                )
-                if parsed:
-                    logger.info(
-                        "Found order %s via get-order-detail: status=%s cumulative_qty=%s",
-                        order_id,
-                        parsed["status"],
-                        parsed["cumulative_quantity"],
+                    row = (
+                        db.query(ExchangeOrder)
+                        .filter(ExchangeOrder.exchange_order_id == str(order_id))
+                        .first()
                     )
-                    return parsed
-            except Exception as detail_err:
-                logger.debug("get-order-detail failed for %s: %s", order_id, detail_err)
+                    if row:
+                        if not instrument_name and row.symbol:
+                            instrument_name = row.symbol
+                        role = (getattr(row, "order_role", None) or "").upper()
+                        otype = (getattr(row, "order_type", None) or "").upper()
+                        prefer_advanced = role in ("TAKE_PROFIT", "STOP_LOSS") or otype in _PROTECTIVE_ORDER_TYPES
+                finally:
+                    db.close()
+            except Exception:
+                pass
 
-            try:
-                adv_detail_fn = getattr(trade_client, "get_advanced_order_detail", None)
-                if callable(adv_detail_fn):
+            def _try_spot_detail() -> Optional[Dict[str, Any]]:
+                try:
+                    detail = trade_client.get_order_detail(str(order_id))
+                    result = detail.get("result") if isinstance(detail, dict) else None
+                    parsed = parse_resolved_order_payload(
+                        result if isinstance(result, dict) else None,
+                        str(order_id),
+                    )
+                    if parsed:
+                        logger.info(
+                            "Found order %s via get-order-detail: status=%s cumulative_qty=%s",
+                            order_id,
+                            parsed["status"],
+                            parsed["cumulative_quantity"],
+                        )
+                        return parsed
+                except Exception as detail_err:
+                    logger.debug("get-order-detail failed for %s: %s", order_id, detail_err)
+                return None
+
+            def _try_advanced_detail() -> Optional[Dict[str, Any]]:
+                try:
+                    adv_detail_fn = getattr(trade_client, "get_advanced_order_detail", None)
+                    if not callable(adv_detail_fn):
+                        return None
                     adv_detail = adv_detail_fn(str(order_id))
                     adv_result = adv_detail.get("result") if isinstance(adv_detail, dict) else None
                     parsed = parse_resolved_order_payload(
@@ -706,8 +719,25 @@ class ExchangeSyncService:
                             parsed["cumulative_quantity"],
                         )
                         return parsed
-            except Exception as adv_detail_err:
-                logger.debug("advanced get-order-detail failed for %s: %s", order_id, adv_detail_err)
+                except Exception as adv_detail_err:
+                    logger.debug("advanced get-order-detail failed for %s: %s", order_id, adv_detail_err)
+                return None
+
+            # 1) Exact order detail — advanced first for protection, else spot then advanced
+            if prefer_advanced:
+                parsed = _try_advanced_detail()
+                if parsed:
+                    return parsed
+                parsed = _try_spot_detail()
+                if parsed:
+                    return parsed
+            else:
+                parsed = _try_spot_detail()
+                if parsed:
+                    return parsed
+                parsed = _try_advanced_detail()
+                if parsed:
+                    return parsed
 
             end_time_ms = int(time.time() * 1000)
             if order_created_at:
@@ -878,6 +908,93 @@ class ExchangeSyncService:
             logger.debug("Advanced order history lookup failed for %s: %s", order_id, e)
             return None
     
+    def _upsert_protection_child_spot_fill(
+        self,
+        db: Session,
+        parent: ExchangeOrder,
+        order_info: Dict[str, Any],
+    ) -> Optional[str]:
+        """Persist the spot child fill id from advanced TP/SL detail (exchange_order_id).
+
+        Crypto.com Advanced Order Management keeps the contingency parent (73817…) and
+        creates a separate spot child (57556…) when the TP/SL triggers. Without upserting
+        the child, Executed Orders / history miss the real fill and later spot sync can
+        emit a second unlabeled ORDER EXECUTED.
+        """
+        child_id = order_info.get("child_exchange_order_id")
+        if child_id in (None, "", "0", 0):
+            return None
+        child_id = str(child_id)
+        if child_id == str(parent.exchange_order_id):
+            return None
+
+        role = self._infer_protection_order_role(parent) or parent.order_role
+        cum = float(order_info.get("cumulative_quantity") or parent.cumulative_quantity or 0)
+        price = order_info.get("price")
+        if price is None:
+            price = float(parent.avg_price or parent.price or 0) or None
+        now = datetime.now(timezone.utc)
+
+        existing = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == child_id)
+            .first()
+        )
+        if existing:
+            existing.status = OrderStatusEnum.FILLED
+            if cum > 0:
+                existing.cumulative_quantity = cum
+            if price:
+                existing.avg_price = float(price)
+            if role and not existing.order_role:
+                existing.order_role = role
+            if parent.parent_order_id and not existing.parent_order_id:
+                existing.parent_order_id = parent.parent_order_id
+            # Suppress duplicate Telegram if spot history later rediscovers this child.
+            if existing.execution_notified_at is None and parent.execution_notified_at is not None:
+                existing.execution_notified_at = parent.execution_notified_at
+            elif existing.execution_notified_at is None:
+                existing.execution_notified_at = now
+            existing.exchange_update_time = now
+            logger.info(
+                "Upserted protection child fill %s (parent=%s role=%s) status=FILLED",
+                child_id,
+                parent.exchange_order_id,
+                role,
+            )
+            return child_id
+
+        side = parent.side if isinstance(parent.side, OrderSideEnum) else (
+            OrderSideEnum.SELL if str(getattr(parent.side, "value", parent.side) or "").upper() == "SELL"
+            else OrderSideEnum.BUY
+        )
+        child = ExchangeOrder(
+            exchange_order_id=child_id,
+            symbol=parent.symbol,
+            side=side,
+            order_type=parent.order_type or "LIMIT",
+            status=OrderStatusEnum.FILLED,
+            price=float(price) if price else (float(parent.price) if parent.price else None),
+            quantity=float(parent.quantity or cum or 0),
+            cumulative_quantity=cum if cum > 0 else float(parent.quantity or 0),
+            avg_price=float(price) if price else None,
+            order_role=role,
+            parent_order_id=parent.parent_order_id or str(parent.exchange_order_id),
+            exchange_create_time=parent.exchange_create_time or parent.created_at,
+            exchange_update_time=now,
+            # Parent already owns the Telegram ORDER EXECUTED for this fill.
+            execution_notified_at=parent.execution_notified_at or now,
+        )
+        db.add(child)
+        logger.info(
+            "Inserted protection child fill %s (parent=%s role=%s symbol=%s)",
+            child_id,
+            parent.exchange_order_id,
+            role,
+            parent.symbol,
+        )
+        return child_id
+
     def _apply_protection_fill_from_resolve(
         self,
         db: Session,
@@ -923,6 +1040,16 @@ class ExchangeSyncService:
                 )
 
         order.exchange_update_time = datetime.now(timezone.utc)
+
+        try:
+            self._upsert_protection_child_spot_fill(db, order, order_info)
+        except Exception as child_err:
+            logger.warning(
+                "Failed upserting protection child fill for %s: %s",
+                order.exchange_order_id,
+                child_err,
+                exc_info=True,
+            )
 
         if old_status != OrderStatusEnum.FILLED:
             try:
@@ -1015,17 +1142,30 @@ class ExchangeSyncService:
                 ),
             )
             .order_by(ExchangeOrder.updated_at.desc())
-            .limit(max(1, int(limit)))
+            .limit(max(1, int(limit)) * 3)
             .all()
         )
         repaired = 0
+        checked = 0
         for order in candidates:
+            oid = str(order.exchange_order_id)
+            if oid in self._protection_reconcile_exhausted:
+                continue
+            if checked >= max(1, int(limit)):
+                break
+            checked += 1
             try:
                 info = self._resolve_advanced_order_status_from_exchange(
                     order.exchange_order_id,
                     order.exchange_create_time or order.created_at,
                 )
                 if not info:
+                    continue
+                status = normalize_resolved_exchange_status(info.get("status"))
+                cum = float(info.get("cumulative_quantity") or 0)
+                if status in ("CANCELLED", "REJECTED", "EXPIRED") and cum <= 0:
+                    # Confirmed non-fill — do not re-poll every sync cycle.
+                    self._protection_reconcile_exhausted.add(oid)
                     continue
                 if self._apply_protection_fill_from_resolve(
                     db,
@@ -1034,6 +1174,7 @@ class ExchangeSyncService:
                     source="protection_fill_reconcile",
                 ):
                     repaired += 1
+                    self._protection_reconcile_exhausted.discard(oid)
             except Exception as err:
                 logger.warning(
                     "Failed reconciling protection order %s: %s",
@@ -1576,7 +1717,24 @@ class ExchangeSyncService:
                             old_status = order.status
                             
                             if resolved_status == 'FILLED':
-                                # Order was FILLED - update status and emit ORDER_EXECUTED
+                                is_protection = (
+                                    order.order_role in ("TAKE_PROFIT", "STOP_LOSS")
+                                    or (
+                                        order.order_type
+                                        and str(order.order_type).upper() in _PROTECTIVE_ORDER_TYPES
+                                    )
+                                )
+                                if is_protection:
+                                    # Shared path: Telegram + child spot upsert + OCO cancel
+                                    self._apply_protection_fill_from_resolve(
+                                        db,
+                                        order,
+                                        order_info,
+                                        source="sync_open_orders_resolve",
+                                    )
+                                    continue
+
+                                # Entry / non-protection fill — update status and emit ORDER_EXECUTED
                                 order.status = OrderStatusEnum.FILLED
                                 order.cumulative_quantity = order_info.get('cumulative_quantity', order.quantity)
                                 if order_info.get('price'):
@@ -1633,29 +1791,6 @@ class ExchangeSyncService:
                                         )
                                     except Exception as emit_err:
                                         logger.warning(f"Failed to emit ORDER_EXECUTED event for {order.exchange_order_id}: {emit_err}", exc_info=True)
-
-                                # TP/SL fill via open-orders orphan path must cancel the sibling
-                                # (history sync already does this; without it SL stays orphaned).
-                                try:
-                                    if order.order_role in ("TAKE_PROFIT", "STOP_LOSS") or (
-                                        order.order_type
-                                        and str(order.order_type).upper()
-                                        in (
-                                            "TAKE_PROFIT",
-                                            "TAKE_PROFIT_LIMIT",
-                                            "STOP_LOSS",
-                                            "STOP_LIMIT",
-                                            "STOP_MARKET",
-                                        )
-                                    ):
-                                        self._cancel_oco_after_protection_fill(db, order)
-                                except Exception as oco_err:
-                                    logger.warning(
-                                        "Failed to cancel OCO sibling after fill resolve for %s: %s",
-                                        order.exchange_order_id,
-                                        oco_err,
-                                        exc_info=True,
-                                    )
                                 
                                 # Don't add to cancelled_orders - order was executed
                                 continue
