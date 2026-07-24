@@ -3849,6 +3849,57 @@ function resolveDecisionIndexColor(value: number): string {
     logger.info(`✅ Fast tick completed for ${symbols.length} symbols`);
   }, [fetchSignals]);
 
+  // Shared order history for Portfolio P&L (and slow-tick refresh).
+  // ExecutedOrdersTab keeps its own useOrders() instance; this fills page-level state
+  // that PortfolioTab receives as `executedOrders` (previously never populated).
+  const fetchExecutedOrders = useCallback(async (options: {
+    showLoader?: boolean;
+    limit?: number;
+    offset?: number;
+    loadAll?: boolean;
+    sync?: boolean;
+  } = {}) => {
+    const {
+      showLoader = false,
+      limit = 500,
+      offset = 0,
+      loadAll = false,
+      sync = false,
+    } = options;
+    if (showLoader) {
+      setExecutedOrdersLoading(true);
+    }
+    setExecutedOrdersError(null);
+    try {
+      logger.info('🔄 Fetching executed orders for Portfolio / P&L...', {
+        limit,
+        offset,
+        sync: sync || loadAll,
+        excludeCancelled: hideCancelled,
+      });
+      const response = await getOrderHistory({
+        limit,
+        offset,
+        sync: sync || loadAll,
+        excludeCancelled: hideCancelled,
+      });
+      setExecutedOrders(response.orders || []);
+      setExecutedOrdersLastUpdate(new Date());
+      setExecutedOrdersError(null);
+      logger.info(`✅ Loaded ${response.orders?.length || 0} executed orders for Portfolio`);
+    } catch (err) {
+      logger.logHandledError(
+        'fetchExecutedOrders',
+        'Failed to fetch executed orders for Portfolio',
+        err,
+        'warn'
+      );
+      setExecutedOrdersError('Failed to load executed orders. Retrying on next refresh.');
+    } finally {
+      setExecutedOrdersLoading(false);
+    }
+  }, [hideCancelled]);
+
   // We need to use refs to avoid circular dependency issues
   const fetchTopCoinsRef = useRef<((preserveLocalChanges?: boolean, filterTradeYes?: boolean) => Promise<void>) | null>(null);
   const fetchPortfolioRef = useRef<(() => Promise<void>) | null>(null);
@@ -4547,7 +4598,8 @@ function resolveDecisionIndexColor(value: number): string {
   useEffect(() => {
     fetchPortfolioRef.current = fetchPortfolio;
     fetchTopCoinsRef.current = fetchTopCoins;
-  }, [fetchPortfolio, fetchTopCoins]);
+    fetchExecutedOrdersRef.current = fetchExecutedOrders;
+  }, [fetchPortfolio, fetchTopCoins, fetchExecutedOrders]);
 
   // Load trading config and initialize coin presets
   useEffect(() => {
@@ -4622,6 +4674,8 @@ function resolveDecisionIndexColor(value: number): string {
     // Load initial data
     fetchPortfolio({ showLoader: true });
     fetchTopCoins(false);
+    // Populate shared order history so Portfolio P&L lots work without expand
+    fetchExecutedOrders({ showLoader: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load expected TP data when tab is selected

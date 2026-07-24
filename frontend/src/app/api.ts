@@ -2514,8 +2514,29 @@ export interface JarvisDailyReportsResponse {
   alerting: Record<string, unknown>;
 }
 
-export async function getJarvisAlerts(limit = 100): Promise<JarvisAlertsResponse> {
-  return fetchAPI<JarvisAlertsResponse>(`/jarvis/alerts?limit=${limit}`);
+export type GetJarvisAlertsOptions = {
+  limit?: number;
+  status?: string;
+  severity?: string;
+};
+
+export async function getJarvisAlerts(
+  limitOrOptions: number | GetJarvisAlertsOptions = 100,
+): Promise<JarvisAlertsResponse> {
+  const options: GetJarvisAlertsOptions =
+    typeof limitOrOptions === 'object' && limitOrOptions !== null
+      ? limitOrOptions
+      : { limit: limitOrOptions };
+  const params = new URLSearchParams({
+    limit: String(options.limit ?? 100),
+  });
+  if (options.status) {
+    params.set('status', options.status);
+  }
+  if (options.severity) {
+    params.set('severity', options.severity);
+  }
+  return fetchAPI<JarvisAlertsResponse>(`/jarvis/alerts?${params.toString()}`);
 }
 
 export async function getJarvisAlert(alertId: string): Promise<JarvisAlertSummary & { evidence: unknown[] }> {
