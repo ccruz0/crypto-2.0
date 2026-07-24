@@ -10,6 +10,8 @@ from app.services.sl_tp_checker import (
     _derive_entry_from_abs_prices,
     _entry_symbol_variants,
     _order_entry_price,
+    _protection_quantities_cover_position,
+    _quantity_matches_position,
 )
 
 
@@ -103,6 +105,36 @@ class TestDeriveEntryFromAbs(unittest.TestCase):
             tp_percentage=None,
         )
         self.assertAlmostEqual(entry, 1.0, places=6)
+
+
+class TestProtectionQtyCoverage(unittest.TestCase):
+    def test_single_order_full_balance(self):
+        orders = [{"quantity": "0.313", "order_status": "ACTIVE"}]
+        self.assertTrue(_protection_quantities_cover_position(orders, 0.31311604))
+        self.assertTrue(_quantity_matches_position(orders[0], 0.31311604))
+
+    def test_multi_lot_sum_covers_aave_style(self):
+        # Prod AAVE: three lot SL/TPs sum to wallet; each alone fails ±5%.
+        orders = [
+            {"quantity": "0.105", "order_status": "PENDING"},
+            {"quantity": "0.104", "order_status": "PENDING"},
+            {"quantity": "0.104", "order_status": "PENDING"},
+        ]
+        balance = 0.31311604
+        self.assertTrue(_protection_quantities_cover_position(orders, balance))
+        for o in orders:
+            self.assertFalse(_quantity_matches_position(o, balance))
+
+    def test_under_covered_multi_lot_is_not_protected(self):
+        orders = [
+            {"quantity": "0.10", "order_status": "ACTIVE"},
+            {"quantity": "0.10", "order_status": "ACTIVE"},
+        ]
+        # 0.20 vs 0.313 → ~64% coverage, below 95% floor
+        self.assertFalse(_protection_quantities_cover_position(orders, 0.31311604))
+
+    def test_empty_orders_not_covered(self):
+        self.assertFalse(_protection_quantities_cover_position([], 0.31))
 
 
 class TestEnsureMissingProtection(unittest.TestCase):
@@ -210,6 +242,56 @@ class TestCheckPositionsUsesUnifiedOrders(unittest.TestCase):
 
         self.assertEqual(result["positions_missing_sl_tp"], [])
         self.assertEqual(result["total_positions"], 0)
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=95.0)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_multi_lot_aave_not_flagged_missing(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        # Wallet fully covered by 3 SL + 3 TP lot legs; none alone matches balance.
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "AAVE", "balance": "0.31311604"}]
+        }
+        legs = []
+        for qty, oid_base in (("0.105", "1"), ("0.104", "2"), ("0.104", "3")):
+            legs.append(
+                {
+                    "instrument_name": "AAVE_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "PENDING",
+                    "quantity": qty,
+                    "order_id": f"sl-{oid_base}",
+                    "side": "SELL",
+                }
+            )
+            legs.append(
+                {
+                    "instrument_name": "AAVE_USD",
+                    "order_type": "TAKE_PROFIT_LIMIT",
+                    "order_status": "PENDING",
+                    "quantity": qty,
+                    "order_id": f"tp-{oid_base}",
+                    "side": "SELL",
+                }
+            )
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": legs,
+        }
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        missing = result["positions_missing_sl_tp"]
+        aave_missing = [m for m in missing if "AAVE" in str(m.get("symbol", ""))]
+        self.assertEqual(aave_missing, [])
 
 
 if __name__ == "__main__":
