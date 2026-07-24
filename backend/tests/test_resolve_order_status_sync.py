@@ -389,12 +389,15 @@ class TestReconcileMisclassifiedProtectionFills:
                 "cumulative_quantity": 0.00016,
                 "price": 65239.32,
                 "quantity": 0.00016,
+                "child_exchange_order_id": "5755600492017002493",
             },
         ), patch.object(
             svc, "_maybe_notify_executed_fill_telegram"
         ) as mock_tg, patch.object(
             svc, "_cancel_oco_sibling"
-        ):
+        ), patch.object(
+            svc, "_upsert_protection_child_spot_fill"
+        ) as mock_child:
             repaired = svc._reconcile_misclassified_protection_fills(db, limit=5)
 
         assert repaired == 1
@@ -402,6 +405,137 @@ class TestReconcileMisclassifiedProtectionFills:
         assert order.cumulative_quantity == pytest.approx(0.00016)
         assert order.avg_price == pytest.approx(65239.32)
         mock_tg.assert_called_once()
+        mock_child.assert_called_once()
+
+    def test_skips_confirmed_cancelled_on_subsequent_passes(self):
+        from app.models.exchange_order import OrderStatusEnum
+
+        svc = ExchangeSyncService()
+        order = MagicMock()
+        order.exchange_order_id = "73817490102025222"
+        order.symbol = "DGB_USD"
+        order.status = OrderStatusEnum.CANCELLED
+        order.cumulative_quantity = 0
+        order.order_role = "STOP_LOSS"
+        order.order_type = "STOP_LIMIT"
+        order.exchange_create_time = datetime(2026, 7, 23, tzinfo=timezone.utc)
+        order.created_at = order.exchange_create_time
+
+        db = MagicMock()
+        query = MagicMock()
+        db.query.return_value = query
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.limit.return_value = query
+        query.all.return_value = [order]
+
+        with patch.object(
+            svc,
+            "_resolve_advanced_order_status_from_exchange",
+            return_value={
+                "status": "CANCELLED",
+                "cumulative_quantity": 0.0,
+                "price": None,
+                "quantity": 0.0,
+            },
+        ) as mock_adv, patch.object(
+            svc, "_apply_protection_fill_from_resolve"
+        ) as mock_apply:
+            assert svc._reconcile_misclassified_protection_fills(db, limit=5) == 0
+            assert mock_adv.call_count == 1
+            mock_apply.assert_not_called()
+            # Second pass must not re-hit advanced API
+            assert svc._reconcile_misclassified_protection_fills(db, limit=5) == 0
+            assert mock_adv.call_count == 1
+
+
+class TestUpsertProtectionChildSpotFill:
+    def test_inserts_missing_child_and_suppresses_telegram(self):
+        from app.models.exchange_order import OrderSideEnum, OrderStatusEnum
+
+        svc = ExchangeSyncService()
+        parent = MagicMock()
+        parent.exchange_order_id = "73817490102011214"
+        parent.symbol = "BTC_USD"
+        parent.side = OrderSideEnum.SELL
+        parent.order_type = "TAKE_PROFIT_LIMIT"
+        parent.order_role = "TAKE_PROFIT"
+        parent.parent_order_id = "entry-1"
+        parent.quantity = 0.3
+        parent.price = 65945.0
+        parent.avg_price = 65960.21
+        parent.cumulative_quantity = 0.3
+        parent.execution_notified_at = datetime(2026, 7, 23, 11, 6, tzinfo=timezone.utc)
+        parent.exchange_create_time = datetime(2026, 7, 19, tzinfo=timezone.utc)
+        parent.created_at = parent.exchange_create_time
+
+        db = MagicMock()
+        query = MagicMock()
+        db.query.return_value = query
+        query.filter.return_value = query
+        query.first.return_value = None  # child missing
+
+        child_id = svc._upsert_protection_child_spot_fill(
+            db,
+            parent,
+            {
+                "status": "FILLED",
+                "cumulative_quantity": 0.3,
+                "price": 65960.21,
+                "child_exchange_order_id": "5755600492041405464",
+            },
+        )
+        assert child_id == "5755600492041405464"
+        db.add.assert_called_once()
+        created = db.add.call_args[0][0]
+        assert created.exchange_order_id == "5755600492041405464"
+        assert created.status == OrderStatusEnum.FILLED
+        assert created.order_role == "TAKE_PROFIT"
+        assert created.execution_notified_at is not None
+
+
+class TestResolvePrefersAdvancedForProtection:
+    def test_protection_row_tries_advanced_before_spot(self):
+        from app.models.exchange_order import OrderStatusEnum
+
+        svc = ExchangeSyncService()
+        row = MagicMock()
+        row.symbol = "BTC_USD"
+        row.order_role = "TAKE_PROFIT"
+        row.order_type = "TAKE_PROFIT_LIMIT"
+
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = row
+
+        adv_detail = {
+            "code": 0,
+            "result": {
+                "order_id": "73817490102011214",
+                "status": "FILLED",
+                "cumulative_quantity": "0.30000",
+                "avg_price": "65960.21",
+                "quantity": "0.30000",
+                "exchange_order_id": "5755600492041405464",
+            },
+        }
+        with patch(
+            "app.services.exchange_sync.SessionLocal", return_value=db
+        ), patch(
+            "app.services.exchange_sync.trade_client.get_advanced_order_detail",
+            return_value=adv_detail,
+        ) as mock_adv, patch(
+            "app.services.exchange_sync.trade_client.get_order_detail",
+        ) as mock_spot:
+            result = svc._resolve_order_status_from_exchange(
+                "73817490102011214",
+                datetime(2026, 7, 19, tzinfo=timezone.utc),
+                instrument_name="BTC_USD",
+            )
+            assert result is not None
+            assert result["status"] == "FILLED"
+            assert result["child_exchange_order_id"] == "5755600492041405464"
+            mock_adv.assert_called_once()
+            mock_spot.assert_not_called()
 
 
 class TestMaybeNotifyExecutedFillTelegram:
