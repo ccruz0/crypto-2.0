@@ -42,6 +42,7 @@ _spec = importlib.util.spec_from_file_location("auto_entry_promote", _promote_pa
 if _spec is None or _spec.loader is None:
     raise SystemExit(f"Cannot load {_promote_path}")
 _promote = importlib.util.module_from_spec(_spec)
+sys.modules["auto_entry_promote"] = _promote
 _spec.loader.exec_module(_promote)
 apply_promote = _promote.apply_promote
 load_manifest = _promote.load_manifest
