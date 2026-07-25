@@ -244,11 +244,18 @@ def synthetic_candles(
     bars: int = 20,
     step_min: int = 15,
     drift: float = 0.002,
+    adverse: bool = False,
 ) -> list[Candle]:
-    """Deterministic candles for --fixture-candles / unit demos (no network)."""
+    """Deterministic candles for --fixture-candles / unit demos (no network).
+
+    By default price drifts in the trade's favor. Set adverse=True to drift
+    against the side (for mixed-label ML demos).
+    """
     out: list[Candle] = []
     price = entry
     sign = 1.0 if side == "BUY" else -1.0
+    if adverse:
+        sign *= -1.0
     for i in range(bars):
         t = entry_ts_ms + i * step_min * 60_000
         move = drift * sign
@@ -350,10 +357,13 @@ def evaluate_alerts(
         cache_key = f"{norm['symbol']}|{norm['entry_ts_ms']}|{end_ms}"
 
         if fixture_candles:
+            ctx = parse_context_json(raw.get("context_json"))
+            adverse = bool(ctx.get("fixture_adverse"))
             candles = synthetic_candles(
                 norm["entry_price"],
                 norm["entry_ts_ms"],
                 norm["side"],
+                adverse=adverse,
             )
             source = "fixture"
         else:
