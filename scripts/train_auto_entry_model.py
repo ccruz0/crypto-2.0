@@ -71,14 +71,24 @@ def load_dataset(path: Path) -> tuple[list[list[float]], list[int], dict[str, An
 
 
 def next_version(out_dir: Path) -> int:
-    manifest_path = out_dir / "manifest.json"
-    if not manifest_path.exists():
-        return 1
-    try:
-        m = json.loads(manifest_path.read_text(encoding="utf-8"))
-        return int(m.get("version") or 0) + 1
-    except Exception:
-        return 1
+    versions: list[int] = []
+    for name in ("manifest.json", "candidate_manifest.json"):
+        path = out_dir / name
+        if not path.exists():
+            continue
+        try:
+            m = json.loads(path.read_text(encoding="utf-8"))
+            versions.append(int(m.get("version") or 0))
+        except Exception:
+            continue
+    for p in out_dir.glob("auto_entry_v*.joblib"):
+        try:
+            # auto_entry_v12.joblib
+            stem = p.stem  # auto_entry_v12
+            versions.append(int(stem.rsplit("v", 1)[-1]))
+        except Exception:
+            continue
+    return (max(versions) + 1) if versions else 1
 
 
 def train(
@@ -149,6 +159,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--test-size", type=float, default=0.25)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--min-rows", type=int, default=MIN_ROWS)
+    p.add_argument(
+        "--no-promote",
+        action="store_true",
+        help="Write versioned + candidate artifacts only (do not update current.joblib)",
+    )
     return p.parse_args(argv)
 
 
@@ -176,15 +191,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     version = next_version(args.out_dir)
     model_name = f"auto_entry_v{version}.joblib"
     model_path = args.out_dir / model_name
-    joblib.dump(
-        {
-            "model": clf,
-            "feature_names": list(FEATURE_NAMES),
-            "feature_version": FEATURE_VERSION,
-            "version": version,
-        },
-        model_path,
-    )
+    payload = {
+        "model": clf,
+        "feature_names": list(FEATURE_NAMES),
+        "feature_version": FEATURE_VERSION,
+        "version": version,
+    }
+    joblib.dump(payload, model_path)
 
     manifest = {
         "version": version,
@@ -203,23 +216,33 @@ def main(argv: Optional[list[str]] = None) -> int:
         "metrics": metrics,
         "autonomous_promote": False,
         "live_gate_enabled": False,
-        "note": "PR-ML-A offline artifact only — runtime gate is PR-ML-B",
+        "note": "candidate artifact — promote via retrain_and_promote_auto_entry.py (PR-ML-C)",
     }
-    (args.out_dir / "manifest.json").write_text(
+    (args.out_dir / "candidate_manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
-    # Convenience copy for loaders that expect "current"
-    joblib.dump(
-        {
-            "model": clf,
-            "feature_names": list(FEATURE_NAMES),
-            "feature_version": FEATURE_VERSION,
-            "version": version,
-        },
-        args.out_dir / "current.joblib",
-    )
+    joblib.dump(payload, args.out_dir / "candidate.joblib")
 
-    print(json.dumps({"wrote": str(model_path), "manifest": manifest}, indent=2))
+    promoted_current = False
+    if not args.no_promote:
+        # Backward-compatible default: also refresh current + manifest
+        joblib.dump(payload, args.out_dir / "current.joblib")
+        (args.out_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        promoted_current = True
+
+    print(
+        json.dumps(
+            {
+                "wrote": str(model_path),
+                "candidate": str(args.out_dir / "candidate.joblib"),
+                "updated_current": promoted_current,
+                "manifest": manifest,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
