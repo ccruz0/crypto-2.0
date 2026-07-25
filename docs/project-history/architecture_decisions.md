@@ -159,6 +159,41 @@ en prod en Phase 1.
 
 ---
 
+## ADR-0004 — Auto ML entry classifier (autonomous promote)
+
+**Estado:** VIGENTE (PR-ML-A offline shipped in-repo; live gate pending PR-ML-B)  
+**Fecha:** 2026-07-24  
+**Supersedes (parcial):** ADR-0003 “learning apply solo vía Approval Center” **solo** para el artefacto ML de Auto (no para ACW patch/PR/deploy general).
+
+### Contexto
+
+Operador eligió: (1) modelo ML real para filtrar entradas Auto, (2) promote autónomo en prod
+(kill switch + rollback), no solo tuning de JSON vía Approval Center.
+
+### Opciones consideradas
+
+1. Bounded rule tuning + Approval Center (Phase 2 sketch).
+2. Offline scorecard only (eval) without a classifier.
+3. sklearn entry classifier + Auto-only score gate + autonomous promote de `joblib`.
+
+### Decisión
+
+Adoptar (3):
+
+- Label offline: `dir_acc_1h OR tp_before_sl` (`scripts/auto_ml_features.py`).
+- Train: `HistGradientBoostingClassifier` → `models/auto_entry/` (gitignored binaries).
+- Runtime (PR-ML-B+): gate solo si `strategy_type == auto` y `AUTO_ML_ENABLED=true`.
+- Promote autónomo solo del artefacto modelo si `AUTO_ML_AUTONOMOUS_PROMOTE=true` y holdout mejora; **no** habilita Jarvis `patch_apply` / GitHub write.
+- Default de kill switch: **off** hasta enable explícito en prod.
+
+### Consecuencias
+
+- PR-ML-A no cambia live trading.
+- Riesgo de overfit con pocos labels; exige `n_min` y holdout en retrain (PR-ML-C).
+- Rollback: `AUTO_ML_ENABLED=false` o pin de `manifest` / `current.joblib` previo.
+
+---
+
 ## Plantilla para nuevas ADR
 
 ```markdown

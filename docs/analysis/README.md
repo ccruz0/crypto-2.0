@@ -28,3 +28,26 @@ python3 scripts/eval_alert_quality.py --alerts-json path/to/alerts.json
 
 Outputs: `docs/analysis/alert-quality-scorecard-YYYY-MM-DD.md` (+ `.json`).
 Pure metric helpers: `scripts/alert_quality_metrics.py` (unit-tested).
+
+## Auto ML entry model (PR-ML-A — offline only)
+
+Builds a labeled feature dataset from alerts + forward OHLCV, then trains a
+`HistGradientBoostingClassifier`. **Does not** enable the live Auto score gate
+(that is PR-ML-B). Kill switch / runtime wiring stays off. See ADR-0004.
+
+```bash
+# Deps (offline train only; use the backend venv)
+backend/.venv/bin/python -m pip install -r scripts/requirements-auto-ml.txt
+
+# Demo dataset + train (no network / no DB)
+backend/.venv/bin/python scripts/build_auto_ml_dataset.py --demo
+backend/.venv/bin/python scripts/train_auto_entry_model.py --dataset docs/analysis/auto-ml-dataset.json
+
+# From dashboard or DB (same sources as alert-quality eval)
+backend/.venv/bin/python scripts/build_auto_ml_dataset.py --api-url https://dashboard.hilovivo.com --days 30
+backend/.venv/bin/python scripts/train_auto_entry_model.py
+```
+
+Artifacts: `models/auto_entry/auto_entry_vN.joblib`, `current.joblib`, `manifest.json`
+(gitignored binaries). Features/labels: `scripts/auto_ml_features.py`.
+Tests: `backend/tests/test_auto_ml_offline.py`.
