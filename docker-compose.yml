@@ -271,6 +271,14 @@ services:
       - AI_RUNS_DIR=/app/backend/ai_runs
       # Jarvis repository graph: read-only monorepo index (backend code lives in /app)
       - JARVIS_REPO_INDEX_ROOTS=/repo
+      # Auto ML entry gate + autonomous promote (ADR-0004). Override via .env.aws if needed.
+      - AUTO_ML_ENABLED=${AUTO_ML_ENABLED:-true}
+      - AUTO_ML_AUTONOMOUS_PROMOTE=${AUTO_ML_AUTONOMOUS_PROMOTE:-true}
+      - AUTO_ML_THRESHOLD=${AUTO_ML_THRESHOLD:-0.5}
+      - AUTO_ML_SHADOW_LOG=${AUTO_ML_SHADOW_LOG:-true}
+      - AUTO_ML_MODEL_PATH=${AUTO_ML_MODEL_PATH:-/data/auto_ml/current.joblib}
+      - AUTO_ML_PROMOTE_MIN_ROWS=${AUTO_ML_PROMOTE_MIN_ROWS:-20}
+      - AUTO_ML_PROMOTE_MIN_DELTA=${AUTO_ML_PROMOTE_MIN_DELTA:-0.0}
     # SECURITY NOTE:
     # Never publish backend ports on 0.0.0.0 in production.
     # Use 127.0.0.1 binding or internal docker network only.
@@ -289,6 +297,8 @@ services:
       - ./docs:/app/docs
       - ./logs:/app/logs
       - aws_trading_config_data:/data
+      # Auto ML artifacts (current.joblib + manifest); host path ./models/auto_entry
+      - ./models/auto_entry:/data/auto_ml
       # Mount secrets directory (not only runtime.env): persist uses mkstemp beside the file;
       # a file-only bind mount makes /app/secrets non-writable for new files → rotate-admin-key 500.
       - ./secrets:/app/secrets
