@@ -23,6 +23,7 @@ import JarvisAlertsTab from '@/app/components/tabs/JarvisAlertsTab';
 import JarvisDailyReportsTab from '@/app/components/tabs/JarvisDailyReportsTab';
 import JarvisAnalyticsTab from '@/app/components/tabs/JarvisAnalyticsTab';
 import JarvisImprovementTab from '@/app/components/tabs/JarvisImprovementTab';
+import DashboardTabNav, { type DashboardTab } from '@/app/components/DashboardTabNav';
 import SystemHealthPanel from '@/components/SystemHealth';
 import { getSystemHealth } from '@/lib/api';
 import { palette } from '@/theme/palette';
@@ -338,7 +339,7 @@ const SkeletonBlock = ({ className = '' }: { className?: string }) => (
   <div className={`animate-pulse bg-gray-200 dark:bg-slate-700 rounded ${className}`} />
 );
 
-type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring' | 'jarvis' | 'production-diagnostics' | 'scheduled-investigations' | 'jarvis-alerts' | 'jarvis-daily-reports' | 'jarvis-analytics' | 'jarvis-improvement';
+type Tab = DashboardTab;
 
 // Helper function to add thousand separators
 function addThousandSeparators(numStr: string): string {
@@ -4830,25 +4831,6 @@ function resolveDecisionIndexColor(value: number): string {
   // Get current rules for the selected preset and risk mode
   const currentRules = presetsConfig[selectedConfigPreset]?.rules[selectedConfigRisk] || PRESET_CONFIG[selectedConfigPreset].rules[selectedConfigRisk];
 
-  // Tab navigation configuration
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'portfolio', label: 'Portfolio' },
-    { id: 'watchlist', label: 'Watchlist' },
-    { id: 'signals', label: 'Signals' },
-    { id: 'orders', label: 'Orders' },
-    { id: 'expected-take-profit', label: 'Expected TP' },
-    { id: 'executed-orders', label: 'Executed Orders' },
-    { id: 'monitoring', label: 'Monitoring' },
-    { id: 'version-history', label: 'Version History' },
-    { id: 'jarvis', label: 'Jarvis' },
-    { id: 'production-diagnostics', label: 'Production Diagnostics' },
-    { id: 'scheduled-investigations', label: 'Scheduled Investigations' },
-    { id: 'jarvis-alerts', label: 'Alerts' },
-    { id: 'jarvis-daily-reports', label: 'Daily Reports' },
-    { id: 'jarvis-analytics', label: 'Jarvis Analytics' },
-    { id: 'jarvis-improvement', label: 'Jarvis Improvement' },
-  ];
-
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-slate-900">
       <div className="container mx-auto p-4">
@@ -4876,32 +4858,11 @@ function resolveDecisionIndexColor(value: number): string {
           <SystemHealthPanel className="mb-4" />
         </ErrorBoundary>
 
-        {/* Tab Navigation Menu */}
-        <div className="mb-6 border-b border-gray-200 dark:border-gray-700">
-          <nav className="flex flex-wrap gap-2 -mb-px">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`
-                  px-4 py-2 text-sm font-medium transition-colors
-                  ${
-                    activeTab === tab.id
-                      ? 'border-b-2 border-blue-600 text-blue-600 dark:text-blue-400'
-                      : 'text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
-                  }
-                `}
-              >
-                {tab.label}
-                {tab.id === 'monitoring' && unreadMonitoringCount > 0 && (
-                  <span className="ml-2 px-2 py-0.5 text-xs bg-red-500 text-white rounded-full">
-                    {unreadMonitoringCount}
-                  </span>
-                )}
-              </button>
-            ))}
-          </nav>
-        </div>
+        <DashboardTabNav
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          unreadMonitoringCount={unreadMonitoringCount}
+        />
 
         {/* Tab Content */}
         <ErrorBoundary>
@@ -5057,11 +5018,16 @@ function resolveDecisionIndexColor(value: number): string {
           {activeTab === 'signals' && (
             <div className="space-y-6">
               {/* Header Section */}
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Signal Configuration</h2>
+              <div className="flex justify-between items-start gap-4 mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Strategy Config</h2>
+                  <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    Preset and risk settings for the bot. Live buy/sell signals are on the Watchlist.
+                  </p>
+                </div>
                 <button
                   onClick={() => setShowSignalConfig(true)}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center gap-2"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center gap-2 shrink-0"
                 >
                   <span>⚙️</span>
                   <span>Configure Strategy</span>

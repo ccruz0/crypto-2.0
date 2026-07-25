@@ -21,9 +21,9 @@ test.describe('Price Threshold E2E Verification', () => {
   });
 
   test('should verify price threshold changes ($10 -> $11, $3, no limit) and alert behavior', async () => {
-    // Step 1: Navigate to Signal Configuration tab
-    test.info().annotations.push({ type: 'step', description: 'Navigate to Signal Configuration' });
-    const signalConfigTab = page.locator('button:has-text("Signal Configuration"), a:has-text("Signal Configuration")').first();
+    // Step 1: Navigate to Strategy Config tab
+    test.info().annotations.push({ type: 'step', description: 'Navigate to Strategy Config' });
+    const signalConfigTab = page.locator('button:has-text("Strategy Config"), button:has-text("Signal Configuration"), a:has-text("Strategy Config"), a:has-text("Signal Configuration")').first();
     if (await signalConfigTab.count() > 0) {
       await signalConfigTab.click();
       await page.waitForTimeout(1000);
@@ -126,11 +126,11 @@ test.describe('Price Threshold E2E Verification', () => {
 
     console.log(`✅ Found test coin: ${testCoin.symbol} (BUY: ${testCoin.buyActive}, SELL: ${testCoin.sellActive})`);
 
-    // Step 3: Navigate to Signal Configuration and change threshold
-    test.info().annotations.push({ type: 'step', description: 'Change price threshold in Signal Configuration' });
-    
-    // Try multiple ways to find Signal Configuration tab
-    let configTab = page.locator('button:has-text("Signal Configuration"), a:has-text("Signal Configuration"), [data-testid*="signal-config"], [data-testid*="config"]').first();
+    // Step 3: Navigate to Strategy Config and change threshold
+    test.info().annotations.push({ type: 'step', description: 'Change price threshold in Strategy Config' });
+
+    // Try multiple ways to find Strategy Config tab
+    let configTab = page.locator('button:has-text("Strategy Config"), button:has-text("Signal Configuration"), a:has-text("Strategy Config"), a:has-text("Signal Configuration"), [data-testid*="signal-config"], [data-testid*="config"]').first();
     if (await configTab.count() === 0) {
       // Try clicking on any tab that might lead to config
       const allTabs = page.locator('button, a').filter({ hasText: /config|signal|strategy/i });
@@ -143,7 +143,7 @@ test.describe('Price Threshold E2E Verification', () => {
       await configTab.click();
       await page.waitForTimeout(2000);
     } else {
-      console.log('⚠️ Signal Configuration tab not found, trying to find input directly...');
+      console.log('⚠️ Strategy Config tab not found, trying to find input directly...');
     }
 
     // Find the minPriceChangePct input field - try multiple selectors

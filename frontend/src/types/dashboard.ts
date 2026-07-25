@@ -4,7 +4,22 @@
 
 import { OpenOrder } from '@/app/api';
 
-export type Tab = 'portfolio' | 'watchlist' | 'signals' | 'orders' | 'expected-take-profit' | 'executed-orders' | 'version-history' | 'monitoring';
+export type Tab =
+  | 'portfolio'
+  | 'watchlist'
+  | 'signals'
+  | 'orders'
+  | 'expected-take-profit'
+  | 'executed-orders'
+  | 'version-history'
+  | 'monitoring'
+  | 'jarvis'
+  | 'production-diagnostics'
+  | 'scheduled-investigations'
+  | 'jarvis-alerts'
+  | 'jarvis-daily-reports'
+  | 'jarvis-analytics'
+  | 'jarvis-improvement';
 
 export type Preset = 'Swing' | 'Intraday' | 'Scalp' | 'Auto';
 export type RiskMode = 'Conservative' | 'Aggressive';
