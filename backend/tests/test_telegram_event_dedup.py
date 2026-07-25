@@ -32,9 +32,11 @@ class TestSlTpReuseSkipsTelegram(unittest.TestCase):
     @patch("app.api.routes_signals.calculate_stop_loss_and_take_profit", create=True)
     @patch("app.services.exchange_sync.try_acquire_sl_tp_creation_lock", return_value=True)
     @patch("app.services.exchange_sync.release_sl_tp_creation_lock")
+    @patch("app.services.exchange_sync.should_skip_rejected_tp_backfill", return_value=False)
+    @patch("app.services.exchange_sync._base_wallet_balance_from_accounts", return_value=-0.05)
     @patch("app.services.live_trading_gate.get_live_trading", return_value=True)
     def test_no_new_protection_skips_telegram(
-        self, _live, _release, _lock, _calc, mock_notifier
+        self, _live, _wallet, _skip_rej, _release, _lock, _calc, mock_notifier
     ):
         from app.services.exchange_sync import ExchangeSyncService
 
@@ -65,7 +67,10 @@ class TestSlTpReuseSkipsTelegram(unittest.TestCase):
             }
         )
 
-        with patch.dict("sys.modules", {"app.api.routes_signals": MagicMock()}):
+        with patch.dict("sys.modules", {"app.api.routes_signals": MagicMock()}), patch(
+            "app.services.exchange_sync.trade_client.get_account_summary",
+            return_value={"accounts": [{"currency": "ETH", "balance": "-0.05"}]},
+        ):
             result = svc._create_sl_tp_for_filled_order(
                 db=db,
                 symbol="ETH_USD",

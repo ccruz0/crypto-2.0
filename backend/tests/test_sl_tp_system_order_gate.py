@@ -63,12 +63,55 @@ def test_should_create_for_system_order_without_timestamp():
     with patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
+    ), patch(
+        "app.services.exchange_sync.should_skip_rejected_tp_backfill",
+        return_value=False,
     ):
         allowed, reason = should_auto_create_sl_tp_on_sync(
             db, order, order_filled_time=None, now_utc=datetime.now(timezone.utc)
         )
     assert allowed is True
     assert reason == "system_order_needs_protection"
+
+
+def test_should_skip_wallet_side_mismatch_for_system_order():
+    db = MagicMock()
+    order = _order(trade_signal_id=7)
+    order.side = "SELL"
+    with patch(
+        "app.services.exchange_sync.has_complete_sl_tp_protection",
+        return_value=False,
+    ), patch(
+        "app.services.exchange_sync.should_skip_rejected_tp_backfill",
+        return_value=False,
+    ):
+        allowed, reason = should_auto_create_sl_tp_on_sync(
+            db,
+            order,
+            order_filled_time=None,
+            now_utc=datetime.now(timezone.utc),
+            wallet_balance=1.89,
+            entry_side="SELL",
+        )
+    assert allowed is False
+    assert reason.startswith("wallet_side_mismatch")
+
+
+def test_should_skip_rejected_tp_terminal():
+    db = MagicMock()
+    order = _order(trade_signal_id=7)
+    with patch(
+        "app.services.exchange_sync.has_complete_sl_tp_protection",
+        return_value=False,
+    ), patch(
+        "app.services.exchange_sync.should_skip_rejected_tp_backfill",
+        return_value=True,
+    ):
+        allowed, reason = should_auto_create_sl_tp_on_sync(
+            db, order, order_filled_time=None, now_utc=datetime.now(timezone.utc)
+        )
+    assert allowed is False
+    assert reason == "tp_rejected_terminal"
 
 
 def test_should_skip_external_old_fill():
@@ -79,6 +122,9 @@ def test_should_skip_external_old_fill():
     filled = now - timedelta(hours=5)
     with patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
+        return_value=False,
+    ), patch(
+        "app.services.exchange_sync.should_skip_rejected_tp_backfill",
         return_value=False,
     ):
         allowed, reason = should_auto_create_sl_tp_on_sync(db, order, filled, now)

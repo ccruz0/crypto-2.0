@@ -75,6 +75,10 @@ def claim_telegram_event(
                 key[:64],
                 exc,
             )
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     now = time.time()
     ttl_seconds = max(60, int(ttl_minutes) * 60)
