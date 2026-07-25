@@ -355,16 +355,21 @@ def send_promote_telegram(message: str) -> bool:
         logger.info("Telegram promote notify skipped (token/chat not configured)")
         return False
     try:
-        import urllib.parse
-        import urllib.request
+        from app.utils.http_client import http_post
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = urllib.parse.urlencode(
-            {"chat_id": chat, "text": message, "parse_mode": "HTML", "disable_web_page_preview": "1"}
-        ).encode()
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            ok = 200 <= getattr(resp, "status", 200) < 300
+        response = http_post(
+            url,
+            json={
+                "chat_id": chat,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=15,
+            calling_module="auto_entry_promote.send_promote_telegram",
+        )
+        ok = 200 <= int(getattr(response, "status_code", 0) or 0) < 300
         if ok:
             logger.info("Telegram promote notify sent")
         return bool(ok)

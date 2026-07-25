@@ -117,3 +117,28 @@ def test_apply_promote_writes_current(tmp_path: Path):
     assert promoted["autonomous_promote"] is True
     man = json.loads((tmp_path / "manifest.json").read_text())
     assert man["promote_reason"] == "force"
+
+
+def test_send_promote_telegram_uses_http_client(monkeypatch):
+    from app.services import auto_entry_promote as mod
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN_AWS", "token-test")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID_AWS", "chat-test")
+    calls = {}
+
+    class _Resp:
+        status_code = 200
+
+    def fake_http_post(url, json=None, timeout=10, calling_module="unknown", **kwargs):
+        calls["url"] = url
+        calls["json"] = json
+        calls["calling_module"] = calling_module
+        calls["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr("app.utils.http_client.http_post", fake_http_post)
+    assert mod.send_promote_telegram("<b>hi</b>") is True
+    assert "api.telegram.org/bottoken-test/sendMessage" in calls["url"]
+    assert calls["json"]["chat_id"] == "chat-test"
+    assert calls["json"]["text"] == "<b>hi</b>"
+    assert calls["calling_module"] == "auto_entry_promote.send_promote_telegram"
