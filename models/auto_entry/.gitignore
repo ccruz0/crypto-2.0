@@ -1,0 +1,5 @@
+# Auto ML entry artifacts (PR-ML-A+). Retrain locally; do not commit binaries.
+# See scripts/train_auto_entry_model.py and docs/analysis/README.md
+*
+!.gitignore
+!README.md
