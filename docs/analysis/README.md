@@ -67,3 +67,25 @@ candidate. Default **off** (`AUTO_ML_ENABLED` unset/false). Shadow logs scores w
 
 Fail-open: missing model / joblib → allow rule BUY. Swing/scalp/intraday untouched.
 Tests: `backend/tests/test_auto_ml_live_gate.py`.
+
+## Auto ML retrain + autonomous promote (PR-ML-C)
+
+```bash
+# Dry-run decision (no current.joblib write)
+backend/.venv/bin/python scripts/retrain_and_promote_auto_entry.py --demo \
+  --min-rows 4 --promote-min-rows 4 --allow-single-class --dry-run
+
+# Autonomous promote when metrics improve (requires env)
+AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+  scripts/retrain_and_promote_auto_entry.py --demo --min-rows 4 \
+  --promote-min-rows 4 --allow-single-class
+```
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `AUTO_ML_AUTONOMOUS_PROMOTE` | `false` | Allow promote of `current.joblib` without Approval Center |
+| `AUTO_ML_PROMOTE_MIN_ROWS` | `20` | Min labeled rows to promote |
+| `AUTO_ML_PROMOTE_MIN_DELTA` | `0.0` | Min primary-metric improvement vs current |
+
+Primary metric: holdout `roc_auc`, else `accuracy`. Telegram notify on promote when bot token/chat env is set (secrets never logged). Runtime model cache reloads when `current.joblib` mtime changes.
+Tests: `backend/tests/test_auto_ml_promote.py`.

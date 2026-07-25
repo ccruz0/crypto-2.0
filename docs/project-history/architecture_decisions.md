@@ -161,7 +161,7 @@ en prod en Phase 1.
 
 ## ADR-0004 — Auto ML entry classifier (autonomous promote)
 
-**Estado:** VIGENTE (PR-ML-A offline shipped in-repo; live gate pending PR-ML-B)  
+**Estado:** VIGENTE (PR-ML-A/B merged; PR-ML-C retrain+promote)  
 **Fecha:** 2026-07-24  
 **Supersedes (parcial):** ADR-0003 “learning apply solo vía Approval Center” **solo** para el artefacto ML de Auto (no para ACW patch/PR/deploy general).
 
@@ -182,14 +182,14 @@ Adoptar (3):
 
 - Label offline: `dir_acc_1h OR tp_before_sl` (`scripts/auto_ml_features.py`).
 - Train: `HistGradientBoostingClassifier` → `models/auto_entry/` (gitignored binaries).
-- Runtime (PR-ML-B+): gate solo si `strategy_type == auto` y `AUTO_ML_ENABLED=true`.
-- Promote autónomo solo del artefacto modelo si `AUTO_ML_AUTONOMOUS_PROMOTE=true` y holdout mejora; **no** habilita Jarvis `patch_apply` / GitHub write.
-- Default de kill switch: **off** hasta enable explícito en prod.
+- Runtime (PR-ML-B): gate solo si `strategy_type == auto` y `AUTO_ML_ENABLED=true`.
+- Promote autónomo (PR-ML-C): `scripts/retrain_and_promote_auto_entry.py` + `AUTO_ML_AUTONOMOUS_PROMOTE=true` cuando holdout metric mejora y `n ≥ AUTO_ML_PROMOTE_MIN_ROWS`; **no** habilita Jarvis `patch_apply` / GitHub write.
+- Default de kill switch / promote: **off** hasta enable explícito en prod.
 
 ### Consecuencias
 
-- PR-ML-A no cambia live trading.
-- Riesgo de overfit con pocos labels; exige `n_min` y holdout en retrain (PR-ML-C).
+- PR-ML-A/B merged to main; live gate still default-off.
+- Riesgo de overfit con pocos labels; `n_min` + holdout gate en promote.
 - Rollback: `AUTO_ML_ENABLED=false` o pin de `manifest` / `current.joblib` previo.
 
 ---

@@ -27,6 +27,7 @@ _LOCK = threading.Lock()
 _CACHE: dict[str, Any] = {
     "model": None,
     "path": None,
+    "mtime": None,
     "version": None,
     "feature_names": None,
     "feature_version": None,
@@ -43,6 +44,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def auto_ml_enabled() -> bool:
     return _env_bool("AUTO_ML_ENABLED", False)
+
+
+def auto_ml_autonomous_promote() -> bool:
+    return _env_bool("AUTO_ML_AUTONOMOUS_PROMOTE", False)
 
 
 def auto_ml_shadow_log() -> bool:
@@ -89,11 +94,18 @@ class AutoEntryScore:
 def _load_model(force: bool = False) -> Any:
     path = default_model_path()
     path_s = str(path)
+    mtime: Optional[float] = None
+    if path.is_file():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
     with _LOCK:
         if (
             not force
             and _CACHE["model"] is not None
             and _CACHE["path"] == path_s
+            and _CACHE.get("mtime") == mtime
         ):
             return _CACHE["model"]
         if not path.is_file():
@@ -101,6 +113,7 @@ def _load_model(force: bool = False) -> Any:
                 {
                     "model": None,
                     "path": path_s,
+                    "mtime": None,
                     "version": None,
                     "load_error": f"model_missing:{path_s}",
                 }
@@ -113,6 +126,7 @@ def _load_model(force: bool = False) -> Any:
                 {
                     "model": None,
                     "path": path_s,
+                    "mtime": None,
                     "load_error": f"joblib_missing:{e}",
                 }
             )
@@ -139,6 +153,7 @@ def _load_model(force: bool = False) -> Any:
                     {
                         "model": None,
                         "path": path_s,
+                        "mtime": None,
                         "load_error": "feature_names_mismatch",
                     }
                 )
@@ -153,6 +168,7 @@ def _load_model(force: bool = False) -> Any:
                     {
                         "model": None,
                         "path": path_s,
+                        "mtime": None,
                         "load_error": "feature_version_mismatch",
                     }
                 )
@@ -161,6 +177,7 @@ def _load_model(force: bool = False) -> Any:
                 {
                     "model": model,
                     "path": path_s,
+                    "mtime": mtime,
                     "version": version,
                     "feature_names": names,
                     "feature_version": fver,
@@ -180,6 +197,7 @@ def _load_model(force: bool = False) -> Any:
                 {
                     "model": None,
                     "path": path_s,
+                    "mtime": None,
                     "load_error": str(e),
                 }
             )
@@ -193,6 +211,7 @@ def reset_model_cache() -> None:
             {
                 "model": None,
                 "path": None,
+                "mtime": None,
                 "version": None,
                 "feature_names": None,
                 "feature_version": None,
