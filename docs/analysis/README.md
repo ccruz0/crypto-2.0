@@ -51,3 +51,19 @@ backend/.venv/bin/python scripts/train_auto_entry_model.py
 Artifacts: `models/auto_entry/auto_entry_vN.joblib`, `current.joblib`, `manifest.json`
 (gitignored binaries). Features/labels: `scripts/auto_ml_features.py`.
 Tests: `backend/tests/test_auto_ml_offline.py`.
+
+## Auto ML live score gate (PR-ML-B)
+
+Runtime gate in `calculate_trading_signals` for **Auto only**, after rule BUY
+candidate. Default **off** (`AUTO_ML_ENABLED` unset/false). Shadow logs scores when
+`AUTO_ML_SHADOW_LOG` is true (default).
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `AUTO_ML_ENABLED` | `false` | When true, block Auto BUY if score &lt; threshold |
+| `AUTO_ML_THRESHOLD` | `0.5` | Min P(good entry) |
+| `AUTO_ML_MODEL_PATH` | `models/auto_entry/current.joblib` | joblib artifact |
+| `AUTO_ML_SHADOW_LOG` | `true` | Log `[AUTO_ML]` scores without blocking |
+
+Fail-open: missing model / joblib → allow rule BUY. Swing/scalp/intraday untouched.
+Tests: `backend/tests/test_auto_ml_live_gate.py`.
