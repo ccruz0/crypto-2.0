@@ -11,6 +11,7 @@ import logging
 from app.services.strategy_profiles import StrategyType, RiskApproach
 from app.services.config_loader import get_strategy_rules
 from app.utils.indicator_format import format_indicator_value as _iv
+from app.services.auto_entry_model import apply_auto_ml_buy_gate
 
 logger = logging.getLogger(__name__)
 
@@ -665,9 +666,40 @@ def calculate_trading_signals(
         strategy_index = None  # No boolean flags to evaluate
     
     strategy_state["index"] = strategy_index
+
+    # Auto ML score gate (PR-ML-B): only for AUTO after rule BUY candidate.
+    # Default AUTO_ML_ENABLED=false → shadow log only; fail-open if model missing.
+    ml_blocked = False
+    if all_buy_flags_true and strategy_type == StrategyType.AUTO:
+        ml = apply_auto_ml_buy_gate(
+            symbol=symbol,
+            price=price,
+            rsi=rsi,
+            ma50=ma50,
+            ma200=ma200,
+            ema10=ema10,
+            volume_ratio=volume_ratio_val,
+            atr=atr14,
+            strategy_index=float(strategy_index) if strategy_index is not None else None,
+        )
+        strategy_state["ml_score"] = ml.score
+        strategy_state["ml_version"] = ml.version
+        strategy_state["ml_threshold"] = ml.threshold
+        strategy_state["ml_gate_enabled"] = ml.gate_enabled
+        strategy_state["ml_passed"] = ml.passed
+        strategy_state["ml_reason"] = ml.reason
+        if ml.gate_enabled and ml.passed is False:
+            ml_blocked = True
+            result["buy_signal"] = False
+            strategy_state["decision"] = "WAIT"
+            score_txt = f"{ml.score:.3f}" if ml.score is not None else "n/a"
+            result["rationale"].append(
+                f"⏸️ Auto ML gate blocked BUY ({profile_label}): "
+                f"score={score_txt} < threshold={ml.threshold:.3f} (v{ml.version})"
+            )
     
     # Set BUY signal based on canonical rule (PRIMARY)
-    if all_buy_flags_true:
+    if all_buy_flags_true and not ml_blocked:
         result["buy_signal"] = True
         strategy_state["decision"] = "BUY"
         
@@ -747,6 +779,9 @@ def calculate_trading_signals(
         
         # Canonical rule triggered - decision=BUY, buy_signal=True
         # Logging happens at end of function via DEBUG_STRATEGY_FINAL
+    elif ml_blocked:
+        # Rule BUY candidate rejected by Auto ML gate — rationale already set.
+        pass
     else:
         # Not all buy flags are True - identify blocking conditions
         no_buy_reasons = []
