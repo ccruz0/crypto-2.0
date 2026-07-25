@@ -7,9 +7,12 @@ from app.utils.indicator_format import format_indicator_value
 from app.services.sl_tp_checker import (
     SLTPCheckerService,
     _classify_open_protection_leg,
+    _db_protection_covers_wallet,
     _derive_entry_from_abs_prices,
     _entry_symbol_variants,
     _order_entry_price,
+    _parent_lot_qty,
+    _protection_create_qty,
     _protection_quantities_cover_position,
     _quantity_matches_position,
 )
@@ -135,6 +138,58 @@ class TestProtectionQtyCoverage(unittest.TestCase):
 
     def test_empty_orders_not_covered(self):
         self.assertFalse(_protection_quantities_cover_position([], 0.31))
+
+
+class TestProtectionCreateQty(unittest.TestCase):
+    def test_linked_parent_uses_lot_not_wallet(self):
+        parent = MagicMock(cumulative_quantity=0.3, quantity=0.3)
+        self.assertAlmostEqual(
+            _protection_create_qty(position_balance=1.893, parent_order=parent),
+            0.3,
+        )
+
+    def test_no_parent_uses_wallet(self):
+        self.assertAlmostEqual(
+            _protection_create_qty(position_balance=1.893, parent_order=None),
+            1.893,
+        )
+
+    def test_parent_larger_than_wallet_caps_to_wallet(self):
+        parent = MagicMock(cumulative_quantity=2.0, quantity=2.0)
+        self.assertAlmostEqual(
+            _protection_create_qty(position_balance=1.5, parent_order=parent),
+            1.5,
+        )
+
+    def test_parent_lot_qty_prefers_cumulative(self):
+        parent = MagicMock(cumulative_quantity=0.25, quantity=0.3)
+        self.assertAlmostEqual(_parent_lot_qty(parent), 0.25)
+
+
+class TestDbSisterBookCoverage(unittest.TestCase):
+    def test_sister_tps_cover_wallet(self):
+        db = MagicMock()
+        rows = [
+            MagicMock(quantity=1.3, cumulative_quantity=1.3),
+            MagicMock(quantity=0.3, cumulative_quantity=0.3),
+            MagicMock(quantity=0.3, cumulative_quantity=0.3),
+        ]
+        db.query.return_value.filter.return_value.all.return_value = rows
+        self.assertTrue(
+            _db_protection_covers_wallet(
+                db, ["BTC_USDT", "BTC_USD"], "TAKE_PROFIT", 1.893
+            )
+        )
+
+    def test_under_covered_sister_tps(self):
+        db = MagicMock()
+        rows = [MagicMock(quantity=0.3, cumulative_quantity=0.3)]
+        db.query.return_value.filter.return_value.all.return_value = rows
+        self.assertFalse(
+            _db_protection_covers_wallet(
+                db, ["BTC_USDT", "BTC_USD"], "TAKE_PROFIT", 1.893
+            )
+        )
 
 
 class TestEnsureMissingProtection(unittest.TestCase):
