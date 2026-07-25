@@ -262,6 +262,85 @@ def _protection_quantities_cover_position(
     return covered >= position_balance * (1.0 - tolerance)
 
 
+def _parent_lot_qty(order: Optional[ExchangeOrder]) -> Optional[float]:
+    """Filled/declared qty of an entry parent used to size linked SL/TP legs."""
+    if order is None:
+        return None
+    for attr in ("cumulative_quantity", "quantity"):
+        raw = getattr(order, attr, None)
+        if raw is None or raw == "":
+            continue
+        try:
+            qty = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            return qty
+    return None
+
+
+def _protection_create_qty(
+    *,
+    position_balance: float,
+    parent_order: Optional[ExchangeOrder] = None,
+) -> float:
+    """Qty for new SL/TP: parent lot when linked, else wallet. Never exceed wallet.
+
+    Linking a full-wallet leg to a partial parent (e.g. TP 1.893 on a 0.3 fill)
+    oversizes coverage and duplicates sister-book lot TPs.
+    """
+    wallet = float(position_balance or 0.0)
+    if wallet <= 0:
+        return 0.0
+    parent_qty = _parent_lot_qty(parent_order)
+    if parent_qty is not None and parent_qty > 0:
+        return min(parent_qty, wallet)
+    return wallet
+
+
+def _db_active_protection_qty(
+    db: Session, symbol_variants: List[str], role: str
+) -> float:
+    """Sum of active DB protection qty for role across USD/USDT sister books."""
+    if not symbol_variants:
+        return 0.0
+    active_statuses = (
+        OrderStatusEnum.ACTIVE,
+        OrderStatusEnum.NEW,
+        OrderStatusEnum.PARTIALLY_FILLED,
+    )
+    rows = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol.in_(symbol_variants),
+            ExchangeOrder.order_role == role,
+            ExchangeOrder.status.in_(active_statuses),
+        )
+        .all()
+    )
+    total = 0.0
+    for row in rows:
+        qty = _parent_lot_qty(row)
+        if qty:
+            total += qty
+    return total
+
+
+def _db_protection_covers_wallet(
+    db: Session,
+    symbol_variants: List[str],
+    role: str,
+    position_balance: float,
+    tolerance: float = 0.05,
+) -> bool:
+    """True when active sister-book SL/TP qty already covers the wallet."""
+    wallet = float(position_balance or 0.0)
+    if wallet <= 0:
+        return True
+    covered = _db_active_protection_qty(db, symbol_variants, role)
+    return covered >= wallet * (1.0 - tolerance)
+
+
 class SLTPCheckerService:
     """Service to check open positions for missing SL/TP orders and OCO integrity"""
     
@@ -1472,11 +1551,13 @@ class SLTPCheckerService:
             
             # Get parent order ID from most recent filled entry order (for linking TP/SL)
             parent_order_id = None
+            parent_order = None
             oco_group_id = None
             if entry_price:
                 try:
                     recent_order = _find_recent_entry_order(db, symbol)
                     if recent_order:
+                        parent_order = recent_order
                         parent_order_id = recent_order.exchange_order_id
                         entry_side = _entry_side_from_order(recent_order)
                         # Generate OCO group ID for linking SL and TP orders (same as automatic creation)
@@ -1485,6 +1566,45 @@ class SLTPCheckerService:
                         logger.info(f"Found parent order {parent_order_id} for {symbol}, using OCO group: {oco_group_id}")
                 except Exception as e:
                     logger.warning(f"Could not get parent order ID for {symbol}: {e}")
+
+            # Size legs to parent lot (not full wallet) when linked; never exceed wallet.
+            protection_qty = _protection_create_qty(
+                position_balance=position_balance,
+                parent_order=parent_order,
+            )
+            if parent_order and abs(protection_qty - float(position_balance)) > 1e-12:
+                logger.info(
+                    "Using parent lot qty %s (wallet %s) for %s protection "
+                    "(parent %s)",
+                    protection_qty,
+                    position_balance,
+                    symbol,
+                    parent_order_id,
+                )
+
+            # Skip creating a wallet-duplicate leg when sister-book / multi-lot
+            # protections already cover the bag (USD TPs covering BTC_USDT ensure).
+            sister_variants = _entry_symbol_variants(symbol)
+            if create_tp and _db_protection_covers_wallet(
+                db, sister_variants, "TAKE_PROFIT", position_balance
+            ):
+                logger.info(
+                    "Skipping TP create for %s: active sister/lot TPs already "
+                    "cover wallet %s",
+                    symbol,
+                    position_balance,
+                )
+                create_tp = False
+            if create_sl and _db_protection_covers_wallet(
+                db, sister_variants, "STOP_LOSS", position_balance
+            ):
+                logger.info(
+                    "Skipping SL create for %s: active sister/lot SLs already "
+                    "cover wallet %s",
+                    symbol,
+                    position_balance,
+                )
+                create_sl = False
             
             # Use the reusable TP/SL order creator functions (same as automatic creation)
             from app.services.sl_tp_protection import get_active_protection_order
@@ -1492,7 +1612,7 @@ class SLTPCheckerService:
             # Create SL order if requested
             sl_order_id = None
             sl_error = None
-            if create_sl and sl_price and entry_price:
+            if create_sl and sl_price and entry_price and protection_qty > 0:
                 existing_sl = (
                     get_active_protection_order(db, parent_order_id, "STOP_LOSS")
                     if parent_order_id
@@ -1512,7 +1632,7 @@ class SLTPCheckerService:
                         symbol=symbol,
                         side=entry_side,
                         sl_price=sl_price,
-                        quantity=position_balance,
+                        quantity=protection_qty,
                         entry_price=entry_price,
                         parent_order_id=parent_order_id,
                         oco_group_id=oco_group_id,
@@ -1530,7 +1650,7 @@ class SLTPCheckerService:
             # Create TP order if requested
             tp_order_id = None
             tp_error = None
-            if create_tp and tp_price and entry_price:
+            if create_tp and tp_price and entry_price and protection_qty > 0:
                 existing_tp = (
                     get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
                     if parent_order_id
@@ -1550,7 +1670,7 @@ class SLTPCheckerService:
                         symbol=symbol,
                         side=entry_side,
                         tp_price=tp_price,
-                        quantity=position_balance,
+                        quantity=protection_qty,
                         entry_price=entry_price,
                         parent_order_id=parent_order_id,
                         oco_group_id=oco_group_id,
@@ -1649,7 +1769,7 @@ class SLTPCheckerService:
                         symbol=symbol,
                         sl_price=sl_price,
                         tp_price=tp_price,
-                        quantity=position_balance,
+                        quantity=protection_qty,
                         mode=watchlist_item.sl_tp_mode or "conservative",
                         sl_order_id=str(sl_order_id) if sl_order_id else None,
                         tp_order_id=str(tp_order_id) if tp_order_id else None,
