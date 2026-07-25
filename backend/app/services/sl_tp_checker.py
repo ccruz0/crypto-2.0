@@ -1553,19 +1553,50 @@ class SLTPCheckerService:
             parent_order_id = None
             parent_order = None
             oco_group_id = None
+            # Wallet sign is the source of truth for which side to protect.
+            if position_balance > 0:
+                wallet_entry_side = "BUY"
+            elif position_balance < 0:
+                wallet_entry_side = "SELL"
+            else:
+                wallet_entry_side = None
             if entry_price:
                 try:
                     recent_order = _find_recent_entry_order(db, symbol)
                     if recent_order:
+                        fill_side = _entry_side_from_order(recent_order)
+                        if wallet_entry_side and fill_side != wallet_entry_side:
+                            logger.info(
+                                "Skipping ensure protection for %s: recent fill side=%s "
+                                "does not match wallet side=%s (balance=%s)",
+                                symbol,
+                                fill_side,
+                                wallet_entry_side,
+                                position_balance,
+                            )
+                            return {
+                                "success": False,
+                                "symbol": symbol,
+                                "error": (
+                                    f"wallet_side_mismatch: fill={fill_side} "
+                                    f"wallet={wallet_entry_side}"
+                                ),
+                                "sl_order_id": None,
+                                "tp_order_id": None,
+                            }
                         parent_order = recent_order
                         parent_order_id = recent_order.exchange_order_id
-                        entry_side = _entry_side_from_order(recent_order)
+                        entry_side = fill_side or wallet_entry_side or entry_side
                         # Generate OCO group ID for linking SL and TP orders (same as automatic creation)
                         import uuid
                         oco_group_id = f"oco_{parent_order_id}_{int(datetime.utcnow().timestamp())}"
                         logger.info(f"Found parent order {parent_order_id} for {symbol}, using OCO group: {oco_group_id}")
+                    elif wallet_entry_side:
+                        entry_side = wallet_entry_side
                 except Exception as e:
                     logger.warning(f"Could not get parent order ID for {symbol}: {e}")
+            elif wallet_entry_side:
+                entry_side = wallet_entry_side
 
             # Size legs to parent lot (not full wallet) when linked; never exceed wallet.
             protection_qty = _protection_create_qty(
@@ -1607,11 +1638,31 @@ class SLTPCheckerService:
                 create_sl = False
             
             # Use the reusable TP/SL order creator functions (same as automatic creation)
-            from app.services.sl_tp_protection import get_active_protection_order
+            from app.services.sl_tp_protection import (
+                get_active_protection_order,
+                should_skip_rejected_tp_backfill,
+            )
+
+            if parent_order_id and should_skip_rejected_tp_backfill(db, parent_order_id):
+                logger.info(
+                    "Skipping ensure TP backfill for %s parent=%s: REJECTED TP with active SL",
+                    symbol,
+                    parent_order_id,
+                )
+                create_tp = False
+                if not create_sl:
+                    return {
+                        "success": True,
+                        "symbol": symbol,
+                        "sl_order_id": None,
+                        "tp_order_id": None,
+                        "skip_reason": "tp_rejected_terminal",
+                    }
 
             # Create SL order if requested
             sl_order_id = None
             sl_error = None
+            sl_newly_created = False
             if create_sl and sl_price and entry_price and protection_qty > 0:
                 existing_sl = (
                     get_active_protection_order(db, parent_order_id, "STOP_LOSS")
@@ -1646,10 +1697,12 @@ class SLTPCheckerService:
                     )
                     sl_order_id = sl_result.get("order_id")
                     sl_error = sl_result.get("error")
+                    sl_newly_created = bool(sl_order_id)
             
             # Create TP order if requested
             tp_order_id = None
             tp_error = None
+            tp_newly_created = False
             if create_tp and tp_price and entry_price and protection_qty > 0:
                 existing_tp = (
                     get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
@@ -1679,11 +1732,12 @@ class SLTPCheckerService:
                     )
                     tp_order_id = tp_result.get("order_id")
                     tp_error = tp_result.get("error")
+                    tp_newly_created = bool(tp_order_id)
             
-            # BR-3: ATOMIC ROLLBACK - If both SL and TP were requested, both must succeed
-            # If one failed, cancel the other (rollback)
+            # BR-3: ATOMIC ROLLBACK - only roll back legs newly created in this call.
+            # Never cancel a pre-existing reused SL/TP when the other leg fails.
             if create_sl and create_tp:
-                if sl_order_id and not tp_order_id:
+                if sl_newly_created and sl_order_id and not tp_order_id:
                     # SL created but TP failed - ROLLBACK: cancel SL
                     logger.error(f"🚨 ATOMIC TP/SL VIOLATION: SL created but TP failed for {symbol}. Rolling back SL order {sl_order_id}.")
                     try:
@@ -1693,6 +1747,7 @@ class SLTPCheckerService:
                         else:
                             logger.info(f"✅ Rolled back SL order {sl_order_id} after TP creation failed")
                             sl_order_id = None  # Mark as rolled back
+                            sl_newly_created = False
                     except Exception as cancel_err:
                         logger.error(f"❌ Exception during SL rollback for {symbol}: {cancel_err}", exc_info=True)
                     
@@ -1717,7 +1772,7 @@ class SLTPCheckerService:
                     except Exception as emit_err:
                         logger.warning(f"Failed to emit SLTP_FAILED event for {symbol}: {emit_err}")
                         
-                elif tp_order_id and not sl_order_id:
+                elif tp_newly_created and tp_order_id and not sl_order_id:
                     # TP created but SL failed - ROLLBACK: cancel TP
                     logger.error(f"🚨 ATOMIC TP/SL VIOLATION: TP created but SL failed for {symbol}. Rolling back TP order {tp_order_id}.")
                     try:
@@ -1727,6 +1782,7 @@ class SLTPCheckerService:
                         else:
                             logger.info(f"✅ Rolled back TP order {tp_order_id} after SL creation failed")
                             tp_order_id = None  # Mark as rolled back
+                            tp_newly_created = False
                     except Exception as cancel_err:
                         logger.error(f"❌ Exception during TP rollback for {symbol}: {cancel_err}", exc_info=True)
                     
@@ -1751,34 +1807,60 @@ class SLTPCheckerService:
                     except Exception as emit_err:
                         logger.warning(f"Failed to emit SLTP_FAILED event for {symbol}: {emit_err}")
             
-            # Send notification
-            if sl_order_id or tp_order_id:
+            # Notify only when at least one leg was newly created this call.
+            if sl_newly_created or tp_newly_created:
                 try:
-                    # Get percentages from watchlist or calculate from prices
-                    sl_pct = watchlist_item.sl_percentage if watchlist_item.sl_percentage else None
-                    tp_pct = watchlist_item.tp_percentage if watchlist_item.tp_percentage else None
-                    
-                    # If percentages not set, calculate from entry price and SL/TP prices
-                    if entry_price and entry_price > 0:
-                        if not sl_pct and sl_price:
-                            sl_pct = abs((entry_price - sl_price) / entry_price * 100)
-                        if not tp_pct and tp_price:
-                            tp_pct = abs((tp_price - entry_price) / entry_price * 100)
-                    
-                    telegram_notifier.send_sl_tp_orders(
+                    from app.services.telegram_event_dedup import claim_telegram_event
+
+                    claim_id = parent_order_id or symbol
+                    if tp_newly_created and not sl_newly_created:
+                        claim_key = f"sl_tp_created:ensure:{claim_id}:tp_ok"
+                    else:
+                        claim_key = f"sl_tp_created:ensure:{claim_id}"
+                    if not claim_telegram_event(
+                        db,
+                        claim_key,
                         symbol=symbol,
-                        sl_price=sl_price,
-                        tp_price=tp_price,
-                        quantity=protection_qty,
-                        mode=watchlist_item.sl_tp_mode or "conservative",
-                        sl_order_id=str(sl_order_id) if sl_order_id else None,
-                        tp_order_id=str(tp_order_id) if tp_order_id else None,
-                        original_order_id=None,
-                        entry_price=entry_price,
-                        sl_percentage=sl_pct,
-                        tp_percentage=tp_pct
-                    )
-                    logger.info(f"✅ Sent Telegram notification for SL/TP orders: {symbol} - SL: {sl_order_id}, TP: {tp_order_id}")
+                        ttl_minutes=7 * 24 * 60,
+                        action="sl_tp_created",
+                    ):
+                        logger.info(
+                            "📢 Skipping ensure SL/TP Telegram for %s: already claimed %s",
+                            symbol,
+                            claim_key,
+                        )
+                    else:
+                        # Get percentages from watchlist or calculate from prices
+                        sl_pct = watchlist_item.sl_percentage if watchlist_item.sl_percentage else None
+                        tp_pct = watchlist_item.tp_percentage if watchlist_item.tp_percentage else None
+
+                        # If percentages not set, calculate from entry price and SL/TP prices
+                        if entry_price and entry_price > 0:
+                            if not sl_pct and sl_price:
+                                sl_pct = abs((entry_price - sl_price) / entry_price * 100)
+                            if not tp_pct and tp_price:
+                                tp_pct = abs((tp_price - entry_price) / entry_price * 100)
+
+                        exit_side = "SELL" if entry_side == "BUY" else "BUY"
+                        telegram_notifier.send_sl_tp_orders(
+                            symbol=symbol,
+                            sl_price=sl_price,
+                            tp_price=tp_price,
+                            quantity=protection_qty,
+                            mode=watchlist_item.sl_tp_mode or "conservative",
+                            sl_order_id=str(sl_order_id) if sl_order_id else None,
+                            tp_order_id=str(tp_order_id) if tp_order_id else None,
+                            original_order_id=parent_order_id,
+                            entry_price=entry_price,
+                            sl_percentage=sl_pct,
+                            tp_percentage=tp_pct,
+                            original_order_side=entry_side,
+                            sl_side=exit_side,
+                            tp_side=exit_side,
+                            sl_newly_created=sl_newly_created,
+                            tp_newly_created=tp_newly_created,
+                        )
+                        logger.info(f"✅ Sent Telegram notification for SL/TP orders: {symbol} - SL: {sl_order_id}, TP: {tp_order_id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to send Telegram notification for SL/TP orders: {symbol} - {e}", exc_info=True)
             

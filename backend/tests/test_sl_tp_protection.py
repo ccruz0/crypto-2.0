@@ -7,6 +7,8 @@ from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.services.sl_tp_protection import (
     get_active_protection_order,
     has_complete_sl_tp_protection,
+    should_skip_rejected_tp_backfill,
+    wallet_balance_matches_entry_side,
 )
 from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
 
@@ -30,8 +32,41 @@ class TestSlTpProtectionHelpers(unittest.TestCase):
         with patch(
             "app.services.sl_tp_protection.get_active_protection_order",
             side_effect=[sl, None],
+        ), patch(
+            "app.services.sl_tp_protection.has_filled_sl_tp_protection",
+            return_value=False,
         ):
             self.assertFalse(has_complete_sl_tp_protection(db, "parent-1"))
+
+    def test_filled_stubs_count_as_complete(self):
+        db = MagicMock()
+        with patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            return_value=None,
+        ), patch(
+            "app.services.sl_tp_protection.has_filled_sl_tp_protection",
+            return_value=True,
+        ):
+            self.assertTrue(has_complete_sl_tp_protection(db, "parent-1"))
+
+    def test_wallet_balance_matches_entry_side(self):
+        self.assertTrue(wallet_balance_matches_entry_side("BUY", 1.5))
+        self.assertFalse(wallet_balance_matches_entry_side("BUY", -1.5))
+        self.assertTrue(wallet_balance_matches_entry_side("SELL", -0.2))
+        self.assertFalse(wallet_balance_matches_entry_side("SELL", 1.89))
+        self.assertFalse(wallet_balance_matches_entry_side("SELL", 0.0))
+
+    def test_skip_rejected_tp_backfill_when_sl_active(self):
+        db = MagicMock()
+        sl = ExchangeOrder(exchange_order_id="sl-1", order_role="STOP_LOSS", status=OrderStatusEnum.ACTIVE)
+        with patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            return_value=sl,
+        ), patch(
+            "app.services.sl_tp_protection.has_rejected_protection_order",
+            return_value=True,
+        ):
+            self.assertTrue(should_skip_rejected_tp_backfill(db, "parent-1"))
 
 
 class TestTpSlCreatorIdempotency(unittest.TestCase):

@@ -24,7 +24,9 @@ from app.services.sl_tp_protection import (
     has_complete_sl_tp_protection,
     release_sl_tp_creation_lock,
     should_mark_unresolved_order_cancelled,
+    should_skip_rejected_tp_backfill,
     try_acquire_sl_tp_creation_lock,
+    wallet_balance_matches_entry_side,
 )
 # fill_dedup_postgres may be absent in some deployments; run with fill dedup disabled if missing.
 # EC2 verification after deploy: git reset --hard origin/main; rebuild backend image with --no-cache;
@@ -327,11 +329,21 @@ def is_system_created_order(db: Session, order: ExchangeOrder) -> bool:
     return False
 
 
+def _order_entry_side(order: ExchangeOrder) -> str:
+    side = getattr(order, "side", None)
+    if hasattr(side, "value"):
+        return str(side.value).upper()
+    return str(side or "").upper()
+
+
 def should_auto_create_sl_tp_on_sync(
     db: Session,
     order: ExchangeOrder,
     order_filled_time: Optional[datetime],
     now_utc: datetime,
+    *,
+    wallet_balance: Optional[float] = None,
+    entry_side: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Gate SL/TP backfill during exchange_sync history processing."""
     linked = link_system_trade_signal_to_order(db, order)
@@ -339,6 +351,14 @@ def should_auto_create_sl_tp_on_sync(
     parent_id = str(order.exchange_order_id)
     if has_complete_sl_tp_protection(db, parent_id):
         return False, "already_protected"
+
+    if should_skip_rejected_tp_backfill(db, parent_id):
+        return False, "tp_rejected_terminal"
+
+    side = (entry_side or _order_entry_side(order) or "").upper()
+    if wallet_balance is not None and side in ("BUY", "SELL"):
+        if not wallet_balance_matches_entry_side(side, wallet_balance):
+            return False, f"wallet_side_mismatch_side={side}_bal={wallet_balance}"
 
     is_system = is_system_created_order(db, order)
     logger.info(
@@ -374,6 +394,40 @@ def should_auto_create_sl_tp_on_sync(
             f"external_order_old_fill_{time_since_filled:.2f}h",
         )
     return True, "recent_external_fill"
+
+
+def _base_wallet_balance_from_accounts(
+    accounts: List[dict],
+    symbol: str,
+) -> Optional[float]:
+    """Best-effort signed wallet balance for the symbol base currency."""
+    if not accounts or not symbol:
+        return None
+    base = symbol.split("_")[0].upper() if "_" in symbol else symbol.upper()
+    symbol_norm = symbol.replace("/", "_").upper()
+    best: Optional[float] = None
+    for account in accounts:
+        currency = str(account.get("currency") or account.get("instrument_name") or "").upper()
+        if not currency:
+            continue
+        currency_norm = currency.replace("/", "_")
+        matches = (
+            currency_norm == symbol_norm
+            or currency_norm == base
+            or currency_norm.startswith(base + "_")
+        )
+        if not matches:
+            continue
+        try:
+            bal = float(account.get("balance") or 0)
+        except (TypeError, ValueError):
+            continue
+        # Prefer exact instrument match over bare base currency.
+        if currency_norm == symbol_norm:
+            return bal
+        if best is None or currency_norm == base:
+            best = bal
+    return best
 
 
 def filter_sync_cancel_orders_for_telegram(
@@ -2863,8 +2917,25 @@ class ExchangeSyncService:
     ) -> Optional[dict]:
         """Create SL/TP for a synced fill when gate allows (replaces dead event-bus publish)."""
         now_utc = datetime.now(timezone.utc)
+        wallet_balance: Optional[float] = None
+        try:
+            summary = trade_client.get_account_summary()
+            accounts = summary.get("accounts") or []
+            wallet_balance = _base_wallet_balance_from_accounts(accounts, symbol)
+        except Exception as bal_err:
+            logger.warning(
+                "Could not fetch wallet balance for SL/TP gate %s (%s): %s",
+                order_id,
+                symbol,
+                bal_err,
+            )
         allowed, reason = should_auto_create_sl_tp_on_sync(
-            db, order, order_filled_time, now_utc
+            db,
+            order,
+            order_filled_time,
+            now_utc,
+            wallet_balance=wallet_balance,
+            entry_side=side,
         )
         if not allowed:
             if reason == "external_order_no_timestamp":
@@ -2970,9 +3041,42 @@ class ExchangeSyncService:
             logger.warning(f"Cannot create SL/TP for order {order_id}: invalid price ({filled_price}) or quantity ({filled_qty})")
             return default_result
 
+        side_upper = (side or "").upper()
+        # Never invent short protection on a long wallet (or vice versa).
+        try:
+            summary = trade_client.get_account_summary()
+            wallet_balance = _base_wallet_balance_from_accounts(
+                summary.get("accounts") or [],
+                symbol,
+            )
+        except Exception as bal_err:
+            logger.debug(
+                "Wallet balance unavailable for SL/TP create gate %s (%s): %s",
+                order_id,
+                symbol,
+                bal_err,
+            )
+            wallet_balance = None
+        if wallet_balance is not None and side_upper in ("BUY", "SELL"):
+            if not wallet_balance_matches_entry_side(side_upper, wallet_balance):
+                logger.info(
+                    "Skipping SL/TP for order %s (%s): wallet_side_mismatch "
+                    "side=%s balance=%s",
+                    order_id,
+                    symbol,
+                    side_upper,
+                    wallet_balance,
+                )
+                return {
+                    **default_result,
+                    "status": "wallet_side_mismatch",
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "source": source,
+                }
+
         # Manual/explicit TP/SL overrides must be validated early (fail fast with clear errors).
         # This is ONLY about the user-provided numbers; it does not change auth/client behavior.
-        side_upper = (side or "").upper()
         if side_upper not in {"BUY", "SELL"}:
             raise ValueError(f"Invalid side '{side}'. Expected BUY or SELL.")
         try:
@@ -3044,6 +3148,21 @@ class ExchangeSyncService:
                 f"Skipping SL/TP creation."
             )
             return default_result
+
+        if should_skip_rejected_tp_backfill(db, order_id):
+            logger.info(
+                "Skipping SL/TP create for order %s (%s): active SL with REJECTED TP "
+                "(terminal — no further auto backfill)",
+                order_id,
+                symbol,
+            )
+            return {
+                **default_result,
+                "status": "tp_rejected_terminal",
+                "symbol": symbol,
+                "order_id": order_id,
+                "source": source,
+            }
 
         # Cross-process lock: in-memory locks do not work across backend-aws / canary workers.
         lock_acquired = try_acquire_sl_tp_creation_lock(db, order_id)
@@ -3315,14 +3434,10 @@ class ExchangeSyncService:
                         "skip_tp_creation": bool(skip_tp_creation),
                         "skip_tp_reason": skip_tp_reason,
                     }
-                # Distinct claim keys so a later TP-only (or SL-only) backfill can still notify
-                # once, instead of being suppressed by the original paired SL/TP announcement.
-                if sl_newly_created and tp_newly_created:
-                    claim_key = f"sl_tp_created:{order_id}"
-                elif tp_newly_created:
-                    claim_key = f"sl_tp_created:{order_id}:tp"
-                elif sl_newly_created:
-                    claim_key = f"sl_tp_created:{order_id}:sl"
+                # One claim per parent for the initial announce. A later TP-only success
+                # may notify once via `:tp_ok` without replaying half-failed SL spam.
+                if tp_newly_created and not sl_newly_created:
+                    claim_key = f"sl_tp_created:{order_id}:tp_ok"
                 else:
                     claim_key = f"sl_tp_created:{order_id}"
                 if not claim_telegram_event(

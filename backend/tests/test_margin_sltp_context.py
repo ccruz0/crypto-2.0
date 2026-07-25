@@ -34,12 +34,16 @@ class TestMarginSltpContext(unittest.TestCase):
             with patch("app.services.exchange_sync.is_system_created_order", return_value=False):
                 with patch("app.services.exchange_sync.has_complete_sl_tp_protection", return_value=False):
                     with patch(
-                        "app.services.exchange_sync.get_active_protection_order",
-                        side_effect=lambda _db, _parent, role: sl if role == "STOP_LOSS" else None,
+                        "app.services.exchange_sync.should_skip_rejected_tp_backfill",
+                        return_value=False,
                     ):
-                        allowed, reason = should_auto_create_sl_tp_on_sync(
-                            db, order, filled_time, now
-                        )
+                        with patch(
+                            "app.services.exchange_sync.get_active_protection_order",
+                            side_effect=lambda _db, _parent, role: sl if role == "STOP_LOSS" else None,
+                        ):
+                            allowed, reason = should_auto_create_sl_tp_on_sync(
+                                db, order, filled_time, now
+                            )
         self.assertTrue(allowed)
         self.assertEqual(reason, "half_protected_backfill")
 

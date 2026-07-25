@@ -82,11 +82,90 @@ def get_active_protection_order(
     )
 
 
+def get_filled_protection_order(
+    db: Session,
+    parent_order_id: str,
+    role: str,
+) -> Optional[ExchangeOrder]:
+    """Return a FILLED protection leg for a parent (closed / suppressed position)."""
+    return (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.parent_order_id == str(parent_order_id),
+            ExchangeOrder.order_role == role,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+        )
+        .order_by(ExchangeOrder.id.asc())
+        .first()
+    )
+
+
+def has_filled_sl_tp_protection(db: Session, parent_order_id: str) -> bool:
+    """True when both SL and TP were FILLED (or stubbed closed) for the parent."""
+    sl = get_filled_protection_order(db, parent_order_id, "STOP_LOSS")
+    tp = get_filled_protection_order(db, parent_order_id, "TAKE_PROFIT")
+    return sl is not None and tp is not None
+
+
 def has_complete_sl_tp_protection(db: Session, parent_order_id: str) -> bool:
-    """True when both an active SL and TP exist for the parent entry order."""
+    """True when both SL and TP exist as active legs, or both were FILLED/closed."""
     sl = get_active_protection_order(db, parent_order_id, "STOP_LOSS")
     tp = get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
-    return sl is not None and tp is not None
+    if sl is not None and tp is not None:
+        return True
+    return has_filled_sl_tp_protection(db, parent_order_id)
+
+
+def has_rejected_protection_order(
+    db: Session,
+    parent_order_id: str,
+    role: str,
+) -> bool:
+    """True when exchange previously REJECTED this protection role for the parent."""
+    row = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.parent_order_id == str(parent_order_id),
+            ExchangeOrder.order_role == role,
+            ExchangeOrder.status == OrderStatusEnum.REJECTED,
+        )
+        .first()
+    )
+    return row is not None
+
+
+def should_skip_rejected_tp_backfill(db: Session, parent_order_id: str) -> bool:
+    """Skip endless TP retries when SL is live but TP was already REJECTED."""
+    has_sl = get_active_protection_order(db, parent_order_id, "STOP_LOSS") is not None
+    if not has_sl:
+        return False
+    return has_rejected_protection_order(db, parent_order_id, "TAKE_PROFIT")
+
+
+def wallet_balance_matches_entry_side(
+    entry_side: str,
+    wallet_balance: float,
+    *,
+    qty_epsilon: float = 0.0,
+) -> bool:
+    """True when wallet sign matches the entry side that needs protection.
+
+    BUY entries need a long (positive) wallet. SELL entries need a short
+    (negative) wallet. Flat / dust wallets must not get new SL/TP backfills.
+    """
+    side = (entry_side or "").strip().upper()
+    try:
+        bal = float(wallet_balance)
+    except (TypeError, ValueError):
+        return False
+    eps = max(0.0, float(qty_epsilon or 0.0))
+    if abs(bal) <= eps:
+        return False
+    if side == "BUY":
+        return bal > eps
+    if side == "SELL":
+        return bal < -eps
+    return False
 
 
 def _sl_tp_lock_key(parent_order_id: str) -> int:

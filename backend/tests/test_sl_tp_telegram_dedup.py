@@ -67,9 +67,11 @@ class TestSlTpImplIdempotency(unittest.TestCase):
 class TestSlTpTelegramSkip(unittest.TestCase):
     @patch("app.services.telegram_notifier.telegram_notifier")
     @patch.object(ExchangeSyncService, "_create_sl_tp_impl")
+    @patch("app.services.exchange_sync.should_skip_rejected_tp_backfill", return_value=False)
+    @patch("app.services.exchange_sync._base_wallet_balance_from_accounts", return_value=-0.05)
     @patch("app.services.live_trading_gate.get_live_trading", return_value=True)
     def test_skips_telegram_when_already_protected(
-        self, _live_trading, mock_impl, mock_notifier
+        self, _live_trading, _wallet, _skip_rej, mock_impl, mock_notifier
     ):
         mock_impl.return_value = {
             "status": "already_protected",
@@ -91,15 +93,24 @@ class TestSlTpTelegramSkip(unittest.TestCase):
         svc.sync_open_orders = MagicMock()
         svc._sl_tp_creation_locks = {}
 
-        result = svc._create_sl_tp_for_filled_order(
-            db=db,
-            symbol="ETH_USD",
-            side="SELL",
-            filled_price=1790.66,
-            filled_qty=0.0558,
-            order_id="parent-1",
-            source="test",
-        )
+        with patch(
+            "app.services.exchange_sync.trade_client.get_account_summary",
+            return_value={"accounts": [{"currency": "ETH", "balance": "-0.05"}]},
+        ), patch(
+            "app.services.exchange_sync.try_acquire_sl_tp_creation_lock",
+            return_value=True,
+        ), patch(
+            "app.services.exchange_sync.release_sl_tp_creation_lock",
+        ):
+            result = svc._create_sl_tp_for_filled_order(
+                db=db,
+                symbol="ETH_USD",
+                side="SELL",
+                filled_price=1790.66,
+                filled_qty=0.0558,
+                order_id="parent-1",
+                source="test",
+            )
 
         self.assertEqual(result["status"], "already_protected")
         mock_notifier.send_sl_tp_orders.assert_not_called()
