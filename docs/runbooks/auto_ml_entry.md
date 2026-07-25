@@ -47,6 +47,18 @@ curl -sS http://127.0.0.1:8002/api/config/auto-ml | jq '{gate_enabled,autonomous
 docker compose --profile aws logs --tail=50 backend-aws | grep AUTO_ML || true
 ```
 
+## Telegram on version update
+
+Cada vez que se actualiza `current.joblib` (retrain promote o `train_auto_entry_model`
+sin `--no-promote`), se envía un mensaje a Telegram con:
+
+- versión anterior → nueva
+- **por qué** (métrica mejoró, primera versión, force, etc.)
+- **cambios aplicados** (métricas, dataset source/rows, gate)
+
+Requiere `TELEGRAM_BOT_TOKEN_AWS` / `TELEGRAM_CHAT_ID_AWS` (o genéricos) en el entorno
+del proceso que corre el retrain. Usa `--no-telegram` para silenciar.
+
 ## Offline train / promote
 
 ```bash

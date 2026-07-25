@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -164,7 +165,42 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Write versioned + candidate artifacts only (do not update current.joblib)",
     )
+    p.add_argument(
+        "--no-telegram",
+        action="store_true",
+        help="Skip Telegram notify when current.joblib is updated",
+    )
     return p.parse_args(argv)
+
+
+def _notify_direct_promote(out_dir: Path, manifest: dict, previous: Optional[dict]) -> bool:
+    """Notify Telegram when train writes current directly (bypass retrain CLI)."""
+    import importlib.util
+
+    promote_path = _REPO_ROOT / "backend" / "app" / "services" / "auto_entry_promote.py"
+    spec = importlib.util.spec_from_file_location("auto_entry_promote", promote_path)
+    if spec is None or spec.loader is None:
+        return False
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        return False
+    decision = mod.PromoteDecision(
+        should_promote=True,
+        reason="train_direct_current",
+        candidate_metric=mod.primary_metric(manifest.get("metrics")),
+        current_metric=mod.primary_metric((previous or {}).get("metrics")),
+        min_rows=0,
+        min_delta=0.0,
+        autonomous=mod.autonomous_promote_enabled(),
+    )
+    return mod.notify_model_version_update(
+        out_dir=out_dir,
+        promoted=manifest,
+        decision=decision,
+        previous=previous,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -188,6 +224,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     clf, metrics = train(X, y, test_size=args.test_size, seed=args.seed)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    previous_manifest = None
+    manifest_path = args.out_dir / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            previous_manifest = None
+
     version = next_version(args.out_dir)
     model_name = f"auto_entry_v{version}.joblib"
     model_path = args.out_dir / model_name
@@ -224,13 +268,30 @@ def main(argv: Optional[list[str]] = None) -> int:
     joblib.dump(payload, args.out_dir / "candidate.joblib")
 
     promoted_current = False
+    telegram_sent = None
     if not args.no_promote:
         # Backward-compatible default: also refresh current + manifest
+        if previous_manifest is not None:
+            (args.out_dir / "manifest.prev.json").write_text(
+                json.dumps(previous_manifest, indent=2) + "\n", encoding="utf-8"
+            )
+        promoted_manifest = dict(manifest)
+        promoted_manifest["promoted_at"] = datetime.now(timezone.utc).isoformat()
+        promoted_manifest["promote_reason"] = "train_direct_current"
+        promoted_manifest["previous_version"] = (previous_manifest or {}).get("version")
+        promoted_manifest["live_gate_enabled"] = (
+            (os.environ.get("AUTO_ML_ENABLED") or "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
         joblib.dump(payload, args.out_dir / "current.joblib")
         (args.out_dir / "manifest.json").write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            json.dumps(promoted_manifest, indent=2) + "\n", encoding="utf-8"
         )
         promoted_current = True
+        if not args.no_telegram:
+            telegram_sent = _notify_direct_promote(
+                args.out_dir, promoted_manifest, previous_manifest
+            )
 
     print(
         json.dumps(
@@ -238,6 +299,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "wrote": str(model_path),
                 "candidate": str(args.out_dir / "candidate.joblib"),
                 "updated_current": promoted_current,
+                "telegram_sent": telegram_sent,
                 "manifest": manifest,
             },
             indent=2,

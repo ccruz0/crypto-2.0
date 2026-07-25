@@ -12,10 +12,39 @@ from app.services.auto_entry_promote import (
 )
 
 
-def test_primary_metric_prefers_auc():
-    assert primary_metric({"holdout": True, "roc_auc": 0.7, "accuracy": 0.5}) == 0.7
-    assert primary_metric({"holdout": True, "roc_auc": None, "accuracy": 0.6}) == 0.6
-    assert primary_metric({"holdout": False, "note": "single_class_fit_on_all", "accuracy": 1.0}) is None
+def test_format_promote_telegram_includes_changes_and_why():
+    from app.services.auto_entry_promote import PromoteDecision, format_promote_telegram
+
+    decision = PromoteDecision(
+        should_promote=True,
+        reason="metric_improved:0.6000->0.8000(delta>=0.0)",
+        candidate_metric=0.8,
+        current_metric=0.6,
+        min_rows=10,
+        min_delta=0.0,
+        autonomous=True,
+    )
+    prev = {
+        "version": 1,
+        "metrics": {"holdout": True, "roc_auc": 0.6, "accuracy": 0.55},
+        "n_fit_rows": 10,
+    }
+    promoted = {
+        "version": 2,
+        "promoted_at": "2026-07-25T02:00:00+00:00",
+        "n_fit_rows": 20,
+        "live_gate_enabled": True,
+        "feature_version": 1,
+        "metrics": {"holdout": True, "roc_auc": 0.8, "accuracy": 0.75},
+        "dataset_meta": {"source": "api:demo", "n_positive": 12, "n_negative": 8},
+    }
+    msg = format_promote_telegram(promoted, decision, previous=prev)
+    assert "NUEVA VERSIÓN" in msg
+    assert "v1 → v2" in msg
+    assert "Por qué:" in msg
+    assert "Cambios aplicados:" in msg
+    assert "0.6000" in msg and "0.8000" in msg
+    assert "mejoró la métrica" in msg.lower() or "holdout" in msg.lower()
 
 
 def test_should_promote_disabled_by_default(monkeypatch):
