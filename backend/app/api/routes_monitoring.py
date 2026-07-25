@@ -392,6 +392,15 @@ _REASON_LINE_RE = re.compile(r"(?:✅\s*)?REASON\s*:\s*(.+?)(?:\n|$)", re.IGNORE
 _SHORT_REASON_RE = re.compile(r"\)\s*-\s*(.+)$")  # e.g. "... (+1.23%) - <reason>"
 _STRATEGY_LINE_RE = re.compile(r"STRATEGY\s*:\s*([^\n]+)", re.IGNORECASE)
 _APPROACH_LINE_RE = re.compile(r"APPROACH\s*:\s*([^\n]+)", re.IGNORECASE)
+# DB-only audit rows written after send_buy/sell_signal — never sent as a separate Telegram message.
+_PHANTOM_SIGNAL_SUMMARY_RE = re.compile(
+    r"^(?:✅\s*|🔴\s*)?(?:BUY|SELL)\s+SIGNAL:\s+",
+    re.IGNORECASE,
+)
+_PHANTOM_PERSIST_LABEL_RE = re.compile(
+    r"^\[(?:DRY_RUN|PERSIST|TEST|LAB)[^\]]*\]\s*(?:BUY|SELL)\s+SIGNAL:",
+    re.IGNORECASE,
+)
 
 
 def _format_utc_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -424,12 +433,38 @@ def _infer_side_from_message(message_text: str) -> str:
     if not message_text:
         return "UNKNOWN"
     upper = message_text.upper()
-    # Keep it signal-focused: the throttle panel is about signal alerts.
-    if "BUY SIGNAL" in upper or "🟢" in message_text:
+    if "BUY SIGNAL" in upper or "BUY ORDER" in upper or "SIDE: BUY" in upper:
         return "BUY"
-    if "SELL SIGNAL" in upper or "🟥" in message_text or "🔴" in message_text:
+    if "SELL SIGNAL" in upper or "SELL ORDER" in upper or "SIDE: SELL" in upper:
+        return "SELL"
+    # Lifecycle one-liners: "ORDER_CANCELED: ALGO_USD BUY - ..."
+    if re.search(r"\bBUY\b", upper) and not re.search(r"\bSELL\b", upper):
+        return "BUY"
+    if re.search(r"\bSELL\b", upper) and not re.search(r"\bBUY\b", upper):
+        return "SELL"
+    if "🟢" in message_text:
+        return "BUY"
+    if "🔴" in message_text or "🟥" in message_text:
         return "SELL"
     return "UNKNOWN"
+
+
+def _is_phantom_telegram_audit_row(message: str) -> bool:
+    """True for DB-only rows that did not go out as a separate Telegram send.
+
+    After a real send_message() success, send_buy/sell_signal also writes a short
+    summary like '✅ BUY SIGNAL: SYM @ $…' for audit/orchestrator metadata. That
+    summary must not appear in 'Enviados' (1:1 with Telegram chat).
+    """
+    if not message:
+        return False
+    text = message.strip()
+    # Real Telegram alert bodies are HTML templates.
+    if "<" in text and ">" in text:
+        return False
+    if _PHANTOM_PERSIST_LABEL_RE.match(text):
+        return True
+    return bool(_PHANTOM_SIGNAL_SUMMARY_RE.match(text))
 
 
 def _extract_price_from_message(message_text: str) -> Optional[float]:
@@ -1433,15 +1468,19 @@ async def get_telegram_messages(
     blocked: Optional[str] = Query("all", description="Filter: true (blocked only), false (sent only), all (default)"),
 ):
     """Get Telegram messages from the last month.
-    
+
     DB is the primary source. Optional query param: blocked=true|false|all (default: all).
-    Both sent and blocked messages can be returned depending on blocked param.
+    When blocked=false, DB-only audit summaries (never sent as separate TG messages) are excluded
+    so the list matches what actually arrived on Telegram.
     """
     from datetime import timedelta
     from app.models.telegram_message import TelegramMessage
 
-    one_month_ago = datetime.now() - timedelta(days=30)
+    one_month_ago = datetime.now(timezone.utc) - timedelta(days=30)
     block_filter = blocked.strip().lower() if blocked else "all"
+    # Cap high enough that a busy day of blocked noise does not hide today's sent rows
+    # when callers ask for blocked=false / true separately.
+    fetch_limit = 1000
 
     try:
         # Primary source: database
@@ -1452,10 +1491,13 @@ async def get_telegram_messages(
             elif block_filter == "false":
                 q = q.filter(TelegramMessage.blocked.is_(False))
             # "all" or anything else: no extra filter
-            db_messages = q.order_by(TelegramMessage.timestamp.desc()).limit(500).all()
+            db_messages = q.order_by(TelegramMessage.timestamp.desc()).limit(fetch_limit).all()
 
             messages = []
             for msg in db_messages:
+                # Enviados must be 1:1 with Telegram — drop phantom audit summaries.
+                if block_filter == "false" and _is_phantom_telegram_audit_row(msg.message or ""):
+                    continue
                 # Ensure order_skipped is always a boolean (handle None from old rows)
                 order_skipped_val = getattr(msg, 'order_skipped', None)
                 if order_skipped_val is None:
@@ -1468,7 +1510,7 @@ async def get_telegram_messages(
                     "symbol": msg.symbol,
                     "blocked": msg.blocked,
                     "order_skipped": order_skipped_val,
-                    "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now().isoformat(),
+                    "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now(timezone.utc).isoformat(),
                     "throttle_status": msg.throttle_status,
                     "throttle_reason": msg.throttle_reason,
                     "decision_type": msg.decision_type,
@@ -1492,11 +1534,19 @@ async def get_telegram_messages(
     global _telegram_messages
     recent_messages = []
     for msg in _telegram_messages:
-        if datetime.fromisoformat(msg["timestamp"]) < one_month_ago:
+        try:
+            ts = datetime.fromisoformat(msg["timestamp"])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if ts < one_month_ago:
             continue
         if block_filter == "true" and msg.get("blocked") is not True:
             continue
         if block_filter == "false" and msg.get("blocked") is not False:
+            continue
+        if block_filter == "false" and _is_phantom_telegram_audit_row(msg.get("message") or ""):
             continue
         # Ensure order_skipped is always a boolean
         order_skipped_val = msg.get("order_skipped")
@@ -1599,59 +1649,49 @@ async def get_lifecycle_events(limit: int = 200, db: Session = Depends(get_db)):
 
 @router.get("/monitoring/signal-throttle")
 async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
-    """Expose recent signal throttle state for the Monitoring dashboard.
-    
-    IMPORTANT: Returns ALL alerts that were sent to Telegram (not blocked).
-    Uses TelegramMessage table as the primary source to ensure we show ALL sent messages,
-    then enriches with throttle state data when available.
+    """Return messages that actually arrived on Telegram (1:1 with chat).
+
+    Source of truth: telegram_messages where blocked=False, excluding DB-only
+    audit summaries written after send_buy/sell_signal (never sent separately).
+
+    Lifecycle rows without a Telegram send are NOT included — those belong in
+    /monitoring/lifecycle-events, not in Enviados.
     """
-    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    log.debug("Fetching telegram sent messages for Enviados panel (limit=%s)", limit)
     if db is None:
         return []
-    
+
     try:
         from app.models.telegram_message import TelegramMessage
-        
+
         bounded_limit = max(1, min(limit, 500))
         now = datetime.now(timezone.utc)
-        
-        # PRIMARY STRATEGY: Query sent Telegram messages (blocked=False).
-        # Then filter to *signal* messages only. The throttle panel is for BUY/SELL signal alerts,
-        # not generic Telegram notifications (orders/workflows/etc) which cause UNKNOWN side / empty fields.
+
+        # Over-fetch to allow phantom-summary filtering without undershooting limit.
         sent_messages = (
             db.query(TelegramMessage)
-            .filter(TelegramMessage.blocked.is_(False))  # Only messages that were sent
+            .filter(TelegramMessage.blocked.is_(False))
             .order_by(TelegramMessage.timestamp.desc())
-            .limit(bounded_limit * 15)  # Get more to account for filtering + dedup
+            .limit(bounded_limit * 3)
             .all()
         )
 
-        # 1) Parse & filter to signal messages, then deduplicate within minute buckets.
-        # We keep the "best" message per (symbol, side, minute) to avoid duplicates caused by
-        # multiple storage call paths (full Telegram body + summary row).
-        best_by_bucket: Dict[tuple, Dict[str, Any]] = {}
-
+        payload: list[Dict[str, Any]] = []
         for msg in sent_messages:
             raw_text = msg.message or ""
-            parsed_text = _strip_html(raw_text)
-            upper = parsed_text.upper()
+            if _is_phantom_telegram_audit_row(raw_text):
+                continue
 
+            parsed_text = _strip_html(raw_text)
             symbol_value = (msg.symbol or "").strip().upper()
             if not symbol_value:
-                sm = _SYMBOL_RE.search(upper)
+                sm = _SYMBOL_RE.search(parsed_text.upper())
                 if sm:
                     symbol_value = sm.group(1).upper()
-            if not symbol_value or _SYMBOL_RE.fullmatch(symbol_value) is None:
-                continue
+            if not symbol_value:
+                symbol_value = "UNKNOWN"
 
             side = _infer_side_from_message(parsed_text)
-
-            # Only keep actual signal alerts.
-            if side not in {"BUY", "SELL"}:
-                continue
-            if "SIGNAL" not in upper:
-                continue
-
             msg_time = msg.timestamp
             if msg_time and msg_time.tzinfo is None:
                 msg_time = msg_time.replace(tzinfo=timezone.utc)
@@ -1659,320 +1699,40 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
             price = _extract_price_from_message(parsed_text)
             parsed_reason = _extract_reason_from_message(parsed_text)
             parsed_strategy_key = _extract_strategy_key_from_message(parsed_text)
-
-            minute_bucket = int(msg_time.timestamp() // 60) if msg_time else int(msg.id or 0)
-            bucket_key = (symbol_value, side, minute_bucket)
-
-            # Score: prefer explicit throttle_reason, then parsed reason, then more detailed body.
-            score = 0
-            if getattr(msg, "throttle_reason", None):
-                score += 10
-            if parsed_reason:
-                score += 5
-            if "SIGNAL DETECTED" in upper:
-                score += 3
-            if parsed_strategy_key:
-                score += 2
-            if price:
-                score += 1
-
-            existing = best_by_bucket.get(bucket_key)
-            if not existing or score > existing.get("_score", -1):
-                best_by_bucket[bucket_key] = {
-                    "_score": score,
-                    "msg": msg,
-                    "symbol": symbol_value,
-                    "side": side,
-                    "msg_time": msg_time,
-                    "parsed_text": parsed_text,
-                    "price": price,
-                    "parsed_reason": parsed_reason,
-                    "parsed_strategy_key": parsed_strategy_key,
-                }
-
-        events = list(best_by_bucket.values())
-        # Sort newest first for output, but we'll compute price deltas in chronological order below.
-        events.sort(key=lambda e: (e.get("msg_time") or datetime(1970, 1, 1, tzinfo=timezone.utc)), reverse=True)
-        if not events:
-            return []
-
-        # 2) Load throttle state rows for symbols in view (enrichment source of truth).
-        symbols = sorted({e["symbol"] for e in events if e.get("symbol")})
-        states = (
-            db.query(SignalThrottleState)
-            .filter(SignalThrottleState.symbol.in_(symbols))
-            .order_by(SignalThrottleState.last_time.desc())
-            .limit(max(200, bounded_limit * 10))
-            .all()
-        )
-        
-        # 2b) Also load lifecycle events (ORDER_*, SLTP_*, TRADE_BLOCKED) from SignalThrottleState
-        # These may not have corresponding Telegram messages, so we add them separately
-        from datetime import timedelta
-        one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-        lifecycle_states = (
-            db.query(SignalThrottleState)
-            .filter(SignalThrottleState.last_time >= one_week_ago)
-            .filter(SignalThrottleState.emit_reason.isnot(None))
-            .filter(
-                or_(
-                    SignalThrottleState.emit_reason.like("TRADE_BLOCKED%"),
-                    SignalThrottleState.emit_reason.like("ORDER_ATTEMPT%"),
-                    SignalThrottleState.emit_reason.like("ORDER_CREATED%"),
-                    SignalThrottleState.emit_reason.like("ORDER_FAILED%"),
-                    SignalThrottleState.emit_reason.like("ORDER_EXECUTED%"),
-                    SignalThrottleState.emit_reason.like("ORDER_CANCELED%"),
-                    SignalThrottleState.emit_reason.like("SLTP_ATTEMPT%"),
-                    SignalThrottleState.emit_reason.like("SLTP_CREATED%"),
-                    SignalThrottleState.emit_reason.like("SLTP_FAILED%"),
-                )
+            emit_reason = (
+                (getattr(msg, "throttle_reason", None) or "").strip()
+                or parsed_reason
+                or (parsed_text[:120] if parsed_text else "Sent to Telegram")
             )
-            .order_by(SignalThrottleState.last_time.desc())
-            .limit(bounded_limit)
-            .all()
-        )
-        
-        # Add lifecycle events to events list
-        for state in lifecycle_states:
-            if not state.symbol or not state.side:
-                continue
-            symbol_value = state.symbol.upper()
-            side = state.side.upper()
-            if side not in {"BUY", "SELL"}:
-                continue
-            
-            # Parse event type from emit_reason
-            event_type = "UNKNOWN"
-            if state.emit_reason:
-                if state.emit_reason.startswith("TRADE_BLOCKED"):
-                    event_type = "TRADE_BLOCKED"
-                elif state.emit_reason.startswith("ORDER_ATTEMPT"):
-                    event_type = "ORDER_ATTEMPT"
-                elif state.emit_reason.startswith("ORDER_CREATED"):
-                    event_type = "ORDER_CREATED"
-                elif state.emit_reason.startswith("ORDER_FAILED"):
-                    event_type = "ORDER_FAILED"
-                elif state.emit_reason.startswith("ORDER_EXECUTED"):
-                    event_type = "ORDER_EXECUTED"
-                elif state.emit_reason.startswith("ORDER_CANCELED"):
-                    event_type = "ORDER_CANCELED"
-                elif state.emit_reason.startswith("SLTP_ATTEMPT"):
-                    event_type = "SLTP_ATTEMPT"
-                elif state.emit_reason.startswith("SLTP_CREATED"):
-                    event_type = "SLTP_CREATED"
-                elif state.emit_reason.startswith("SLTP_FAILED"):
-                    event_type = "SLTP_FAILED"
-            
-            # Only add if it's a lifecycle event (not already covered by signal alerts)
-            if event_type != "UNKNOWN":
-                state_time = state.last_time
-                if state_time and state_time.tzinfo is None:
-                    state_time = state_time.replace(tzinfo=timezone.utc)
-                
-                minute_bucket = int(state_time.timestamp() // 60) if state_time else 0
-                # Use event_type in bucket key to prevent lifecycle events from being dropped
-                # when they occur in the same minute as signal alerts
-                # Format: (symbol, side, minute_bucket, event_type) for lifecycle events
-                bucket_key = (symbol_value, side, minute_bucket, event_type)
-                
-                # Always add lifecycle events - they use a different bucket key format
-                # that includes event_type, so they won't collide with signal alerts
-                best_by_bucket[bucket_key] = {
-                    "_score": 0,  # Lower score than signal alerts
-                    "msg": None,  # No Telegram message
-                    "symbol": symbol_value,
-                    "side": side,
-                    "msg_time": state_time,
-                    "parsed_text": f"{event_type}: {state.emit_reason}",
-                    "price": float(state.last_price) if state.last_price else None,
-                    "parsed_reason": state.emit_reason,
-                    "parsed_strategy_key": state.strategy_key,
-                    "is_lifecycle_event": True,
-                    "event_type": event_type,
-                }
-        
-        # Rebuild events list with lifecycle events included
-        events = list(best_by_bucket.values())
-        states_by_key: Dict[tuple, list] = {}
-        for st in states:
-            if not st.symbol or not st.side:
-                continue
-            k = (st.symbol.upper(), st.side.upper())
-            states_by_key.setdefault(k, []).append(st)
-
-        # 3) Compute message-based price change fallback (when previous_price is missing in throttle state).
-        events_chrono = [e for e in events if e.get("msg_time")]
-        events_chrono.sort(key=lambda e: e["msg_time"])
-        prev_price_by_symbol_side: Dict[tuple, float] = {}
-        prev_price_by_msg_id: Dict[int, float] = {}
-        for e in events_chrono:
-            msg_obj = e.get("msg")
-            msg_id = int(getattr(msg_obj, "id", 0) or 0)
-            key = (e["symbol"], e["side"])
-            current_price = e.get("price")
-            if current_price and current_price > 0:
-                if key in prev_price_by_symbol_side:
-                    prev_price_by_msg_id[msg_id] = prev_price_by_symbol_side[key]
-                prev_price_by_symbol_side[key] = current_price
-
-        # 4) Build final payload (reason, last_price, price_change_pct always best-effort).
-        payload: list[Dict[str, Any]] = []
-        for e in events[: bounded_limit * 3]:
-            msg_obj = e.get("msg")
-            msg_id = int(getattr(msg_obj, "id", 0) or 0)
-            symbol_value = e["symbol"]
-            side = e["side"]
-            msg_time = e.get("msg_time")
-            parsed_reason = e.get("parsed_reason")
-            parsed_strategy_key = e.get("parsed_strategy_key")
-            msg_throttle_reason = (getattr(msg_obj, "throttle_reason", None) or "").strip() or None
-            msg_throttle_status = (getattr(msg_obj, "throttle_status", None) or "").strip() or None
-            
-            # Check if message was actually sent (not blocked)
-            msg_was_sent = not getattr(msg_obj, "blocked", True)  # Default to True if attribute missing (conservative)
-
-            # Choose the best matching throttle state for this event:
-            # - Prefer a state close in time (<=30m) that doesn't look "blocked".
-            # - CRITICAL: If message was sent, never use throttle state with blocked/throttled emit_reason
-            candidate_states = states_by_key.get((symbol_value, side), []) or []
-            chosen_state = None
-            if msg_time and candidate_states:
-                for st in candidate_states:
-                    st_time = st.last_time
-                    if st_time and st_time.tzinfo is None:
-                        st_time = st_time.replace(tzinfo=timezone.utc)
-                    if not st_time:
-                        continue
-                    diff = abs((msg_time - st_time).total_seconds())
-                    looks_blocked = ("throttled" in (st.emit_reason or "").lower()) or ("blocked" in (st.emit_reason or "").lower())
-                    # If message was sent, exclude blocked throttle states
-                    if msg_was_sent and looks_blocked:
-                        continue
-                    if diff <= 1800 and not looks_blocked:
-                        chosen_state = st
-                        break
-            # Only fallback to first candidate if message wasn't sent OR if we didn't find a non-blocked state
-            if not chosen_state and candidate_states:
-                # For sent messages, try to find any non-blocked state
-                if msg_was_sent:
-                    for st in candidate_states:
-                        looks_blocked = ("throttled" in (st.emit_reason or "").lower()) or ("blocked" in (st.emit_reason or "").lower())
-                        if not looks_blocked:
-                            chosen_state = st
-                            break
-                # If still no match or message was blocked, use first candidate
-                if not chosen_state:
-                    chosen_state = candidate_states[0]
-
-            strategy_key = (
-                (chosen_state.strategy_key if chosen_state and chosen_state.strategy_key else None)
-                or parsed_strategy_key
-                or "unknown:unknown"
-            )
-
-            # last_price: prefer throttle-state price (source of truth), else parse from message.
-            last_price = None
-            if chosen_state and chosen_state.last_price and chosen_state.last_price > 0:
-                last_price = float(chosen_state.last_price)
-            elif e.get("price") and e["price"] > 0:
-                last_price = float(e["price"])
-
-            # Compute price change: prefer throttle-state previous_price, else use message-history previous price.
-            price_change_pct = None
-            previous_price = None
-            if chosen_state and chosen_state.previous_price and chosen_state.previous_price > 0:
-                previous_price = float(chosen_state.previous_price)
-            elif msg_id in prev_price_by_msg_id:
-                previous_price = float(prev_price_by_msg_id[msg_id])
-
-            if last_price and previous_price and previous_price > 0:
-                try:
-                    price_change_pct = ((last_price - previous_price) / previous_price) * 100.0
-                except Exception:
-                    price_change_pct = None
-
-            # Reason: never return placeholder "Sent to Telegram".
-            # CRITICAL: If message was sent (not blocked), never use a throttle reason that indicates blocking
-            # Only use chosen_state.emit_reason if message was blocked OR if it doesn't look blocked
-            emit_reason = None
-            if msg_throttle_reason:
-                # Check if throttle_reason indicates blocking (shouldn't happen for sent messages, but check anyway)
-                if msg_was_sent and ("throttled" in msg_throttle_reason.lower() or "blocked" in msg_throttle_reason.lower()):
-                    # Message was sent but has blocked reason - this shouldn't happen, use fallback
-                    emit_reason = None
-                else:
-                    emit_reason = msg_throttle_reason
-            
-            if not emit_reason and chosen_state and chosen_state.emit_reason:
-                # Only use chosen_state.emit_reason if:
-                # 1. Message was blocked (msg_was_sent=False), OR
-                # 2. The emit_reason doesn't indicate blocking
-                state_emit_reason = chosen_state.emit_reason
-                looks_blocked_in_state = ("throttled" in state_emit_reason.lower()) or ("blocked" in state_emit_reason.lower())
-                if not msg_was_sent or not looks_blocked_in_state:
-                    emit_reason = state_emit_reason
-            
-            if not emit_reason:
-                emit_reason = parsed_reason or "Signal sent"
-
-            event_time = msg_time
-            if chosen_state and chosen_state.last_time:
-                # Use throttle state's last_time when it matches closely; otherwise keep msg_time (actual send time).
-                if msg_time is None:
-                    event_time = chosen_state.last_time
-                else:
-                    st_time = chosen_state.last_time
-                    if st_time and st_time.tzinfo is None:
-                        st_time = st_time.replace(tzinfo=timezone.utc)
-                    if st_time and abs((msg_time - st_time).total_seconds()) <= 1800:
-                        event_time = st_time
-
-            if event_time and event_time.tzinfo is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
 
             seconds_since = (
-                max(0, int((now - event_time).total_seconds()))
-                if event_time
+                max(0, int((now - msg_time).total_seconds()))
+                if msg_time
                 else None
             )
 
-            # Check if this is a lifecycle event (not a signal alert)
-            is_lifecycle_event = e.get("is_lifecycle_event", False)
-            event_type = e.get("event_type", None)
-            
-            # For lifecycle events without Telegram messages, use state data directly
-            if is_lifecycle_event and not msg_obj:
-                # Use state data for lifecycle events
-                state_for_event = chosen_state if chosen_state else None
-                if state_for_event:
-                    event_time = state_for_event.last_time
-                    if event_time and event_time.tzinfo is None:
-                        event_time = event_time.replace(tzinfo=timezone.utc)
-                    last_price = float(state_for_event.last_price) if state_for_event.last_price else None
-                    emit_reason = state_for_event.emit_reason or emit_reason
-                    strategy_key = state_for_event.strategy_key or strategy_key
-                    seconds_since = max(0, int((now - event_time).total_seconds())) if event_time else None
-            
             payload.append(
                 {
                     "symbol": symbol_value,
-                    "strategy_key": strategy_key,
+                    "strategy_key": parsed_strategy_key or "telegram:sent",
                     "side": side,
-                    "last_price": last_price,
-                    "last_time": event_time.isoformat() if event_time else None,
-                    "is_lifecycle_event": is_lifecycle_event,
-                    "event_type": event_type,
+                    "last_price": price,
+                    "last_time": msg_time.isoformat() if msg_time else None,
+                    "is_lifecycle_event": False,
+                    "event_type": None,
                     "seconds_since_last": seconds_since,
-                    "price_change_pct": round(price_change_pct, 2) if price_change_pct is not None else None,
+                    "price_change_pct": None,
                     "emit_reason": emit_reason,
+                    "telegram_message": raw_text,
                 }
             )
+            if len(payload) >= bounded_limit:
+                break
 
-        payload.sort(key=lambda x: x["last_time"] or "", reverse=True)
-        return payload[:bounded_limit]
-        
+        return payload
+
     except Exception as exc:
-        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        log.warning("Failed to load telegram sent messages: %s", exc, exc_info=True)
         return []
 
 

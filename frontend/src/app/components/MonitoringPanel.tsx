@@ -448,17 +448,22 @@ export default function MonitoringPanel({
   // Ensure telegramMessages is always an array and coinFilter is always a string
   const safeTelegramMessages = Array.isArray(telegramMessages) ? telegramMessages : [];
   const safeCoinFilter = typeof coinFilter === 'string' ? coinFilter : '';
+  // Bloqueados panel: only messages that did not reach Telegram
+  const blockedTelegramMessages = useMemo(
+    () => safeTelegramMessages.filter((msg) => msg?.blocked === true),
+    [safeTelegramMessages]
+  );
   const filteredTelegramMessages = useMemo(() => {
     const trimmedFilter = safeCoinFilter.trim();
     if (!trimmedFilter) {
-      return safeTelegramMessages;
+      return blockedTelegramMessages;
     }
     const filterUpper = trimmedFilter.toUpperCase();
-    return safeTelegramMessages.filter(msg => {
+    return blockedTelegramMessages.filter(msg => {
       if (!msg || !msg.symbol) return false;
       return msg.symbol.toUpperCase().includes(filterUpper);
     });
-  }, [safeTelegramMessages, safeCoinFilter]);
+  }, [blockedTelegramMessages, safeCoinFilter]);
 
   const formatTimestamp = (ts: string): string => {
     try {
@@ -527,19 +532,22 @@ export default function MonitoringPanel({
   };
 
   const renderSideBadge = (side: string) => {
-    const isBuy = side?.toUpperCase() === 'BUY';
-    const classes = isBuy
-      ? 'bg-green-100 text-green-800 border-green-200'
-      : 'bg-red-100 text-red-800 border-red-200';
+    const sideUpper = side?.toUpperCase() || 'UNKNOWN';
+    const classes =
+      sideUpper === 'BUY'
+        ? 'bg-green-100 text-green-800 border-green-200'
+        : sideUpper === 'SELL'
+        ? 'bg-red-100 text-red-800 border-red-200'
+        : 'bg-gray-100 text-gray-700 border-gray-200';
     return (
       <span className={`px-2 py-0.5 text-xs font-semibold rounded-full border ${classes}`}>
-        {side?.toUpperCase()}
+        {sideUpper}
       </span>
     );
   };
 
   const formatStrategyKey = (key: string): string => {
-    if (!key) return 'N/A';
+    if (!key || key === 'telegram:sent') return '—';
     const [strategy, approach] = key.split(':');
     const formatPart = (part?: string) =>
       part ? part.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) : '';
@@ -877,10 +885,10 @@ export default function MonitoringPanel({
     );
   };
 
-  // Build throttle rows array - limit to last 5 orders
+  // Build enviados rows — show recent sent messages (scrollable panel)
   const throttleRows: React.ReactNode[] = [];
   if (Array.isArray(throttleEntries) && throttleEntries.length > 0) {
-    const limitedEntries = throttleEntries.slice(0, 5);
+    const limitedEntries = throttleEntries.slice(0, 50);
     for (let idx = 0; idx < limitedEntries.length; idx++) {
       const entry = limitedEntries[idx];
       const priceChangeDisplay = entry.price_change_pct != null 
@@ -1447,12 +1455,14 @@ export default function MonitoringPanel({
         )}
       </div>
 
-      {/* Signal Throttle Panel */}
+      {/* Telegram Enviados — 1:1 with what reached Telegram */}
       <div className="bg-white rounded-lg shadow border border-gray-200 mb-6">
         <div className="p-4 border-b border-gray-200 flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold">Throttle (Mensajes Enviados)</h3>
-            <p className="text-xs text-gray-500">Mensajes throttled que fueron enviados a Telegram</p>
+            <h3 className="text-lg font-semibold">Telegram (Enviados) ({throttleEntries.length})</h3>
+            <p className="text-xs text-gray-500">
+              Mensajes que llegaron a Telegram (1:1 con el chat). Sin lifecycle ni resúmenes de auditoría.
+            </p>
           </div>
           <button
             onClick={fetchThrottle}
@@ -1470,24 +1480,24 @@ export default function MonitoringPanel({
         {throttleLoading && throttleEntries.length === 0 ? (
           <div className="p-6 text-center text-gray-500">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto mb-2"></div>
-            Loading throttle data...
+            Loading sent Telegram messages...
           </div>
         ) : throttleRows.length === 0 ? (
           <div className="p-6 text-center text-gray-500">
-            No throttle activity recorded yet.
+            No hay mensajes enviados a Telegram todavía.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto max-h-96 overflow-y-auto">
             <table className="w-full">
-              <thead className="bg-gray-50">
+              <thead className="bg-gray-50 sticky top-0">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Strategy</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Side</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Price</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Price Change %</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reason</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Event</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mensaje</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Enviado</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ago</th>
                 </tr>
               </thead>
@@ -1579,7 +1589,7 @@ export default function MonitoringPanel({
             className="flex items-center justify-between w-full text-left"
           >
             <h3 className="text-lg font-semibold">
-              Telegram (Mensajes Bloqueados) ({safeTelegramMessages.length})
+              Telegram (Mensajes Bloqueados) ({blockedTelegramMessages.length})
               {safeCoinFilter.trim() && (
                 <span className="ml-2 text-sm font-normal text-gray-500">
                   (showing {filteredTelegramMessages.length})
