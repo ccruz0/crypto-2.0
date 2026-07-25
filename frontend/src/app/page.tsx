@@ -1282,7 +1282,8 @@ function DashboardPageContent() {
         setTelegramMessagesLoading(true);
       }
       try {
-        const response = await getTelegramMessages();
+        // Monitoring "Bloqueados" panel: only messages that did NOT reach Telegram
+        const response = await getTelegramMessages('true');
         const messages = response.messages || [];
         setTelegramMessages(messages);
         handleNewMessages(messages);

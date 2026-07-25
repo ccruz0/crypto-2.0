@@ -2589,9 +2589,13 @@ export async function getMonitoringSummary(forceRefresh: boolean = false): Promi
   }
 }
 
-export async function getTelegramMessages(): Promise<TelegramMessagesResponse> {
+export async function getTelegramMessages(
+  blocked: 'true' | 'false' | 'all' = 'all'
+): Promise<TelegramMessagesResponse> {
   try {
-    const data = await fetchAPI<TelegramMessagesResponse>('/monitoring/telegram-messages');
+    const data = await fetchAPI<TelegramMessagesResponse>(
+      `/monitoring/telegram-messages?blocked=${blocked}`
+    );
     return data;
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
