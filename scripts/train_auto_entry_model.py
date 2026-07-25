@@ -182,6 +182,7 @@ def _notify_direct_promote(out_dir: Path, manifest: dict, previous: Optional[dic
     if spec is None or spec.loader is None:
         return False
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["auto_entry_promote"] = mod
     try:
         spec.loader.exec_module(mod)
     except Exception:
