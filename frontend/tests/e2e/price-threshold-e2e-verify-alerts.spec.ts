@@ -198,7 +198,7 @@ test.describe('Price Threshold Alert Verification', () => {
 
     // Step 3: Set threshold to 5% for easier triggering
     test.info().annotations.push({ type: 'step', description: 'Set threshold to 5%' });
-    const configTab = page.locator('button:has-text("Signal Configuration"), a:has-text("Signal Configuration")').first();
+    const configTab = page.locator('button:has-text("Strategy Config"), button:has-text("Signal Configuration"), a:has-text("Strategy Config"), a:has-text("Signal Configuration")').first();
     if (await configTab.count() > 0) {
       await configTab.click();
       await page.waitForTimeout(2000);

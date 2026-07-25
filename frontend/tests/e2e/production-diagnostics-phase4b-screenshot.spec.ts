@@ -96,7 +96,9 @@ test('capture phase4b eligibility panel screenshot', async ({ page }) => {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1500);
 
-  await page.getByRole('button', { name: 'Production Diagnostics', exact: true }).click();
+  await page.getByTestId('ops-nav-toggle').click();
+  await expect(page.getByTestId('ops-nav-menu')).toBeVisible({ timeout: 15000 });
+  await page.getByRole('menuitem', { name: 'Production Diagnostics', exact: true }).click();
   await page.waitForTimeout(500);
 
   await page.getByText('Why are open orders empty?').click();

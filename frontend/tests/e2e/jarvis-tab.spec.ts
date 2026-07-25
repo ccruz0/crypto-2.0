@@ -1,20 +1,25 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 /**
  * Jarvis Control Center tab replaces OpenClaw and Agent Ops.
+ * Jarvis lives under the Ops nav group.
  */
+async function openOpsTab(page: Page, tabName: string) {
+  await page.getByTestId('ops-nav-toggle').click();
+  await expect(page.getByTestId('ops-nav-menu')).toBeVisible();
+  await page.getByRole('menuitem', { name: tabName, exact: true }).click();
+}
+
 test.describe('Jarvis Control Center tab', () => {
-  test('shows Jarvis tab, hides OpenClaw, renders input and submit', async ({ page }) => {
+  test('shows Jarvis under Ops, hides OpenClaw, renders input and submit', async ({ page }) => {
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(1500);
 
-    const jarvisTab = page.getByRole('button', { name: 'Jarvis', exact: true });
-    await expect(jarvisTab).toBeVisible({ timeout: 15000 });
-
+    await expect(page.getByTestId('ops-nav-toggle')).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole('button', { name: 'OpenClaw', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Agent Ops', exact: true })).toHaveCount(0);
 
-    await jarvisTab.click();
+    await openOpsTab(page, 'Jarvis');
     await page.waitForTimeout(500);
 
     await expect(page.getByTestId('jarvis-tab')).toBeVisible();
@@ -28,7 +33,7 @@ test.describe('Jarvis Control Center tab', () => {
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(1500);
 
-    await page.getByRole('button', { name: 'Jarvis', exact: true }).click();
+    await openOpsTab(page, 'Jarvis');
     await page.waitForTimeout(500);
 
     await page.getByTestId('jarvis-prompt-input').fill('Investigate stale market data for BTC');
