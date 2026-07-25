@@ -34,13 +34,19 @@ for p in (_SCRIPTS_DIR, _BACKEND):
 from build_auto_ml_dataset import main as build_main  # noqa: E402
 from train_auto_entry_model import main as train_main  # noqa: E402
 
-from app.services.auto_entry_promote import (  # noqa: E402
-    apply_promote,
-    format_promote_telegram,
-    load_manifest,
-    send_promote_telegram,
-    should_promote,
-)
+# Load promote helpers without importing app.services.__init__ (avoids heavy deps).
+import importlib.util  # noqa: E402
+
+_promote_path = _BACKEND / "app" / "services" / "auto_entry_promote.py"
+_spec = importlib.util.spec_from_file_location("auto_entry_promote", _promote_path)
+if _spec is None or _spec.loader is None:
+    raise SystemExit(f"Cannot load {_promote_path}")
+_promote = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_promote)
+apply_promote = _promote.apply_promote
+load_manifest = _promote.load_manifest
+notify_model_version_update = _promote.notify_model_version_update
+should_promote = _promote.should_promote
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -154,6 +160,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     }
 
     if decision.should_promote and not args.dry_run:
+        previous = current
         promoted = apply_promote(
             args.out_dir,
             candidate_model=candidate_model,
@@ -163,12 +170,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         result["promoted"] = True
         result["promoted_manifest"] = {
             "version": promoted.get("version"),
+            "previous_version": promoted.get("previous_version"),
             "promoted_at": promoted.get("promoted_at"),
             "promote_reason": promoted.get("promote_reason"),
         }
         if not args.no_telegram:
-            msg = format_promote_telegram(promoted, decision)
-            result["telegram_sent"] = send_promote_telegram(msg)
+            result["telegram_sent"] = notify_model_version_update(
+                out_dir=args.out_dir,
+                promoted=promoted,
+                decision=decision,
+                previous=previous,
+            )
     elif decision.should_promote and args.dry_run:
         result["note"] = "would_promote"
     else:

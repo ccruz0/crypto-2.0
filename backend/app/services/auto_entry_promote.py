@@ -217,6 +217,12 @@ def apply_promote(
     """Copy candidate → current.joblib and write promoted manifest.json."""
     out_dir.mkdir(parents=True, exist_ok=True)
     current_model = out_dir / "current.joblib"
+    # Snapshot previous manifest for Telegram "what changed"
+    prev_manifest = load_manifest(out_dir / "manifest.json")
+    if prev_manifest is not None:
+        (out_dir / "manifest.prev.json").write_text(
+            json.dumps(prev_manifest, indent=2) + "\n", encoding="utf-8"
+        )
     shutil.copy2(candidate_model, current_model)
 
     promoted = dict(candidate_manifest)
@@ -225,6 +231,7 @@ def apply_promote(
     promoted["promote_reason"] = decision.reason
     promoted["promote_decision"] = asdict(decision)
     promoted["live_gate_enabled"] = _env_bool("AUTO_ML_ENABLED", False)
+    promoted["previous_version"] = (prev_manifest or {}).get("version")
     promoted["note"] = "PR-ML-C promoted current.joblib"
     (out_dir / "manifest.json").write_text(
         json.dumps(promoted, indent=2) + "\n", encoding="utf-8"
@@ -236,20 +243,100 @@ def apply_promote(
     return promoted
 
 
-def format_promote_telegram(promoted: dict[str, Any], decision: PromoteDecision) -> str:
+def _human_reason(reason: str) -> str:
+    if reason == "force":
+        return "Promote forzado por operador (--force-promote)."
+    if reason == "no_current_baseline":
+        return "Primera versión en producción (no había modelo current previo)."
+    if reason == "current_metric_missing":
+        return "El modelo actual no tenía métrica usable; se adopta el candidato."
+    if reason.startswith("metric_improved:"):
+        return "El candidato mejoró la métrica de holdout vs el modelo actual."
+    if reason.startswith("metric_not_improved:"):
+        return "El candidato no mejoró lo suficiente vs el modelo actual."
+    if reason.startswith("n_fit_rows="):
+        return "Insuficientes filas etiquetadas para promover."
+    if reason == "single_class_or_no_holdout":
+        return "Entrenamiento sin holdout / una sola clase (bloqueado salvo allow-single-class)."
+    if reason == "autonomous_promote_disabled":
+        return "AUTO_ML_AUTONOMOUS_PROMOTE está desactivado."
+    if reason == "candidate_metric_missing":
+        return "El candidato no reportó métrica primaria."
+    if reason == "train_direct_current":
+        return "Entrenamiento escribió current.joblib directamente (train_auto_entry_model)."
+    return reason
+
+
+def format_promote_telegram(
+    promoted: dict[str, Any],
+    decision: PromoteDecision,
+    *,
+    previous: Optional[dict[str, Any]] = None,
+) -> str:
+    """Rich Telegram body: version delta, what changed, and why."""
+    prev = previous or {}
     ver = promoted.get("version")
+    prev_ver = prev.get("version")
+    ver_line = (
+        f"v{prev_ver} → v{ver}" if prev_ver is not None and prev_ver != ver else f"v{ver}"
+    )
+
     cm = decision.candidate_metric
     pm = decision.current_metric
     cm_s = f"{cm:.4f}" if cm is not None else "n/a"
     pm_s = f"{pm:.4f}" if pm is not None else "n/a"
+
+    metrics = promoted.get("metrics") if isinstance(promoted.get("metrics"), dict) else {}
+    ds = promoted.get("dataset_meta") if isinstance(promoted.get("dataset_meta"), dict) else {}
+    prev_metrics = prev.get("metrics") if isinstance(prev.get("metrics"), dict) else {}
+
+    changes: list[str] = []
+    if prev_ver is None:
+        changes.append("• Se instaló el primer artefacto <code>current.joblib</code>")
+    else:
+        changes.append(f"• Versión de modelo: <code>v{prev_ver}</code> → <code>v{ver}</code>")
+    changes.append(
+        f"• Métrica primaria (holdout auc/acc): <code>{pm_s}</code> → <code>{cm_s}</code>"
+    )
+    if metrics.get("accuracy") is not None or prev_metrics.get("accuracy") is not None:
+        pa = prev_metrics.get("accuracy")
+        ca = metrics.get("accuracy")
+        pa_s = f"{float(pa):.4f}" if pa is not None else "n/a"
+        ca_s = f"{float(ca):.4f}" if ca is not None else "n/a"
+        changes.append(f"• Accuracy holdout: <code>{pa_s}</code> → <code>{ca_s}</code>")
+    if metrics.get("roc_auc") is not None or prev_metrics.get("roc_auc") is not None:
+        pr = prev_metrics.get("roc_auc")
+        cr = metrics.get("roc_auc")
+        pr_s = f"{float(pr):.4f}" if pr is not None else "n/a"
+        cr_s = f"{float(cr):.4f}" if cr is not None else "n/a"
+        changes.append(f"• ROC-AUC holdout: <code>{pr_s}</code> → <code>{cr_s}</code>")
+    n_fit = promoted.get("n_fit_rows")
+    n_pos = ds.get("n_positive")
+    n_neg = ds.get("n_negative")
+    changes.append(
+        f"• Dataset: source=<code>{ds.get('source') or 'n/a'}</code> "
+        f"rows=<code>{n_fit}</code> (pos={n_pos} neg={n_neg})"
+    )
+    changes.append(
+        f"• Gate live: AUTO_ML_ENABLED=<code>{promoted.get('live_gate_enabled')}</code> "
+        f"threshold usa env <code>AUTO_ML_THRESHOLD</code>"
+    )
+    if promoted.get("feature_version") is not None:
+        changes.append(f"• feature_version=<code>{promoted.get('feature_version')}</code>")
+
+    why = _human_reason(str(decision.reason or ""))
+    promoted_at = promoted.get("promoted_at") or promoted.get("trained_at") or ""
+
     return (
-        "🤖 <b>AUTO ML MODEL PROMOTED</b>\n"
-        f"version: <code>v{ver}</code>\n"
-        f"metric: <code>{pm_s} → {cm_s}</code>\n"
-        f"reason: <code>{decision.reason}</code>\n"
-        f"n_fit_rows: <code>{promoted.get('n_fit_rows')}</code>\n"
-        f"gate AUTO_ML_ENABLED: <code>{promoted.get('live_gate_enabled')}</code>\n"
-        f"source=retrain host=offline"
+        "🤖 <b>AUTO ML — NUEVA VERSIÓN</b>\n"
+        f"<b>Versión:</b> <code>{ver_line}</code>\n"
+        f"<b>Cuándo:</b> <code>{promoted_at}</code>\n"
+        f"<b>Por qué:</b> {why}\n"
+        f"<b>Motivo técnico:</b> <code>{decision.reason}</code>\n"
+        f"<b>Cambios aplicados:</b>\n"
+        + "\n".join(changes)
+        + "\n"
+        f"source=retrain host=AWS"
     )
 
 
@@ -262,6 +349,7 @@ def send_promote_telegram(message: str) -> bool:
     chat = (
         (os.environ.get("TELEGRAM_CHAT_ID_AWS") or "").strip()
         or (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+        or (os.environ.get("TELEGRAM_CHAT_ID_OPS") or "").strip()
     )
     if not token or not chat:
         logger.info("Telegram promote notify skipped (token/chat not configured)")
@@ -272,7 +360,7 @@ def send_promote_telegram(message: str) -> bool:
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode(
-            {"chat_id": chat, "text": message, "parse_mode": "HTML"}
+            {"chat_id": chat, "text": message, "parse_mode": "HTML", "disable_web_page_preview": "1"}
         ).encode()
         req = urllib.request.Request(url, data=data, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -283,3 +371,20 @@ def send_promote_telegram(message: str) -> bool:
     except Exception as e:
         logger.warning("Telegram promote notify failed: %s", type(e).__name__)
         return False
+
+
+def notify_model_version_update(
+    *,
+    out_dir: Path,
+    promoted: dict[str, Any],
+    decision: PromoteDecision,
+    previous: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Format + send Telegram for a version update. Returns send success."""
+    prev = previous
+    if prev is None:
+        # Prefer audit file written just before promote when available
+        bak = out_dir / "manifest.prev.json"
+        prev = load_manifest(bak)
+    msg = format_promote_telegram(promoted, decision, previous=prev)
+    return send_promote_telegram(msg)
