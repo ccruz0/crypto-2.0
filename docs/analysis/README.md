@@ -68,6 +68,8 @@ candidate. Default **off** (`AUTO_ML_ENABLED` unset/false). Shadow logs scores w
 Fail-open: missing model / joblib → allow rule BUY. Swing/scalp/intraday untouched.
 Tests: `backend/tests/test_auto_ml_live_gate.py`.
 
+Operator runbook: [`docs/runbooks/auto_ml_entry.md`](../runbooks/auto_ml_entry.md).
+
 ## Auto ML retrain + autonomous promote (PR-ML-C)
 
 ```bash

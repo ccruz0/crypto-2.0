@@ -35,7 +35,7 @@ def _merge_strategy_rules_preserving_locked_auto(
                 status_code=403,
                 detail=(
                     "strategy_rules.auto is locked; parameters are read-only. "
-                    "Updates require Approval Center (learning apply not enabled yet)."
+                    "Updates require retrain/promote (AUTO_ML_AUTONOMOUS_PROMOTE), not this API."
                 ),
             )
     elif incoming_auto is not None:
@@ -77,6 +77,15 @@ def get_config() -> Dict[str, Any]:
     cfg = load_config()
     _log_volume_min_ratio("GET", cfg)
     return cfg
+
+
+@router.get("/config/auto-ml")
+def get_auto_ml_config_status() -> Dict[str, Any]:
+    """Read-only Auto ML gate + model manifest status (PR-ML-D)."""
+    from app.services.auto_entry_model import get_auto_ml_status
+
+    return get_auto_ml_status()
+
 
 @router.put("/config")
 def put_config(new_cfg: Dict[str, Any] = Body(...)) -> Dict[str, Any]:

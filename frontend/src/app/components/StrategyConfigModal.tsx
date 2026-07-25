@@ -38,6 +38,25 @@ export default function StrategyConfigModal({
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [autoMlStatus, setAutoMlStatus] = useState<{
+    gate_enabled?: boolean;
+    shadow_log?: boolean;
+    threshold?: number;
+    autonomous_promote?: boolean;
+    model_present?: boolean;
+    version?: number | null;
+    trained_at?: string | null;
+    promoted_at?: string | null;
+    promote_reason?: string | null;
+    n_fit_rows?: number | null;
+    metrics?: {
+      accuracy?: number | null;
+      roc_auc?: number | null;
+      holdout?: boolean | null;
+    };
+    load_error?: string | null;
+  } | null>(null);
+  const [autoMlStatusError, setAutoMlStatusError] = useState<string | null>(null);
 
   const isLocked = isAutoPreset(activePreset);
 
@@ -49,10 +68,41 @@ export default function StrategyConfigModal({
     if (!isOpen) return;
     setActivePreset(preset);
     setActiveRiskMode(isAutoPreset(preset) ? 'Conservative' : riskMode);
-    setFormData(rules);
+    setFormData(resolveRules(preset, isAutoPreset(preset) ? 'Conservative' : riskMode));
     setSaveError(null);
     setSaveSuccess(false);
-  }, [isOpen, rules, preset, riskMode]);
+  }, [isOpen, preset, riskMode, presetsConfig, defaultPresetConfig]);
+
+  // Load Auto ML status when viewing Auto (read-only)
+  useEffect(() => {
+    if (!isOpen || !isAutoPreset(activePreset)) {
+      setAutoMlStatus(null);
+      setAutoMlStatusError(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/config/auto-ml');
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (!cancelled) {
+          setAutoMlStatus(data);
+          setAutoMlStatusError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setAutoMlStatus(null);
+          setAutoMlStatusError(err instanceof Error ? err.message : 'Failed to load Auto ML status');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, activePreset]);
 
   const handlePresetChange = (newPreset: Preset) => {
     setActivePreset(newPreset);
@@ -114,7 +164,7 @@ export default function StrategyConfigModal({
     e.preventDefault();
     if (isLocked) {
       setSaveError(
-        'Auto strategy parameters are locked. Updates require Approval Center (learning not enabled yet).'
+        'Auto strategy parameters are locked. Updates require retrain/promote (not this form).'
       );
       return;
     }
@@ -225,9 +275,68 @@ export default function StrategyConfigModal({
               </p>
               {isLocked && (
                 <p className="text-xs text-amber-700 dark:text-amber-300 mt-1" data-testid="auto-locked-hint">
-                  Parámetros visibles pero no editables. Solo Approval Center puede actualizar Auto
-                  (learning apply aún no habilitado).
+                  Parámetros visibles pero no editables. El modelo ML se actualiza vía retrain/promote
+                  (`AUTO_ML_AUTONOMOUS_PROMOTE`), no desde este formulario.
                 </p>
+              )}
+              {isLocked && (
+                <div
+                  className="mt-3 rounded-md border border-amber-200 bg-amber-50/80 p-3 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+                  data-testid="auto-ml-status-panel"
+                >
+                  <div className="font-semibold mb-1">Auto ML status</div>
+                  {autoMlStatusError && (
+                    <p className="text-red-600 dark:text-red-300">{autoMlStatusError}</p>
+                  )}
+                  {!autoMlStatusError && !autoMlStatus && (
+                    <p className="opacity-70">Loading…</p>
+                  )}
+                  {autoMlStatus && (
+                    <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+                      <dt>Gate</dt>
+                      <dd data-testid="auto-ml-gate">
+                        {autoMlStatus.gate_enabled ? 'ON' : 'OFF'}
+                        {typeof autoMlStatus.threshold === 'number'
+                          ? ` (threshold ${autoMlStatus.threshold})`
+                          : ''}
+                      </dd>
+                      <dt>Model</dt>
+                      <dd data-testid="auto-ml-version">
+                        {autoMlStatus.model_present
+                          ? `v${autoMlStatus.version ?? '?'}`
+                          : 'missing'}
+                      </dd>
+                      <dt>Promote</dt>
+                      <dd>
+                        {autoMlStatus.autonomous_promote ? 'autonomous ON' : 'autonomous OFF'}
+                      </dd>
+                      <dt>Holdout</dt>
+                      <dd>
+                        {autoMlStatus.metrics?.roc_auc != null
+                          ? `auc ${Number(autoMlStatus.metrics.roc_auc).toFixed(3)}`
+                          : autoMlStatus.metrics?.accuracy != null
+                            ? `acc ${Number(autoMlStatus.metrics.accuracy).toFixed(3)}`
+                            : 'n/a'}
+                      </dd>
+                      <dt>Promoted</dt>
+                      <dd className="truncate" title={autoMlStatus.promoted_at || undefined}>
+                        {autoMlStatus.promoted_at
+                          ? new Date(autoMlStatus.promoted_at).toLocaleString()
+                          : autoMlStatus.trained_at
+                            ? new Date(autoMlStatus.trained_at).toLocaleString()
+                            : 'n/a'}
+                      </dd>
+                      {autoMlStatus.load_error ? (
+                        <>
+                          <dt>Load</dt>
+                          <dd className="truncate" title={autoMlStatus.load_error}>
+                            {autoMlStatus.load_error}
+                          </dd>
+                        </>
+                      ) : null}
+                    </dl>
+                  )}
+                </div>
               )}
             </div>
             <button
