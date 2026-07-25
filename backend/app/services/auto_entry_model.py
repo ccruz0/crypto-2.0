@@ -337,3 +337,53 @@ def apply_auto_ml_buy_gate(
             result.reason,
         )
     return result
+
+
+def get_auto_ml_status() -> dict[str, Any]:
+    """Read-only status for UI / ops (no secrets)."""
+    from app.services.auto_entry_promote import (
+        autonomous_promote_enabled,
+        load_manifest,
+        min_promote_delta,
+        min_promote_rows,
+    )
+
+    path = default_model_path()
+    manifest_path = path.parent / "manifest.json"
+    if not manifest_path.is_file():
+        here = Path(__file__).resolve()
+        repo_root = here.parents[3]
+        alt = repo_root / "models" / "auto_entry" / "manifest.json"
+        if alt.is_file():
+            manifest_path = alt
+
+    manifest = load_manifest(manifest_path) or {}
+    model_present = path.is_file()
+    metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
+
+    return {
+        "gate_enabled": auto_ml_enabled(),
+        "shadow_log": auto_ml_shadow_log(),
+        "threshold": auto_ml_threshold(),
+        "autonomous_promote": autonomous_promote_enabled(),
+        "promote_min_rows": min_promote_rows(),
+        "promote_min_delta": min_promote_delta(),
+        "model_path": str(path),
+        "model_present": model_present,
+        "feature_version": FEATURE_VERSION,
+        "feature_names": list(FEATURE_NAMES),
+        "version": manifest.get("version"),
+        "trained_at": manifest.get("trained_at"),
+        "promoted_at": manifest.get("promoted_at"),
+        "promote_reason": manifest.get("promote_reason"),
+        "n_fit_rows": manifest.get("n_fit_rows"),
+        "metrics": {
+            "holdout": metrics.get("holdout"),
+            "accuracy": metrics.get("accuracy"),
+            "roc_auc": metrics.get("roc_auc"),
+            "n_train": metrics.get("n_train"),
+            "n_test": metrics.get("n_test"),
+        },
+        "load_error": _CACHE.get("load_error"),
+        "cached_version": _CACHE.get("version"),
+    }

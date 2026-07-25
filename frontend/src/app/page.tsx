@@ -4732,7 +4732,7 @@ function resolveDecisionIndexColor(value: number): string {
   ) => {
     if (preset === 'Auto') {
       throw new Error(
-        'Auto strategy parameters are locked. Updates require Approval Center (learning not enabled yet).'
+        'Auto strategy parameters are locked. Updates require retrain/promote (not this form).'
       );
     }
     try {
