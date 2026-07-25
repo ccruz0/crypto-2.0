@@ -147,14 +147,37 @@ def test_btc_oversize_lots_capped_to_wallet_across_sister_books(db_session):
         assert float(row["net_qty"]) <= float(wallet) + 1e-9
         assert row.get("wallet_qty_warning") == "lots_exceed_wallet"
 
-    details = get_expected_take_profit_details(
+    details_usd = get_expected_take_profit_details(
         db_session,
         "BTC_USD",
         current_price=64000.0,
         portfolio_balance=float(wallet),
     )
-    assert details["net_qty"] == pytest.approx(float(wallet))
-    assert details["net_qty"] <= float(wallet) + 1e-9
+    details_usdt = get_expected_take_profit_details(
+        db_session,
+        "BTC_USDT",
+        current_price=64000.0,
+        portfolio_balance=float(wallet),
+    )
+    # Details must use the same pair-share split as summary — never assign the
+    # full base wallet to each sister book (BTC_USDT uncovered 1.59 regression).
+    assert details_usd["net_qty"] + details_usdt["net_qty"] == pytest.approx(
+        float(wallet), rel=1e-6
+    )
+    assert details_usd["net_qty"] <= float(wallet) + 1e-9
+    assert details_usdt["net_qty"] <= float(wallet) + 1e-9
+    assert details_usd["net_qty"] == pytest.approx(float(summary["BTC_USD"]["net_qty"]), rel=1e-6)
+    if "BTC_USDT" in summary:
+        assert details_usdt["net_qty"] == pytest.approx(
+            float(summary["BTC_USDT"]["net_qty"]), rel=1e-6
+        )
+    else:
+        assert details_usdt["net_qty"] == pytest.approx(0.0)
+    assert details_usd.get("wallet_balance") == pytest.approx(float(wallet))
+    assert details_usdt.get("wallet_balance") == pytest.approx(float(wallet))
+    # USDT details must not invent uncovered ≈ full wallet minus a tiny covered lot.
+    assert details_usdt["uncovered_qty"] <= details_usdt["net_qty"] + 1e-9
+    assert details_usdt["uncovered_qty"] < 1.0
 
 
 def test_dgb_ghost_short_dropped_when_wallet_long(db_session):
@@ -259,3 +282,78 @@ def test_doge_short_path_uses_abs_wallet_not_pair_qty(db_session):
     assert doge["net_qty"] == pytest.approx(abs(wallet))
     assert doge["net_qty"] < 1000  # not the inflated 9187 lot sum
     assert doge.get("wallet_qty_warning") == "lots_exceed_wallet"
+
+
+def test_details_sister_books_share_wallet_not_each_claim_full(db_session):
+    """Prod BTC regression: USD+USDT details must not each use full wallet net_qty."""
+    t0 = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    buy_usd = _add_order(
+        db_session,
+        exchange_order_id="btc-usd-main",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="60000",
+        quantity="1.5",
+        exchange_create_time=t0,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="btc-usd-tp",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="70000",
+        quantity="1.5",
+        cumulative_quantity="0",
+        parent_order_id=buy_usd.exchange_order_id,
+        exchange_create_time=t0,
+    )
+    buy_usdt = _add_order(
+        db_session,
+        exchange_order_id="btc-usdt-main",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.BUY,
+        price="75000",
+        quantity="0.4",
+        exchange_create_time=t1,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="btc-usdt-tp",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="80000",
+        quantity="0.4",
+        cumulative_quantity="0",
+        parent_order_id=buy_usdt.exchange_order_id,
+        exchange_create_time=t1,
+    )
+
+    wallet = 1.9
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "BTC", "balance": wallet, "value_usd": 120000.0}],
+        market_prices={"BTC": 64000.0, "BTC_USD": 64000.0, "BTC_USDT": 64000.0},
+    )
+    details_usd = get_expected_take_profit_details(
+        db_session, "BTC_USD", current_price=64000.0, portfolio_balance=wallet
+    )
+    details_usdt = get_expected_take_profit_details(
+        db_session, "BTC_USDT", current_price=64000.0, portfolio_balance=wallet
+    )
+
+    assert "BTC_USD" in summary and "BTC_USDT" in summary
+    assert details_usd["net_qty"] + details_usdt["net_qty"] == pytest.approx(wallet, rel=1e-6)
+    assert details_usd["net_qty"] == pytest.approx(float(summary["BTC_USD"]["net_qty"]), rel=1e-6)
+    assert details_usdt["net_qty"] == pytest.approx(float(summary["BTC_USDT"]["net_qty"]), rel=1e-6)
+    # Neither modal may claim the full wallet alone when both books have inventory.
+    assert details_usd["net_qty"] < wallet
+    assert details_usdt["net_qty"] < wallet
+    assert details_usdt["uncovered_qty"] < 1.0
