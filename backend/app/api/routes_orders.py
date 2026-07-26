@@ -1791,8 +1791,15 @@ def get_order_history(
             executed_statuses = [OrderStatusEnum.FILLED]
 
         from sqlalchemy import func
+        from app.utils.ops_stub_orders import OPS_STUB_CLOSED_PREFIX
+
         query = db.query(ExchangeOrder).filter(ExchangeOrder.status.in_(executed_statuses)).order_by(
             func.coalesce(ExchangeOrder.exchange_update_time, ExchangeOrder.updated_at).desc()
+        )
+        # Ops bandaids (STUB-CLOSED-*) stay in DB so ensure skips recreate, but must
+        # not appear in Executed Orders / pollute realized P&L (same price as parent → $0).
+        query = query.filter(
+            ~ExchangeOrder.exchange_order_id.like(f"{OPS_STUB_CLOSED_PREFIX}%")
         )
         if symbol:
             query = query.filter(ExchangeOrder.symbol == symbol)

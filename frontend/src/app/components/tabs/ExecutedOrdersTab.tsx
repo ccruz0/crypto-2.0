@@ -143,6 +143,11 @@ export default function ExecutedOrdersTab({
     if (!Array.isArray(executedOrders)) return [];
     
     const filtered = executedOrders.filter(order => {
+      // Ops bandaids — never show in Executed Orders (also filtered server-side).
+      if ((order.order_id || '').toUpperCase().startsWith('STUB-CLOSED-')) {
+        return false;
+      }
+
       // Filter by symbol
       if (orderFilter.symbol && order.instrument_name) {
         if (!order.instrument_name.toLowerCase().includes(orderFilter.symbol.toLowerCase())) {
