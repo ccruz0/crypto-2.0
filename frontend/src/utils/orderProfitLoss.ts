@@ -746,6 +746,9 @@ export interface PortfolioBalanceHint {
 function groupFilledPositionOrdersBySymbol(orders: OpenOrder[]): Map<string, OpenOrder[]> {
   const bySymbol = new Map<string, OpenOrder[]>();
   for (const order of orders) {
+    // Ops stubs (STUB-CLOSED-*) are not real fills — exclude from lot/P&L pairing.
+    const oid = (order.order_id || '').toUpperCase();
+    if (oid.startsWith('STUB-CLOSED-')) continue;
     if (!isFilledPositionOrder(order)) continue;
     const symbol = (order.instrument_name || '').toUpperCase();
     if (!symbol) continue;

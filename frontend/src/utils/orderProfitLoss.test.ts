@@ -1165,4 +1165,37 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     expect(resolveCurrentPrice('ETH_USDT', coins)).toBeCloseTo(1842.5);
     expect(resolveCurrentPrice('BTC_USD', coins)).toBeNull();
   });
+
+  it('ignores STUB-CLOSED fills in realized P/L pairing', () => {
+    const parentSell = makeOrder({
+      order_id: '5755600492155811564',
+      side: 'SELL',
+      quantity: '0.00015',
+      price: '65388.97',
+      instrument_name: 'BTC_USD',
+      order_type: 'MARKET',
+      execution_origin: 'ALERT',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const stubTp = makeOrder({
+      order_id: 'STUB-CLOSED-TAKE_PROFIT-5755600492155811564',
+      side: 'BUY',
+      quantity: '0.00015',
+      price: '65388.97',
+      instrument_name: 'BTC_USD',
+      order_type: 'TAKE_PROFIT_LIMIT',
+      order_role: 'TAKE_PROFIT',
+      execution_origin: 'TAKE_PROFIT',
+      parent_order_id: '5755600492155811564',
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const all = [parentSell, stubTp];
+    const realized = buildRealizedPnlByOrderId(all);
+    expect(realized.has('STUB-CLOSED-TAKE_PROFIT-5755600492155811564')).toBe(false);
+    // Parent remains an open short lot (stub close ignored).
+    const openLots = buildOpenLotsByOrderId(all);
+    expect(openLots.has('5755600492155811564')).toBe(true);
+  });
 });

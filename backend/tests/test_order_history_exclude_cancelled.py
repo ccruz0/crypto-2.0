@@ -157,3 +157,42 @@ def test_status_filter_filled(db_session):
         assert body["orders"][0]["order_id"] == "a"
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_stub_closed_orders_hidden_from_history(db_session):
+    """Ops STUB-CLOSED-* rows must not appear in Executed Orders history."""
+    db_session.add(_order("real-fill", OrderStatusEnum.FILLED, minutes_ago=0))
+    db_session.add(
+        _order(
+            "STUB-CLOSED-STOP_LOSS-5755600492155811564",
+            OrderStatusEnum.FILLED,
+            minutes_ago=1,
+        )
+    )
+    db_session.add(
+        _order(
+            "STUB-CLOSED-TAKE_PROFIT-5755600492155811564",
+            OrderStatusEnum.FILLED,
+            minutes_ago=2,
+        )
+    )
+    db_session.commit()
+
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        resp = client.get("/api/orders/history?exclude_cancelled=true")
+        assert resp.status_code == 200
+        body = resp.json()
+        ids = [o["order_id"] for o in body["orders"]]
+        assert ids == ["real-fill"]
+        assert body["total"] == 1
+        assert all(not oid.startswith("STUB-CLOSED-") for oid in ids)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
