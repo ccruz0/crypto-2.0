@@ -63,27 +63,56 @@ def _order_entry_price(order: ExchangeOrder) -> Optional[float]:
         return None
 
 
-def _find_recent_entry_order(db: Session, symbol: str) -> Optional[ExchangeOrder]:
+def _find_recent_entry_order(
+    db: Session,
+    symbol: str,
+    *,
+    side: Optional[str] = None,
+) -> Optional[ExchangeOrder]:
     """Most recent filled entry order (BUY long or SELL short), excluding protection orders.
 
     Searches USD/USDT symbol variants — Crypto.com often fills on *_USD while
     watchlist/ensure defaults bare balances to *_USDT.
+
+    When ``side`` is BUY/SELL, only that entry side is considered (avoids linking
+    a long wallet to a recent short dust fill and vice versa).
     """
     variants = _entry_symbol_variants(symbol)
-    return (
+    q = (
         db.query(ExchangeOrder)
         .filter(
             ExchangeOrder.symbol.in_(variants),
             ExchangeOrder.status == OrderStatusEnum.FILLED,
-            ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]),
         )
         .filter(
             (ExchangeOrder.order_role.is_(None))
             | (~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]))
         )
-        .order_by(ExchangeOrder.exchange_create_time.desc())
-        .first()
     )
+    side_u = (side or "").strip().upper()
+    if side_u == "BUY":
+        q = q.filter(ExchangeOrder.side == OrderSideEnum.BUY)
+    elif side_u == "SELL":
+        q = q.filter(ExchangeOrder.side == OrderSideEnum.SELL)
+    else:
+        q = q.filter(ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]))
+    return q.order_by(ExchangeOrder.exchange_create_time.desc()).first()
+
+
+_EXPECTED_ENSURE_SKIP_MARKERS = (
+    "wallet_side_mismatch",
+    "tp_rejected_terminal",
+)
+
+
+def _is_expected_ensure_skip(creation: Optional[Dict]) -> bool:
+    """True when ensure correctly skipped (must not page as hourly failure)."""
+    if not creation:
+        return False
+    skip = str(creation.get("skip_reason") or "").lower()
+    err = str(creation.get("error") or "").lower()
+    blob = f"{skip} {err}"
+    return any(marker in blob for marker in _EXPECTED_ENSURE_SKIP_MARKERS)
 
 
 def _fetch_mark_price(symbol: str) -> Optional[float]:
@@ -876,6 +905,7 @@ class SLTPCheckerService:
         positions_missing = result.get("positions_missing_sl_tp", [])
         created: List[Dict] = []
         failed: List[Dict] = []
+        skipped: List[Dict] = []
         still_missing: List[Dict] = []
 
         for pos in positions_missing:
@@ -911,11 +941,31 @@ class SLTPCheckerService:
                 continue
 
             if creation.get("success"):
-                created.append(
+                if creation.get("skip_reason") or _is_expected_ensure_skip(creation):
+                    skipped.append(
+                        {
+                            "symbol": symbol,
+                            "skip_reason": creation.get("skip_reason")
+                            or creation.get("error"),
+                            **pos,
+                        }
+                    )
+                else:
+                    created.append(
+                        {
+                            "symbol": symbol,
+                            "sl_order_id": creation.get("sl_order_id"),
+                            "tp_order_id": creation.get("tp_order_id"),
+                        }
+                    )
+            elif _is_expected_ensure_skip(creation):
+                # Correct no-op (e.g. terminal TP reject) — do not page hourly.
+                skipped.append(
                     {
                         "symbol": symbol,
-                        "sl_order_id": creation.get("sl_order_id"),
-                        "tp_order_id": creation.get("tp_order_id"),
+                        "skip_reason": creation.get("skip_reason")
+                        or creation.get("error"),
+                        **pos,
                     }
                 )
             else:
@@ -943,6 +993,7 @@ class SLTPCheckerService:
             "oco_issues": result.get("oco_issues", {}),
             "created": created,
             "failed": failed,
+            "skipped": skipped,
             "still_missing": still_missing,
             "positions_missing_sl_tp": still_missing,
         }
@@ -1265,6 +1316,14 @@ class SLTPCheckerService:
                     'success': False,
                     'error': f'No open position found for {symbol}. Please verify you have balance in {base_currency}.'
                 }
+
+            # Live wallet sign — prefer fills that match (ignore opposite dust fills).
+            if position_balance > 0:
+                wallet_entry_side = "BUY"
+            elif position_balance < 0:
+                wallet_entry_side = "SELL"
+            else:
+                wallet_entry_side = None
             
             # Get watchlist item (if exists) — try USD/USDT variants
             watchlist_item = None
@@ -1291,7 +1350,9 @@ class SLTPCheckerService:
                 # Try to get entry price from most recent filled entry order
                 entry_price = None
                 try:
-                    recent_order = _find_recent_entry_order(db, symbol)
+                    recent_order = _find_recent_entry_order(
+                        db, symbol, side=wallet_entry_side
+                    )
                     if recent_order:
                         entry_price = _order_entry_price(recent_order)
                         logger.info(f"Found entry price from recent order: {entry_price}")
@@ -1344,8 +1405,10 @@ class SLTPCheckerService:
                         is_sl_trigger_valid,
                     )
 
-                    preview_side = "BUY"
-                    recent_for_side = _find_recent_entry_order(db, symbol)
+                    preview_side = wallet_entry_side or "BUY"
+                    recent_for_side = _find_recent_entry_order(
+                        db, symbol, side=wallet_entry_side
+                    )
                     if recent_for_side:
                         preview_side = _entry_side_from_order(recent_for_side)
                     last = fetch_last_price(symbol)
@@ -1368,11 +1431,13 @@ class SLTPCheckerService:
             
             # Calculate from percentages if prices not available, or when tp_percentage is set
             entry_price = None
-            entry_side = "BUY"
+            entry_side = wallet_entry_side or "BUY"
             need_sl_calc = create_sl and not sl_price
             need_tp_calc = create_tp and (not tp_price or prefer_tp_from_pct)
             if need_sl_calc or need_tp_calc:
-                recent_order = _find_recent_entry_order(db, symbol)
+                recent_order = _find_recent_entry_order(
+                    db, symbol, side=wallet_entry_side
+                )
 
                 if recent_order:
                     entry_price = _order_entry_price(recent_order)
@@ -1531,9 +1596,11 @@ class SLTPCheckerService:
             dry_run_mode = not live_trading
             
             # Ensure entry_price is available for order creation (even if prices were already set)
-            entry_side = "BUY"
+            entry_side = wallet_entry_side or "BUY"
             if not entry_price:
-                recent_order = _find_recent_entry_order(db, symbol)
+                recent_order = _find_recent_entry_order(
+                    db, symbol, side=wallet_entry_side
+                )
                 if recent_order:
                     entry_price = _order_entry_price(recent_order)
                     entry_side = _entry_side_from_order(recent_order)
@@ -1549,48 +1616,33 @@ class SLTPCheckerService:
                     or _fetch_mark_price(symbol)
                 )
             
-            # Get parent order ID from most recent filled entry order (for linking TP/SL)
+            # Get parent order ID from most recent wallet-matching fill (for linking TP/SL)
             parent_order_id = None
             parent_order = None
             oco_group_id = None
-            # Wallet sign is the source of truth for which side to protect.
-            if position_balance > 0:
-                wallet_entry_side = "BUY"
-            elif position_balance < 0:
-                wallet_entry_side = "SELL"
-            else:
-                wallet_entry_side = None
             if entry_price:
                 try:
-                    recent_order = _find_recent_entry_order(db, symbol)
+                    recent_order = _find_recent_entry_order(
+                        db, symbol, side=wallet_entry_side
+                    )
                     if recent_order:
-                        fill_side = _entry_side_from_order(recent_order)
-                        if wallet_entry_side and fill_side != wallet_entry_side:
-                            logger.info(
-                                "Skipping ensure protection for %s: recent fill side=%s "
-                                "does not match wallet side=%s (balance=%s)",
-                                symbol,
-                                fill_side,
-                                wallet_entry_side,
-                                position_balance,
-                            )
-                            return {
-                                "success": False,
-                                "symbol": symbol,
-                                "error": (
-                                    f"wallet_side_mismatch: fill={fill_side} "
-                                    f"wallet={wallet_entry_side}"
-                                ),
-                                "sl_order_id": None,
-                                "tp_order_id": None,
-                            }
                         parent_order = recent_order
                         parent_order_id = recent_order.exchange_order_id
-                        entry_side = fill_side or wallet_entry_side or entry_side
-                        # Generate OCO group ID for linking SL and TP orders (same as automatic creation)
+                        entry_side = (
+                            _entry_side_from_order(recent_order)
+                            or wallet_entry_side
+                            or entry_side
+                        )
+                        # Generate OCO group ID for linking SL and TP orders
                         import uuid
-                        oco_group_id = f"oco_{parent_order_id}_{int(datetime.utcnow().timestamp())}"
-                        logger.info(f"Found parent order {parent_order_id} for {symbol}, using OCO group: {oco_group_id}")
+                        oco_group_id = (
+                            f"oco_{parent_order_id}_"
+                            f"{int(datetime.utcnow().timestamp())}"
+                        )
+                        logger.info(
+                            f"Found parent order {parent_order_id} for {symbol}, "
+                            f"using OCO group: {oco_group_id}"
+                        )
                     elif wallet_entry_side:
                         entry_side = wallet_entry_side
                 except Exception as e:

@@ -10,6 +10,7 @@ from app.services.sl_tp_checker import (
     _db_protection_covers_wallet,
     _derive_entry_from_abs_prices,
     _entry_symbol_variants,
+    _is_expected_ensure_skip,
     _order_entry_price,
     _parent_lot_qty,
     _protection_create_qty,
@@ -230,6 +231,64 @@ class TestEnsureMissingProtection(unittest.TestCase):
         self.assertEqual(kwargs["source"], "auto_ensure")
         self.assertEqual(len(result["created"]), 1)
         self.assertEqual(result["still_missing"], [])
+        self.assertEqual(result.get("skipped"), [])
+
+    @patch.object(SLTPCheckerService, "_create_protection_order")
+    @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+    def test_wallet_side_mismatch_is_skipped_not_failed(self, mock_check, mock_create):
+        """Hourly Telegram must not page expected wallet_side_mismatch skips."""
+        svc = SLTPCheckerService()
+        mock_check.return_value = {
+            "positions_missing_sl_tp": [
+                {
+                    "symbol": "BTC_USD",
+                    "currency": "BTC",
+                    "balance": 0.05,
+                    "has_sl": False,
+                    "has_tp": False,
+                    "sl_price": None,
+                    "tp_price": None,
+                    "skip_reminder": False,
+                }
+            ],
+            "total_positions": 1,
+            "oco_issues": {},
+            "checked_at": None,
+        }
+        mock_create.return_value = {
+            "success": False,
+            "error": "wallet_side_mismatch: fill=SELL wallet=BUY",
+            "sl_order_id": None,
+            "tp_order_id": None,
+        }
+
+        result = svc.ensure_missing_protection(MagicMock())
+
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("wallet_side_mismatch", result["skipped"][0]["skip_reason"])
+        self.assertEqual(result["created"], [])
+
+
+class TestExpectedEnsureSkip(unittest.TestCase):
+    def test_wallet_side_mismatch_error(self):
+        self.assertTrue(
+            _is_expected_ensure_skip(
+                {"error": "wallet_side_mismatch: fill=SELL wallet=BUY"}
+            )
+        )
+
+    def test_tp_rejected_terminal_skip_reason(self):
+        self.assertTrue(
+            _is_expected_ensure_skip(
+                {"success": True, "skip_reason": "tp_rejected_terminal"}
+            )
+        )
+
+    def test_real_failure_not_skipped(self):
+        self.assertFalse(
+            _is_expected_ensure_skip({"error": "Both SL and TP orders failed"})
+        )
 
 
 class TestCheckPositionsUsesUnifiedOrders(unittest.TestCase):
