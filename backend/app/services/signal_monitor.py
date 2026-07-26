@@ -1951,6 +1951,33 @@ class SignalMonitorService:
             side=side,
         )
 
+    def _should_persist_only_signal_alert(
+        self,
+        db: Session,
+        symbol: str,
+        side: str,
+        watchlist_item: WatchlistItem,
+        *,
+        extra_block_reason: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Suppress live Telegram when a trade-enabled signal cannot place an order.
+
+        Alert-only symbols (trade_enabled=False) still get live Telegram.
+        When trade is on, Control must not show BUY/SELL SIGNAL DETECTED if
+        guardrails / trade criteria would block execution (e.g. MAX_OPEN_ORDERS_TOTAL).
+        Monitoring still persists via emit_alert(persist_only=True).
+        """
+        if extra_block_reason:
+            return True, extra_block_reason
+        if not bool(getattr(watchlist_item, "trade_enabled", False)):
+            return False, None
+        allowed, reason = self._orchestrator_order_guard(
+            db, symbol, side, watchlist_item
+        )
+        if allowed:
+            return False, None
+        return True, reason or "blocked by trade criteria"
+
     def _block_orchestrator_order(
         self,
         db: Session,
@@ -2530,9 +2557,8 @@ class SignalMonitorService:
         # ========================================================================
         # VERIFICACIÓN DE EXPOSICIÓN: Contar exposición abierta (Global y Base)
         # ========================================================================
-        # NOTA: Los límites NO bloquean las alertas, solo la creación de órdenes.
-        # Las alertas siempre se envían para mantener al usuario informado.
-        # La creación de órdenes se bloquea más adelante si se alcanza el límite.
+        # Limits do not skip signal evaluation. When trade_enabled, live Telegram is
+        # suppressed later via persist_only if the order cannot execute.
         try:
             total_open_buy_orders = self._count_total_open_buy_orders(db)
             try:
@@ -2547,14 +2573,14 @@ class SignalMonitorService:
             
             logger.info(
                 f"🔍 EXPOSICIÓN ACTUAL para {symbol}: Global={total_open_buy_orders}, "
-                f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (informativo, no bloquea alertas)"
+                f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
             )
             
-            # Solo registrar si hay límite alcanzado, pero NO bloquear alertas
             if base_open >= MAX_OPEN_ORDERS_PER_SYMBOL:
                 logger.info(
-                    f"ℹ️  {symbol} tiene {base_open} posiciones abiertas (límite: {MAX_OPEN_ORDERS_PER_SYMBOL}). "
-                    f"La alerta se enviará, pero la creación de órdenes se bloqueará si se alcanza el límite."
+                    f"ℹ️  {symbol} tiene {base_open} posiciones abiertas "
+                    f"(límite: {MAX_OPEN_ORDERS_PER_SYMBOL}). "
+                    f"Si trade_enabled, la alerta live se omitirá (Monitoring only)."
                 )
         except Exception as e:
             logger.error(f"Error verificando exposición para {symbol}: {e}", exc_info=True)
@@ -3859,8 +3885,8 @@ class SignalMonitorService:
                     f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
                 )
                 
-                # Verificar límite - solo afecta creación de órdenes, NO alertas
-                # Las alertas SIEMPRE se envían para mantener al usuario informado
+                # Verificar límite - bloquea creación de órdenes; live Telegram se omite
+                # vía persist_only cuando trade_enabled (Monitoring still gets the row).
                 should_block_order_creation = self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=final_total_open_orders)
                 
                 if should_block_order_creation:
@@ -4094,6 +4120,26 @@ class SignalMonitorService:
                                 "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
                             },
                         )
+
+                        extra_block = None
+                        if should_block_order_creation:
+                            extra_block = "OPEN_ORDERS_LIMIT"
+                        elif order_skipped_due_to_limit:
+                            extra_block = "PORTFOLIO_LIMIT"
+                        persist_only_alert, persist_reason = self._should_persist_only_signal_alert(
+                            db,
+                            symbol,
+                            "BUY",
+                            watchlist_item,
+                            extra_block_reason=extra_block,
+                        )
+                        if persist_only_alert:
+                            logger.warning(
+                                "ℹ️  %s BUY signal → Monitoring only (no live Telegram): "
+                                "order cannot execute (%s)",
+                                symbol,
+                                persist_reason,
+                            )
                         
                         # Send Telegram alert (throttling already verified by should_emit_signal)
                         try:
@@ -4131,13 +4177,17 @@ class SignalMonitorService:
                                 strategy_type=strategy_display,
                                 risk_approach=risk_display,
                                 price_variation=price_variation,
-                                throttle_status="SENT",
-                                throttle_reason=throttle_buy_reason or buy_reason,
+                                throttle_status="SENT" if not persist_only_alert else "BLOCKED",
+                                throttle_reason=(
+                                    throttle_buy_reason or buy_reason
+                                    if not persist_only_alert
+                                    else f"persist_only: {persist_reason}"
+                                ),
                                 evaluation_id=evaluation_id,
                                 strategy_key=strategy_key,
                                 thresholds=threshold_context,
-                                # Coin / open-order limit: Monitoring only, no live Telegram.
-                                persist_only=bool(should_block_order_creation),
+                                # Trade criteria / open-order limits: Monitoring only, no live Telegram.
+                                persist_only=bool(persist_only_alert),
                             )
                             # PHASE 0: Structured logging for Telegram send attempt
                             message_id = None
@@ -6306,6 +6356,26 @@ class SignalMonitorService:
                             throttle_status_to_send = "SENT" if sell_allowed else "BLOCKED"
                             # Use throttle_sell_reason if available, otherwise use sell_reason from throttle check
                             throttle_reason_to_send = throttle_sell_reason if throttle_sell_reason else sell_reason
+
+                            extra_block = (
+                                "INSUFFICIENT_BALANCE" if balance_check_warning else None
+                            )
+                            persist_only_alert, persist_reason = self._should_persist_only_signal_alert(
+                                db,
+                                symbol,
+                                "SELL",
+                                watchlist_item,
+                                extra_block_reason=extra_block,
+                            )
+                            if persist_only_alert:
+                                logger.warning(
+                                    "ℹ️  %s SELL signal → Monitoring only (no live Telegram): "
+                                    "order cannot execute (%s)",
+                                    symbol,
+                                    persist_reason,
+                                )
+                                throttle_status_to_send = "BLOCKED"
+                                throttle_reason_to_send = f"persist_only: {persist_reason}"
                             
                             result = emit_alert(
                                 db=db,
@@ -6328,6 +6398,7 @@ class SignalMonitorService:
                                 evaluation_id=evaluation_id,
                                 strategy_key=strategy_key,
                                 thresholds=threshold_context,
+                                persist_only=bool(persist_only_alert),
                             )
                             # PHASE 0: Structured logging for SELL Telegram send attempt
                             message_id_sell = None
