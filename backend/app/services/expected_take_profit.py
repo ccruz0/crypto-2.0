@@ -478,6 +478,11 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     
     if not executed_orders:
         return []
+
+    # Collapse dual-ID TP/SL fills (trigger 73817… + spot remap 57556…) before netting.
+    from app.utils.economic_twin_orders import dedupe_protection_close_twins
+
+    executed_orders = dedupe_protection_close_twins(executed_orders)
     
     # Split into buys and sells
     buys = [

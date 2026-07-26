@@ -743,9 +743,107 @@ export interface PortfolioBalanceHint {
   balance: number;
 }
 
+const ECONOMIC_TWIN_MAX_GAP_MS = 60 * 60 * 1000; // 1h — Crypto.com trigger↔spot remap window
+
+function isProtectionCloseOrder(order: OpenOrder): boolean {
+  const role = (order.order_role || '').toUpperCase();
+  if (PROTECTION_ROLES.has(role)) return true;
+  const orderType = (order.order_type || '').toUpperCase();
+  return (
+    TRIGGER_ORDER_TYPES.has(orderType) ||
+    orderType.includes('TAKE_PROFIT') ||
+    orderType.includes('STOP')
+  );
+}
+
+function protectionCloseFingerprint(order: OpenOrder): string | null {
+  const parent = (order.parent_order_id || '').trim();
+  if (!parent || !isProtectionCloseOrder(order)) return null;
+  const role = (order.order_role || '').toUpperCase() ||
+    ((order.order_type || '').toUpperCase().includes('TAKE_PROFIT') ? 'TAKE_PROFIT' : 'STOP_LOSS');
+  const side = (order.side || '').toUpperCase();
+  const qty = Math.round(getOrderQuantity(order) * 1e8) / 1e8;
+  const price = Math.round(getOrderPrice(order) * 100) / 100;
+  if (!(qty > 0) || !(price > 0)) return null;
+  return [
+    (order.instrument_name || '').toUpperCase(),
+    parent,
+    side,
+    role,
+    String(qty),
+    String(price),
+  ].join('|');
+}
+
+function protectionCloseKeepScore(order: OpenOrder): number {
+  let score = 0;
+  if ((order.oco_group_id || '').trim()) score += 100;
+  const cumValue = parseFloat(order.cumulative_value || '0');
+  if (cumValue > 0) score += 10;
+  // Prefer older create (original trigger): subtract normalized create time.
+  const created = order.create_time || 0;
+  score += 1 / (1 + created);
+  return score;
+}
+
+function timesWithinEconomicTwinGap(a: OpenOrder, b: OpenOrder): boolean {
+  const ta = getOrderExecutionTime(a);
+  const tb = getOrderExecutionTime(b);
+  const ca = a.create_time || ta;
+  const cb = b.create_time || tb;
+  const gaps = [Math.abs(ta - tb), Math.abs(ta - cb), Math.abs(tb - ca)];
+  return Math.min(...gaps) <= ECONOMIC_TWIN_MAX_GAP_MS;
+}
+
+/**
+ * Drop Crypto.com spot-remapped TP/SL shadow rows when the OCO/trigger twin
+ * is present (same parent/qty/price, fill within 1h).
+ */
+export function dedupeProtectionCloseTwins(orders: OpenOrder[]): OpenOrder[] {
+  if (orders.length < 2) return orders;
+
+  const groups = new Map<string, OpenOrder[]>();
+  const passthrough: OpenOrder[] = [];
+  for (const order of orders) {
+    const fp = protectionCloseFingerprint(order);
+    if (!fp) {
+      passthrough.push(order);
+      continue;
+    }
+    const list = groups.get(fp) ?? [];
+    list.push(order);
+    groups.set(fp, list);
+  }
+
+  const dropIds = new Set<string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    let remaining = [...group];
+    while (remaining.length > 0) {
+      const canonical = remaining.reduce((best, cur) =>
+        protectionCloseKeepScore(cur) > protectionCloseKeepScore(best) ? cur : best
+      );
+      remaining = remaining.filter((o) => o.order_id !== canonical.order_id);
+      const next: OpenOrder[] = [];
+      for (const shadow of remaining) {
+        if (timesWithinEconomicTwinGap(canonical, shadow)) {
+          dropIds.add(shadow.order_id);
+        } else {
+          next.push(shadow);
+        }
+      }
+      remaining = next;
+    }
+  }
+
+  if (dropIds.size === 0) return orders;
+  return orders.filter((o) => !dropIds.has(o.order_id));
+}
+
 function groupFilledPositionOrdersBySymbol(orders: OpenOrder[]): Map<string, OpenOrder[]> {
   const bySymbol = new Map<string, OpenOrder[]>();
-  for (const order of orders) {
+  const deduped = dedupeProtectionCloseTwins(orders);
+  for (const order of deduped) {
     // Ops stubs (STUB-CLOSED-*) are not real fills — exclude from lot/P&L pairing.
     const oid = (order.order_id || '').toUpperCase();
     if (oid.startsWith('STUB-CLOSED-')) continue;

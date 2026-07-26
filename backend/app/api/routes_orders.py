@@ -1855,6 +1855,45 @@ def get_order_history(
                 total_count = len(all_orders) + (limit if len(all_orders) == limit else 0)
             else:
                 total_count = offset + len(all_orders) + (limit if len(all_orders) == limit else 0)
+
+        # Collapse Crypto.com trigger+spot remapped TP/SL twins so dashboard
+        # does not show two rows / double-count one economic fill.
+        from app.utils.economic_twin_orders import (
+            PROTECTION_CLOSE_ROLES,
+            dedupe_protection_close_twins,
+            is_protection_close_order,
+            shadow_protection_close_ids_against_canonicals,
+        )
+
+        all_orders = dedupe_protection_close_twins(all_orders)
+        page_protection = [
+            o for o in all_orders
+            if is_protection_close_order(o) and (o.parent_order_id or "").strip()
+        ]
+        if page_protection:
+            parent_ids = {
+                (o.parent_order_id or "").strip()
+                for o in page_protection
+                if (o.parent_order_id or "").strip()
+            }
+            siblings = (
+                db.query(ExchangeOrder)
+                .filter(
+                    ExchangeOrder.parent_order_id.in_(list(parent_ids)),
+                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                    ExchangeOrder.order_role.in_(list(PROTECTION_CLOSE_ROLES)),
+                )
+                .all()
+            )
+            drop_shadows = shadow_protection_close_ids_against_canonicals(
+                all_orders, list(siblings) + list(all_orders)
+            )
+            if drop_shadows:
+                all_orders = [
+                    o
+                    for o in all_orders
+                    if str(o.exchange_order_id or "") not in drop_shadows
+                ]
         
         # Convert to API format
         orders = []
@@ -1970,6 +2009,7 @@ def get_order_history(
                 "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
                 "order_role": order.order_role,  # Include order_role for SL/TP identification
                 "parent_order_id": order.parent_order_id,
+                "oco_group_id": order.oco_group_id,
                 "has_linked_tp": has_linked_tp,
                 "has_linked_sl": has_linked_sl,
                 "is_orphan": is_orphan,
