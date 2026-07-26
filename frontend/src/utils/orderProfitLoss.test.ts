@@ -1198,4 +1198,55 @@ describe('getExecutedOrderDisplayPnl / Executed Orders tab', () => {
     const openLots = buildOpenLotsByOrderId(all);
     expect(openLots.has('5755600492155811564')).toBe(true);
   });
+
+  it('dedupes AAVE trigger+spot remapped TP twins to one close', () => {
+    const parentBuy = makeOrder({
+      order_id: '5755600492185071232',
+      side: 'BUY',
+      quantity: '0.108',
+      price: '92.224',
+      instrument_name: 'AAVE_USD',
+      order_type: 'MARKET',
+      execution_origin: 'ALERT',
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const triggerTp = makeOrder({
+      order_id: '73817490102030139',
+      side: 'SELL',
+      quantity: '0.108',
+      price: '93.15',
+      avg_price: '93.163',
+      cumulative_value: '10.061604',
+      instrument_name: 'AAVE_USD',
+      order_type: 'TAKE_PROFIT_LIMIT',
+      order_role: 'TAKE_PROFIT',
+      execution_origin: 'TAKE_PROFIT',
+      parent_order_id: '5755600492185071232',
+      oco_group_id: 'oco_5755600492185071232_1784938239',
+      create_time: 2_000,
+      update_time: 3_000,
+    });
+    const shadowTp = makeOrder({
+      order_id: '5755600492222958387',
+      side: 'SELL',
+      quantity: '0.108',
+      price: '93.163',
+      avg_price: '93.163',
+      cumulative_value: '0',
+      instrument_name: 'AAVE_USD',
+      order_type: 'TAKE_PROFIT_LIMIT',
+      order_role: 'TAKE_PROFIT',
+      execution_origin: 'TAKE_PROFIT',
+      parent_order_id: '5755600492185071232',
+      create_time: 2_000,
+      update_time: 3_002,
+    });
+    const all = [parentBuy, shadowTp, triggerTp];
+    const realized = buildRealizedPnlByOrderId(all);
+    expect(realized.has('73817490102030139')).toBe(true);
+    expect(realized.has('5755600492222958387')).toBe(false);
+    // Parent fully closed once (not double-sold).
+    expect(buildOpenLotsByOrderId(all).has('5755600492185071232')).toBe(false);
+  });
 });

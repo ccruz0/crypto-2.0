@@ -11,6 +11,7 @@ import { useOrders } from '@/hooks/useOrders';
 import {
   buildOpenLotsByOrderId,
   buildRealizedPnlByOrderId,
+  dedupeProtectionCloseTwins,
   getExecutedOrderDisplayPnl,
   getPnlUnavailableTooltip,
   isClosedExecutedEntryOrder,
@@ -100,12 +101,12 @@ export default function ExecutedOrdersTab({
 
   // FIFO open lots only — do not trim by portfolio balance (Portfolio tab owns that).
   const openLotsByOrderId = useMemo(
-    () => buildOpenLotsByOrderId(executedOrders),
+    () => buildOpenLotsByOrderId(dedupeProtectionCloseTwins(executedOrders)),
     [executedOrders]
   );
 
   const realizedByOrderId = useMemo(
-    () => buildRealizedPnlByOrderId(executedOrders),
+    () => buildRealizedPnlByOrderId(dedupeProtectionCloseTwins(executedOrders)),
     [executedOrders]
   );
 
@@ -141,8 +142,8 @@ export default function ExecutedOrdersTab({
   // Filter orders
   const filteredOrders = useMemo(() => {
     if (!Array.isArray(executedOrders)) return [];
-    
-    const filtered = executedOrders.filter(order => {
+
+    const filtered = dedupeProtectionCloseTwins(executedOrders).filter(order => {
       // Ops bandaids — never show in Executed Orders (also filtered server-side).
       if ((order.order_id || '').toUpperCase().startsWith('STUB-CLOSED-')) {
         return false;
