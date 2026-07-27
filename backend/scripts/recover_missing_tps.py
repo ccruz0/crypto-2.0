@@ -551,9 +551,31 @@ def place_protection(
     )
     want_sl = (not tp_only) and plan.action in ("create_sl", "create_sl_tp")
 
+    # Entry side: BUY long / SELL short. Infer from parent or live protection closing side.
+    entry_side = "BUY"
+    if parent_id:
+        parent_row = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == str(parent_id))
+            .first()
+        )
+        if parent_row is not None:
+            side_raw = getattr(parent_row, "side", None)
+            side_val = side_raw.value if hasattr(side_raw, "value") else side_raw
+            if str(side_val or "").upper() in ("BUY", "SELL"):
+                entry_side = str(side_val).upper()
+    if entry_side == "BUY" and plan.protection.active_sl:
+        closing = getattr(plan.protection.active_sl[0], "side", None)
+        closing_val = closing.value if hasattr(closing, "value") else closing
+        closing_u = str(closing_val or "").upper()
+        if closing_u == "BUY":
+            entry_side = "SELL"  # short close
+        elif closing_u == "SELL":
+            entry_side = "BUY"
+
     if want_tp:
         logger.info(
-            "%s TP %s qty=%s entry=%s tp=%s margin=%s parent=%s",
+            "%s TP %s qty=%s entry=%s tp=%s margin=%s parent=%s entry_side=%s",
             "[DRY-RUN]" if dry_run else "[LIVE]",
             place_symbol,
             qty,
@@ -561,11 +583,12 @@ def place_protection(
             plan.tp_price,
             is_margin,
             parent_id,
+            entry_side,
         )
         tp_res = create_take_profit_order(
             db=db,
             symbol=place_symbol,
-            side="BUY",
+            side=entry_side,
             tp_price=float(plan.tp_price),
             quantity=float(qty),
             entry_price=float(entry.price),
@@ -584,7 +607,7 @@ def place_protection(
 
     if want_sl and plan.sl_price:
         logger.info(
-            "%s SL %s qty=%s entry=%s sl=%s margin=%s parent=%s",
+            "%s SL %s qty=%s entry=%s sl=%s margin=%s parent=%s entry_side=%s",
             "[DRY-RUN]" if dry_run else "[LIVE]",
             place_symbol,
             qty,
@@ -592,11 +615,12 @@ def place_protection(
             plan.sl_price,
             is_margin,
             parent_id,
+            entry_side,
         )
         sl_res = create_stop_loss_order(
             db=db,
             symbol=place_symbol,
-            side="BUY",
+            side=entry_side,
             sl_price=float(plan.sl_price),
             quantity=float(qty),
             entry_price=float(entry.price),

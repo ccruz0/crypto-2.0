@@ -3535,6 +3535,7 @@ class ExchangeSyncService:
             create_stop_loss_order,
             create_take_profit_order,
             create_oco_protection_orders,
+            is_insufficient_acc_balance_error,
             is_native_oco_enabled,
             resolve_sltp_margin_context,
         )
@@ -3655,63 +3656,27 @@ class ExchangeSyncService:
         tp_newly_created = False
         skip_tp_creation = False
         skip_tp_reason = None
-        if existing_sl:
-            sl_result = {"order_id": existing_sl.exchange_order_id, "error": None}
-            logger.info(
-                "[SLTP_IDEMPOTENCY] Reusing existing SL %s for parent %s oco=%s",
-                existing_sl.exchange_order_id,
-                order_id,
-                oco_group_id,
-            )
-            if existing_sl.oco_group_id != oco_group_id:
-                existing_sl.oco_group_id = oco_group_id
-                db.add(existing_sl)
-                try:
-                    db.commit()
-                except Exception as heal_err:
-                    logger.warning(
-                        "[SLTP_IDEMPOTENCY] Failed to heal SL oco_group_id for parent %s: %s",
-                        order_id,
-                        heal_err,
-                    )
-                    db.rollback()
-        else:
-            sl_result = create_stop_loss_order(
-                db=db,
-                symbol=symbol,
-                side=side_upper,
-                sl_price=sl_price,
-                quantity=filled_qty,
-                entry_price=filled_price_f,
-                parent_order_id=order_id,
-                oco_group_id=oco_group_id,
-                dry_run=False,
-                source=source,
-            )
-            sl_newly_created = bool(sl_result.get("order_id")) and not sl_result.get("error")
-        if existing_tp:
-            tp_result = {"order_id": existing_tp.exchange_order_id, "error": None}
-            logger.info(
-                "[SLTP_IDEMPOTENCY] Reusing existing TP %s for parent %s oco=%s",
-                existing_tp.exchange_order_id,
-                order_id,
-                oco_group_id,
-            )
-            if existing_tp.oco_group_id != oco_group_id:
-                existing_tp.oco_group_id = oco_group_id
-                db.add(existing_tp)
-                try:
-                    db.commit()
-                except Exception as heal_err:
-                    logger.warning(
-                        "[SLTP_IDEMPOTENCY] Failed to heal TP oco_group_id for parent %s: %s",
-                        order_id,
-                        heal_err,
-                    )
-                    db.rollback()
-        else:
-            # Always place TP at the agreed calculated/watchlist price (no market widen/skip).
-            tp_result = create_take_profit_order(
+        active_sl = existing_sl
+        sl_result: Dict[str, Any] = {"order_id": None, "error": None}
+        tp_result: Dict[str, Any] = {"order_id": None, "error": None}
+
+        def _heal_oco_group(leg) -> None:
+            if not leg or leg.oco_group_id == oco_group_id:
+                return
+            leg.oco_group_id = oco_group_id
+            db.add(leg)
+            try:
+                db.commit()
+            except Exception as heal_err:
+                logger.warning(
+                    "[SLTP_IDEMPOTENCY] Failed to heal oco_group_id for parent %s: %s",
+                    order_id,
+                    heal_err,
+                )
+                db.rollback()
+
+        def _place_tp() -> Dict[str, Any]:
+            return create_take_profit_order(
                 db=db,
                 symbol=symbol,
                 side=side_upper,
@@ -3723,7 +3688,128 @@ class ExchangeSyncService:
                 dry_run=False,
                 source=source,
             )
-            tp_newly_created = bool(tp_result.get("order_id")) and not tp_result.get("error")
+
+        def _place_sl() -> Dict[str, Any]:
+            return create_stop_loss_order(
+                db=db,
+                symbol=symbol,
+                side=side_upper,
+                sl_price=sl_price,
+                quantity=filled_qty,
+                entry_price=filled_price_f,
+                parent_order_id=order_id,
+                oco_group_id=oco_group_id,
+                dry_run=False,
+                source=source,
+            )
+
+        def _cancel_sl_for_balance_recovery(leg) -> bool:
+            """Cancel live SL so TP can reserve qty (ops cancel-SL-first pattern)."""
+            if not leg or not leg.exchange_order_id:
+                return False
+            cancel_type = (
+                str(leg.order_type)
+                if leg.order_type
+                else "STOP_LIMIT"
+            )
+            try:
+                cancel_res = trade_client.cancel_order(
+                    str(leg.exchange_order_id),
+                    order_type=cancel_type,
+                )
+            except Exception as cancel_err:
+                logger.warning(
+                    "[SLTP_BALANCE_RECOVERY] cancel SL %s failed: %s",
+                    leg.exchange_order_id,
+                    cancel_err,
+                )
+                return False
+            if isinstance(cancel_res, dict) and cancel_res.get("error") and not cancel_res.get(
+                "skipped"
+            ):
+                # Already gone on exchange is fine; otherwise abort recovery.
+                err_u = str(cancel_res.get("error") or "").upper()
+                if "NOT_FOUND" not in err_u and "CANCELLED" not in err_u and "CANCELED" not in err_u:
+                    logger.warning(
+                        "[SLTP_BALANCE_RECOVERY] cancel SL %s rejected: %s",
+                        leg.exchange_order_id,
+                        cancel_res.get("error"),
+                    )
+                    return False
+            try:
+                leg.status = OrderStatusEnum.CANCELLED
+                leg.updated_at = datetime.now(timezone.utc)
+                db.add(leg)
+                db.commit()
+            except Exception as db_err:
+                logger.warning(
+                    "[SLTP_BALANCE_RECOVERY] DB mark cancel failed for %s: %s",
+                    leg.exchange_order_id,
+                    db_err,
+                )
+                db.rollback()
+            logger.info(
+                "[SLTP_BALANCE_RECOVERY] cancelled SL %s for parent %s (margin=%s) before TP retry",
+                leg.exchange_order_id,
+                order_id,
+                is_margin,
+            )
+            return True
+
+        if existing_tp:
+            tp_result = {"order_id": existing_tp.exchange_order_id, "error": None}
+            logger.info(
+                "[SLTP_IDEMPOTENCY] Reusing existing TP %s for parent %s oco=%s",
+                existing_tp.exchange_order_id,
+                order_id,
+                oco_group_id,
+            )
+            _heal_oco_group(existing_tp)
+        else:
+            # Dual full-qty triggers: place TP before SL (recover_missing_tps pattern).
+            # SL-first reserves closing qty and TP then fails with INSUFFICIENT_ACC_BALANCE
+            # on margin shorts (and spot when native OCO is unavailable).
+            if not active_sl:
+                logger.info(
+                    "[SLTP_DUAL_ORDER] parent=%s symbol=%s placing TP before SL (avoid balance lock)",
+                    order_id,
+                    symbol,
+                )
+            tp_result = _place_tp()
+            tp_ok = bool(tp_result.get("order_id")) and not tp_result.get("error")
+            tp_newly_created = tp_ok
+            if (
+                not tp_ok
+                and active_sl
+                and is_insufficient_acc_balance_error(tp_result.get("error"))
+            ):
+                logger.warning(
+                    "[SLTP_BALANCE_RECOVERY] TP failed with balance lock after SL %s "
+                    "parent=%s symbol=%s — cancel-SL-first then TP then SL",
+                    active_sl.exchange_order_id,
+                    order_id,
+                    symbol,
+                )
+                if _cancel_sl_for_balance_recovery(active_sl):
+                    active_sl = None
+                    existing_sl = None
+                    tp_result = _place_tp()
+                    tp_ok = bool(tp_result.get("order_id")) and not tp_result.get("error")
+                    tp_newly_created = tp_ok
+
+        if active_sl:
+            sl_result = {"order_id": active_sl.exchange_order_id, "error": None}
+            logger.info(
+                "[SLTP_IDEMPOTENCY] Reusing existing SL %s for parent %s oco=%s",
+                active_sl.exchange_order_id,
+                order_id,
+                oco_group_id,
+            )
+            _heal_oco_group(active_sl)
+        else:
+            sl_result = _place_sl()
+            sl_newly_created = bool(sl_result.get("order_id")) and not sl_result.get("error")
+
         # When SL already exists and nothing new was created, treat as idempotent
         # so callers do not re-send "SL/TP ORDERS CREATED".
         status = None
