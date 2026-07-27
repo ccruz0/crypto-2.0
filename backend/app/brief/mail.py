@@ -253,7 +253,7 @@ def _fetch_one_account(
     try:
         client.login(cfg.user, cfg.password)
         # Read-only: EXAMINE (do not SELECT — never mark messages read)
-        typ, _ = client.examine(cfg.folder)
+        typ, _ = client.select(cfg.folder, readonly=True)
         if typ != "OK":
             raise imaplib.IMAP4.error(f"examine_failed:{cfg.folder}")
 
