@@ -7,7 +7,9 @@ This document explains how Take Profit (TP) and Stop Loss (SL) orders are create
 - **TAKE_PROFIT_LIMIT**: Used for take-profit on the **legacy dual-order** path. Trigger and execution price are the same (TP price). Trigger condition: market price >= TP price (for SELL to close long).
 - **STOP_LIMIT**: Used for stop-loss. Trigger and execution price are the same (SL price). Trigger condition: market price <= SL price (for SELL to close long).
 
-**Post-fill spot (preferred):** when both SL and TP are missing and the symbol is **spot** (not margin), `_create_sl_tp_impl` places a native Crypto.com OCO via `private/advanced/create-oco`: one **LIMIT** leg at TP and one **STOP_LIMIT** (fallback **STOP_LOSS**) leg at SL, same closing side/qty. The exchange returns a `list_id` stored as `oco_group_id`. This avoids `INSUFFICIENT_ACC_BALANCE` from two independent full-qty triggers. Disable with env `SLTP_NATIVE_OCO=false`. Margin and one-leg backfill still use the dual `private/advanced/create-order` path.
+**Post-fill spot (preferred):** when both SL and TP are missing and the symbol is **spot** (not margin), `_create_sl_tp_impl` places a native Crypto.com OCO via `private/advanced/create-oco`: one **LIMIT** leg at TP and one **STOP_LIMIT** (fallback **STOP_LOSS**) leg at SL, same closing side/qty. The exchange returns a `list_id` stored as `oco_group_id`. This avoids `INSUFFICIENT_ACC_BALANCE` from two independent full-qty triggers. Disable with env `SLTP_NATIVE_OCO=false`.
+
+**Margin / dual create-order (shorts):** when native OCO is skipped (margin) or fails, dual create places **TP before SL**. If an existing SL already locked qty and TP returns `INSUFFICIENT_ACC_BALANCE`, the path cancels that SL once, then places TP then SL (same as ops `--cancel-sl-first`).
 
 **Endpoint (updated 2026-07-03):** conditional/trigger orders are created via the **Advanced Order
 Management API** — `private/advanced/create-order` — **not** `private/create-order`. As of

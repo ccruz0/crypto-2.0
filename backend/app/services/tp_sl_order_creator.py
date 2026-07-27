@@ -61,6 +61,22 @@ def is_native_oco_enabled() -> bool:
     return os.getenv("SLTP_NATIVE_OCO", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
+def is_insufficient_acc_balance_error(error: Optional[object]) -> bool:
+    """True when exchange rejected a leg because qty/balance is already reserved.
+
+    Common after placing a full-qty SL first: the sibling TP then fails with
+    INSUFFICIENT_ACC_BALANCE (ETH short / dual-trigger pattern).
+    """
+    if error is None:
+        return False
+    text = str(error).upper()
+    return (
+        "INSUFFICIENT_ACC_BALANCE" in text
+        or "INSUFFICIENT_AVAILABLE_BALANCE" in text
+        or "INSUFFICIENT_BALANCE" in text
+    )
+
+
 def create_oco_protection_orders(
     db: Session,
     symbol: str,
