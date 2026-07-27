@@ -67,28 +67,79 @@ def sqlite_engine(monkeypatch):
 def test_deduplication(sqlite_engine):
     fid1 = upsert_followup(
         source_type="initiative",
-        source_id="init-1",
-        title="Portfolio reconciliation is overdue by 11 days.",
+        source_id="init-1:overdue",
+        title="Portfolio reconciliation is overdue.",
+        description="Initiative target date has passed (11 day(s) overdue).",
         severity="high",
     )
+    # Day count advanced — title would have changed under the old key; must reuse row.
     fid2 = upsert_followup(
         source_type="initiative",
-        source_id="init-1",
-        title="Portfolio reconciliation is overdue by 11 days.",
+        source_id="init-1:overdue",
+        title="Portfolio reconciliation is overdue.",
+        description="Initiative target date has passed (12 day(s) overdue).",
         severity="high",
     )
     assert fid1 == fid2
 
     row = find_open_followup(
         source_type="initiative",
-        source_id="init-1",
-        title="Portfolio reconciliation is overdue by 11 days.",
+        source_id="init-1:overdue",
     )
     assert row is not None
     assert row["reminder_count"] == 2
+    assert "12 day(s)" in (row.get("description") or "")
 
     open_items = list_followups(status="open")
     assert len(open_items) == 1
+
+
+def test_dedupe_ignores_day_count_title_churn(sqlite_engine):
+    """Historical bug: title embedded N days → new open row every day → High:66 spam."""
+    fid1 = upsert_followup(
+        source_type="aws_audit",
+        source_id="aws_audit",
+        title="AWS audit has not been rerun recently.",
+        description="last run 41 days ago",
+        severity="high",
+    )
+    fid2 = upsert_followup(
+        source_type="aws_audit",
+        source_id="aws_audit",
+        title="AWS audit has not been rerun recently.",
+        description="last run 42 days ago",
+        severity="high",
+    )
+    assert fid1 == fid2
+    assert len(list_followups(status="open")) == 1
+
+    # Simulate legacy orphans with day-count titles / old source_ids, then cleanup.
+    from app.jarvis.mvp.followup_persistence import dismiss_legacy_day_count_followup_churn
+    from sqlalchemy import text
+    from app.database import engine
+
+    assert engine is not None
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO jarvis_followups (
+                    followup_id, source_type, source_id, title, description,
+                    severity, status, reminder_count
+                ) VALUES
+                ('legacy-1', 'aws_audit', 'old-audit-uuid',
+                 'AWS audit has not been rerun in 41 days.', '', 'high', 'open', 1),
+                ('legacy-2', 'aws_audit', 'old-audit-uuid-2',
+                 'AWS audit has not been rerun in 42 days.', '', 'high', 'open', 1)
+                """
+            )
+        )
+    assert len(list_followups(status="open")) == 3
+    dismissed = dismiss_legacy_day_count_followup_churn()
+    assert dismissed == 2
+    remaining = list_followups(status="open")
+    assert len(remaining) == 1
+    assert remaining[0]["source_id"] == "aws_audit"
 
 
 def test_followup_rules_with_sample_data(sqlite_engine):
@@ -169,9 +220,30 @@ def test_telegram_alert_format(sqlite_engine):
         "overdue_followups": 1,
     }
     followups = [
-        {"severity": "critical", "title": "Portfolio reconciliation is overdue by 11 days.", "reminder_count": 2},
-        {"severity": "high", "title": "Security group remediation is blocked.", "reminder_count": 1},
-        {"severity": "high", "title": "Action plan 42f2d87b is still awaiting review.", "reminder_count": 1},
+        {
+            "severity": "critical",
+            "title": "Portfolio reconciliation is overdue.",
+            "reminder_count": 2,
+            "source_type": "initiative",
+            "source_id": "init-1:overdue",
+            "status": "open",
+        },
+        {
+            "severity": "high",
+            "title": "Security group remediation is blocked.",
+            "reminder_count": 1,
+            "source_type": "initiative",
+            "source_id": "init-2:blocked",
+            "status": "open",
+        },
+        {
+            "severity": "high",
+            "title": "Action plan 42f2d87b is still awaiting review.",
+            "reminder_count": 1,
+            "source_type": "action_plan",
+            "source_id": "plan-1",
+            "status": "open",
+        },
     ]
     message = format_followup_daily_alert(summary=summary, followups=followups)
 
@@ -182,6 +254,40 @@ def test_telegram_alert_format(sqlite_engine):
     assert "Top follow-ups:" in message
     assert "No actions executed." in message
     assert "Portfolio reconciliation" in message
+
+
+def test_followup_telegram_quiet_when_no_actionable(sqlite_engine):
+    from app.jarvis.mvp.telegram_followup_alerts import should_send_followup_daily_alert
+
+    summary = {
+        "critical_followups": 0,
+        "high_followups": 0,
+        "overdue_followups": 0,
+    }
+    assert should_send_followup_daily_alert(summary=summary, followups=[]) is False
+
+    summary_high = {
+        "critical_followups": 0,
+        "high_followups": 1,
+        "overdue_followups": 0,
+    }
+    followups = [
+        {
+            "severity": "high",
+            "title": "AWS audit has not been rerun recently.",
+            "source_type": "aws_audit",
+            "source_id": "aws_audit",
+            "status": "open",
+        }
+    ]
+    assert should_send_followup_daily_alert(summary=summary_high, followups=followups) is True
+
+    summary_overdue = {
+        "critical_followups": 0,
+        "high_followups": 0,
+        "overdue_followups": 1,
+    }
+    assert should_send_followup_daily_alert(summary=summary_overdue, followups=[]) is True
 
 
 def test_generate_followups_telegram_mock(sqlite_engine):

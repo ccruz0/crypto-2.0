@@ -30,6 +30,7 @@ from app.jarvis.investigations.alerting.severity import classify_investigation_r
 from app.jarvis.investigations.alerting.telegram import (
     format_daily_health_report_message,
     format_investigation_alert_message,
+    should_send_daily_health_report,
     should_send_telegram,
 )
 from app.jarvis.investigations.alerting.types import AlertInput, AlertRecord, AlertSeverity, AlertStatus
@@ -313,6 +314,59 @@ def test_daily_report_telegram_format():
     assert "JARVIS DAILY HEALTH SUMMARY" in msg
     assert "90.0%" in msg
     assert "API degradation" in msg
+
+
+def test_daily_health_telegram_quiet_when_healthy():
+    healthy = {
+        "report_date": "2026-07-27",
+        "failures": 0,
+        "critical_alerts": 0,
+        "warnings": 4,
+    }
+    assert should_send_daily_health_report(healthy) is False
+
+    with_failures = {**healthy, "failures": 1}
+    assert should_send_daily_health_report(with_failures) is True
+
+    with_critical = {**healthy, "critical_alerts": 2}
+    assert should_send_daily_health_report(with_critical) is True
+
+
+def test_top_recurring_issues_excludes_success_titles(alert_db):
+    from app.jarvis.investigations.alerting.persistence import top_recurring_issues
+
+    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    upsert_alert(
+        AlertInput(
+            alert_type="investigation_completed",
+            source="database_health",
+            title="Investigation completed successfully",
+            summary="All checks passed",
+            severity=AlertSeverity.INFO,
+            investigation_id=None,
+            evidence=[],
+        ),
+        fingerprint="fp-success",
+        suppression_window_hours=24,
+    )
+    upsert_alert(
+        AlertInput(
+            alert_type="api_degradation",
+            source="api_health",
+            title="API degradation",
+            summary="Latency high",
+            severity=AlertSeverity.WARNING,
+            investigation_id=None,
+            evidence=[],
+        ),
+        fingerprint="fp-warn",
+        suppression_window_hours=24,
+    )
+
+    recurring = top_recurring_issues(since=since, limit=5)
+    titles = [r["title"] for r in recurring]
+    assert "Investigation completed successfully" not in titles
+    assert "API degradation" in titles
 
 
 # --- Alert engine ---

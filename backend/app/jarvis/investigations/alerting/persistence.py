@@ -341,6 +341,7 @@ def count_alerts_since(*, since: datetime, severity: str | None = None) -> int:
 
 
 def top_recurring_issues(*, since: datetime, limit: int = 5) -> list[dict[str, Any]]:
+    """Rank recurring *problems* — exclude healthy/success INFO noise."""
     if not ensure_tables():
         return []
     with engine.connect() as conn:
@@ -351,6 +352,8 @@ def top_recurring_issues(*, since: datetime, limit: int = 5) -> list[dict[str, A
                        MAX(severity) AS max_severity
                 FROM jarvis_alerts
                 WHERE created_at >= :since
+                  AND severity != 'INFO'
+                  AND title != 'Investigation completed successfully'
                 GROUP BY fingerprint, title
                 ORDER BY total_occurrences DESC
                 LIMIT :limit

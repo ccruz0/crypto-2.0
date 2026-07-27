@@ -88,9 +88,15 @@ def find_open_followup(
     *,
     source_type: str,
     source_id: str | None,
-    title: str,
+    title: str | None = None,
 ) -> dict[str, Any] | None:
-    """Find an existing open follow-up for deduplication."""
+    """Find an existing open follow-up for deduplication.
+
+    Deduplication key is source_type + source_id only. ``title`` is accepted for
+    backward-compatible callers but is ignored so day-count title churn cannot
+    create a new open row every day.
+    """
+    del title  # unused — kept for call-site compatibility
     if engine is None or not ensure_jarvis_followups_table(engine):
         return None
 
@@ -101,20 +107,113 @@ def find_open_followup(
                 SELECT * FROM jarvis_followups
                 WHERE status = 'open'
                   AND source_type = :source_type
-                  AND title = :title
                   AND COALESCE(source_id, '') = COALESCE(:source_id, '')
+                ORDER BY updated_at DESC
                 LIMIT 1
                 """
             ),
             {
                 "source_type": source_type,
                 "source_id": source_id,
-                "title": title,
             },
         ).fetchone()
     if row is None:
         return None
     return _row_to_detail(row)
+
+
+def dismiss_duplicate_open_followups(
+    *,
+    source_type: str,
+    source_id: str | None,
+    keep_followup_id: str,
+) -> int:
+    """Dismiss older open duplicates for the same source_type+source_id."""
+    if engine is None or not ensure_jarvis_followups_table(engine):
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                UPDATE jarvis_followups
+                SET status = 'dismissed',
+                    updated_at = :updated_at
+                WHERE status = 'open'
+                  AND source_type = :source_type
+                  AND COALESCE(source_id, '') = COALESCE(:source_id, '')
+                  AND followup_id != :keep_followup_id
+                """
+            ),
+            {
+                "updated_at": now,
+                "source_type": source_type,
+                "source_id": source_id,
+                "keep_followup_id": keep_followup_id,
+            },
+        )
+    return int(result.rowcount or 0)  # type: ignore[union-attr]
+
+
+def dismiss_legacy_day_count_followup_churn() -> int:
+    """
+    Dismiss historical open rows created by day-count title churn.
+
+    Before dedupe used source_type+source_id only, audit/initiative titles that
+    embedded ``N days`` opened a new row daily. Keep stable-keyed rows
+    (``aws_audit`` / ``crypto_audit`` / ``*:overdue|blocked|stale``) and dismiss
+    the legacy open orphans.
+    """
+    if engine is None or not ensure_jarvis_followups_table(engine):
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    dismissed = 0
+    with engine.begin() as conn:
+        # Old audit rows used source_id=system or a changing audit UUID + day-count titles.
+        result = conn.execute(
+            text(
+                """
+                UPDATE jarvis_followups
+                SET status = 'dismissed',
+                    updated_at = :updated_at
+                WHERE status = 'open'
+                  AND source_type IN ('aws_audit', 'crypto_audit')
+                  AND COALESCE(source_id, '') NOT IN ('aws_audit', 'crypto_audit')
+                """
+            ),
+            {"updated_at": now},
+        )
+        dismissed += int(result.rowcount or 0)  # type: ignore[union-attr]
+
+        # Legacy initiative rows used bare initiative_id (no :blocked/:overdue/:stale).
+        result = conn.execute(
+            text(
+                """
+                UPDATE jarvis_followups
+                SET status = 'dismissed',
+                    updated_at = :updated_at
+                WHERE status = 'open'
+                  AND source_type = 'initiative'
+                  AND source_id IS NOT NULL
+                  AND source_id NOT LIKE :blocked_suffix
+                  AND source_id NOT LIKE :overdue_suffix
+                  AND source_id NOT LIKE :stale_suffix
+                """
+            ),
+            {
+                "updated_at": now,
+                "blocked_suffix": "%:blocked",
+                "overdue_suffix": "%:overdue",
+                "stale_suffix": "%:stale",
+            },
+        )
+        dismissed += int(result.rowcount or 0)  # type: ignore[union-attr]
+
+    if dismissed:
+        logger.info("dismissed %s legacy day-count follow-up duplicates", dismissed)
+    return dismissed
 
 
 def upsert_followup(
@@ -131,12 +230,13 @@ def upsert_followup(
     """
     Insert a new follow-up or bump reminder_count on an existing open match.
 
-    Deduplication key: source_type + source_id + title (open status only).
+    Deduplication key: source_type + source_id (open status only).
+    Title may change (e.g. refreshed copy); age belongs in description.
     """
     if engine is None or not ensure_jarvis_followups_table(engine):
         raise RuntimeError("Database unavailable for Jarvis follow-up persistence")
 
-    existing = find_open_followup(source_type=source_type, source_id=source_id, title=title)
+    existing = find_open_followup(source_type=source_type, source_id=source_id)
     now = datetime.now(timezone.utc).isoformat()
     safe_severity = severity if severity in VALID_SEVERITIES else "medium"
 
@@ -152,6 +252,7 @@ def upsert_followup(
                         reminder_count = :reminder_count,
                         last_reminded_at = :last_reminded_at,
                         severity = :severity,
+                        title = :title,
                         description = :description,
                         due_date = COALESCE(:due_date, due_date),
                         assigned_to = COALESCE(:assigned_to, assigned_to)
@@ -164,11 +265,17 @@ def upsert_followup(
                     "reminder_count": new_count,
                     "last_reminded_at": now,
                     "severity": safe_severity,
+                    "title": title,
                     "description": description or existing.get("description") or "",
                     "due_date": due_date,
                     "assigned_to": assigned_to,
                 },
             )
+        dismiss_duplicate_open_followups(
+            source_type=source_type,
+            source_id=source_id,
+            keep_followup_id=fid,
+        )
         return fid
 
     fid = followup_id or str(uuid.uuid4())
@@ -199,6 +306,11 @@ def upsert_followup(
                 "last_reminded_at": now,
             },
         )
+    dismiss_duplicate_open_followups(
+        source_type=source_type,
+        source_id=source_id,
+        keep_followup_id=fid,
+    )
     return fid
 
 
