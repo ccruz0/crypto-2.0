@@ -109,3 +109,7 @@ yarn-error.log*
 tmp/telegram_updates.json
 tmp/telegram_updates_sample.json
 tmp/*.json
+# Telethon / Telegram session files (full account access)
+*.session
+*.session-journal
+**/telegram/*.session
