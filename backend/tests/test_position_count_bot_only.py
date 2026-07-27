@@ -9,7 +9,10 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
-from app.services.order_position_service import count_open_positions_for_symbol
+from app.services.order_position_service import (
+    count_open_positions_for_symbol,
+    count_total_open_positions,
+)
 
 BOT_SIGNAL_ID = 2001
 
@@ -127,3 +130,80 @@ def test_bot_long_entry_unchanged(db_session):
     db_session.commit()
 
     assert count_open_positions_for_symbol(db_session, "ETH_USDT") == 1
+
+
+def test_total_ignores_orphan_pending_take_profits(db_session):
+    """Pending TP legs must not inflate MAX_OPEN_ORDERS_TOTAL (prod had 39 TPs / ~10 bot)."""
+    # Orphan / protection TPs with no live bot entry
+    db_session.add_all(
+        [
+            _bot_order(
+                exchange_order_id="orphan_tp_btc_1",
+                symbol="BTC_USD",
+                side=OrderSideEnum.SELL,
+                status=OrderStatusEnum.ACTIVE,
+                order_role="TAKE_PROFIT",
+                trade_signal_id=None,
+                parent_order_id="old_buy_1",
+            ),
+            _bot_order(
+                exchange_order_id="orphan_tp_btc_2",
+                symbol="BTC_USD",
+                side=OrderSideEnum.SELL,
+                status=OrderStatusEnum.ACTIVE,
+                order_role="TAKE_PROFIT",
+                trade_signal_id=None,
+                parent_order_id="old_buy_2",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert count_total_open_positions(db_session) == 0
+
+
+def test_total_sums_bot_positions_across_symbols(db_session):
+    db_session.add_all(
+        [
+            _bot_order(
+                exchange_order_id="long_eth",
+                symbol="ETH_USDT",
+                side=OrderSideEnum.BUY,
+                trade_signal_id=BOT_SIGNAL_ID,
+            ),
+            _bot_order(
+                exchange_order_id="short_doge_1",
+                symbol="DOGE_USD",
+                side=OrderSideEnum.SELL,
+                trade_signal_id=BOT_SIGNAL_ID + 1,
+            ),
+            _bot_order(
+                exchange_order_id="short_doge_2",
+                symbol="DOGE_USD",
+                side=OrderSideEnum.SELL,
+                trade_signal_id=BOT_SIGNAL_ID + 2,
+            ),
+            # Manual fill must not count
+            _bot_order(
+                exchange_order_id="manual_btc",
+                symbol="BTC_USD",
+                side=OrderSideEnum.BUY,
+                trade_signal_id=None,
+            ),
+            # Orphan TP must not inflate total
+            _bot_order(
+                exchange_order_id="orphan_tp",
+                symbol="BTC_USD",
+                side=OrderSideEnum.SELL,
+                status=OrderStatusEnum.ACTIVE,
+                order_role="TAKE_PROFIT",
+                trade_signal_id=None,
+                parent_order_id="manual_btc",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert count_open_positions_for_symbol(db_session, "ETH") == 1
+    assert count_open_positions_for_symbol(db_session, "DOGE") == 2
+    assert count_total_open_positions(db_session) == 3
