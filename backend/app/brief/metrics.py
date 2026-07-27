@@ -28,6 +28,18 @@ try:
         "ICS source fetch/parse failures",
         ["error"],
     )
+    brief_telegram_messages_total = Counter(
+        "brief_telegram_messages_total",
+        "Messages returned by /brief/telegram",
+    )
+    brief_telegram_chats_total = Counter(
+        "brief_telegram_chats_total",
+        "Chats returned by /brief/telegram",
+    )
+    brief_send_parts_total = Counter(
+        "brief_send_parts_total",
+        "Message parts sent by /brief/send",
+    )
     _PROM_OK = True
 except Exception:  # pragma: no cover
     brief_requests_total = None  # type: ignore[assignment]
@@ -35,6 +47,9 @@ except Exception:  # pragma: no cover
     brief_mail_account_errors_total = None  # type: ignore[assignment]
     brief_calendar_events_total = None  # type: ignore[assignment]
     brief_calendar_source_errors_total = None  # type: ignore[assignment]
+    brief_telegram_messages_total = None  # type: ignore[assignment]
+    brief_telegram_chats_total = None  # type: ignore[assignment]
+    brief_send_parts_total = None  # type: ignore[assignment]
     _PROM_OK = False
 
 
@@ -61,3 +76,18 @@ def inc_calendar_events(n: int) -> None:
 def inc_calendar_error(error: str) -> None:
     if _PROM_OK and brief_calendar_source_errors_total is not None:
         brief_calendar_source_errors_total.labels(error=error).inc()
+
+
+def inc_telegram_messages(n: int) -> None:
+    if _PROM_OK and brief_telegram_messages_total is not None and n:
+        brief_telegram_messages_total.inc(n)
+
+
+def inc_telegram_chats(n: int) -> None:
+    if _PROM_OK and brief_telegram_chats_total is not None and n:
+        brief_telegram_chats_total.inc(n)
+
+
+def inc_send_parts(n: int) -> None:
+    if _PROM_OK and brief_send_parts_total is not None and n:
+        brief_send_parts_total.inc(n)
