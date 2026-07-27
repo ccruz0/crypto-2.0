@@ -3535,6 +3535,7 @@ class ExchangeSyncService:
             create_stop_loss_order,
             create_take_profit_order,
             create_oco_protection_orders,
+            is_insufficient_acc_balance_error,
             is_native_oco_enabled,
             resolve_sltp_margin_context,
         )
@@ -3643,8 +3644,6 @@ class ExchangeSyncService:
 
         # When backfilling a missing leg, reuse the surviving leg's OCO group so Jarvis
         # and OCO checks do not treat the new TP/SL as an incomplete orphan group.
-        from app.services.tp_sl_order_creator import is_insufficient_acc_balance_error
-
         existing_sl_oco = getattr(existing_sl, "oco_group_id", None) if existing_sl else None
         existing_tp_oco = getattr(existing_tp, "oco_group_id", None) if existing_tp else None
         if existing_sl_oco:

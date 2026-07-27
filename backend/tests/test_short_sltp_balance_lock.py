@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
