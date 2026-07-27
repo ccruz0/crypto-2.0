@@ -147,7 +147,23 @@ def format_daily_health_report_message(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def should_send_daily_health_report(report: dict[str, Any]) -> bool:
+    """Only Telegram when there is something actionable (failures or critical)."""
+    failures = int(report.get("failures") or 0)
+    critical = int(report.get("critical_alerts") or 0)
+    return failures > 0 or critical > 0
+
+
 def send_daily_health_report(report: dict[str, Any]) -> bool:
+    if not should_send_daily_health_report(report):
+        logger.info(
+            "daily health report telegram skipped (quiet): failures=%s critical=%s date=%s",
+            report.get("failures"),
+            report.get("critical_alerts"),
+            report.get("report_date"),
+        )
+        return False
+
     chat_id = _chat_id()
     if not chat_id:
         logger.warning("daily health report skipped: no TELEGRAM_CHAT_ID configured")

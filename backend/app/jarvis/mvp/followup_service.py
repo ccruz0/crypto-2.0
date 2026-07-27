@@ -19,15 +19,18 @@ logger = logging.getLogger(__name__)
 
 def generate_followups(*, send_telegram: bool = True) -> dict[str, Any]:
     """
-    Run follow-up detection, optionally send Telegram summary for high/critical items.
+    Run follow-up detection, optionally send Telegram summary for actionable items.
     """
     result = detect_followups()
     summary = get_followup_summary()
     open_items = list_followups(limit=500, status="open")
 
     telegram_sent = False
-    if send_telegram and (summary.get("critical_followups") or summary.get("high_followups")):
-        telegram_sent = send_followup_daily_alert(summary=summary, followups=open_items)
+    if send_telegram:
+        from app.jarvis.mvp.telegram_followup_alerts import should_send_followup_daily_alert
+
+        if should_send_followup_daily_alert(summary=summary, followups=open_items):
+            telegram_sent = send_followup_daily_alert(summary=summary, followups=open_items)
 
     return {
         **result,
