@@ -9,6 +9,9 @@ all use the exact same definition of "open positions":
 
     OpenPositions = pending bot entry orders (BUY long / SELL short)
                     + filled bot entry orders net of protection closes on the opposite side.
+
+``count_total_open_positions`` sums that per-symbol count across bases
+(bot-only). It does not count pending TAKE_PROFIT legs.
 """
 
 import logging
@@ -423,29 +426,60 @@ def count_open_positions_for_symbol(
 
 def count_total_open_positions(db: Session) -> int:
     """
-    Count total open positions by counting only pending TAKE_PROFIT orders.
-    
-    This represents positions waiting to be sold. Each pending TP order = 1 open position.
+    Count total open bot positions across all symbols.
+
+    Uses the same bot-only definition as ``count_open_positions_for_symbol``
+    (pending + net filled bot entries). Orphan / manual pending TAKE_PROFIT
+    legs are NOT counted — they previously inflated MAX_OPEN_ORDERS_TOTAL
+    (e.g. 39 TPs while bot exposure was ~10).
     """
-    # Count only TAKE_PROFIT orders that are pending (not FILLED)
-    # These represent positions waiting to be sold
-    pending_tp_orders = db.query(ExchangeOrder).filter(
-        ExchangeOrder.order_role == "TAKE_PROFIT",
-        ExchangeOrder.status.in_(
-            [
-                OrderStatusEnum.NEW,
-                OrderStatusEnum.ACTIVE,
-                OrderStatusEnum.PARTIALLY_FILLED,
-            ]
-        ),
-    ).all()
-    
-    total = len(pending_tp_orders)
-    
-    logger.info(
-        f"[OPEN_POSITION_COUNT] Counting TP orders only: {total} pending TAKE_PROFIT orders"
+    activity_statuses = [
+        OrderStatusEnum.NEW,
+        OrderStatusEnum.ACTIVE,
+        OrderStatusEnum.PARTIALLY_FILLED,
+        OrderStatusEnum.FILLED,
+    ]
+    pending_enum = getattr(OrderStatusEnum, "PENDING", None)
+    if pending_enum is not None:
+        activity_statuses.append(pending_enum)
+
+    # Bases with any bot main-entry activity (long BUY or short SELL).
+    symbol_rows = (
+        db.query(ExchangeOrder.symbol)
+        .filter(
+            ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]),
+            ExchangeOrder.status.in_(activity_statuses),
+            _bot_main_entry_filter(),
+        )
+        .distinct()
+        .all()
     )
-    
+
+    bases: set[str] = set()
+    for row in symbol_rows:
+        sym = row[0] if isinstance(row, tuple) else getattr(row, "symbol", row)
+        if not sym:
+            continue
+        sym_upper = str(sym).upper()
+        base = sym_upper.split("_")[0] if "_" in sym_upper else sym_upper
+        if base:
+            bases.add(base)
+
+    total = 0
+    for base in bases:
+        try:
+            total += count_open_positions_for_symbol(db, base)
+        except Exception as e:
+            logger.warning(
+                "count_total_open_positions: failed for base=%s: %s", base, e
+            )
+
+    logger.info(
+        "[OPEN_POSITION_COUNT] Total bot open positions=%s across %s bases "
+        "(not pending-TP count)",
+        total,
+        len(bases),
+    )
     return total
 
 
