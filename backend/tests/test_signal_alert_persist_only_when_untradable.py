@@ -36,8 +36,8 @@ def test_live_telegram_allowed_when_guardrails_pass():
     assert reason is None
 
 
-def test_alert_only_symbol_still_gets_live_telegram():
-    """trade_enabled=False → alerts are informational; do not require orderability."""
+def test_alert_only_symbol_persist_only_no_live_telegram():
+    """trade_enabled=False → dashboard/Monitoring only; no live Telegram."""
     svc = SignalMonitorService()
     db = MagicMock()
     item = MagicMock(trade_enabled=False, trade_amount_usd=10.0)
@@ -51,9 +51,22 @@ def test_alert_only_symbol_still_gets_live_telegram():
             db, "DOGE_USD", "SELL", item
         )
 
-    assert persist_only is False
-    assert reason is None
+    assert persist_only is True
+    assert reason == "trade_enabled=False"
     guard.assert_not_called()
+
+
+def test_alert_only_buy_also_persist_only():
+    svc = SignalMonitorService()
+    db = MagicMock()
+    item = MagicMock(trade_enabled=False, trade_amount_usd=10.0)
+
+    persist_only, reason = svc._should_persist_only_signal_alert(
+        db, "DGB_USD", "BUY", item
+    )
+
+    assert persist_only is True
+    assert reason == "trade_enabled=False"
 
 
 def test_extra_block_reason_forces_persist_only():

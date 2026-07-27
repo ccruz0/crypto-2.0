@@ -1960,17 +1960,18 @@ class SignalMonitorService:
         *,
         extra_block_reason: Optional[str] = None,
     ) -> Tuple[bool, Optional[str]]:
-        """Suppress live Telegram when a trade-enabled signal cannot place an order.
+        """Suppress live Telegram when the signal must not go to Control.
 
-        Alert-only symbols (trade_enabled=False) still get live Telegram.
-        When trade is on, Control must not show BUY/SELL SIGNAL DETECTED if
-        guardrails / trade criteria would block execution (e.g. MAX_OPEN_ORDERS_TOTAL).
-        Monitoring still persists via emit_alert(persist_only=True).
+        - trade_enabled=False (alert-only): Monitoring/dashboard only — no live Telegram.
+        - trade_enabled=True but guardrails / trade criteria block order placement
+          (e.g. MAX_OPEN_ORDERS_TOTAL): same — Monitoring only.
+        Live Telegram only when trade is enabled and the order can execute.
+        BUY and SELL both call this before emit_alert(...).
         """
         if extra_block_reason:
             return True, extra_block_reason
         if not bool(getattr(watchlist_item, "trade_enabled", False)):
-            return False, None
+            return True, "trade_enabled=False"
         allowed, reason = self._orchestrator_order_guard(
             db, symbol, side, watchlist_item
         )
