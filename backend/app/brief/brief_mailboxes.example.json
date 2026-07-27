@@ -1,0 +1,79 @@
+[
+  {
+    "id": "hilovivo",
+    "label": "Hilovivo",
+    "host": "",
+    "port": 993,
+    "ssl": true,
+    "user": "",
+    "password": "",
+    "folder": "INBOX",
+    "priority": "alta"
+  },
+  {
+    "id": "brickeny",
+    "label": "Brickeny",
+    "host": "",
+    "port": 993,
+    "ssl": true,
+    "user": "",
+    "password": "",
+    "folder": "INBOX",
+    "priority": "alta"
+  },
+  {
+    "id": "brickeny-team",
+    "label": "Brickeny Team",
+    "host": "",
+    "port": 993,
+    "ssl": true,
+    "user": "",
+    "password": "",
+    "folder": "INBOX",
+    "priority": "media"
+  },
+  {
+    "id": "peluqueria",
+    "label": "Peluqueria",
+    "host": "",
+    "port": 993,
+    "ssl": true,
+    "user": "",
+    "password": "",
+    "folder": "INBOX",
+    "priority": "media"
+  },
+  {
+    "id": "cruzgmail",
+    "label": "Cruz Gmail",
+    "host": "imap.gmail.com",
+    "port": 993,
+    "ssl": true,
+    "user": "",
+    "password": "",
+    "folder": "INBOX",
+    "priority": "media"
+  },
+  {
+    "id": "bumibeans",
+    "label": "Bumi Beans",
+    "host": "",
+    "port": 993,
+    "ssl": true,
+    "user": "",
+    "password": "",
+    "folder": "INBOX",
+    "priority": "baja"
+  },
+  {
+    "id": "hotmail-fw",
+    "label": "Hotmail (reenviado)",
+    "host": "",
+    "port": 993,
+    "ssl": true,
+    "user": "",
+    "password": "",
+    "folder": "INBOX",
+    "priority": "alta"
+  }
+]

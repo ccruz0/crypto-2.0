@@ -88,6 +88,8 @@ secrets/*
 secrets/*.env
 secrets/pg_password
 secrets/runtime.env
+# Brief IMAP mailbox credentials (copy from backend/app/brief/brief_mailboxes.example.json)
+secrets/brief_mailboxes.json
 var/
 venv.bak/
 venv/

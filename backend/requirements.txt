@@ -47,6 +47,10 @@ protobuf>=5.29.0
 # Observability (Phase 7)
 prometheus-client==0.20.0
 
+# Brief calendar (ICS + RRULE expansion)
+icalendar>=6.0.0,<8
+recurring-ical-events>=3.0.0,<4
+
 # Background tasks
 celery==5.4.0
 redis==5.0.8
