@@ -77,6 +77,175 @@ def is_insufficient_acc_balance_error(error: Optional[object]) -> bool:
     )
 
 
+def cancel_protection_leg_on_exchange(
+    db: Session,
+    leg: ExchangeOrder,
+    *,
+    source: str = "auto",
+) -> bool:
+    """Cancel one active SL/TP on the exchange and mark it CANCELLED in DB."""
+    if not leg or not leg.exchange_order_id:
+        return False
+    oid = str(leg.exchange_order_id)
+    cancel_type = str(leg.order_type) if leg.order_type else None
+    try:
+        cancel_kwargs = {"order_type": cancel_type} if cancel_type else {}
+        cancel_res = trade_client.cancel_order(oid, **cancel_kwargs)
+    except TypeError:
+        # Older cancel_order signatures may not accept order_type.
+        try:
+            cancel_res = trade_client.cancel_order(oid)
+        except Exception as cancel_err:
+            logger.warning(
+                "[%s_OCO] cancel leg %s failed: %s",
+                source.upper(),
+                oid,
+                cancel_err,
+            )
+            return False
+    except Exception as cancel_err:
+        logger.warning(
+            "[%s_OCO] cancel leg %s failed: %s",
+            source.upper(),
+            oid,
+            cancel_err,
+        )
+        return False
+
+    if isinstance(cancel_res, dict) and cancel_res.get("error") and not cancel_res.get(
+        "skipped"
+    ):
+        err_u = str(cancel_res.get("error") or "").upper()
+        if (
+            "NOT_FOUND" not in err_u
+            and "CANCELLED" not in err_u
+            and "CANCELED" not in err_u
+        ):
+            logger.warning(
+                "[%s_OCO] cancel leg %s rejected: %s",
+                source.upper(),
+                oid,
+                cancel_res.get("error"),
+            )
+            return False
+
+    try:
+        leg.status = OrderStatusEnum.CANCELLED
+        if hasattr(leg, "updated_at"):
+            leg.updated_at = datetime.now(timezone.utc)
+        elif hasattr(leg, "exchange_update_time"):
+            leg.exchange_update_time = datetime.now(timezone.utc)
+        db.add(leg)
+        db.commit()
+    except Exception as db_err:
+        logger.warning(
+            "[%s_OCO] DB mark cancel failed for %s: %s",
+            source.upper(),
+            oid,
+            db_err,
+        )
+        db.rollback()
+        # Exchange cancel likely succeeded; continue so qty can be reused.
+    logger.info("[%s_OCO] cancelled standalone protection leg %s", source.upper(), oid)
+    return True
+
+
+def ensure_spot_oco_protection(
+    db: Session,
+    symbol: str,
+    side: str,
+    tp_price: float,
+    sl_price: float,
+    quantity: float,
+    entry_price: float,
+    parent_order_id: Optional[str] = None,
+    dry_run: bool = False,
+    source: str = "auto",
+    existing_sl: Optional[ExchangeOrder] = None,
+    existing_tp: Optional[ExchangeOrder] = None,
+) -> Dict:
+    """
+    Spot-only: ensure SL+TP exist as ONE native Crypto.com OCO.
+
+    If a standalone leg already exists (typical half-protected backfill), cancel
+    it first so qty is free, then place native OCO for both legs. This is the
+    only safe way to avoid INSUFFICIENT_ACC_BALANCE on spot full-qty triggers.
+    """
+    if not is_native_oco_enabled():
+        return {
+            "sl_result": {"order_id": None, "error": None},
+            "tp_result": {"order_id": None, "error": None},
+            "oco_group_id": None,
+            "error": "native_oco_disabled",
+            "skipped": True,
+        }
+
+    if parent_order_id and (existing_sl is None or existing_tp is None):
+        from app.services.sl_tp_protection import get_active_protection_order
+
+        if existing_sl is None:
+            existing_sl = get_active_protection_order(db, parent_order_id, "STOP_LOSS")
+        if existing_tp is None:
+            existing_tp = get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
+
+    if existing_sl and existing_tp:
+        return {
+            "sl_result": {"order_id": existing_sl.exchange_order_id, "error": None},
+            "tp_result": {"order_id": existing_tp.exchange_order_id, "error": None},
+            "oco_group_id": existing_sl.oco_group_id or existing_tp.oco_group_id,
+            "error": None,
+            "status": "already_protected",
+            "sl_newly_created": False,
+            "tp_newly_created": False,
+        }
+
+    cancelled: list = []
+    for leg in (existing_sl, existing_tp):
+        if not leg:
+            continue
+        if dry_run:
+            cancelled.append(str(leg.exchange_order_id))
+            continue
+        if cancel_protection_leg_on_exchange(db, leg, source=source):
+            cancelled.append(str(leg.exchange_order_id))
+        else:
+            err = (
+                f"Failed to cancel standalone {leg.order_role} "
+                f"{leg.exchange_order_id} before native OCO"
+            )
+            return {
+                "sl_result": {"order_id": None, "error": err},
+                "tp_result": {"order_id": None, "error": err},
+                "oco_group_id": None,
+                "error": err,
+                "cancelled_legs": cancelled,
+            }
+
+    if cancelled:
+        logger.info(
+            "[%s_OCO] cancelled standalone legs %s for %s before native OCO recreate",
+            source.upper(),
+            cancelled,
+            symbol,
+        )
+
+    oco_res = create_oco_protection_orders(
+        db=db,
+        symbol=symbol,
+        side=side,
+        tp_price=tp_price,
+        sl_price=sl_price,
+        quantity=quantity,
+        entry_price=entry_price,
+        parent_order_id=parent_order_id,
+        dry_run=dry_run,
+        source=source,
+    )
+    if cancelled:
+        oco_res = {**oco_res, "cancelled_legs": cancelled, "replaced_standalone": True}
+    return oco_res
+
+
 def create_oco_protection_orders(
     db: Session,
     symbol: str,

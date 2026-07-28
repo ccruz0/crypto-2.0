@@ -40,7 +40,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.watchlist import WatchlistItem
-from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
+from app.services.tp_sl_order_creator import (
+    create_stop_loss_order,
+    create_take_profit_order,
+    ensure_spot_oco_protection,
+    is_native_oco_enabled,
+)
 from app.utils.live_trading import get_live_trading_status
 
 logging.basicConfig(
@@ -572,6 +577,62 @@ def place_protection(
             entry_side = "SELL"  # short close
         elif closing_u == "SELL":
             entry_side = "BUY"
+
+    # Spot: prefer ONE native OCO when both legs are needed.
+    if (
+        want_tp
+        and want_sl
+        and plan.sl_price
+        and plan.tp_price
+        and not is_margin
+        and is_native_oco_enabled()
+    ):
+        from app.services.sl_tp_protection import get_active_protection_order
+
+        existing_sl = (
+            get_active_protection_order(db, parent_id, "STOP_LOSS") if parent_id else None
+        )
+        existing_tp = (
+            get_active_protection_order(db, parent_id, "TAKE_PROFIT") if parent_id else None
+        )
+        if cancel_sl_first:
+            existing_sl = None
+        logger.info(
+            "%s native OCO %s qty=%s entry=%s tp=%s sl=%s parent=%s entry_side=%s",
+            "[DRY-RUN]" if dry_run else "[LIVE]",
+            place_symbol,
+            qty,
+            entry.price,
+            plan.tp_price,
+            plan.sl_price,
+            parent_id,
+            entry_side,
+        )
+        oco_res = ensure_spot_oco_protection(
+            db=db,
+            symbol=place_symbol,
+            side=entry_side,
+            tp_price=float(plan.tp_price),
+            sl_price=float(plan.sl_price),
+            quantity=float(qty),
+            entry_price=float(entry.price),
+            parent_order_id=parent_id,
+            dry_run=dry_run,
+            source="manual",
+            existing_sl=existing_sl,
+            existing_tp=existing_tp,
+        )
+        if oco_res.get("error") and not oco_res.get("skipped"):
+            result["errors"].append(f"OCO: {oco_res.get('error')}")
+            return result
+        tp_id = (oco_res.get("tp_result") or {}).get("order_id")
+        sl_id = (oco_res.get("sl_result") or {}).get("order_id")
+        if tp_id:
+            result["placed"].append({"role": "TAKE_PROFIT", "order_id": tp_id})
+        if sl_id:
+            result["placed"].append({"role": "STOP_LOSS", "order_id": sl_id})
+        result["oco_group_id"] = oco_res.get("oco_group_id")
+        return result
 
     if want_tp:
         logger.info(

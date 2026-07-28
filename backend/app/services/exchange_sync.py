@@ -3534,7 +3534,6 @@ class ExchangeSyncService:
         from app.services.tp_sl_order_creator import (
             create_stop_loss_order,
             create_take_profit_order,
-            create_oco_protection_orders,
             is_insufficient_acc_balance_error,
             is_native_oco_enabled,
             resolve_sltp_margin_context,
@@ -3592,15 +3591,13 @@ class ExchangeSyncService:
         tp_price = round(tp_price, 2) if tp_price >= 100 else round(tp_price, 4)
 
         is_margin, _leverage = resolve_sltp_margin_context(db, symbol)
-        # Native OCO: both legs missing, spot only, feature flag on.
-        # Avoids INSUFFICIENT_ACC_BALANCE from two standalone full-qty triggers.
-        if (
-            not existing_sl
-            and not existing_tp
-            and not is_margin
-            and is_native_oco_enabled()
-        ):
-            oco_res = create_oco_protection_orders(
+        # Spot: always prefer ONE native OCO (both missing OR half-protected).
+        # Half-protected cancels the standalone leg first so qty is free — never
+        # place a second independent full-qty trigger (INSUFFICIENT_ACC_BALANCE).
+        if not is_margin and is_native_oco_enabled():
+            from app.services.tp_sl_order_creator import ensure_spot_oco_protection
+
+            oco_res = ensure_spot_oco_protection(
                 db=db,
                 symbol=symbol,
                 side=side_upper,
@@ -3611,22 +3608,32 @@ class ExchangeSyncService:
                 parent_order_id=order_id,
                 dry_run=False,
                 source=source,
+                existing_sl=existing_sl,
+                existing_tp=existing_tp,
             )
-            if not oco_res.get("error") and (
-                (oco_res.get("sl_result") or {}).get("order_id")
-                or oco_res.get("oco_group_id")
+            if oco_res.get("status") == "already_protected" or (
+                not oco_res.get("error")
+                and not oco_res.get("skipped")
+                and (
+                    (oco_res.get("sl_result") or {}).get("order_id")
+                    or oco_res.get("oco_group_id")
+                )
             ):
                 logger.info(
-                    "[SLTP_NATIVE_OCO] parent=%s symbol=%s list_id=%s sl=%s tp=%s",
+                    "[SLTP_NATIVE_OCO] parent=%s symbol=%s list_id=%s sl=%s tp=%s "
+                    "replaced=%s",
                     order_id,
                     symbol,
                     oco_res.get("oco_group_id"),
                     (oco_res.get("sl_result") or {}).get("order_id"),
                     (oco_res.get("tp_result") or {}).get("order_id"),
+                    bool(oco_res.get("replaced_standalone")),
                 )
                 return {
-                    "sl_result": oco_res.get("sl_result") or {"order_id": None, "error": None},
-                    "tp_result": oco_res.get("tp_result") or {"order_id": None, "error": None},
+                    "sl_result": oco_res.get("sl_result")
+                    or {"order_id": None, "error": None},
+                    "tp_result": oco_res.get("tp_result")
+                    or {"order_id": None, "error": None},
                     "oco_group_id": oco_res.get("oco_group_id"),
                     "sl_price": sl_price,
                     "tp_price": tp_price,
@@ -3634,9 +3641,52 @@ class ExchangeSyncService:
                     "skip_tp_reason": None,
                     "sl_newly_created": bool(oco_res.get("sl_newly_created")),
                     "tp_newly_created": bool(oco_res.get("tp_newly_created")),
+                    **(
+                        {"status": "already_protected"}
+                        if oco_res.get("status") == "already_protected"
+                        else {}
+                    ),
+                }
+            # Spot must not fall through to dual independent triggers when a
+            # standalone leg already holds qty — that path is the balance-lock bug.
+            if existing_sl or existing_tp:
+                err = oco_res.get("error") or "native_oco_failed"
+                logger.error(
+                    "[SLTP_NATIVE_OCO] spot half-protected heal failed parent=%s "
+                    "symbol=%s err=%s — refusing dual create-order",
+                    order_id,
+                    symbol,
+                    err,
+                )
+                sl_res = oco_res.get("sl_result") or {}
+                tp_res = oco_res.get("tp_result") or {}
+                return {
+                    "sl_result": {
+                        "order_id": sl_res.get("order_id")
+                        or (existing_sl.exchange_order_id if existing_sl else None),
+                        "error": sl_res.get("error")
+                        if not existing_sl
+                        else None,
+                    },
+                    "tp_result": {
+                        "order_id": tp_res.get("order_id")
+                        or (existing_tp.exchange_order_id if existing_tp else None),
+                        "error": tp_res.get("error")
+                        if not existing_tp
+                        else None,
+                    },
+                    "oco_group_id": None,
+                    "sl_price": sl_price,
+                    "tp_price": tp_price,
+                    "skip_tp_creation": False,
+                    "skip_tp_reason": None,
+                    "sl_newly_created": False,
+                    "tp_newly_created": False,
+                    "error": err,
                 }
             logger.warning(
-                "[SLTP_NATIVE_OCO] failed for parent=%s symbol=%s err=%s — falling back to dual create-order",
+                "[SLTP_NATIVE_OCO] failed for parent=%s symbol=%s err=%s — "
+                "falling back to dual create-order (both legs missing)",
                 order_id,
                 symbol,
                 oco_res.get("error"),
