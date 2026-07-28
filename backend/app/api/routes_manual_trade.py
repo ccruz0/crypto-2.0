@@ -172,64 +172,105 @@ def confirm_manual_trade(
         # Calculate SL trigger price
         sl_trigger_price = sl_price * 0.99 if side == "BUY" else sl_price * 1.01
         
-        # Place SL order
-        logger.info(f"[TP_ORDER][REFERENCE] Creating STOP_LOSS order:")
-        logger.info(f"[TP_ORDER][REFERENCE]   symbol: {symbol}")
-        logger.info(f"[TP_ORDER][REFERENCE]   side: {'SELL' if side == 'BUY' else 'BUY'} (inverted from entry)")
-        logger.info(f"[TP_ORDER][REFERENCE]   price: {sl_price} (SL execution price)")
-        logger.info(f"[TP_ORDER][REFERENCE]   quantity: {quantity}")
-        logger.info(f"[TP_ORDER][REFERENCE]   trigger_price: {sl_trigger_price}")
-        logger.info(f"[TP_ORDER][REFERENCE]   entry_price: {entry_price} (for ref_price)")
-        
-        sl_order = trade_client.place_stop_loss_order(
-            symbol=symbol,
-            side="SELL" if side == "BUY" else "BUY",
-            price=sl_price,
-            qty=quantity,
-            trigger_price=sl_trigger_price,
-            entry_price=entry_price,  # CRITICAL: Pass entry_price for ref_price calculation
-            dry_run=not live_trading,
-            source="manual"  # Mark as manual for logging
+        # Spot: place SL+TP as ONE native OCO (never two independent full-qty triggers).
+        from app.services.tp_sl_order_creator import (
+            create_oco_protection_orders,
+            create_stop_loss_order,
+            create_take_profit_order,
+            is_native_oco_enabled,
         )
-        
-        # Log SL order payload for reference
-        logger.info(f"[TP_ORDER][REFERENCE] STOP_LOSS order response:")
-        logger.info(f"[TP_ORDER][REFERENCE]   SL order response: {json.dumps(sl_order, indent=2, ensure_ascii=False)}")
-        if "error" in sl_order:
-            logger.warning(f"[TP_ORDER][REFERENCE]   SL order ERROR: {sl_order.get('error')}")
-        else:
-            logger.info(f"[TP_ORDER][REFERENCE]   SL order_id: {sl_order.get('order_id') or sl_order.get('client_order_id')}")
-        
-        # Place TP order
-        logger.info(f"[TP_ORDER][REFERENCE] Creating TAKE_PROFIT order:")
-        logger.info(f"[TP_ORDER][REFERENCE]   symbol: {symbol}")
-        logger.info(f"[TP_ORDER][REFERENCE]   side: {'SELL' if side == 'BUY' else 'BUY'} (inverted from entry)")
-        logger.info(f"[TP_ORDER][REFERENCE]   price: {tp_price} (TP execution price)")
-        logger.info(f"[TP_ORDER][REFERENCE]   quantity: {quantity}")
-        logger.info(f"[TP_ORDER][REFERENCE]   entry_price: {entry_price} (for ref_price calculation)")
-        
-        tp_order = trade_client.place_take_profit_order(
-            symbol=symbol,
-            side="SELL" if side == "BUY" else "BUY",
-            price=tp_price,
-            qty=quantity,
-            entry_price=entry_price,  # CRITICAL: Pass entry_price for ref_price calculation
-            dry_run=not live_trading,
-            source="manual"  # Mark as manual for logging
+
+        main_order_id = (
+            main_order.get("order_id") or main_order.get("client_order_id")
+            if isinstance(main_order, dict)
+            else None
         )
-        
-        # Log TP order payload for reference
-        logger.info(f"[TP_ORDER][REFERENCE] TAKE_PROFIT order response:")
-        logger.info(f"[TP_ORDER][REFERENCE]   TP order response: {json.dumps(tp_order, indent=2, ensure_ascii=False)}")
-        if "error" in tp_order:
-            logger.warning(f"[TP_ORDER][REFERENCE]   TP order ERROR: {tp_order.get('error')}")
+        sl_order: dict = {}
+        tp_order: dict = {}
+        sl_order_id = None
+        tp_order_id = None
+
+        if (not is_margin) and is_native_oco_enabled() and entry_price and sl_price and tp_price:
+            logger.info(
+                "[TP_ORDER][REFERENCE] Creating native OCO SL+TP for spot %s",
+                symbol,
+            )
+            oco_res = create_oco_protection_orders(
+                db=db,
+                symbol=symbol,
+                side=side,
+                tp_price=float(tp_price),
+                sl_price=float(sl_price),
+                quantity=float(quantity),
+                entry_price=float(entry_price),
+                parent_order_id=str(main_order_id) if main_order_id else None,
+                dry_run=not live_trading,
+                source="manual",
+            )
+            sl_order = oco_res.get("sl_result") or {}
+            tp_order = oco_res.get("tp_result") or {}
+            if oco_res.get("error"):
+                sl_order = {"error": oco_res.get("error")}
+                tp_order = {"error": oco_res.get("error")}
+            sl_order_id = sl_order.get("order_id")
+            tp_order_id = tp_order.get("order_id")
+            logger.info(
+                "[TP_ORDER][REFERENCE] native OCO response list_id=%s sl=%s tp=%s err=%s",
+                oco_res.get("oco_group_id"),
+                sl_order_id,
+                tp_order_id,
+                oco_res.get("error"),
+            )
         else:
-            logger.info(f"[TP_ORDER][REFERENCE]   TP order_id: {tp_order.get('order_id') or tp_order.get('client_order_id')}")
-        
-        # Get order IDs
-        sl_order_id = sl_order.get("order_id") or sl_order.get("client_order_id") if isinstance(sl_order, dict) and "error" not in sl_order else None
-        tp_order_id = tp_order.get("order_id") or tp_order.get("client_order_id") if isinstance(tp_order, dict) and "error" not in tp_order else None
-        main_order_id = main_order.get("order_id") or main_order.get("client_order_id") if isinstance(main_order, dict) else None
+            # Margin / OCO disabled: keep dual path (TP before SL to avoid balance lock).
+            logger.info(f"[TP_ORDER][REFERENCE] Creating TAKE_PROFIT order:")
+            logger.info(f"[TP_ORDER][REFERENCE]   symbol: {symbol}")
+            logger.info(f"[TP_ORDER][REFERENCE]   side: {'SELL' if side == 'BUY' else 'BUY'} (inverted from entry)")
+            logger.info(f"[TP_ORDER][REFERENCE]   price: {tp_price} (TP execution price)")
+            logger.info(f"[TP_ORDER][REFERENCE]   quantity: {quantity}")
+            logger.info(f"[TP_ORDER][REFERENCE]   entry_price: {entry_price} (for ref_price calculation)")
+
+            tp_res = create_take_profit_order(
+                db=db,
+                symbol=symbol,
+                side=side,
+                tp_price=float(tp_price),
+                quantity=float(quantity),
+                entry_price=float(entry_price),
+                parent_order_id=str(main_order_id) if main_order_id else None,
+                is_margin=bool(is_margin),
+                leverage=float(leverage) if leverage else None,
+                dry_run=not live_trading,
+                source="manual",
+            )
+            tp_order = tp_res
+            tp_order_id = tp_res.get("order_id")
+            logger.info(f"[TP_ORDER][REFERENCE] TAKE_PROFIT order response: {json.dumps(tp_order, indent=2, ensure_ascii=False, default=str)}")
+
+            logger.info(f"[TP_ORDER][REFERENCE] Creating STOP_LOSS order:")
+            logger.info(f"[TP_ORDER][REFERENCE]   symbol: {symbol}")
+            logger.info(f"[TP_ORDER][REFERENCE]   side: {'SELL' if side == 'BUY' else 'BUY'} (inverted from entry)")
+            logger.info(f"[TP_ORDER][REFERENCE]   price: {sl_price} (SL execution price)")
+            logger.info(f"[TP_ORDER][REFERENCE]   quantity: {quantity}")
+            logger.info(f"[TP_ORDER][REFERENCE]   trigger_price: {sl_trigger_price}")
+            logger.info(f"[TP_ORDER][REFERENCE]   entry_price: {entry_price} (for ref_price)")
+
+            sl_res = create_stop_loss_order(
+                db=db,
+                symbol=symbol,
+                side=side,
+                sl_price=float(sl_price),
+                quantity=float(quantity),
+                entry_price=float(entry_price),
+                parent_order_id=str(main_order_id) if main_order_id else None,
+                is_margin=bool(is_margin),
+                leverage=float(leverage) if leverage else None,
+                dry_run=not live_trading,
+                source="manual",
+            )
+            sl_order = sl_res
+            sl_order_id = sl_res.get("order_id")
+            logger.info(f"[TP_ORDER][REFERENCE] STOP_LOSS order response: {json.dumps(sl_order, indent=2, ensure_ascii=False, default=str)}")
         
         # Send Telegram notification for SL/TP orders
         telegram_notifier.send_sl_tp_orders(
