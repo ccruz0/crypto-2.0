@@ -1694,8 +1694,15 @@ class SLTPCheckerService:
                 get_active_protection_order,
                 should_skip_rejected_tp_backfill,
             )
+            from app.services.tp_sl_order_creator import (
+                ensure_spot_oco_protection,
+                is_native_oco_enabled,
+                resolve_sltp_margin_context,
+            )
 
-            if parent_order_id and should_skip_rejected_tp_backfill(db, parent_order_id):
+            if parent_order_id and should_skip_rejected_tp_backfill(
+                db, parent_order_id, symbol=symbol
+            ):
                 logger.info(
                     "Skipping ensure TP backfill for %s parent=%s: REJECTED TP with active SL",
                     symbol,
@@ -1711,16 +1718,89 @@ class SLTPCheckerService:
                         "skip_reason": "tp_rejected_terminal",
                     }
 
+            existing_sl = (
+                get_active_protection_order(db, parent_order_id, "STOP_LOSS")
+                if parent_order_id
+                else None
+            )
+            existing_tp = (
+                get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
+                if parent_order_id
+                else None
+            )
+
+            # Spot: prefer ONE native OCO whenever both prices are known and we
+            # would otherwise create two independent full-qty triggers (or backfill
+            # a missing leg while the other locks qty).
+            is_margin, _leverage = resolve_sltp_margin_context(db, symbol)
+            need_sl = bool(create_sl and sl_price and entry_price and protection_qty > 0)
+            need_tp = bool(create_tp and tp_price and entry_price and protection_qty > 0)
+            want_both_or_heal = (
+                (need_sl and need_tp)
+                or (need_tp and existing_sl and not existing_tp)
+                or (need_sl and existing_tp and not existing_sl)
+            )
+            if (
+                want_both_or_heal
+                and not is_margin
+                and is_native_oco_enabled()
+                and sl_price
+                and tp_price
+                and entry_price
+                and protection_qty > 0
+            ):
+                oco_res = ensure_spot_oco_protection(
+                    db=db,
+                    symbol=symbol,
+                    side=entry_side,
+                    tp_price=float(tp_price),
+                    sl_price=float(sl_price),
+                    quantity=float(protection_qty),
+                    entry_price=float(entry_price),
+                    parent_order_id=parent_order_id,
+                    dry_run=dry_run_mode,
+                    source=source,
+                    existing_sl=existing_sl,
+                    existing_tp=existing_tp,
+                )
+                if oco_res.get("status") == "already_protected" or (
+                    not oco_res.get("error")
+                    and not oco_res.get("skipped")
+                    and (
+                        (oco_res.get("sl_result") or {}).get("order_id")
+                        or oco_res.get("oco_group_id")
+                    )
+                ):
+                    sl_order_id = (oco_res.get("sl_result") or {}).get("order_id")
+                    tp_order_id = (oco_res.get("tp_result") or {}).get("order_id")
+                    return {
+                        "success": True,
+                        "symbol": symbol,
+                        "sl_order_id": sl_order_id,
+                        "tp_order_id": tp_order_id,
+                        "oco_group_id": oco_res.get("oco_group_id"),
+                        "sl_newly_created": bool(oco_res.get("sl_newly_created")),
+                        "tp_newly_created": bool(oco_res.get("tp_newly_created")),
+                        "status": oco_res.get("status") or "oco_created",
+                    }
+                logger.error(
+                    "Native OCO ensure failed for %s: %s — refusing dual create-order on spot",
+                    symbol,
+                    oco_res.get("error"),
+                )
+                return {
+                    "success": False,
+                    "symbol": symbol,
+                    "sl_order_id": existing_sl.exchange_order_id if existing_sl else None,
+                    "tp_order_id": existing_tp.exchange_order_id if existing_tp else None,
+                    "error": oco_res.get("error") or "native_oco_failed",
+                }
+
             # Create SL order if requested
             sl_order_id = None
             sl_error = None
             sl_newly_created = False
-            if create_sl and sl_price and entry_price and protection_qty > 0:
-                existing_sl = (
-                    get_active_protection_order(db, parent_order_id, "STOP_LOSS")
-                    if parent_order_id
-                    else None
-                )
+            if need_sl:
                 if existing_sl:
                     sl_order_id = existing_sl.exchange_order_id
                     logger.info(
@@ -1755,12 +1835,7 @@ class SLTPCheckerService:
             tp_order_id = None
             tp_error = None
             tp_newly_created = False
-            if create_tp and tp_price and entry_price and protection_qty > 0:
-                existing_tp = (
-                    get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
-                    if parent_order_id
-                    else None
-                )
+            if need_tp:
                 if existing_tp:
                     tp_order_id = existing_tp.exchange_order_id
                     logger.info(

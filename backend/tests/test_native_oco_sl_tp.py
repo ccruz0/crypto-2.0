@@ -228,38 +228,54 @@ def test_create_sl_tp_impl_skips_oco_for_margin(db_session, monkeypatch):
     assert len(legacy_sl) == 1
 
 
-def test_create_sl_tp_impl_one_leg_uses_legacy_only(db_session, monkeypatch):
+def test_create_sl_tp_impl_one_leg_cancels_and_uses_oco(db_session, monkeypatch):
     monkeypatch.setenv("SLTP_NATIVE_OCO", "true")
     parent_id = "parent-one-leg"
-    db_session.add(
-        ExchangeOrder(
-            exchange_order_id="existing-sl",
-            symbol="ETH_USDT",
-            side=OrderSideEnum.SELL,
-            order_type="STOP_LIMIT",
-            status=OrderStatusEnum.ACTIVE,
-            price=Decimal("90"),
-            quantity=Decimal("1"),
-            parent_order_id=parent_id,
-            order_role="STOP_LOSS",
-            oco_group_id="oco_parent-one-leg_1",
-            exchange_create_time=datetime.now(timezone.utc),
-        )
+    existing_sl = ExchangeOrder(
+        exchange_order_id="existing-sl",
+        symbol="ETH_USDT",
+        side=OrderSideEnum.SELL,
+        order_type="STOP_LIMIT",
+        status=OrderStatusEnum.ACTIVE,
+        price=Decimal("90"),
+        quantity=Decimal("1"),
+        parent_order_id=parent_id,
+        order_role="STOP_LOSS",
+        oco_group_id="oco_parent-one-leg_1",
+        exchange_create_time=datetime.now(timezone.utc),
     )
+    db_session.add(existing_sl)
     db_session.commit()
 
     oco_calls = []
+    cancel_calls = []
+    legacy_tp = []
+
+    def _oco(**kwargs):
+        oco_calls.append(kwargs)
+        return {
+            "sl_result": {"order_id": "sl-oco-2", "error": None},
+            "tp_result": {"order_id": "tp-oco-2", "error": None},
+            "oco_group_id": "6498090546073120999",
+            "error": None,
+            "sl_newly_created": True,
+            "tp_newly_created": True,
+        }
+
     monkeypatch.setattr(
-        "app.services.tp_sl_order_creator.create_oco_protection_orders",
-        lambda **kwargs: oco_calls.append(kwargs) or {"error": "no"},
+        "app.services.tp_sl_order_creator.create_oco_protection_orders", _oco
     )
     monkeypatch.setattr(
-        "app.services.tp_sl_order_creator.create_stop_loss_order",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should reuse SL")),
+        "app.services.tp_sl_order_creator.cancel_protection_leg_on_exchange",
+        lambda db, leg, source="auto": cancel_calls.append(leg.exchange_order_id) or True,
     )
     monkeypatch.setattr(
         "app.services.tp_sl_order_creator.create_take_profit_order",
-        lambda **kwargs: {"order_id": "new-tp", "error": None},
+        lambda **kwargs: legacy_tp.append(kwargs) or {"order_id": "legacy-tp", "error": None},
+    )
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.create_stop_loss_order",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not dual-create SL")),
     )
     monkeypatch.setattr(
         "app.services.tp_sl_order_creator.resolve_sltp_margin_context",
@@ -279,9 +295,75 @@ def test_create_sl_tp_impl_one_leg_uses_legacy_only(db_session, monkeypatch):
         sl_price_override_f=90.0,
         tp_price_override_f=110.0,
     )
-    assert not oco_calls
-    assert result["sl_result"]["order_id"] == "existing-sl"
-    assert result["tp_result"]["order_id"] == "new-tp"
+    assert cancel_calls == ["existing-sl"]
+    assert len(oco_calls) == 1
+    assert not legacy_tp
+    assert result["oco_group_id"] == "6498090546073120999"
+    assert result["tp_result"]["order_id"] == "tp-oco-2"
+    assert result["sl_result"]["order_id"] == "sl-oco-2"
+
+
+def test_create_sl_tp_impl_spot_half_protected_refuses_dual_on_oco_fail(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("SLTP_NATIVE_OCO", "true")
+    parent_id = "parent-heal-fail"
+    db_session.add(
+        ExchangeOrder(
+            exchange_order_id="existing-sl",
+            symbol="ALGO_USD",
+            side=OrderSideEnum.SELL,
+            order_type="STOP_LIMIT",
+            status=OrderStatusEnum.ACTIVE,
+            price=Decimal("0.1"),
+            quantity=Decimal("10"),
+            parent_order_id=parent_id,
+            order_role="STOP_LOSS",
+            exchange_create_time=datetime.now(timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    legacy = []
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.ensure_spot_oco_protection",
+        lambda **kwargs: {
+            "sl_result": {"order_id": None, "error": "cancel_failed"},
+            "tp_result": {"order_id": None, "error": "cancel_failed"},
+            "oco_group_id": None,
+            "error": "cancel_failed",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.create_take_profit_order",
+        lambda **kwargs: legacy.append("tp") or {"order_id": "bad-tp", "error": None},
+    )
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.create_stop_loss_order",
+        lambda **kwargs: legacy.append("sl") or {"order_id": "bad-sl", "error": None},
+    )
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.resolve_sltp_margin_context",
+        lambda db, symbol: (False, None),
+    )
+
+    result = ExchangeSyncService()._create_sl_tp_impl(
+        db=db_session,
+        symbol="ALGO_USD",
+        side_upper="BUY",
+        filled_price_f=0.2,
+        filled_qty=10.0,
+        order_id=parent_id,
+        source="test",
+        strict_percentages=False,
+        sl_price_override_f=0.1,
+        tp_price_override_f=0.3,
+    )
+    assert not legacy
+    assert result.get("error") == "cancel_failed"
+    # Keep surviving SL id when present; never invent a dual-path TP.
+    assert result["tp_result"].get("order_id") in (None, "existing-sl")
+    assert result["tp_result"].get("order_id") != "bad-tp"
 
 
 def test_cancel_order_type_for_limit_tp_leg():
