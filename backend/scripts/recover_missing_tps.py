@@ -163,14 +163,25 @@ def _order_qty(order: ExchangeOrder) -> Optional[float]:
         return None
 
 
-def resolve_entry_price(db, symbol: str, watchlist: Optional[WatchlistItem]) -> EntryResolution:
+def resolve_entry_price(
+    db,
+    symbol: str,
+    watchlist: Optional[WatchlistItem],
+    *,
+    preferred_side: str = "BUY",
+) -> EntryResolution:
     variants = symbol_variants(symbol)
+    side_u = (preferred_side or "BUY").upper()
+    if side_u not in ("BUY", "SELL"):
+        side_u = "BUY"
+    side_enum = OrderSideEnum.BUY if side_u == "BUY" else OrderSideEnum.SELL
+    source_label = "filled_buy" if side_u == "BUY" else "filled_sell"
 
-    buys = (
+    fills = (
         db.query(ExchangeOrder)
         .filter(
             ExchangeOrder.symbol.in_(variants),
-            ExchangeOrder.side == OrderSideEnum.BUY,
+            ExchangeOrder.side == side_enum,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
             ExchangeOrder.order_type.in_(list(PRIMARY_ORDER_TYPES)),
         )
@@ -178,25 +189,25 @@ def resolve_entry_price(db, symbol: str, watchlist: Optional[WatchlistItem]) -> 
         .all()
     )
 
-    # Prefer most recent fill with a usable price; fall back to any FILLED BUY
-    if not buys:
-        buys = (
+    # Prefer most recent primary fill; fall back to any FILLED on that side
+    if not fills:
+        fills = (
             db.query(ExchangeOrder)
             .filter(
                 ExchangeOrder.symbol.in_(variants),
-                ExchangeOrder.side == OrderSideEnum.BUY,
+                ExchangeOrder.side == side_enum,
                 ExchangeOrder.status == OrderStatusEnum.FILLED,
             )
             .order_by(ExchangeOrder.exchange_create_time.desc())
             .all()
         )
 
-    for order in buys:
+    for order in fills:
         price = _order_price(order)
         if price:
             return EntryResolution(
                 price=price,
-                source="filled_buy",
+                source=source_label,
                 parent_order_id=str(order.exchange_order_id),
                 symbol_used=order.symbol,
                 quantity_from_order=_order_qty(order),
@@ -286,7 +297,7 @@ def resolve_entry_price(db, symbol: str, watchlist: Optional[WatchlistItem]) -> 
 
 
 def get_position_qty(base: str) -> Optional[float]:
-    """Return wallet balance for base currency (same shape as sl_tp_checker)."""
+    """Return signed wallet balance for base currency (negative = short)."""
     try:
         from app.services.brokers.crypto_com_trade import trade_client
 
@@ -309,10 +320,9 @@ def get_position_qty(base: str) -> Optional[float]:
             if currency_base != base_u and currency != base_u:
                 continue
             try:
-                qty = float(acct.get("balance", 0) or 0)
+                return float(acct.get("balance", 0) or 0)
             except (TypeError, ValueError):
                 continue
-            return qty if qty > 0 else 0.0
     except Exception as exc:
         logger.warning("Could not fetch account balance for %s: %s", base, exc)
     return None
@@ -392,19 +402,26 @@ def protection_state(db, symbol: str, parent_order_id: Optional[str]) -> Protect
 def calc_levels(
     entry: float,
     watchlist: Optional[WatchlistItem],
+    *,
+    entry_side: str = "BUY",
 ) -> Tuple[float, float, float, float]:
     mode = ((watchlist.sl_tp_mode if watchlist else None) or "conservative").lower()
     default_sl, default_tp = (2.0, 2.0) if mode == "aggressive" else (3.0, 3.0)
     sl_pct = abs(float(watchlist.sl_percentage)) if watchlist and watchlist.sl_percentage else default_sl
     tp_pct = abs(float(watchlist.tp_percentage)) if watchlist and watchlist.tp_percentage else default_tp
+    side_u = (entry_side or "BUY").upper()
 
     if watchlist and watchlist.sl_price and float(watchlist.sl_price) > 0:
         sl_price = float(watchlist.sl_price)
+    elif side_u == "SELL":
+        sl_price = entry * (1 + sl_pct / 100)
     else:
         sl_price = entry * (1 - sl_pct / 100)
 
     if watchlist and watchlist.tp_price and float(watchlist.tp_price) > 0:
         tp_price = float(watchlist.tp_price)
+    elif side_u == "SELL":
+        tp_price = entry * (1 - tp_pct / 100)
     else:
         tp_price = entry * (1 + tp_pct / 100)
 
@@ -421,9 +438,39 @@ def build_plan(db, symbol: str, min_usd: float = DEFAULT_MIN_USD) -> SymbolPlan:
     variants = symbol_variants(symbol)
     base = base_currency(symbol)
     watchlist = find_watchlist(db, symbol)
-    entry = resolve_entry_price(db, symbol, watchlist)
     pos_qty = get_position_qty(base)
+    entry_side = "SELL" if (pos_qty is not None and pos_qty < 0) else "BUY"
+    entry = resolve_entry_price(db, symbol, watchlist, preferred_side=entry_side)
     protection = protection_state(db, symbol, entry.parent_order_id)
+
+    # Multi-lot recovery: include any open SL/TP on the symbol so --cancel-sl-first
+    # can free the full wallet before recreating protection.
+    symbol_sl = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol.in_(variants),
+            ExchangeOrder.order_role == "STOP_LOSS",
+            ExchangeOrder.status.in_(OPEN_STATUSES),
+        )
+        .all()
+    )
+    symbol_tp = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol.in_(variants),
+            ExchangeOrder.order_role == "TAKE_PROFIT",
+            ExchangeOrder.status.in_(OPEN_STATUSES),
+        )
+        .all()
+    )
+    by_id = {str(o.exchange_order_id): o for o in protection.active_sl}
+    for o in symbol_sl:
+        by_id[str(o.exchange_order_id)] = o
+    protection.active_sl = list(by_id.values())
+    by_id_tp = {str(o.exchange_order_id): o for o in protection.active_tp}
+    for o in symbol_tp:
+        by_id_tp[str(o.exchange_order_id)] = o
+    protection.active_tp = list(by_id_tp.values())
 
     plan = SymbolPlan(
         symbol=symbol,
@@ -434,17 +481,24 @@ def build_plan(db, symbol: str, min_usd: float = DEFAULT_MIN_USD) -> SymbolPlan:
         protection=protection,
         watchlist=watchlist,
     )
+    plan.notes.append(f"wallet_side={entry_side}")
 
+    abs_pos = abs(float(pos_qty)) if pos_qty is not None else None
     qty = None
-    if pos_qty is not None and pos_qty > 0:
-        qty = pos_qty
+    if abs_pos is not None and abs_pos > 0:
+        qty = abs_pos
         plan.notes.append(f"qty from account balance={pos_qty}")
     elif entry.quantity_from_order:
         qty = entry.quantity_from_order
         plan.notes.append(f"qty from entry order={qty}")
     plan.qty_to_use = qty
 
-    if pos_qty is not None and pos_qty <= 0:
+    if pos_qty is not None and abs(float(pos_qty)) <= 0:
+        # Flat wallet: cancel leftover protection if present.
+        if protection.active_sl or protection.active_tp:
+            plan.action = "cancel_orphan_protection"
+            plan.notes.append("flat wallet with open SL/TP — cancel orphans")
+            return plan
         plan.action = "skip_no_position"
         plan.notes.append("account balance is 0")
         return plan
@@ -458,14 +512,20 @@ def build_plan(db, symbol: str, min_usd: float = DEFAULT_MIN_USD) -> SymbolPlan:
     notional = float(qty or 0) * float(entry.price)
     plan.notes.append(f"notional≈${notional:.4f}")
     if notional < float(min_usd):
+        if protection.active_sl or protection.active_tp:
+            plan.action = "cancel_orphan_protection"
+            plan.notes.append(f"below min_usd=${min_usd} with open SL/TP — cancel orphans")
+            return plan
         plan.action = "skip_dust"
         plan.notes.append(f"below min_usd=${min_usd}")
         return plan
 
-    sl_price, tp_price, sl_pct, tp_pct = calc_levels(entry.price, watchlist)
+    sl_price, tp_price, sl_pct, tp_pct = calc_levels(
+        entry.price, watchlist, entry_side=entry_side
+    )
     plan.sl_price = sl_price
     plan.tp_price = tp_price
-    plan.notes.append(f"levels sl={sl_pct}% tp={tp_pct}%")
+    plan.notes.append(f"levels sl={sl_pct}% tp={tp_pct}% side={entry_side}")
 
     has_sl = bool(protection.active_sl)
     has_tp = bool(protection.active_tp)
@@ -799,7 +859,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     symbol_used=plan.entry.symbol_used or symbol,
                     quantity_from_order=plan.entry.quantity_from_order,
                 )
-                sl_price, tp_price, _, _ = calc_levels(args.entry, plan.watchlist)
+                sl_price, tp_price, _, _ = calc_levels(
+                    args.entry,
+                    plan.watchlist,
+                    entry_side=(
+                        "SELL"
+                        if plan.position_qty is not None and plan.position_qty < 0
+                        else "BUY"
+                    ),
+                )
                 plan.sl_price = sl_price
                 plan.tp_price = tp_price
                 if plan.action == "need_manual_entry":
@@ -825,22 +893,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         print(f"  [DRY-RUN] would write purchase_price={plan.entry.price}")
 
         actionable = [p for p in plans if p.action.startswith("create")]
+        orphans = [p for p in plans if p.action == "cancel_orphan_protection"]
         print("\n" + "=" * 72)
-        print(f"Summary: {len(plans)} symbols | actionable={len(actionable)}")
+        print(
+            f"Summary: {len(plans)} symbols | actionable={len(actionable)} "
+            f"| orphan_cancel={len(orphans)}"
+        )
         for p in plans:
-            print(f"  {p.symbol:12} {p.action:20} entry={p.entry.price} src={p.entry.source}")
+            print(f"  {p.symbol:12} {p.action:24} entry={p.entry.price} src={p.entry.source}")
 
-        if not actionable:
+        if not actionable and not orphans:
             print("\nNothing to place.")
             return 0
 
         if not live_flag:
             print("\nDry-run only. Re-run with --live to place orders.")
-            print("For ETH/DOT INSUFFICIENT_ACC_BALANCE, try: --live --cancel-sl-first --tp-only")
+            print("For margin half-protected TPs, try: --live --cancel-sl-first")
+            if orphans:
+                print(
+                    f"Would cancel orphan protection on: "
+                    f"{', '.join(p.symbol for p in orphans)}"
+                )
             return 0
 
         print("\nPlacing protection orders...")
         failures = 0
+        for plan in orphans:
+            ids = [
+                str(o.exchange_order_id)
+                for o in (plan.protection.active_sl + plan.protection.active_tp)
+                if o.exchange_order_id
+            ]
+            cancelled = cancel_orders(ids, dry_run=False)
+            print(f"  {plan.symbol}: cancelled orphan protection {cancelled}")
         for plan in actionable:
             res = place_protection(
                 db,
