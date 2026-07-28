@@ -870,14 +870,8 @@ def create_protection_smart(
     from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
     from app.models.watchlist import WatchlistItem
     from app.models.trading_settings import TradingSettings
-    from app.services.tp_sl_order_creator import (
-        create_stop_loss_order,
-        create_take_profit_order,
-        ensure_spot_oco_protection,
-        is_native_oco_enabled,
-    )
+    from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
     from app.services.sl_tp_price_adjust import compute_strategy_sl_tp_prices, resolve_watchlist_percentages
-    from app.services.sl_tp_protection import get_active_protection_order
     from app.utils.live_trading import get_live_trading_status
     from app.utils.http_client import http_get
 
@@ -975,73 +969,6 @@ def create_protection_smart(
         oco = next((o.oco_group_id for o in open_prot if o.oco_group_id), None)
         created = []
         errors = []
-
-        existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
-        existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
-        want_both_or_heal = (
-            (want_sl and want_tp)
-            or (want_tp and existing_sl and not existing_tp)
-            or (want_sl and existing_tp and not existing_sl)
-        )
-        if want_both_or_heal and not is_margin and is_native_oco_enabled():
-            oco_res = ensure_spot_oco_protection(
-                db=db,
-                symbol=symbol,
-                side=side,
-                tp_price=tp_price,
-                sl_price=sl_price,
-                quantity=qty,
-                entry_price=entry_price,
-                parent_order_id=order_id,
-                dry_run=False,
-                source="manual",
-                existing_sl=existing_sl,
-                existing_tp=existing_tp,
-            )
-            if oco_res.get("status") == "already_protected" or (
-                not oco_res.get("error")
-                and not oco_res.get("skipped")
-                and (
-                    (oco_res.get("sl_result") or {}).get("order_id")
-                    or oco_res.get("oco_group_id")
-                )
-            ):
-                sl_id = (oco_res.get("sl_result") or {}).get("order_id")
-                tp_id = (oco_res.get("tp_result") or {}).get("order_id")
-                if tp_id and (want_tp or oco_res.get("replaced_standalone")):
-                    created.append({"role": "TAKE_PROFIT", "order_id": tp_id, "price": tp_price})
-                if sl_id and (want_sl or oco_res.get("replaced_standalone")):
-                    created.append({"role": "STOP_LOSS", "order_id": sl_id, "price": sl_price})
-                return {
-                    "ok": True,
-                    "order_id": order_id,
-                    "symbol": symbol,
-                    "entry_price": entry_price,
-                    "quantity": qty,
-                    "strategy": {"sl_percentage": sl_pct, "tp_percentage": tp_pct, "sl_tp_mode": mode},
-                    "prices": price_meta,
-                    "created": created,
-                    "errors": [],
-                    "oco_group_id": oco_res.get("oco_group_id"),
-                    "message": (
-                        f"Created native OCO protection ({len(created)} leg(s))"
-                        if created
-                        else "Already has requested protection"
-                    ),
-                }
-            errors.append({"role": "OCO", "error": oco_res.get("error") or oco_res})
-            return {
-                "ok": False,
-                "order_id": order_id,
-                "symbol": symbol,
-                "entry_price": entry_price,
-                "quantity": qty,
-                "strategy": {"sl_percentage": sl_pct, "tp_percentage": tp_pct, "sl_tp_mode": mode},
-                "prices": price_meta,
-                "created": [],
-                "errors": errors,
-                "message": "Native OCO protection failed; refused dual create-order on spot",
-            }
 
         if want_tp:
             tp_res = create_take_profit_order(
