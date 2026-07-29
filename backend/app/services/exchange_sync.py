@@ -24,6 +24,7 @@ from app.services.sl_tp_protection import (
     has_complete_sl_tp_protection,
     release_sl_tp_creation_lock,
     should_mark_unresolved_order_cancelled,
+    should_send_protection_rejected_alert,
     should_skip_rejected_tp_backfill,
     try_acquire_sl_tp_creation_lock,
     wallet_balance_matches_entry_side,
@@ -1857,16 +1858,24 @@ class ExchangeSyncService:
                                 if resolved_status == "REJECTED" and order.order_role in ("STOP_LOSS", "TAKE_PROFIT"):
                                     reject_reason = order_info.get("reject_reason") or "unknown"
                                     try:
-                                        from app.services.telegram_notifier import telegram_notifier
-
-                                        telegram_notifier.send_message(
-                                            "🚫 <b>PROTECTION ORDER REJECTED</b>\n\n"
-                                            f"📊 Symbol: <b>{order.symbol}</b>\n"
-                                            f"📋 Role: {order.order_role}\n"
-                                            f"🆔 Order: <code>{order.exchange_order_id}</code>\n"
-                                            f"⚠️ Reason: <code>{reject_reason}</code>",
+                                        if should_send_protection_rejected_alert(
+                                            db,
+                                            old_status=old_status,
+                                            order_id=str(order.exchange_order_id),
                                             symbol=order.symbol,
-                                        )
+                                            order_role=order.order_role,
+                                            reject_reason=reject_reason,
+                                        ):
+                                            from app.services.telegram_notifier import telegram_notifier
+
+                                            telegram_notifier.send_message(
+                                                "🚫 <b>PROTECTION ORDER REJECTED</b>\n\n"
+                                                f"📊 Symbol: <b>{order.symbol}</b>\n"
+                                                f"📋 Role: {order.order_role}\n"
+                                                f"🆔 Order: <code>{order.exchange_order_id}</code>\n"
+                                                f"⚠️ Reason: <code>{reject_reason}</code>",
+                                                symbol=order.symbol,
+                                            )
                                     except Exception as alert_err:
                                         logger.warning("Failed protection reject alert: %s", alert_err)
                                 
@@ -3816,36 +3825,58 @@ class ExchangeSyncService:
             )
             _heal_oco_group(existing_tp)
         else:
-            # Dual full-qty triggers: place TP before SL (recover_missing_tps pattern).
-            # SL-first reserves closing qty and TP then fails with INSUFFICIENT_ACC_BALANCE
-            # on margin shorts (and spot when native OCO is unavailable).
-            if not active_sl:
+            # Dual full-qty triggers cannot coexist on margin (and spot without OCO):
+            # SL reserves closing qty → TP gets INSUFFICIENT_ACC_BALANCE.
+            # Proactively cancel-SL-first when a live SL already holds qty, then
+            # place TP before recreating SL (same pattern as recover_missing_tps).
+            if active_sl:
+                logger.info(
+                    "[SLTP_BALANCE_RECOVERY] parent=%s symbol=%s margin=%s "
+                    "cancel-SL-first before TP (avoid dual-trigger lock) sl=%s",
+                    order_id,
+                    symbol,
+                    is_margin,
+                    active_sl.exchange_order_id,
+                )
+                if _cancel_sl_for_balance_recovery(active_sl):
+                    active_sl = None
+                    existing_sl = None
+                else:
+                    logger.warning(
+                        "[SLTP_BALANCE_RECOVERY] could not free SL qty for parent=%s "
+                        "symbol=%s — refusing TP place (prevents reject spam)",
+                        order_id,
+                        symbol,
+                    )
+                    skip_tp_creation = True
+                    skip_tp_reason = "sl_qty_locked_cancel_failed"
+            if not skip_tp_creation:
                 logger.info(
                     "[SLTP_DUAL_ORDER] parent=%s symbol=%s placing TP before SL (avoid balance lock)",
                     order_id,
                     symbol,
                 )
-            tp_result = _place_tp()
-            tp_ok = bool(tp_result.get("order_id")) and not tp_result.get("error")
-            tp_newly_created = tp_ok
-            if (
-                not tp_ok
-                and active_sl
-                and is_insufficient_acc_balance_error(tp_result.get("error"))
-            ):
-                logger.warning(
-                    "[SLTP_BALANCE_RECOVERY] TP failed with balance lock after SL %s "
-                    "parent=%s symbol=%s — cancel-SL-first then TP then SL",
-                    active_sl.exchange_order_id,
-                    order_id,
-                    symbol,
-                )
-                if _cancel_sl_for_balance_recovery(active_sl):
-                    active_sl = None
-                    existing_sl = None
-                    tp_result = _place_tp()
-                    tp_ok = bool(tp_result.get("order_id")) and not tp_result.get("error")
-                    tp_newly_created = tp_ok
+                tp_result = _place_tp()
+                tp_ok = bool(tp_result.get("order_id")) and not tp_result.get("error")
+                tp_newly_created = tp_ok
+                if (
+                    not tp_ok
+                    and active_sl
+                    and is_insufficient_acc_balance_error(tp_result.get("error"))
+                ):
+                    # Defensive: SL may have reappeared / cancel race.
+                    logger.warning(
+                        "[SLTP_BALANCE_RECOVERY] TP still locked after proactive path "
+                        "parent=%s symbol=%s — retry cancel-SL-first",
+                        order_id,
+                        symbol,
+                    )
+                    if _cancel_sl_for_balance_recovery(active_sl):
+                        active_sl = None
+                        existing_sl = None
+                        tp_result = _place_tp()
+                        tp_ok = bool(tp_result.get("order_id")) and not tp_result.get("error")
+                        tp_newly_created = tp_ok
 
         if active_sl:
             sl_result = {"order_id": active_sl.exchange_order_id, "error": None}

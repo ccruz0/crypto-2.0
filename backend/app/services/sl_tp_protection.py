@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union  # noqa: F401 — Union used by helpers below
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -204,6 +204,93 @@ def wallet_balance_matches_entry_side(
     if side == "SELL":
         return bal < -eps
     return False
+
+
+def protection_closing_side_matches_wallet(
+    closing_side: str,
+    wallet_balance: float,
+    *,
+    qty_epsilon: float = 0.0,
+) -> bool:
+    """True when a protection leg's closing side matches wallet inventory.
+
+    SELL SL/TP closes a long (needs positive wallet). BUY SL/TP closes a short
+    (needs negative wallet). Used to detect wrong-side ghost legs.
+    """
+    side = (closing_side or "").strip().upper()
+    if hasattr(closing_side, "value"):
+        side = str(closing_side.value).strip().upper()
+    try:
+        bal = float(wallet_balance)
+    except (TypeError, ValueError):
+        return False
+    eps = max(0.0, float(qty_epsilon or 0.0))
+    if abs(bal) <= eps:
+        return False
+    if side == "SELL":
+        return bal > eps
+    if side == "BUY":
+        return bal < -eps
+    return False
+
+
+def should_send_protection_rejected_alert(
+    db: Optional[Session],
+    *,
+    old_status: Optional[Union[OrderStatusEnum, str]],
+    order_id: str,
+    symbol: Optional[str],
+    order_role: Optional[str],
+    reject_reason: Optional[str],
+) -> bool:
+    """Gate PROTECTION ORDER REJECTED Telegram noise.
+
+    Send only when status newly transitions into REJECTED, once per order_id
+    (cross-process dedup). Known margin dual-trigger INSUFFICIENT_ACC_BALANCE
+    on TAKE_PROFIT is log-only — it is not actionable wallet-funding signal.
+    """
+    old = old_status.value if hasattr(old_status, "value") else old_status
+    old_u = str(old or "").strip().upper()
+    if old_u == "REJECTED":
+        logger.info(
+            "Skipping protection-reject Telegram (already REJECTED) order=%s symbol=%s",
+            order_id,
+            symbol,
+        )
+        return False
+
+    role = (order_role or "").strip().upper()
+    reason = reject_reason or ""
+    try:
+        from app.services.tp_sl_order_creator import is_insufficient_acc_balance_error
+    except Exception:
+        is_insufficient_acc_balance_error = lambda _t: False  # noqa: E731
+
+    if role == "TAKE_PROFIT" and is_insufficient_acc_balance_error(reason):
+        logger.warning(
+            "Suppressing INSUFFICIENT_ACC_BALANCE TP reject Telegram "
+            "order=%s symbol=%s reason=%s (known dual-trigger / margin lock)",
+            order_id,
+            symbol,
+            reason,
+        )
+        return False
+
+    try:
+        from app.services.telegram_event_dedup import claim_telegram_event
+
+        if not claim_telegram_event(
+            db,
+            f"protection_rejected:{order_id}",
+            symbol=symbol,
+            ttl_minutes=7 * 24 * 60,
+            action="prot_rej",
+        ):
+            return False
+    except Exception as dedup_err:
+        logger.debug("protection-reject dedup failed order=%s: %s", order_id, dedup_err)
+
+    return True
 
 
 def _sl_tp_lock_key(parent_order_id: str) -> int:
