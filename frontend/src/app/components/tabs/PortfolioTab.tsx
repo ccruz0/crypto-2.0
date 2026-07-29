@@ -21,6 +21,7 @@ import {
   type OrderProfitLoss,
 } from '@/utils/orderProfitLoss';
 import { logger } from '@/utils/logger';
+import PnLPanel from '@/app/components/PnLPanel';
 
 type SortField = 'coin' | 'balance' | 'value';
 type SortDirection = 'asc' | 'desc';
@@ -598,6 +599,12 @@ export default function PortfolioTab({
               )}
             </div>
           </div>
+
+          <PnLPanel
+            executedOrders={executedOrders}
+            portfolioAssets={portfolio.assets}
+            topCoins={topCoins}
+          />
 
           <div>
             <h2 className="text-xl font-semibold mb-2">Assets</h2>
