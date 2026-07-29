@@ -56,6 +56,59 @@ class TestSlTpProtectionHelpers(unittest.TestCase):
         self.assertFalse(wallet_balance_matches_entry_side("SELL", 1.89))
         self.assertFalse(wallet_balance_matches_entry_side("SELL", 0.0))
 
+    def test_protection_closing_side_matches_wallet(self):
+        from app.services.sl_tp_protection import protection_closing_side_matches_wallet
+
+        self.assertTrue(protection_closing_side_matches_wallet("SELL", 10.0))
+        self.assertFalse(protection_closing_side_matches_wallet("SELL", -10.0))
+        self.assertTrue(protection_closing_side_matches_wallet("BUY", -5.0))
+        self.assertFalse(protection_closing_side_matches_wallet("BUY", 5.0))
+
+    def test_should_send_protection_rejected_alert_gates(self):
+        from app.services.sl_tp_protection import should_send_protection_rejected_alert
+
+        self.assertFalse(
+            should_send_protection_rejected_alert(
+                None,
+                old_status=OrderStatusEnum.REJECTED,
+                order_id="oid-1",
+                symbol="ALGO_USD",
+                order_role="TAKE_PROFIT",
+                reject_reason="INSUFFICIENT_ACC_BALANCE",
+            )
+        )
+        self.assertFalse(
+            should_send_protection_rejected_alert(
+                None,
+                old_status=OrderStatusEnum.ACTIVE,
+                order_id="oid-2",
+                symbol="ALGO_USD",
+                order_role="TAKE_PROFIT",
+                reject_reason="INSUFFICIENT_ACC_BALANCE",
+            )
+        )
+        self.assertTrue(
+            should_send_protection_rejected_alert(
+                None,
+                old_status=OrderStatusEnum.ACTIVE,
+                order_id="oid-3",
+                symbol="ALGO_USD",
+                order_role="STOP_LOSS",
+                reject_reason="INVALID_TRIGGER_PRICE",
+            )
+        )
+        # Dedup: second claim for same order_id suppressed
+        self.assertFalse(
+            should_send_protection_rejected_alert(
+                None,
+                old_status=OrderStatusEnum.NEW,
+                order_id="oid-3",
+                symbol="ALGO_USD",
+                order_role="STOP_LOSS",
+                reject_reason="INVALID_TRIGGER_PRICE",
+            )
+        )
+
     def test_skip_rejected_tp_backfill_when_sl_active(self):
         db = MagicMock()
         sl = ExchangeOrder(exchange_order_id="sl-1", order_role="STOP_LOSS", status=OrderStatusEnum.ACTIVE)

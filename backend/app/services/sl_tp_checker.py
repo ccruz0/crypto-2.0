@@ -261,9 +261,10 @@ def _order_protection_qty(order: dict) -> float:
 def _quantity_matches_position(order: dict, position_balance: float) -> bool:
     """True when a single protection order size matches the wallet balance (±5%)."""
     order_quantity = _order_protection_qty(order)
-    if order_quantity <= 0 or position_balance <= 0:
+    wallet = abs(float(position_balance or 0.0))
+    if order_quantity <= 0 or wallet <= 0:
         return True  # no qty info → assume match (legacy)
-    return abs(order_quantity - position_balance) / position_balance <= 0.05
+    return abs(order_quantity - wallet) / wallet <= 0.05
 
 
 def _protection_quantities_cover_position(
@@ -275,7 +276,8 @@ def _protection_quantities_cover_position(
     wallet balance, so per-order ±5% matching falsely flags them as unprotected even
     when the sum of legs covers the bag (observed AAVE_USD: 0.105+0.104+0.104 ≈ 0.313).
     """
-    if position_balance <= 0:
+    wallet = abs(float(position_balance or 0.0))
+    if wallet <= 0:
         return True
     active = [o for o in orders if _is_active_open_order_status(o)]
     if not active:
@@ -284,11 +286,11 @@ def _protection_quantities_cover_position(
     if all(q <= 0 for q in qtys):
         return True  # no qty info → assume match (legacy)
     for q in qtys:
-        if q > 0 and abs(q - position_balance) / position_balance <= tolerance:
+        if q > 0 and abs(q - wallet) / wallet <= tolerance:
             return True
     covered = sum(q for q in qtys if q > 0)
     # Allow slight undershoot (fees/rounding) and any overshoot (duplicate legs).
-    return covered >= position_balance * (1.0 - tolerance)
+    return covered >= wallet * (1.0 - tolerance)
 
 
 def _parent_lot_qty(order: Optional[ExchangeOrder]) -> Optional[float]:
@@ -317,8 +319,9 @@ def _protection_create_qty(
 
     Linking a full-wallet leg to a partial parent (e.g. TP 1.893 on a 0.3 fill)
     oversizes coverage and duplicates sister-book lot TPs.
+    Short wallets are negative — size with abs(wallet).
     """
-    wallet = float(position_balance or 0.0)
+    wallet = abs(float(position_balance or 0.0))
     if wallet <= 0:
         return 0.0
     parent_qty = _parent_lot_qty(parent_order)
@@ -363,7 +366,7 @@ def _db_protection_covers_wallet(
     tolerance: float = 0.05,
 ) -> bool:
     """True when active sister-book SL/TP qty already covers the wallet."""
-    wallet = float(position_balance or 0.0)
+    wallet = abs(float(position_balance or 0.0))
     if wallet <= 0:
         return True
     covered = _db_active_protection_qty(db, symbol_variants, role)
@@ -439,6 +442,27 @@ class SLTPCheckerService:
             exchange_open_ids = self._fetch_exchange_open_order_ids()
             seen_orphan_ids: set = set()
 
+            # Wallet by base currency for wrong-side ghost detection (SELL legs on shorts, etc.)
+            wallet_by_base: Dict[str, float] = {}
+            try:
+                summary = trade_client.get_account_summary() or {}
+                for acc in summary.get("accounts") or []:
+                    cur = str(acc.get("currency") or "").upper().replace("/", "_")
+                    if not cur:
+                        continue
+                    base = cur.split("_")[0]
+                    try:
+                        bal = float(acc.get("balance") or acc.get("quantity") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    # Prefer exact base row; keep first non-zero-ish.
+                    if base not in wallet_by_base or abs(bal) > abs(wallet_by_base[base]):
+                        wallet_by_base[base] = bal
+            except Exception as wallet_err:
+                logger.debug("Wallet snapshot unavailable for wrong-side reconcile: %s", wallet_err)
+
+            from app.services.sl_tp_protection import protection_closing_side_matches_wallet
+
             for order in active_sl_tp:
                 reasons: List[str] = []
                 on_exchange = bool(
@@ -477,26 +501,40 @@ class SLTPCheckerService:
                 if order.exchange_order_id and exchange_open_ids and not on_exchange:
                     reasons.append("ACTIVE in DB but not on exchange")
 
+                # Wrong-side vs wallet (e.g. SELL SL while ALGO wallet is short).
+                closing_side = order.side.value if hasattr(order.side, "value") else str(order.side or "")
+                base = (order.symbol or "").split("_")[0].upper()
+                wallet_bal = wallet_by_base.get(base)
+                wrong_side = False
+                if wallet_bal is not None and closing_side:
+                    if not protection_closing_side_matches_wallet(closing_side, wallet_bal):
+                        wrong_side = True
+                        reasons.append(
+                            f"wrong-side vs wallet (side={closing_side} bal={wallet_bal})"
+                        )
+
                 if reasons and order.exchange_order_id not in seen_orphan_ids:
                     seen_orphan_ids.add(order.exchange_order_id)
                     # Ghost rows: ACTIVE in DB but gone from the exchange. Reconcile
                     # immediately so the next health check / half_protected path does
-                    # not keep recreating TP or spamming the same 14 orphans
-                    # (observed 2026-07-21). Sibling-FILLED orphans stay alert-only
-                    # until an explicit cancel attempt.
-                    if (
-                        reasons == ["ACTIVE in DB but not on exchange"]
-                        and self._open_orders_snapshot_complete
-                    ):
+                    # not keep recreating TP or spamming the same orphans.
+                    # Also cancel wrong-side legs (long protection on a short wallet).
+                    ghost_only = reasons == ["ACTIVE in DB but not on exchange"]
+                    should_reconcile = (
+                        (ghost_only and self._open_orders_snapshot_complete)
+                        or (wrong_side and (not on_exchange or self._open_orders_snapshot_complete))
+                    )
+                    if should_reconcile:
                         try:
                             order.status = OrderStatusEnum.CANCELLED
                             order.updated_at = datetime.now(timezone.utc)
                             logger.info(
-                                "[OCO_RECONCILE] Marked ghost SL/TP CANCELLED: "
-                                "order_id=%s symbol=%s type=%s",
+                                "[OCO_RECONCILE] Marked ghost/wrong-side SL/TP CANCELLED: "
+                                "order_id=%s symbol=%s type=%s reasons=%s",
                                 order.exchange_order_id,
                                 order.symbol,
                                 order.order_role or order.order_type,
+                                "; ".join(reasons),
                             )
                             continue  # reconciled; do not alert
                         except Exception as reconcile_err:
@@ -1303,13 +1341,14 @@ class SLTPCheckerService:
                     try:
                         position_balance = float(balance_str)
                         logger.debug(f"Found balance for {currency}: {position_balance}")
-                        if position_balance > 0:
+                        # Prefer a non-flat wallet (long or short); keep searching if dust.
+                        if abs(position_balance) > 1e-12:
                             break
                     except (ValueError, TypeError) as e:
                         logger.warning(f"Invalid balance format for {currency}: {balance_str}, error: {e}")
                         continue
             
-            if position_balance <= 0:
+            if abs(position_balance) <= 1e-12:
                 available_currencies = [acc.get('currency') for acc in accounts[:10]]
                 logger.warning(f"No open position found for {symbol}. Available currencies: {available_currencies}")
                 return {
@@ -1485,7 +1524,7 @@ class SLTPCheckerService:
                 
                 # 4. Final fallback: if we have an open position but no entry price, use current market price
                 # This handles cases where position exists but order history is missing
-                if not entry_price and position_balance > 0:
+                if not entry_price and abs(position_balance) > 1e-12:
                     try:
                         current_market_price = _fetch_mark_price(symbol)
                         if current_market_price and current_market_price > 0:
@@ -1794,6 +1833,49 @@ class SLTPCheckerService:
                     "sl_order_id": existing_sl.exchange_order_id if existing_sl else None,
                     "tp_order_id": existing_tp.exchange_order_id if existing_tp else None,
                     "error": oco_res.get("error") or "native_oco_failed",
+                }
+
+            # Margin (and spot without OCO): never place SL then independent TP —
+            # that locks qty and yields INSUFFICIENT_ACC_BALANCE. Reuse the shared
+            # TP-before-SL / cancel-SL-first implementation.
+            if (
+                want_both_or_heal
+                and is_margin
+                and not dry_run_mode
+                and entry_price
+                and protection_qty > 0
+                and parent_order_id
+                and (sl_price or existing_sl)
+                and (tp_price or existing_tp)
+            ):
+                from app.services.exchange_sync import ExchangeSyncService
+
+                impl = ExchangeSyncService()._create_sl_tp_impl(
+                    db=db,
+                    symbol=symbol,
+                    side_upper=(entry_side or "BUY").upper(),
+                    filled_price_f=float(entry_price),
+                    filled_qty=float(protection_qty),
+                    order_id=str(parent_order_id),
+                    source=source,
+                    strict_percentages=False,
+                    sl_price_override_f=float(sl_price) if sl_price else None,
+                    tp_price_override_f=float(tp_price) if tp_price else None,
+                )
+                sl_res = impl.get("sl_result") or {}
+                tp_res = impl.get("tp_result") or {}
+                ok = bool(sl_res.get("order_id") or tp_res.get("order_id") or impl.get("status") == "already_protected")
+                return {
+                    "success": ok,
+                    "symbol": symbol,
+                    "sl_order_id": sl_res.get("order_id"),
+                    "tp_order_id": tp_res.get("order_id"),
+                    "oco_group_id": impl.get("oco_group_id"),
+                    "sl_newly_created": bool(impl.get("sl_newly_created")),
+                    "tp_newly_created": bool(impl.get("tp_newly_created")),
+                    "status": impl.get("status") or ("margin_dual" if ok else "margin_dual_failed"),
+                    "error": sl_res.get("error") or tp_res.get("error"),
+                    "skip_tp_reason": impl.get("skip_tp_reason"),
                 }
 
             # Create SL order if requested

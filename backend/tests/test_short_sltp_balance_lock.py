@@ -90,7 +90,7 @@ def test_margin_short_dual_places_tp_before_sl(db_session, monkeypatch):
 
 
 def test_existing_sl_insufficient_tp_cancels_then_tp_then_sl(db_session, monkeypatch):
-    """Backfill TP while SL locks qty → cancel SL, place TP, recreate SL."""
+    """Backfill TP while SL locks qty → cancel SL first, place TP, recreate SL."""
     monkeypatch.setenv("SLTP_NATIVE_OCO", "false")
     parent_id = "short-parent-locked"
     existing_sl = ExchangeOrder(
@@ -110,7 +110,6 @@ def test_existing_sl_insufficient_tp_cancels_then_tp_then_sl(db_session, monkeyp
     db_session.commit()
 
     calls: list[str] = []
-    tp_attempts = {"n": 0}
 
     monkeypatch.setattr(
         "app.services.tp_sl_order_creator.resolve_sltp_margin_context",
@@ -140,10 +139,7 @@ def test_existing_sl_insufficient_tp_cancels_then_tp_then_sl(db_session, monkeyp
     monkeypatch.setattr("app.services.exchange_sync.get_active_protection_order", _get_active)
 
     def _tp(**kwargs):
-        tp_attempts["n"] += 1
-        calls.append(f"tp{tp_attempts['n']}")
-        if tp_attempts["n"] == 1:
-            return {"order_id": None, "error": "INSUFFICIENT_ACC_BALANCE"}
+        calls.append("tp")
         return {"order_id": "tp-recovered", "error": None}
 
     def _sl(**kwargs):
@@ -179,7 +175,8 @@ def test_existing_sl_insufficient_tp_cancels_then_tp_then_sl(db_session, monkeyp
     )
 
     assert cancel_calls and cancel_calls[0][0] == "sl-live-1"
-    assert calls == ["tp1", "tp2", "sl"]
+    # Proactive cancel-SL-first: one TP attempt (no failed probe), then SL.
+    assert calls == ["tp", "sl"]
     assert result["tp_result"]["order_id"] == "tp-recovered"
     assert result["sl_result"]["order_id"] == "sl-recovered"
     db_session.refresh(existing_sl)
