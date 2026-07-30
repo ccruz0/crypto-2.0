@@ -32,7 +32,7 @@ export function isAutoPreset(preset: Preset | string | null | undefined): boolea
 }
 
 /**
- * Map API strategy_key / preset to a Watchlist <select> option value.
+ * Map API strategy_key / preset to a Watchlist <select title="Select option"> option value.
  * Options use value="auto"; API often returns "auto-conservative" etc.
  */
 export function toWatchlistStrategySelectValue(
