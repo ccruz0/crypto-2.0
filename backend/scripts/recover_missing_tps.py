@@ -399,11 +399,22 @@ def protection_state(db, symbol: str, parent_order_id: Optional[str]) -> Protect
     return ProtectionState(active_sl=active_sl, active_tp=active_tp, rejected_tp=rejected_tp)
 
 
+def _fetch_last_for_levels(symbol: str) -> Optional[float]:
+    try:
+        from app.utils.sl_trigger_guard import fetch_last_price
+
+        return fetch_last_price(symbol)
+    except Exception as exc:
+        logger.debug("last price unavailable for %s: %s", symbol, exc)
+        return None
+
+
 def calc_levels(
     entry: float,
     watchlist: Optional[WatchlistItem],
     *,
     entry_side: str = "BUY",
+    last_price: Optional[float] = None,
 ) -> Tuple[float, float, float, float]:
     mode = ((watchlist.sl_tp_mode if watchlist else None) or "conservative").lower()
     default_sl, default_tp = (2.0, 2.0) if mode == "aggressive" else (3.0, 3.0)
@@ -411,19 +422,69 @@ def calc_levels(
     tp_pct = abs(float(watchlist.tp_percentage)) if watchlist and watchlist.tp_percentage else default_tp
     side_u = (entry_side or "BUY").upper()
 
-    if watchlist and watchlist.sl_price and float(watchlist.sl_price) > 0:
-        sl_price = float(watchlist.sl_price)
+    from app.utils.sl_trigger_guard import (
+        ensure_valid_sl_trigger,
+        ensure_valid_tp_trigger,
+        is_abs_level_valid_vs_entry,
+    )
+
+    abs_sl = (
+        float(watchlist.sl_price)
+        if watchlist and watchlist.sl_price and float(watchlist.sl_price) > 0
+        else None
+    )
+    abs_tp = (
+        float(watchlist.tp_price)
+        if watchlist and watchlist.tp_price and float(watchlist.tp_price) > 0
+        else None
+    )
+
+    # Prefer absolute levels only when they sit on the correct side of entry.
+    # Stale long abs TPs on shorts (and vice versa) cause INVALID_TRIGGER_PRICE.
+    if abs_sl is not None and is_abs_level_valid_vs_entry(
+        side_u, abs_sl, entry, is_tp=False
+    ):
+        sl_price = abs_sl
     elif side_u == "SELL":
         sl_price = entry * (1 + sl_pct / 100)
     else:
         sl_price = entry * (1 - sl_pct / 100)
 
-    if watchlist and watchlist.tp_price and float(watchlist.tp_price) > 0:
-        tp_price = float(watchlist.tp_price)
+    if abs_tp is not None and is_abs_level_valid_vs_entry(
+        side_u, abs_tp, entry, is_tp=True
+    ):
+        tp_price = abs_tp
     elif side_u == "SELL":
         tp_price = entry * (1 - tp_pct / 100)
     else:
         tp_price = entry * (1 + tp_pct / 100)
+
+    # Also repair vs live market when available (price may have moved through %).
+    sl_price, sl_reason = ensure_valid_sl_trigger(
+        entry_side=side_u,
+        sl_price=float(sl_price),
+        last_price=last_price,
+        sl_percentage=sl_pct,
+        entry_price=entry,
+    )
+    tp_price, tp_reason = ensure_valid_tp_trigger(
+        entry_side=side_u,
+        tp_price=float(tp_price),
+        last_price=last_price,
+        tp_percentage=tp_pct,
+        entry_price=entry,
+    )
+    if sl_reason or tp_reason:
+        logger.info(
+            "calc_levels repaired side=%s entry=%s last=%s sl=%s tp=%s (%s | %s)",
+            side_u,
+            entry,
+            last_price,
+            sl_price,
+            tp_price,
+            sl_reason,
+            tp_reason,
+        )
 
     # Round similarly to create_missing_tp_orders
     if entry >= 100:
@@ -521,7 +582,10 @@ def build_plan(db, symbol: str, min_usd: float = DEFAULT_MIN_USD) -> SymbolPlan:
         return plan
 
     sl_price, tp_price, sl_pct, tp_pct = calc_levels(
-        entry.price, watchlist, entry_side=entry_side
+        entry.price,
+        watchlist,
+        entry_side=entry_side,
+        last_price=_fetch_last_for_levels(symbol),
     )
     plan.sl_price = sl_price
     plan.tp_price = tp_price
@@ -551,21 +615,46 @@ def build_plan(db, symbol: str, min_usd: float = DEFAULT_MIN_USD) -> SymbolPlan:
     return plan
 
 
-def cancel_orders(order_ids: Sequence[str], dry_run: bool) -> List[str]:
+def cancel_orders(
+    order_ids: Sequence[str],
+    dry_run: bool,
+    *,
+    order_types: Optional[Dict[str, str]] = None,
+    db=None,
+) -> List[str]:
     cancelled = []
+    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
     from app.services.brokers.crypto_com_trade import trade_client
 
+    order_types = order_types or {}
     for oid in order_ids:
         if dry_run:
             logger.info("[DRY-RUN] would cancel order %s", oid)
             cancelled.append(oid)
             continue
         try:
-            result = trade_client.cancel_order(str(oid))
-            logger.info("Cancel %s -> %s", oid, result)
+            otype = order_types.get(str(oid)) or "STOP_LIMIT"
+            result = trade_client.cancel_order(str(oid), order_type=otype)
+            logger.info("Cancel %s type=%s -> %s", oid, otype, result)
             cancelled.append(oid)
+            if db is not None:
+                row = (
+                    db.query(ExchangeOrder)
+                    .filter(ExchangeOrder.exchange_order_id == str(oid))
+                    .first()
+                )
+                if row is not None:
+                    row.status = OrderStatusEnum.CANCELLED
+                    row.updated_at = datetime.now(timezone.utc)
+                    db.add(row)
         except Exception as exc:
             logger.error("Failed to cancel %s: %s", oid, exc)
+    if db is not None and cancelled and not dry_run:
+        try:
+            db.commit()
+        except Exception as commit_err:
+            logger.warning("DB commit after cancel failed: %s", commit_err)
+            db.rollback()
     return cancelled
 
 
@@ -604,7 +693,14 @@ def place_protection(
 
     if cancel_sl_first and plan.protection.active_sl and plan.action in ("create_tp", "create_sl_tp"):
         sl_ids = [str(o.exchange_order_id) for o in plan.protection.active_sl if o.exchange_order_id]
-        result["cancelled_sl"] = cancel_orders(sl_ids, dry_run=dry_run)
+        sl_types = {
+            str(o.exchange_order_id): str(o.order_type or "STOP_LIMIT")
+            for o in plan.protection.active_sl
+            if o.exchange_order_id
+        }
+        result["cancelled_sl"] = cancel_orders(
+            sl_ids, dry_run=dry_run, order_types=sl_types, db=db
+        )
         # After cancelling SL we will recreate both unless tp_only
         if not tp_only:
             plan.action = "create_sl_tp"
@@ -867,6 +963,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if plan.position_qty is not None and plan.position_qty < 0
                         else "BUY"
                     ),
+                    last_price=_fetch_last_for_levels(symbol),
                 )
                 plan.sl_price = sl_price
                 plan.tp_price = tp_price
