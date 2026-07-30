@@ -1,0 +1,72 @@
+--- a/backend/app/services/brokers/crypto_com_trade.py
++++ b/backend/app/services/brokers/crypto_com_trade.py
+@@ -199,6 +199,24 @@
+     def clear_use_proxy_override(self) -> None:
+         _USE_CRYPTO_PROXY_OVERRIDE.set(None)
+ 
++    def _resolve_actual_dry_run(self, dry_run: bool) -> bool:
++        """Resolve whether an order executes as dry-run.
++
++        On AWS the caller's ``dry_run`` (derived from ``get_live_trading(db)``) is
++        authoritative — see ``_refresh_runtime_flags`` docstring. The previous
++        ``dry_run or not self.live_trading`` forced every AWS order to dry because
++        ``self.live_trading`` is pinned False on AWS, so automated orders never
++        executed real. The live-trading mutation gate remains the second barrier on
++        the non-dry path.
++        """
++        try:
++            from app.core.runtime import is_aws_runtime
++            if is_aws_runtime():
++                return bool(dry_run)
++        except Exception:
++            pass
++        return bool(dry_run) or not self.live_trading
++
+     def _refresh_runtime_flags(self) -> None:
+         """
+         Refresh runtime flags. In production (AWS) LIVE_TRADING is never read from env;
+@@ -3032,7 +3050,7 @@
+             raise ValueError("side must be BUY or SELL (entry side)")
+ 
+         self._refresh_runtime_flags()
+-        actual_dry_run = dry_run or not self.live_trading
++        actual_dry_run = self._resolve_actual_dry_run(dry_run)
+ 
+         jsonl_path = f"/tmp/sltp_variants_{correlation_id}.jsonl"
+         closing_side = "SELL" if entry_side == "BUY" else "BUY"
+@@ -3661,7 +3679,7 @@
+         if skip:
+             return {"order_id": None, **skip}
+         self._refresh_runtime_flags()
+-        actual_dry_run = dry_run or not self.live_trading
++        actual_dry_run = self._resolve_actual_dry_run(dry_run)
+         
+         # Validate parameters based on side
+         side_upper = side.upper()
+@@ -4315,7 +4333,7 @@
+     ) -> dict:
+         """Place limit order"""
+         self._refresh_runtime_flags()
+-        actual_dry_run = dry_run or not self.live_trading
++        actual_dry_run = self._resolve_actual_dry_run(dry_run)
+         
+         if actual_dry_run:
+             logger.info(f"DRY_RUN: place_limit_order - {symbol} {side} {qty} @ {price}")
+@@ -4791,7 +4809,7 @@
+     ) -> dict:
+         """Place stop loss order (STOP_LIMIT)"""
+         self._refresh_runtime_flags()
+-        actual_dry_run = dry_run or not self.live_trading
++        actual_dry_run = self._resolve_actual_dry_run(dry_run)
+ 
+         if actual_dry_run:
+             logger.info(f"DRY_RUN: place_stop_loss_order - {symbol} {side} {qty} @ {price} trigger={trigger_price}")
+@@ -5570,7 +5588,7 @@
+     ) -> dict:
+         """Place take profit order (TAKE_PROFIT_LIMIT)"""
+         self._refresh_runtime_flags()
+-        actual_dry_run = dry_run or not self.live_trading
++        actual_dry_run = self._resolve_actual_dry_run(dry_run)
+ 
+         if actual_dry_run:
+             logger.info(f"DRY_RUN: place_take_profit_order - {symbol} {side} {qty} @ {price}")
