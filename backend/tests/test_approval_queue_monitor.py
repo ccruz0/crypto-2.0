@@ -1,13 +1,15 @@
 """Tests for approval queue monitor metrics and lifecycle."""
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.services.approval_queue_monitor import (
     collect_approval_queue_stats,
     collect_jarvis_approval_queue_stats,
+    dedupe_jarvis_waiting_approvals,
     expire_stale_jarvis_waiting_approvals,
     expire_stale_pending_approvals,
+    objective_fingerprint,
     run_approval_queue_maintenance,
 )
 
@@ -102,14 +104,73 @@ class TestJarvisApprovalQueueMonitor(unittest.TestCase):
         self.assertEqual(expired, 0)
         db.commit.assert_not_called()
 
-    def test_run_maintenance_includes_jarvis_expired(self):
+    def test_objective_fingerprint_normalizes_whitespace(self):
+        a = objective_fingerprint("Fix  HostSwap")
+        b = objective_fingerprint("fix hostswap")
+        self.assertEqual(a, b)
+        self.assertEqual(objective_fingerprint("  "), "")
+
+    def test_dedupe_cancels_older_duplicate(self):
+        now = datetime.now(timezone.utc)
+        newer = MagicMock()
+        newer._mapping = {
+            "task_id": "task-new",
+            "objective": "Fix HostSwap",
+            "created_at": now,
+        }
+        older = MagicMock()
+        older._mapping = {
+            "task_id": "task-old",
+            "objective": "fix  hostswap",
+            "created_at": now - timedelta(hours=2),
+        }
         db = MagicMock()
-        # collect agent stats path
+        db.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[newer, older])),
+            MagicMock(rowcount=1),  # UPDATE older
+            MagicMock(),  # audit insert
+        ]
+        cancelled = dedupe_jarvis_waiting_approvals(db)
+        self.assertEqual(cancelled, 1)
+        db.commit.assert_called_once()
+
+    def test_dedupe_keep_task_id_cancels_siblings(self):
+        now = datetime.now(timezone.utc)
+        keep = MagicMock()
+        keep._mapping = {
+            "task_id": "keep-me",
+            "objective": "Same objective",
+            "created_at": now - timedelta(hours=1),
+        }
+        other = MagicMock()
+        other._mapping = {
+            "task_id": "drop-me",
+            "objective": "same objective",
+            "created_at": now,
+        }
+        db = MagicMock()
+        db.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[other, keep])),
+            MagicMock(rowcount=1),
+            MagicMock(),
+        ]
+        cancelled = dedupe_jarvis_waiting_approvals(db, keep_task_id="keep-me")
+        self.assertEqual(cancelled, 1)
+
+    @patch.dict("os.environ", {"APPROVAL_QUEUE_JARVIS_DEDUP_ENABLED": "false"})
+    def test_dedupe_disabled_via_env(self):
+        db = MagicMock()
+        self.assertEqual(dedupe_jarvis_waiting_approvals(db), 0)
+        db.execute.assert_not_called()
+
+    def test_run_maintenance_includes_jarvis_expired_and_deduped(self):
+        db = MagicMock()
         db.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
         db.query.return_value.filter.return_value.all.return_value = []
-        # jarvis collect + jarvis expire SELECT both return empty
         db.execute.return_value.fetchall.return_value = []
         out = run_approval_queue_maintenance(db)
         self.assertIn("jarvis_expired", out)
+        self.assertIn("jarvis_deduped", out)
         self.assertEqual(out["jarvis_expired"], 0)
+        self.assertEqual(out["jarvis_deduped"], 0)
         self.assertEqual(out["expired"], 0)

@@ -271,6 +271,12 @@ def approve_patch_apply(
         current_step="waiting_for_pr_approval",
         approval_status="pending_pr",
     )
+    try:
+        from app.services.approval_queue_monitor import dedupe_jarvis_waiting_for_task
+
+        dedupe_jarvis_waiting_for_task(task_id)
+    except Exception:
+        pass
     return _detail(task_id)
 
 
