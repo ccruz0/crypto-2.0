@@ -16,8 +16,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STALE_HOURS = int(os.getenv("APPROVAL_QUEUE_STALE_HOURS", "24"))
 DEFAULT_EXPIRE_DAYS = int(os.getenv("APPROVAL_QUEUE_EXPIRE_DAYS", "7"))
+DEFAULT_ESCALATE_DAYS = int(os.getenv("APPROVAL_QUEUE_JARVIS_ESCALATE_DAYS", "3"))
+_MAX_ESCALATE_PER_RUN = int(os.getenv("APPROVAL_QUEUE_JARVIS_ESCALATE_MAX_PER_RUN", "20"))
 # Comma-separated risk_level values eligible for ACW auto-expire (default: low only).
 _DEFAULT_JARVIS_EXPIRE_RISKS = "low"
+_DEFAULT_JARVIS_ESCALATE_RISKS = "medium,high"
 JARVIS_WAITING_STATUSES = ("waiting_for_approval", "waiting_for_pr_approval")
 
 
@@ -25,6 +28,21 @@ def _jarvis_expire_risk_levels() -> tuple[str, ...]:
     raw = os.getenv("APPROVAL_QUEUE_JARVIS_EXPIRE_RISK_LEVELS", _DEFAULT_JARVIS_EXPIRE_RISKS)
     levels = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
     return levels or ("low",)
+
+
+def _jarvis_escalate_risk_levels() -> tuple[str, ...]:
+    raw = os.getenv("APPROVAL_QUEUE_JARVIS_ESCALATE_RISK_LEVELS", _DEFAULT_JARVIS_ESCALATE_RISKS)
+    levels = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+    return levels or ("medium", "high")
+
+
+def _jarvis_escalate_enabled() -> bool:
+    return os.getenv("APPROVAL_QUEUE_JARVIS_ESCALATE_ENABLED", "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _jarvis_dedup_enabled() -> bool:
@@ -459,6 +477,207 @@ def dedupe_jarvis_waiting_for_task(task_id: str) -> int:
         db.close()
 
 
+def _already_escalated_task_ids(db: Session, task_ids: list[str]) -> set[str]:
+    if not task_ids:
+        return set()
+    placeholders = ", ".join(f":tid_{i}" for i in range(len(task_ids)))
+    params = {f"tid_{i}": tid for i, tid in enumerate(task_ids)}
+    try:
+        rows = db.execute(
+            text(
+                f"""
+                SELECT DISTINCT task_id
+                FROM jarvis_task_approvals
+                WHERE decision = 'escalated'
+                  AND task_id IN ({placeholders})
+                """
+            ),
+            params,
+        ).fetchall()
+    except Exception as exc:
+        logger.debug("[APPROVAL_QUEUE] escalated lookup unavailable: %s", exc)
+        return set()
+    out: set[str] = set()
+    for row in rows:
+        mapping = row._mapping if hasattr(row, "_mapping") else None
+        tid = mapping["task_id"] if mapping is not None else row[0]
+        if tid:
+            out.add(str(tid))
+    return out
+
+
+def _record_escalation_audit(db: Session, *, task_id: str, msg: str, now: datetime) -> None:
+    try:
+        db.execute(
+            text(
+                """
+                INSERT INTO jarvis_task_approvals (
+                    approval_id, task_id, decision, actor_id, comment, created_at
+                ) VALUES (
+                    :approval_id, :task_id, :decision, :actor_id, :comment, :created_at
+                )
+                """
+            ),
+            {
+                "approval_id": str(uuid.uuid4()),
+                "task_id": task_id,
+                "decision": "escalated",
+                "actor_id": "approval_queue_monitor",
+                "comment": msg[:2000],
+                "created_at": now,
+            },
+        )
+    except Exception as audit_exc:
+        logger.debug(
+            "[APPROVAL_QUEUE] escalation audit insert skipped for %s: %s",
+            task_id,
+            audit_exc,
+        )
+
+
+def _format_escalation_telegram(
+    items: list[dict[str, Any]],
+    *,
+    escalate_days: int,
+) -> str:
+    dashboard = (
+        os.getenv("FRONTEND_URL")
+        or os.getenv("DASHBOARD_URL")
+        or "https://dashboard.hilovivo.com"
+    ).rstrip("/")
+    lines = [
+        "⚠️ <b>Approval Center escalation</b>",
+        f"{len(items)} medium/high ACW task(s) waiting ≥{escalate_days}d:",
+        "",
+    ]
+    for item in items:
+        obj = (item.get("objective") or "").strip().replace("<", "").replace(">", "")
+        if len(obj) > 120:
+            obj = obj[:117] + "..."
+        age_d = float(item.get("age_days") or 0.0)
+        lines.append(
+            f"• <code>{item['task_id']}</code> risk=<b>{item.get('risk_level') or '?'}</b> "
+            f"age={age_d:.1f}d"
+        )
+        if obj:
+            lines.append(f"  {obj}")
+    lines.append("")
+    lines.append(f'Open: <a href="{dashboard}/jarvis/approval">{dashboard}/jarvis/approval</a>')
+    return "\n".join(lines)
+
+
+def escalate_stale_jarvis_waiting_approvals(
+    db: Session,
+    *,
+    escalate_days: int = DEFAULT_ESCALATE_DAYS,
+    risk_levels: tuple[str, ...] | None = None,
+    send_telegram: bool = True,
+) -> int:
+    """Notify ops once for medium/high ACW waiters older than escalate_days.
+
+    Does not cancel tasks (unlike expire/dedupe). Idempotent via
+    ``jarvis_task_approvals.decision='escalated'``.
+    """
+    if not _jarvis_escalate_enabled():
+        return 0
+
+    levels = risk_levels if risk_levels is not None else _jarvis_escalate_risk_levels()
+    if not levels:
+        return 0
+
+    now = _utc_now()
+    cutoff = now - timedelta(days=max(escalate_days, 1))
+    risk_placeholders = ", ".join(f":risk_{i}" for i in range(len(levels)))
+    params: dict[str, Any] = {"cutoff": cutoff, "limit": max(_MAX_ESCALATE_PER_RUN, 1)}
+    for i, level in enumerate(levels):
+        params[f"risk_{i}"] = level
+
+    try:
+        rows = db.execute(
+            text(
+                f"""
+                SELECT task_id, objective, risk_level, created_at, status
+                FROM jarvis_task_runs
+                WHERE status IN ({_waiting_status_sql_list()})
+                  AND lower(coalesce(risk_level, '')) IN ({risk_placeholders})
+                  AND created_at <= :cutoff
+                ORDER BY created_at ASC
+                LIMIT :limit
+                """
+            ),
+            params,
+        ).fetchall()
+    except Exception as exc:
+        logger.debug("[APPROVAL_QUEUE] jarvis escalate query unavailable: %s", exc)
+        return 0
+
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        mapping = row._mapping if hasattr(row, "_mapping") else None
+        task_id = mapping["task_id"] if mapping is not None else row[0]
+        objective = mapping["objective"] if mapping is not None else row[1]
+        risk_level = mapping["risk_level"] if mapping is not None else row[2]
+        created_at = _as_utc(mapping["created_at"] if mapping is not None else row[3])
+        if not task_id:
+            continue
+        age_days = 0.0
+        if created_at is not None:
+            age_days = max(0.0, (now - created_at).total_seconds() / 86400.0)
+        candidates.append(
+            {
+                "task_id": str(task_id),
+                "objective": str(objective or ""),
+                "risk_level": str(risk_level or ""),
+                "age_days": age_days,
+            }
+        )
+
+    if not candidates:
+        return 0
+
+    already = _already_escalated_task_ids(db, [c["task_id"] for c in candidates])
+    to_escalate = [c for c in candidates if c["task_id"] not in already]
+    if not to_escalate:
+        return 0
+
+    if send_telegram:
+        try:
+            from app.services.telegram_notifier import telegram_notifier
+
+            msg = _format_escalation_telegram(to_escalate, escalate_days=escalate_days)
+            ok = telegram_notifier.send_message(
+                msg,
+                origin="AWS",
+                chat_destination="ops",
+            )
+            if not ok:
+                logger.warning(
+                    "[APPROVAL_QUEUE] escalation Telegram send failed/blocked; will retry next run"
+                )
+                return 0
+        except Exception as exc:
+            logger.warning("[APPROVAL_QUEUE] escalation Telegram error: %s", exc)
+            return 0
+
+    audit_msg = (
+        f"Escalated to ops after {escalate_days} days waiting "
+        f"(risk_level in {list(levels)})."
+    )
+    for item in to_escalate:
+        _record_escalation_audit(
+            db, task_id=item["task_id"], msg=audit_msg, now=now
+        )
+
+    db.commit()
+    logger.info(
+        "[APPROVAL_QUEUE] Escalated %s Jarvis waiting task(s) older than %s days (risk=%s)",
+        len(to_escalate),
+        escalate_days,
+        list(levels),
+    )
+    return len(to_escalate)
+
+
 try:
     from prometheus_client import Gauge  # pyright: ignore[reportMissingImports]
 
@@ -525,11 +744,12 @@ def refresh_approval_queue_metrics(db: Session) -> dict[str, Any]:
 
 
 def run_approval_queue_maintenance(db: Session) -> dict[str, Any]:
-    """Refresh metrics, expire old approvals, and dedupe waiting ACW tasks."""
+    """Refresh metrics, expire/dedupe waiting ACW tasks, escalate medium/high."""
     stats = refresh_approval_queue_metrics(db)
     expired = expire_stale_pending_approvals(db)
     jarvis_expired = expire_stale_jarvis_waiting_approvals(db)
     jarvis_deduped = dedupe_jarvis_waiting_approvals(db)
+    jarvis_escalated = escalate_stale_jarvis_waiting_approvals(db)
     # Re-publish gauges after lifecycle cleanup so stale counts drop in the same run.
     if jarvis_expired or expired or jarvis_deduped:
         stats = refresh_approval_queue_metrics(db)
@@ -538,4 +758,5 @@ def run_approval_queue_maintenance(db: Session) -> dict[str, Any]:
         "expired": expired,
         "jarvis_expired": jarvis_expired,
         "jarvis_deduped": jarvis_deduped,
+        "jarvis_escalated": jarvis_escalated,
     }

@@ -537,6 +537,15 @@ class TradingScheduler:
                     )
                 if stats.get("expired", 0) > 0:
                     logger.info("[APPROVAL_QUEUE] expired=%s", stats.get("expired"))
+                if stats.get("jarvis_expired", 0) > 0:
+                    logger.info("[APPROVAL_QUEUE] jarvis_expired=%s", stats.get("jarvis_expired"))
+                if stats.get("jarvis_deduped", 0) > 0:
+                    logger.info("[APPROVAL_QUEUE] jarvis_deduped=%s", stats.get("jarvis_deduped"))
+                if stats.get("jarvis_escalated", 0) > 0:
+                    logger.info(
+                        "[APPROVAL_QUEUE] jarvis_escalated=%s",
+                        stats.get("jarvis_escalated"),
+                    )
                 record_workflow_execution("approval_queue_maintenance", "success", None)
             finally:
                 db.close()
