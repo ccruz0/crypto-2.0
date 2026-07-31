@@ -64,26 +64,22 @@ Health: `https://dashboard.hilovivo.com/api/health`
 
 ## 3. Current priorities (in order)
 
-1. **Investigate memory consumption and swap pressure** (read-only first).
-2. Decide: **(A) upgrade host** vs **(B) split production and LAB** onto separate
-   hosts vs a hybrid approach. Recommend the safest, most cost-effective option.
-3. **`ApprovalQueueStale` alerting** — shipped for Telegram agent approvals;
-   **`JarvisApprovalQueueStale`** covers Approval Center ACW waiting tasks.
-4. Improve the approval-queue lifecycle (expiration policy, deduplication,
-   escalation). Agent queue has 7-day expire; Approval Center still needs
-   expire/dedup/escalation for accumulating low-risk waiting tasks.
+1. **`ApprovalQueueStale` / `JarvisApprovalQueueStale`** — agent queue has 7-day
+   expire; Approval Center still needs expire/dedup/escalation for accumulating
+   low-risk waiting tasks.
+2. Improve the approval-queue lifecycle (expiration policy, deduplication,
+   escalation).
+3. Next capacity move **only if pressure returns**: split observability or canary
+   off the prod host (not another RAM bump). See
+   `docs/project-history/swap_investigation.md` §7.4.
 
-### Active task: HostSwapHigh investigation
-- Highest current production risk is **memory pressure / swap**, not disk
-  (disk was expanded 30 GB → 50 GB, ~48% used, resolved).
-- Observed: `HostSwapHigh` firing, swap ~54%, RAM constrained; Production, LAB,
-  Canary and Observability all share one host.
-- Goals: identify the largest memory consumers; determine swap root cause;
-  compare upgrade vs split vs hybrid (cost, risk, blast radius); recommend.
-- **Read-only investigation only. No changes until the investigation is complete.**
-- For live host data, PROPOSE the read-only commands for the human to run and
-  paste back (e.g. `free -h`, `vmstat`, `docker stats`, per-process `VmSwap`,
-  PromQL for `MemAvailable` / swap). Do not execute them against production yourself.
+### HostSwapHigh — closed (2026-07-31)
+- **Mitigated.** Same instance `i-087953603011543c5` is now **`t3.medium`**;
+  recheck showed swap ~14%, no thrashing; LAB absent from the host.
+- Acute July episode was dockerd log-followers (fixed 2026-07-06). June
+  oversubscription diagnosis remains valid as structural context.
+- **`HostSwapHigh` remains a TRUE POSITIVE alert — do NOT suppress or retune.**
+- Full write-up: `docs/project-history/swap_investigation.md`.
 
 ---
 
