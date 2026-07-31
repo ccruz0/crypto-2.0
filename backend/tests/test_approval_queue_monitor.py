@@ -7,6 +7,7 @@ from app.services.approval_queue_monitor import (
     collect_approval_queue_stats,
     collect_jarvis_approval_queue_stats,
     dedupe_jarvis_waiting_approvals,
+    escalate_stale_jarvis_waiting_approvals,
     expire_stale_jarvis_waiting_approvals,
     expire_stale_pending_approvals,
     objective_fingerprint,
@@ -171,6 +172,65 @@ class TestJarvisApprovalQueueMonitor(unittest.TestCase):
         out = run_approval_queue_maintenance(db)
         self.assertIn("jarvis_expired", out)
         self.assertIn("jarvis_deduped", out)
+        self.assertIn("jarvis_escalated", out)
         self.assertEqual(out["jarvis_expired"], 0)
         self.assertEqual(out["jarvis_deduped"], 0)
+        self.assertEqual(out["jarvis_escalated"], 0)
         self.assertEqual(out["expired"], 0)
+
+    @patch("app.services.telegram_notifier.telegram_notifier")
+    def test_escalate_sends_ops_telegram_once(self, mock_notifier):
+        now = datetime.now(timezone.utc)
+        row = MagicMock()
+        row._mapping = {
+            "task_id": "task-high-old",
+            "objective": "Ship risky change",
+            "risk_level": "high",
+            "created_at": now - timedelta(days=4),
+            "status": "waiting_for_approval",
+        }
+        db = MagicMock()
+        # SELECT candidates, SELECT already-escalated (empty), INSERT audit
+        db.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[row])),
+            MagicMock(fetchall=MagicMock(return_value=[])),
+            MagicMock(),
+        ]
+        mock_notifier.send_message.return_value = True
+        n = escalate_stale_jarvis_waiting_approvals(
+            db, escalate_days=3, risk_levels=("medium", "high")
+        )
+        self.assertEqual(n, 1)
+        mock_notifier.send_message.assert_called_once()
+        kwargs = mock_notifier.send_message.call_args.kwargs
+        self.assertEqual(kwargs.get("chat_destination"), "ops")
+        db.commit.assert_called_once()
+
+    @patch("app.services.telegram_notifier.telegram_notifier")
+    def test_escalate_skips_already_escalated(self, mock_notifier):
+        now = datetime.now(timezone.utc)
+        row = MagicMock()
+        row._mapping = {
+            "task_id": "task-med",
+            "objective": "Already pinged",
+            "risk_level": "medium",
+            "created_at": now - timedelta(days=5),
+            "status": "waiting_for_approval",
+        }
+        already = MagicMock()
+        already._mapping = {"task_id": "task-med"}
+        db = MagicMock()
+        db.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[row])),
+            MagicMock(fetchall=MagicMock(return_value=[already])),
+        ]
+        n = escalate_stale_jarvis_waiting_approvals(db, escalate_days=3)
+        self.assertEqual(n, 0)
+        mock_notifier.send_message.assert_not_called()
+        db.commit.assert_not_called()
+
+    @patch.dict("os.environ", {"APPROVAL_QUEUE_JARVIS_ESCALATE_ENABLED": "false"})
+    def test_escalate_disabled_via_env(self):
+        db = MagicMock()
+        self.assertEqual(escalate_stale_jarvis_waiting_approvals(db), 0)
+        db.execute.assert_not_called()

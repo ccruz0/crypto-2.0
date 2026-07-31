@@ -64,14 +64,10 @@ Health: `https://dashboard.hilovivo.com/api/health`
 
 ## 3. Current priorities (in order)
 
-1. **`ApprovalQueueStale` / `JarvisApprovalQueueStale`** — alerts shipped; agent
-   and ACW low-risk waiting tasks auto-expire after 7 days; **ACW waiting tasks
-   with the same objective fingerprint are deduped** (keep newest) on enqueue and
-   in hourly maintenance (`APPROVAL_QUEUE_JARVIS_DEDUP_ENABLED`, default on).
-   Escalation for long-waiting medium/high remains a follow-up.
-2. Improve the approval-queue lifecycle (**escalation** for long-waiting
-   medium/high ACW tasks).
-3. Next capacity move **only if pressure returns**: split observability or canary
+1. **`ApprovalQueueStale` / `JarvisApprovalQueueStale`** — alerts + 7-day expire
+   (agent + ACW low) + objective dedup + **ops escalation for medium/high ACW
+   waiters ≥`APPROVAL_QUEUE_JARVIS_ESCALATE_DAYS` (default 3)** (once per task).
+2. Capacity move **only if pressure returns**: split observability or canary
    off the prod host (not another RAM bump). See
    `docs/project-history/swap_investigation.md` §7.4.
 
