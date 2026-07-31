@@ -1,10 +1,11 @@
 # Investigación: HostSwapHigh — Resolución de la causa raíz
 
-> **Estado:** CERRADA y RESUELTA (investigación CPU completada 2026-07-06).
-> **Hallazgo 2026-06-26:** sobreaprovisionamiento de RAM — recomendó upgrade/split (pendiente aprobación).
-> **Hallazgo 2026-07-06:** CPU dockerd (no RAM) — causa raíz confirmada y RESUELTA ($0, matar 2 procesos).
-> **Acción ejecutada:** 2026-07-06 09:38 UTC — matar PIDs 2712707 y 3552257 (dockerd CPU 183% → 0%).
-> **Resultado:** `HostSwapHigh` crónico era síntoma downstream de CPU saturada, no déficit de RAM.
+> **Estado:** CERRADA — mitigada por upgrade + fix dockerd (rechequeo 2026-07-31).
+> **Hallazgo 2026-06-26:** sobreaprovisionamiento de RAM — recomendó upgrade/split.
+> **Hallazgo 2026-07-06:** CPU dockerd (no RAM) — causa raíz del episodio agudo; RESUELTA ($0, matar 2 procesos).
+> **Acción 2026-07-06:** matar PIDs 2712707 y 3552257 (dockerd CPU 183% → 0%).
+> **Acción estructural (antes de 2026-07-31):** Opción A aplicada — misma instancia `i-087953603011543c5` ahora es **`t3.medium`** (3.7 GiB RAM).
+> **Rechequeo 2026-07-31:** swap ~14%, sin thrashing; `HostSwapHigh` no es el riesgo activo. **No tocar umbrales.**
 
 ---
 
@@ -248,8 +249,78 @@ para **capacidad estructural a mediano plazo**:
 - **Opción A (mitigation):** Reducir `backend-lab` mem limit de 2G → 512-768M mientras comparta host.
 - **Opción B (split, mejor):** Migrar `backend-lab` a host dedicado (alineado con `atp-lab-ssm-clean`).
 
-Con el fix de dockerd, el host `t3.small` está **cómodo** para producción + canary + observabilidad.
-LAB se puede pausar cuando no esté en uso, o splitear si la presión vuelve.
+Con el fix de dockerd, el host quedó operable; el upgrade a `t3.medium` (ver §7.4)
+cerró el headroom de RAM. LAB se puede pausar cuando no esté en uso, o splitear
+obs/canary si la presión vuelve.
+
+## 7.4 Rechequeo 2026-07-31 (read-only, SSM)
+
+Misma instancia `i-087953603011543c5`, ahora **`t3.medium`**. Sesión SSM vía
+`~/connect_prod.sh`. Sin cambios aplicados en este rechequeo.
+
+### 7.4.1 Memoria y swap
+
+```text
+Mem:   3.7Gi total · 1.7Gi used · 2.1Gi available
+Swap:  2.0Gi total · 277Mi used (~14%) · 1.7Gi free
+vmstat: si/so ≈ 0 tras la 1ª línea (sin thrashing activo)
+swapon: /swapfile 2G, USED 277.5M
+```
+
+| Alerta | Umbral | Estado 2026-07-31 |
+|---|---|---|
+| HostSwapHigh | Swap > 25% por 10m | **NO** (~14%) |
+| HostMemoryHigh | MemAvailable < 10% | **NO** (~2.1 GiB available) |
+
+**Conclusión swap:** el modo de fallo de junio (swap ~50% sostenido en `t3.small`)
+**ya no está presente**. `HostSwapHigh` sigue siendo true positive — **no
+suprimir, no cambiar umbrales**.
+
+### 7.4.2 Contenedores (`sudo docker stats --no-stream`)
+
+LAB **ausente** del host (no hay `backend-lab`). Co-localizados: prod + canary +
+observabilidad + postgres.
+
+| Contenedor | Mem | Límite | CPU% (muestra) |
+|---|---|---|---|
+| postgres_hardened | ~465 MiB | unlimited (host) | 91% → luego 12% (pico, no stuck) |
+| backend-aws | ~295 MiB | 2 GiB | ~2% |
+| backend-aws-canary | ~189 MiB | 1 GiB | ~13% |
+| market-updater | ~86 MiB | unlimited | ~0% |
+| frontend-aws | ~57 MiB | 512 MiB | ~0% |
+| prometheus / grafana / resto obs | ~15–63 MiB c/u | unlimited | bajo |
+
+### 7.4.3 Top VmSwap (host)
+
+| Proceso | VmSwap | Nota |
+|---|---|---|
+| dockerd | ~71 MiB | ruido residual, no hot-loop |
+| python `server.py` | ~26 MiB | |
+| next-server | ~12 MiB | frontend |
+| resto | <10 MiB | |
+
+### 7.4.4 Red Docker (clientes Postgres)
+
+| IP | Contenedor |
+|---|---|
+| 172.18.0.8 | `backend-aws` (prod) |
+| 172.18.0.7 | `backend-aws-canary` |
+| 172.18.0.11 | `market-updater-aws` |
+| 172.18.0.5 | `postgres_hardened` |
+
+`docker top` mostró una sesión `idle in transaction` desde **172.18.0.8** (prod
+backend) en un muestreo anterior; no se confirmó con `psql` (auth env no conectó
+en la sesión). Seguimiento opcional / higiene — **fuera del alcance HostSwapHigh**.
+
+### 7.4.5 Decisión
+
+| Tema | Decisión |
+|---|---|
+| HostSwapHigh | **Cerrado como mitigado** (upgrade `t3.medium` + ausencia de thrashing) |
+| Umbrales PR #76 | **Sin cambio** |
+| Opción A (upgrade) | **Ya aplicada** |
+| Opción B (split LAB) | LAB ya no corre aquí; siguiente split de capacidad, si hace falta: **obs o canary**, no otro bump de RAM |
+| Acción inmediata | Ninguna. No restarts, no kills, no PRs de swap |
 
 ## 8. Bitácora
 
@@ -258,3 +329,5 @@ LAB se puede pausar cuando no esté en uso, o splitear si la presión vuelve.
 | 2026-06-XX | Carlos / agente | Apertura del documento | Plantilla creada |
 | 2026-06-26 | Cursor agent | Runbook read-only ejecutado en i-087953603011543c5 | Datos pegados; causa raíz confirmada |
 | 2026-06-26 | Cursor agent | Cierre investigación + ADR-0002 actualizado | Recomendación: split LAB (B) |
+| 2026-07-06 | Cursor agent | Investigación CPU + kill de 2 `docker compose logs` huérfanos | dockerd 183% → 0%; HostSwapHigh como síntoma downstream |
+| 2026-07-31 | Carlos (SSM) + Cursor agent | Rechequeo read-only post-upgrade | `t3.medium`, swap ~14%, LAB ausente; HostSwapHigh cerrado como mitigado |
