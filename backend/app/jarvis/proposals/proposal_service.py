@@ -401,6 +401,12 @@ def submit_patch_proposal(investigation_id: str) -> dict[str, Any]:
         current_step="waiting_for_approval",
     )
     transition_task_status(task_id, TaskLifecycleState.WAITING_FOR_APPROVAL)
+    try:
+        from app.services.approval_queue_monitor import dedupe_jarvis_waiting_for_task
+
+        dedupe_jarvis_waiting_for_task(task_id)
+    except Exception:
+        pass
     update_investigation_proposal_linkage(
         inv_id,
         proposal_task_id=task_id,
