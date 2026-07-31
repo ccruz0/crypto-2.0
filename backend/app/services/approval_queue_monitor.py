@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -13,6 +14,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STALE_HOURS = int(os.getenv("APPROVAL_QUEUE_STALE_HOURS", "24"))
 DEFAULT_EXPIRE_DAYS = int(os.getenv("APPROVAL_QUEUE_EXPIRE_DAYS", "7"))
+# Comma-separated risk_level values eligible for ACW auto-expire (default: low only).
+_DEFAULT_JARVIS_EXPIRE_RISKS = "low"
+JARVIS_WAITING_STATUSES = ("waiting_for_approval", "waiting_for_pr_approval")
+
+
+def _jarvis_expire_risk_levels() -> tuple[str, ...]:
+    raw = os.getenv("APPROVAL_QUEUE_JARVIS_EXPIRE_RISK_LEVELS", _DEFAULT_JARVIS_EXPIRE_RISKS)
+    levels = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+    return levels or ("low",)
 
 
 def _utc_now() -> datetime:
@@ -161,6 +171,137 @@ def expire_stale_pending_approvals(
     return len(rows)
 
 
+def expire_stale_jarvis_waiting_approvals(
+    db: Session,
+    *,
+    expire_days: int = DEFAULT_EXPIRE_DAYS,
+    risk_levels: tuple[str, ...] | None = None,
+) -> int:
+    """Cancel stale low-risk ACW waiting tasks (Approval Center lifecycle cleanup).
+
+    Mirrors ``expire_stale_pending_approvals`` for Telegram agent approvals.
+    Age is measured from ``created_at`` (same as Jarvis stale metrics). Only
+    ``risk_level`` values in ``risk_levels`` (default: low) are expired so
+    medium/high waiting tasks stay visible for human review.
+    """
+    levels = risk_levels if risk_levels is not None else _jarvis_expire_risk_levels()
+    if not levels:
+        return 0
+
+    now = _utc_now()
+    expire_cutoff = now - timedelta(days=max(expire_days, 1))
+    # Bound risk placeholders; values come from env/defaults, not request input.
+    risk_placeholders = ", ".join(f":risk_{i}" for i in range(len(levels)))
+    status_list = ", ".join(f"'{s}'" for s in JARVIS_WAITING_STATUSES)
+    params: dict[str, Any] = {"cutoff": expire_cutoff}
+    for i, level in enumerate(levels):
+        params[f"risk_{i}"] = level
+
+    try:
+        rows = db.execute(
+            text(
+                f"""
+                SELECT task_id, status, risk_level, created_at
+                FROM jarvis_task_runs
+                WHERE status IN ({status_list})
+                  AND lower(coalesce(risk_level, '')) IN ({risk_placeholders})
+                  AND created_at <= :cutoff
+                ORDER BY created_at ASC
+                """
+            ),
+            params,
+        ).fetchall()
+    except Exception as exc:
+        logger.debug("[APPROVAL_QUEUE] jarvis expire query unavailable: %s", exc)
+        return 0
+
+    if not rows:
+        return 0
+
+    expired = 0
+    msg = (
+        f"Auto-expired after {expire_days} days waiting "
+        f"(Approval Center lifecycle; risk_level in {list(levels)})."
+    )
+    for row in rows:
+        mapping = row._mapping if hasattr(row, "_mapping") else None
+        task_id = mapping["task_id"] if mapping is not None else row[0]
+        if not task_id:
+            continue
+        try:
+            result = db.execute(
+                text(
+                    f"""
+                    UPDATE jarvis_task_runs
+                    SET status = 'cancelled',
+                        approval_status = 'rejected',
+                        final_answer = :msg,
+                        completed_at = :now,
+                        current_step = 'auto_expired'
+                    WHERE task_id = :task_id
+                      AND status IN ({status_list})
+                    """
+                ),
+                {"task_id": task_id, "msg": msg, "now": now},
+            )
+            if getattr(result, "rowcount", 1) == 0:
+                continue
+            try:
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO jarvis_task_approvals (
+                            approval_id, task_id, decision, actor_id, comment, created_at
+                        ) VALUES (
+                            :approval_id, :task_id, :decision, :actor_id, :comment, :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "approval_id": str(uuid.uuid4()),
+                        "task_id": task_id,
+                        "decision": "expired",
+                        "actor_id": "approval_queue_monitor",
+                        "comment": msg[:2000],
+                        "created_at": now,
+                    },
+                )
+            except Exception as audit_exc:
+                # Task cancel still counts; audit table may be absent on older schemas.
+                logger.debug(
+                    "[APPROVAL_QUEUE] jarvis expire audit insert skipped for %s: %s",
+                    task_id,
+                    audit_exc,
+                )
+            try:
+                from app.jarvis.change_execution.sandbox import cleanup_sandbox
+
+                cleanup_sandbox(str(task_id))
+            except Exception as sandbox_exc:
+                logger.debug(
+                    "[APPROVAL_QUEUE] sandbox cleanup skipped for %s: %s",
+                    task_id,
+                    sandbox_exc,
+                )
+            expired += 1
+        except Exception as exc:
+            logger.warning(
+                "[APPROVAL_QUEUE] failed to expire jarvis task %s: %s",
+                task_id,
+                exc,
+            )
+
+    if expired:
+        db.commit()
+        logger.info(
+            "[APPROVAL_QUEUE] Expired %s Jarvis waiting task(s) older than %s days (risk=%s)",
+            expired,
+            expire_days,
+            list(levels),
+        )
+    return expired
+
+
 try:
     from prometheus_client import Gauge  # pyright: ignore[reportMissingImports]
 
@@ -227,7 +368,11 @@ def refresh_approval_queue_metrics(db: Session) -> dict[str, Any]:
 
 
 def run_approval_queue_maintenance(db: Session) -> dict[str, Any]:
-    """Refresh metrics and expire very old pending agent approvals."""
+    """Refresh metrics and expire very old pending / waiting approvals."""
     stats = refresh_approval_queue_metrics(db)
     expired = expire_stale_pending_approvals(db)
-    return {**stats, "expired": expired}
+    jarvis_expired = expire_stale_jarvis_waiting_approvals(db)
+    # Re-publish gauges after expire so stale counts drop in the same run.
+    if jarvis_expired or expired:
+        stats = refresh_approval_queue_metrics(db)
+    return {**stats, "expired": expired, "jarvis_expired": jarvis_expired}
