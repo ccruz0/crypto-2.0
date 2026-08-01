@@ -246,7 +246,8 @@ def can_place_real_order(
     Checks in order:
     1. Live toggle must be ON (TradingSettings.LIVE_TRADING) - skipped for protective
        SL/TP orders (is_protective_order=True)
-    2. Telegram kill switch must be OFF (TradingSettings.TRADING_KILL_SWITCH)
+    2. Telegram kill switch must be OFF (TradingSettings.TRADING_KILL_SWITCH) -
+       skipped for protective SL/TP orders (is_protective_order=True)
     3. Trade Yes for symbol must be YES (WatchlistItem.trade_enabled) - skipped if ignore_trade_yes=True
     4. TRADING_ENABLED env (optional final override - if false, always block)
     5. Optional allowlist (TRADE_ALLOWLIST, if set)
@@ -263,10 +264,12 @@ def can_place_real_order(
         ignore_cooldown: If True, skip MIN_SECONDS_BETWEEN_ORDERS check (protective SL/TP orders)
         parent_order_id: Optional parent order id for logs (SL/TP tracing)
         is_protective_order: If True, this is a protective Stop-Loss / Take-Profit order
-            for an EXISTING position. The LIVE_TRADING toggle (step 1) does NOT block such
-            orders, so turning trading OFF never strips protection from open positions
+            for an EXISTING position. Neither the LIVE_TRADING toggle (step 1) nor the
+            global trading kill switch (step 2) blocks such orders, so turning trading
+            OFF / an emergency stop never strips protection from open positions
             (naked-position incident, DOT_USD/ETH 2026-07-04). NEW entry orders are
-            unaffected and still fail-closed-blocked when the toggle is OFF.
+            unaffected and still fail-closed-blocked when the toggle is OFF or the
+            kill switch is ON.
 
     Returns:
         Tuple[allowed, block_reason]
@@ -298,18 +301,26 @@ def can_place_real_order(
             reason = "blocked: error checking Live toggle"
             return False, reason
     
-    # 2. Telegram kill switch must be OFF
-    try:
-        kill_switch_on = _get_telegram_kill_switch_status(db)
-        if kill_switch_on:
-            reason = "blocked: Telegram kill switch is ON"
-            logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+    # 2. Telegram kill switch must be OFF (NEW entry orders only).
+    # Protective SL/TP orders for EXISTING positions are exempt: an emergency stop
+    # must never strip protection from open positions. The kill switch read is
+    # fail-closed for entries (DB error / unknown -> ON -> block).
+    if is_protective_order:
+        logger.info(
+            f"[GUARDRAIL] kill switch check bypassed for protective SL/TP order symbol={symbol} side={side}"
+        )
+    else:
+        try:
+            kill_switch_on = _get_telegram_kill_switch_status(db)
+            if kill_switch_on:
+                reason = "blocked: Telegram kill switch is ON"
+                logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+                return False, reason
+        except Exception as e:
+            logger.error(f"Error checking Telegram kill switch: {e}")
+            # Conservative: block on error
+            reason = "blocked: error checking Telegram kill switch"
             return False, reason
-    except Exception as e:
-        logger.error(f"Error checking Telegram kill switch: {e}")
-        # Conservative: block on error
-        reason = "blocked: error checking Telegram kill switch"
-        return False, reason
     
     # 3. Trade Yes for symbol must be YES (unless ignored)
     if not ignore_trade_yes:
