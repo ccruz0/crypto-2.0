@@ -32,4 +32,9 @@ See **`host-swap-status-2026-07-17.md`** for the reconciled recommendation (Open
 
 ## Decision
 
-Pending human approval before any infra change. Do **not** suppress `HostSwapHigh`.
+**Closed as mitigated (2026-07-31).** Prod instance `i-087953603011543c5` was resized to
+`t3.medium`; recheck showed swap ~14% with no thrashing; LAB absent from the host.
+Full write-up: `swap_investigation.md` §7.4. Follow-up capacity move (split observability /
+canary) only if pressure returns — see current `CLAUDE.md` priorities.
+
+Do **not** suppress or retune `HostSwapHigh` (true positive alert remains).

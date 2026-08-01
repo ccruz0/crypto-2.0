@@ -7,11 +7,11 @@ Read-only synthesis. No infra changes applied. Do **not** suppress `HostSwapHigh
 | Layer | Status |
 |-------|--------|
 | Acute dockerd hot-loop (orphaned `docker compose logs`) | **Fixed** 2026-07-06 — see `swap_investigation.md` §6.1 |
-| Structural oversubscription on single `t3.small` | **Still open** — Jul 10 host snapshot still showed ~50% swap |
-| ADR-0002 (upgrade vs split vs hybrid) | **Recommended, not implemented** |
-| Prod code tip | Deployed: `a2e60c93` (#177), healthy |
+| Structural oversubscription on single `t3.small` | **Mitigated** — Option A applied: same instance is now `t3.medium` (2026-07-22 / recheck 2026-07-31) |
+| ADR-0002 (upgrade vs split vs hybrid) | **Upgrade done**; further split of observability/canary only if pressure returns |
+| HostSwapHigh episode | **Closed as mitigated** — swap ~14%, no thrashing; LAB absent (`swap_investigation.md` §7.4) |
 
-**`HostSwapHigh` remains a true positive until prod swap stays &lt;25% for a sustained window.** Residual pages after the dockerd kill can keep the alert firing even when `si/so≈0`; only a fresh host snapshot confirms whether pressure is active thrashing or leftover occupancy.
+**`HostSwapHigh` remains a TRUE POSITIVE alert — do not suppress or retune thresholds.** The incident is closed as mitigated, not as “alert deleted.”
 
 ## Timeline (reconciled)
 
