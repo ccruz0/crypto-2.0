@@ -28,6 +28,11 @@ class TelegramSettingsRequest(BaseModel):
     enabled: bool
 
 
+class KillSwitchRequest(BaseModel):
+    # True = kill switch ON (block all trading); False = OFF (allow trading)
+    enabled: bool
+
+
 def _get_live_trading_from_db(db: Session) -> bool:
     """Get LIVE_TRADING setting from database, fallback to environment variable"""
     try:
@@ -255,6 +260,127 @@ def toggle_live_trading(
         log.error(f"Error toggling live trading: {e}", exc_info=True)
         # Always return JSON on error
         return {"ok": False, "success": False, "error": str(e), "mode": "DRY_RUN"}
+
+
+def _set_kill_switch_in_db(db: Session, enabled: bool) -> bool:
+    """Set the global trading kill switch (TRADING_KILL_SWITCH) in the database."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Clear any failed transaction state first.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+            setting = db.query(TradingSettings).filter(
+                TradingSettings.setting_key == "TRADING_KILL_SWITCH"
+            ).first()
+
+            if setting:
+                setting.setting_value = "true" if enabled else "false"
+                setting.updated_at = func.now()
+            else:
+                setting = TradingSettings(
+                    setting_key="TRADING_KILL_SWITCH",
+                    setting_value="true" if enabled else "false",
+                    description="Global Telegram kill switch to disable all trading",
+                )
+                db.add(setting)
+
+            db.commit()
+            log.warning(
+                f"🛑 TRADING_KILL_SWITCH set to {'ON' if enabled else 'OFF'} in database (attempt {attempt + 1})"
+            )
+            return True
+        except Exception as e:
+            log.error(
+                f"Error setting TRADING_KILL_SWITCH in database (attempt {attempt + 1}/{max_retries}): {e}",
+                exc_info=True,
+            )
+            try:
+                db.rollback()
+            except Exception as rollback_error:
+                log.error(f"Error during rollback: {rollback_error}")
+
+            if attempt == max_retries - 1:
+                return False
+
+            import time
+            time.sleep(0.1 * (attempt + 1))
+
+    return False
+
+
+@router.get("/trading/kill-switch")
+def get_kill_switch_status(db: Session = Depends(get_db)):
+    """
+    Get the current global trading kill switch status.
+
+    When ON, all real order placement (manual + automatic signal paths) is blocked.
+    Reads TradingSettings.TRADING_KILL_SWITCH (fail-closed: returns ON if unreadable).
+    """
+    try:
+        from app.utils.trading_guardrails import _get_telegram_kill_switch_status
+
+        kill_switch_on = _get_telegram_kill_switch_status(db)
+        return {
+            "ok": True,
+            "success": True,
+            "kill_switch_on": kill_switch_on,
+            "trading_blocked": kill_switch_on,
+            "message": (
+                "Kill switch is ON - ALL trading is blocked"
+                if kill_switch_on
+                else "Kill switch is OFF - trading allowed (subject to other gates)"
+            ),
+        }
+    except Exception as e:
+        log.error(f"Error getting kill switch status: {e}", exc_info=True)
+        # Fail-closed in the response surface as well.
+        return {
+            "ok": False,
+            "success": False,
+            "kill_switch_on": True,
+            "trading_blocked": True,
+            "error": str(e),
+        }
+
+
+@router.post("/trading/kill-switch")
+def set_kill_switch(request: KillSwitchRequest, db: Session = Depends(get_db)):
+    """
+    Set the global trading kill switch on/off (operator control).
+
+    Body: { "enabled": true }  -> kill switch ON (block ALL trading)
+    Body: { "enabled": false } -> kill switch OFF (allow trading, subject to other gates)
+    """
+    try:
+        enabled = request.enabled
+        success = _set_kill_switch_in_db(db, enabled)
+
+        if not success:
+            log.error("Failed to save TRADING_KILL_SWITCH setting to database")
+            return {
+                "ok": False,
+                "success": False,
+                "error": "Failed to save TRADING_KILL_SWITCH setting to database",
+            }
+
+        return {
+            "ok": True,
+            "success": True,
+            "kill_switch_on": enabled,
+            "trading_blocked": enabled,
+            "message": (
+                "🛑 Kill switch ACTIVATED - ALL trading is now blocked"
+                if enabled
+                else "🟢 Kill switch DEACTIVATED - trading allowed (subject to other gates)"
+            ),
+        }
+    except Exception as e:
+        log.error(f"Error setting kill switch: {e}", exc_info=True)
+        return {"ok": False, "success": False, "error": str(e)}
 
 
 @router.post("/telegram/update-commands")
