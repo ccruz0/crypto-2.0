@@ -435,3 +435,78 @@ def test_cancel_oco_sibling_soft_check_native_list_id(db_session, monkeypatch):
     assert not cancel_calls
     db_session.refresh(sibling)
     assert sibling.status == OrderStatusEnum.CANCELLED
+
+
+def test_create_oco_repairs_stale_long_tp_behind_market(db_session, monkeypatch):
+    """Late OCO with entry+1% TP already below mark must not send stale trigger.
+
+    Prod AAVE: entry 96.812 → TP 97.78 rejected when mark had already run past.
+    Standalone TP creator repaired; native OCO previously did not.
+    """
+    from app.services.tp_sl_order_creator import create_oco_protection_orders
+
+    place_calls = []
+
+    def _place(**kwargs):
+        place_calls.append(kwargs)
+        return {
+            "list_id": "6498090546073120999",
+            "tp_order_id": "tp-repaired",
+            "sl_order_id": "sl-repaired",
+            "tp_order_type": "LIMIT",
+            "sl_order_type": "STOP_LIMIT",
+        }
+
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.trade_client.place_oco_sl_tp",
+        _place,
+    )
+    monkeypatch.setattr(
+        "app.services.tp_sl_order_creator.can_place_real_order",
+        lambda **_k: (True, None),
+    )
+    monkeypatch.setattr(
+        "app.utils.sl_trigger_guard.fetch_last_price",
+        lambda _symbol: 98.50,
+    )
+
+    # Force +1% TP / 10% SL via ensure_valid_* percentage args by stubbing
+    # the watchlist lookup inside create_oco_protection_orders.
+    wl = MagicMock()
+    wl.tp_percentage = 1.0
+    wl.sl_percentage = 10.0
+    real_query = db_session.query
+
+    def _query(model):
+        from app.models.watchlist import WatchlistItem
+
+        if model is WatchlistItem:
+            return MagicMock(
+                filter=MagicMock(
+                    return_value=MagicMock(first=MagicMock(return_value=wl))
+                )
+            )
+        return real_query(model)
+
+    monkeypatch.setattr(db_session, "query", _query)
+
+    result = create_oco_protection_orders(
+        db=db_session,
+        symbol="AAVE_USD",
+        side="BUY",
+        tp_price=97.78,  # entry 96.812 + 1% — already behind mark 98.50
+        sl_price=87.13,
+        quantity=0.103,
+        entry_price=96.812,
+        parent_order_id="5755600492313745241",
+        dry_run=False,
+        source="test",
+    )
+
+    assert not result.get("error"), result
+    assert place_calls, "place_oco_sl_tp must be called with repaired prices"
+    sent_tp = float(place_calls[0]["tp_price"])
+    # mark 98.50 * 1.01 ≈ 99.485 — must be above mark, not stale 97.78
+    assert sent_tp > 98.50
+    assert sent_tp == pytest.approx(98.50 * 1.01, rel=1e-6)
+    assert float(place_calls[0]["sl_price"]) < 98.50
