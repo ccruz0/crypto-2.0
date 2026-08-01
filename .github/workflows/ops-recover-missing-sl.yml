@@ -1,14 +1,13 @@
-# Ops: lower maxOpenOrdersTotal to 10 and recover missing short TPs.
-# Cap step uses public GET /api/config (and PUT merge if needed).
-# Recover step requires repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
-# Optional: secrets.API_KEY / secrets.API_URL (sent as x-api-key when present).
-name: Ops — cap open orders + recover missing TPs
+# Ops: recreate missing / under-covered STOP_LOSS after TP-only recovery.
+# Requires repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+# Do NOT pass --tp-only (that skips SL recreate after --cancel-sl-first).
+name: Ops — recover missing SLs
 
 on:
   workflow_dispatch:
     inputs:
       dry_run_only:
-        description: "If true, only dry-run TP recovery (still sets limit to 10)"
+        description: "If true, only dry-run SL recovery"
         required: false
         default: "false"
         type: choice
@@ -16,67 +15,16 @@ on:
           - "false"
           - "true"
       symbols:
-        description: "Space-separated symbols for TP recovery"
+        description: "Space-separated symbols for SL recovery"
         required: false
-        default: "ALGO_USD DOGE_USD DOT_USD ETH_USDT ETH_USD"
+        default: "ALGO_USD"
 
 permissions:
   contents: read
 
 jobs:
-  set-open-order-cap:
+  recover-missing-sls:
     runs-on: ubuntu-latest
-    steps:
-      - name: Ensure maxOpenOrdersTotal=10 via API
-        env:
-          API_URL: ${{ secrets.API_URL }}
-          API_KEY: ${{ secrets.API_KEY }}
-        run: |
-          set -euo pipefail
-          API_URL="${API_URL:-https://dashboard.hilovivo.com/api}"
-          sudo apt-get update -qq && sudo apt-get install -y -qq jq >/dev/null
-
-          AUTH_ARGS=()
-          if [ -n "${API_KEY:-}" ]; then
-            AUTH_ARGS=(-H "x-api-key: $API_KEY")
-          else
-            echo "Note: secrets.API_KEY unset; using unauthenticated config GET/PUT merge"
-          fi
-
-          echo "Fetching current config..."
-          curl -sk "${AUTH_ARGS[@]}" "$API_URL/config" -o /tmp/cfg.json
-          before=$(jq -r '.trading_limits.maxOpenOrdersTotal // "unset"' /tmp/cfg.json)
-          echo "BEFORE maxOpenOrdersTotal=$before"
-          if [ "$before" = "10" ]; then
-            echo "Already at maxOpenOrdersTotal=10; skipping PUT"
-            exit 0
-          fi
-
-          # PUT /api/config merges into existing config; send trading_limits only.
-          jq -n --argjson tl "$(jq '.trading_limits // {}' /tmp/cfg.json)" \
-            '{trading_limits: ($tl + {maxOpenOrdersTotal: 10})}' > /tmp/cfg_patch.json
-          echo "PUTting trading_limits.maxOpenOrdersTotal=10..."
-          http_code=$(curl -sk -o /tmp/cfg_saved.json -w '%{http_code}' \
-            "${AUTH_ARGS[@]}" -H "Content-Type: application/json" \
-            -X PUT "$API_URL/config" --data-binary @/tmp/cfg_patch.json)
-          echo "PUT http_code=$http_code"
-          # Response shape is {"ok":true,"config":{...}} (not raw config).
-          after=$(jq -r '
-            (.config.trading_limits.maxOpenOrdersTotal
-             // .trading_limits.maxOpenOrdersTotal
-             // "missing")
-          ' /tmp/cfg_saved.json)
-          if [ "$after" = "missing" ] || [ "$after" = "null" ]; then
-            curl -sk "${AUTH_ARGS[@]}" "$API_URL/config" -o /tmp/cfg_after.json
-            after=$(jq -r '.trading_limits.maxOpenOrdersTotal // "missing"' /tmp/cfg_after.json)
-          fi
-          echo "AFTER maxOpenOrdersTotal=$after"
-          test "$http_code" = "200"
-          test "$after" = "10"
-
-  recover-missing-tps:
-    runs-on: ubuntu-latest
-    needs: set-open-order-cap
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -85,32 +33,34 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-southeast-1
 
-      # AWS-RunShellScript uses /bin/sh. Avoid docker --format '{{.Names}}':
-      # SSM document templating mangles {{...}} and yields "Syntax error: ( unexpected".
-      - name: Dry-run recover_missing_tps on PROD
+      # AWS-RunShellScript uses /bin/sh. Avoid docker --format '{{.Names}}'.
+      - name: Dry-run recover_missing_tps (SL allowed)
         env:
           INSTANCE_ID: i-087953603011543c5
           SYMBOLS: ${{ github.event.inputs.symbols }}
         run: |
           set -euo pipefail
-          SYMBOLS="${SYMBOLS:-ALGO_USD DOGE_USD DOT_USD ETH_USDT ETH_USD}"
+          SYMBOLS="${SYMBOLS:-ALGO_USD}"
           case "$SYMBOLS" in
             *[!A-Za-z0-9_\ ]*) echo "Invalid symbols input: $SYMBOLS" >&2; exit 1 ;;
           esac
-          # Match deploy-backend.yml: heredoc + jq so escaping is reliable.
           read -r -d '' REMOTE <<EOF || true
           set -eu
           cd /home/ubuntu/crypto-2.0
+          # Prefer host-mounted /repo script (compose mounts .:/repo:ro) so this
+          # workflow picks up undercoverage fix without waiting for ECR rebuild.
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- backend/scripts/recover_missing_tps.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER
           test -n "\$CONTAINER"
-          docker exec "\$CONTAINER" python3 /app/scripts/recover_missing_tps.py --tp-only ${SYMBOLS}
+          docker exec "\$CONTAINER" python3 /repo/backend/scripts/recover_missing_tps.py ${SYMBOLS}
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "dry-run recover_missing_tps" \
+            --comment "dry-run recover_missing_sl" \
             --parameters "$PARAMS" \
             --timeout-seconds 300 \
             --output text \
@@ -135,32 +85,33 @@ jobs:
             --query "StandardErrorContent" --output text || true
           test "$STATUS" = "Success"
 
-      - name: Live recover_missing_tps (--cancel-sl-first, recreates SL+TP)
+      - name: Live recover_missing_tps (create missing SLs)
         if: ${{ github.event.inputs.dry_run_only != 'true' }}
         env:
           INSTANCE_ID: i-087953603011543c5
           SYMBOLS: ${{ github.event.inputs.symbols }}
         run: |
           set -euo pipefail
-          SYMBOLS="${SYMBOLS:-ALGO_USD DOGE_USD DOT_USD ETH_USDT ETH_USD}"
+          SYMBOLS="${SYMBOLS:-ALGO_USD}"
           case "$SYMBOLS" in
             *[!A-Za-z0-9_\ ]*) echo "Invalid symbols input: $SYMBOLS" >&2; exit 1 ;;
           esac
           read -r -d '' REMOTE <<EOF || true
           set -eu
           cd /home/ubuntu/crypto-2.0
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- backend/scripts/recover_missing_tps.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER
           test -n "\$CONTAINER"
-          # Do not combine --tp-only with --cancel-sl-first: cancels SLs and never
-          # recreates them (left ALGO TP-only / under-covered in ops run #4).
-          docker exec "\$CONTAINER" python3 /app/scripts/recover_missing_tps.py --live --cancel-sl-first ${SYMBOLS}
+          # No --tp-only: must recreate SLs. No --cancel-sl-first: keep existing SL legs.
+          docker exec "\$CONTAINER" python3 /repo/backend/scripts/recover_missing_tps.py --live ${SYMBOLS}
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "live recover_missing_tps cancel-sl-first" \
+            --comment "live recover_missing_sl" \
             --parameters "$PARAMS" \
             --timeout-seconds 600 \
             --output text \

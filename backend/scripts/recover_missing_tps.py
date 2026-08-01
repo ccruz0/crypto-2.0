@@ -593,9 +593,21 @@ def build_plan(db, symbol: str, min_usd: float = DEFAULT_MIN_USD) -> SymbolPlan:
 
     has_sl = bool(protection.active_sl)
     has_tp = bool(protection.active_tp)
+    sl_qty = sum(float(getattr(o, "quantity", 0) or 0) for o in protection.active_sl)
+    pos_for_cover = float(qty or 0)
 
     if has_sl and has_tp:
-        plan.action = "ok_protected"
+        # Ops #4 left ALGO with TP but only partial SL after --tp-only --cancel-sl-first.
+        # Treat under-covered SL as missing so gap qty can be recreated.
+        if pos_for_cover > 0 and sl_qty + 1e-9 < pos_for_cover * 0.98:
+            gap = max(pos_for_cover - sl_qty, 0.0)
+            plan.action = "create_sl"
+            plan.qty_to_use = gap
+            plan.notes.append(
+                f"SL undercovered sl_qty={sl_qty} pos={pos_for_cover} gap={gap}"
+            )
+        else:
+            plan.action = "ok_protected"
     elif has_tp and not has_sl:
         plan.action = "create_sl"
     elif has_sl and not has_tp:
