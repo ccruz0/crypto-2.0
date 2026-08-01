@@ -8731,7 +8731,7 @@ class SignalMonitorService:
                 except Exception as alert_err:
                     logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
                 
-                filled_quantity = float(executed_qty_raw_decimal) if executed_qty_raw_decimal and isinstance(executed_qty_raw_decimal, Decimal) else filled_quantity
+                    filled_quantity = float(executed_qty_raw_decimal) if executed_qty_raw_decimal and isinstance(executed_qty_raw_decimal, Decimal) else filled_quantity
             else:
                 executed_qty_raw_float = float(executed_qty_raw_decimal)
                 
@@ -8767,7 +8767,7 @@ class SignalMonitorService:
                     )
                     logger.error(f"❌ [SL/TP] {error_msg}")
                     
-                    # FORCED CLOSE: Place immediate SELL MARKET order to close position
+                    # FORCED CLOSE: Place immediate SELL MARKET order to close unprotected position
                     try:
                         from app.utils.live_trading import get_live_trading_status
                         live_trading = get_live_trading_status(db)
@@ -8860,67 +8860,8 @@ class SignalMonitorService:
                         f"(symbol={symbol})"
                     )
 
-                    # Send Telegram notification only after fill confirmation
-                    if DEBUG_TRADING:
-                        logger.info(f"[DEBUG_TRADING] {symbol} BUY: About to send Telegram notification for FILLED order {order_id}")
-                    try:
-                        alert_origin = get_runtime_origin()
-                        if DEBUG_TRADING:
-                            logger.info(f"[DEBUG_TRADING] {symbol} BUY: Calling send_order_created with origin={alert_origin}")
-                        if self._telegram_send_enabled():
-                            telegram_notifier.send_order_created(
-                                symbol=symbol,
-                                side="BUY",
-                            price=float(executed_avg_price),
-                            quantity=normalized_qty,
-                            order_id=str(order_id),
-                            margin=use_margin,
-                            leverage=10 if use_margin else None,
-                            dry_run=dry_run_mode,
-                            order_type="MARKET",
-                            origin=alert_origin
-                        )
-                        buy_alert_sent_successfully = True
-                        logger.info(f"✅ Sent Telegram notification for FILLED BUY order: {symbol} - {order_id} (origin={alert_origin})")
-                        if DEBUG_TRADING:
-                            logger.info(f"[DEBUG_TRADING] {symbol} BUY: Telegram notification sent successfully")
-                    except Exception as telegram_err:
-                        buy_alert_sent_successfully = False
-                        logger.error(f"❌ Failed to send Telegram notification for FILLED BUY order: {telegram_err}", exc_info=True)
-                        if DEBUG_TRADING:
-                            logger.error(f"[DEBUG_TRADING] {symbol} BUY: Telegram notification FAILED - {telegram_err}", exc_info=True)
-
-                    # Update the original BUY SIGNAL message with decision tracing (BR-4)
-                    if buy_alert_sent_successfully:
-                        try:
-                            from app.api.routes_monitoring import update_telegram_message_decision_trace
-                            from app.utils.decision_reason import make_execute, ReasonCode
-                            decision_reason = make_execute(
-                                reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
-                                message=f"Order confirmed FILLED: order_id={order_id}",
-                                context={
-                                    "symbol": symbol,
-                                    "order_id": str(order_id),
-                                    "price": float(executed_avg_price),
-                                    "quantity": normalized_qty,
-                                },
-                                source="exchange",
-                            )
-                            update_telegram_message_decision_trace(
-                                db=db,
-                                symbol=symbol,
-                                message_pattern="BUY SIGNAL",
-                                decision_type="EXECUTED",
-                                reason_code=decision_reason.reason_code,
-                                reason_message=decision_reason.reason_message,
-                                context_json=decision_reason.context,
-                                correlation_id=decision_reason.correlation_id if hasattr(decision_reason, 'correlation_id') else None,
-                            )
-                        except Exception as update_err:
-                            logger.warning(f"Failed to update original BUY SIGNAL message for {symbol} on ORDER_CREATED: {update_err}")
-                    
-                    # IDEMPOTENCY GUARD: Check if SL/TP already exist for this order
-                    # ExchangeOrder is already imported at module level (line 16) - no local import needed
+                    # Protection BEFORE Telegram: tight TP% (e.g. +1%) races the market.
+                    # Also pass the already-confirmed fill so we do not re-poll (~10s).
                     existing_sl_tp = db.query(ExchangeOrder).filter(
                         ExchangeOrder.parent_order_id == str(order_id),
                         ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
@@ -8969,6 +8910,7 @@ class SignalMonitorService:
                                 source="signal_monitor",
                                 is_margin=use_margin,
                                 leverage=leverage_value if use_margin else None,
+                                filled_confirmation=filled_confirmation,
                             )
                             filled_quantity = normalized_qty
                         
@@ -9098,6 +9040,78 @@ class SignalMonitorService:
                                 )
                             
                             filled_quantity = normalized_qty
+
+                    # Notify after protection attempt (do not delay TP for Telegram RTT).
+                    if DEBUG_TRADING:
+                        logger.info(
+                            f"[DEBUG_TRADING] {symbol} BUY: About to send Telegram notification "
+                            f"for FILLED order {order_id}"
+                        )
+                    try:
+                        alert_origin = get_runtime_origin()
+                        if self._telegram_send_enabled():
+                            telegram_notifier.send_order_created(
+                                symbol=symbol,
+                                side="BUY",
+                                price=float(executed_avg_price),
+                                quantity=normalized_qty,
+                                order_id=str(order_id),
+                                margin=use_margin,
+                                leverage=10 if use_margin else None,
+                                dry_run=dry_run_mode,
+                                order_type="MARKET",
+                                origin=alert_origin,
+                            )
+                        buy_alert_sent_successfully = True
+                        logger.info(
+                            f"✅ Sent Telegram notification for FILLED BUY order: "
+                            f"{symbol} - {order_id} (origin={alert_origin})"
+                        )
+                    except Exception as telegram_err:
+                        buy_alert_sent_successfully = False
+                        logger.error(
+                            f"❌ Failed to send Telegram notification for FILLED BUY order: "
+                            f"{telegram_err}",
+                            exc_info=True,
+                        )
+
+                    if buy_alert_sent_successfully:
+                        try:
+                            from app.api.routes_monitoring import (
+                                update_telegram_message_decision_trace,
+                            )
+                            from app.utils.decision_reason import ReasonCode, make_execute
+
+                            decision_reason = make_execute(
+                                reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
+                                message=f"Order confirmed FILLED: order_id={order_id}",
+                                context={
+                                    "symbol": symbol,
+                                    "order_id": str(order_id),
+                                    "price": float(executed_avg_price),
+                                    "quantity": normalized_qty,
+                                },
+                                source="exchange",
+                            )
+                            update_telegram_message_decision_trace(
+                                db=db,
+                                symbol=symbol,
+                                message_pattern="BUY SIGNAL",
+                                decision_type="EXECUTED",
+                                reason_code=decision_reason.reason_code,
+                                reason_message=decision_reason.reason_message,
+                                context_json=decision_reason.context,
+                                correlation_id=(
+                                    decision_reason.correlation_id
+                                    if hasattr(decision_reason, "correlation_id")
+                                    else None
+                                ),
+                            )
+                        except Exception as update_err:
+                            logger.warning(
+                                f"Failed to update original BUY SIGNAL message for "
+                                f"{symbol} on ORDER_CREATED: {update_err}"
+                            )
         else:
             # Order not confirmed FILLED after polling - try to create SL/TP with estimated values
             # For MARKET orders, they typically fill immediately, so we should create SL/TP even if status is uncertain
@@ -9730,12 +9744,18 @@ class SignalMonitorService:
         source: str = "signal_monitor",
         is_margin: bool = False,
         leverage: Optional[float] = None,
+        filled_confirmation: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Create SL/TP after a confirmed entry fill (BUY long or SELL short).
 
         ``is_margin`` / ``leverage`` describe how the entry was opened so that, if
         protection cannot be created, the emergency flatten closes the position in the
         SAME margin mode (a margin long flattened as spot is rejected with 306).
+
+        Pass ``filled_confirmation`` when the caller already polled/confirmed the fill.
+        Re-polling from the raw placement ``result`` (often still NEW / no qty) was
+        adding up to ~10s before TP on the hot path — enough for a tight +1% target
+        to be behind the market (prod AAVE_USD).
         """
         from decimal import Decimal
         from app.services.exchange_sync import exchange_sync_service
@@ -9745,39 +9765,52 @@ class SignalMonitorService:
             logger.error(f"[SL/TP] Invalid entry_side={entry_side!r} for {symbol} order {order_id}")
             return None
 
-        result_status = (placement_result.get("status") or "").upper()
-        is_filled_immediately = result_status in [
-            "FILLED", "PARTIALLY_FILLED", "PARTIALLY FILLED", "CANCELED", "CANCELLED"
-        ]
-        has_cumulative_qty = placement_result.get("cumulative_quantity") and float(
-            placement_result.get("cumulative_quantity", 0) or 0
-        ) > 0
-
-        filled_confirmation = None
-        if is_filled_immediately and has_cumulative_qty:
-            cumulative_qty_raw = placement_result.get("cumulative_quantity")
+        # Prefer caller-confirmed fill; only poll when we do not already have one.
+        confirmed = filled_confirmation
+        if confirmed and (confirmed.get("status") or "").upper() == "FILLED":
+            qty = confirmed.get("cumulative_quantity")
             try:
-                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw)) if cumulative_qty_raw else None
-                avg_price_raw = placement_result.get("avg_price")
-                avg_price_value = float(avg_price_raw) if avg_price_raw else estimated_price
-            except (ValueError, TypeError):
-                cumulative_qty_decimal = None
-                avg_price_value = estimated_price
+                qty_ok = qty is not None and Decimal(str(qty)) > 0
+            except Exception:
+                qty_ok = False
+            if not qty_ok:
+                confirmed = None
 
-            if cumulative_qty_decimal and cumulative_qty_decimal > 0:
-                filled_confirmation = {
-                    "status": "FILLED",
-                    "cumulative_quantity": cumulative_qty_decimal,
-                    "avg_price": avg_price_value,
-                    "filled_price": avg_price_value,
-                }
-        else:
-            filled_confirmation = self._poll_order_fill_confirmation(
-                symbol=symbol,
-                order_id=str(order_id),
-                max_attempts=ORDER_FILL_POLL_MAX_ATTEMPTS,
-                poll_interval=ORDER_FILL_POLL_INTERVAL_SECONDS,
-            )
+        if confirmed is None:
+            result_status = (placement_result.get("status") or "").upper()
+            is_filled_immediately = result_status in [
+                "FILLED", "PARTIALLY_FILLED", "PARTIALLY FILLED", "CANCELED", "CANCELLED"
+            ]
+            has_cumulative_qty = placement_result.get("cumulative_quantity") and float(
+                placement_result.get("cumulative_quantity", 0) or 0
+            ) > 0
+
+            if is_filled_immediately and has_cumulative_qty:
+                cumulative_qty_raw = placement_result.get("cumulative_quantity")
+                try:
+                    cumulative_qty_decimal = Decimal(str(cumulative_qty_raw)) if cumulative_qty_raw else None
+                    avg_price_raw = placement_result.get("avg_price")
+                    avg_price_value = float(avg_price_raw) if avg_price_raw else estimated_price
+                except (ValueError, TypeError):
+                    cumulative_qty_decimal = None
+                    avg_price_value = estimated_price
+
+                if cumulative_qty_decimal and cumulative_qty_decimal > 0:
+                    confirmed = {
+                        "status": "FILLED",
+                        "cumulative_quantity": cumulative_qty_decimal,
+                        "avg_price": avg_price_value,
+                        "filled_price": avg_price_value,
+                    }
+            else:
+                confirmed = self._poll_order_fill_confirmation(
+                    symbol=symbol,
+                    order_id=str(order_id),
+                    max_attempts=ORDER_FILL_POLL_MAX_ATTEMPTS,
+                    poll_interval=ORDER_FILL_POLL_INTERVAL_SECONDS,
+                )
+
+        filled_confirmation = confirmed
 
         if not filled_confirmation or filled_confirmation.get("status") != "FILLED":
             logger.warning(
@@ -11166,6 +11199,7 @@ class SignalMonitorService:
                                         source="signal_monitor",
                                         is_margin=use_margin,
                                         leverage=leverage_value if use_margin else None,
+                                        filled_confirmation=filled_confirmation,
                                     )
                                 else:
                                     logger.info(
