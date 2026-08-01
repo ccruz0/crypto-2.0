@@ -226,13 +226,25 @@ def format_order_failed_telegram(
     error_msg: str,
     reason_code: str,
 ) -> str:
-    """Telegram HTML body for ORDER FAILED — includes Spanish reason, not EXCHANGE_ERROR_UNKNOWN noise."""
+    """Telegram HTML body for ORDER FAILED — Spanish-first for guardrails.
+
+    Guardrail / system_core blocks show a humanized Error line plus a technical
+    detail line (raw reason). Exchange and other errors keep the raw Error line.
+    """
+    from app.utils.guardrail_messages import order_failed_telegram_error_section
+
     es = reason_code_es_label(reason_code, error_msg)
+    error_section, _ = order_failed_telegram_error_section(
+        error_msg,
+        symbol,
+        reason_code,
+        side=side,
+    )
     return (
         f"❌ <b>ORDER FAILED</b>\n\n"
         f"📊 Symbol: <b>{symbol}</b>\n"
         f"🔄 Side: {side}\n"
-        f"❌ Error: {error_msg}\n"
+        f"{error_section}\n"
         f"📋 Reason Code: {reason_code}\n"
         f"🇪🇸 Motivo: {es}\n\n"
         f"<i>Señal enviada; la orden no se creó.</i>"

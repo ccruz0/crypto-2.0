@@ -1,0 +1,92 @@
+"""Human-readable Spanish messages for trading guardrail / system_core blocks."""
+
+from __future__ import annotations
+
+from app.utils.decision_reason import ReasonCode, classify_system_core_error
+
+# Reason codes that should show a humanized Error line + technical detail.
+_GUARDRAIL_FAMILY_CODES = frozenset(
+    {
+        ReasonCode.GUARDRAIL_BLOCKED.value,
+        ReasonCode.ONE_ACTIVE_TRADE_PER_COIN.value,
+        ReasonCode.SYSTEM_CORE_MAX_OPEN_TRADES.value,
+        ReasonCode.SYSTEM_CORE_RSI.value,
+        ReasonCode.SYSTEM_CORE_MA200.value,
+        ReasonCode.SYSTEM_CORE_MAX_TRADE_USD.value,
+        ReasonCode.SYSTEM_CORE_DAILY_DRAWDOWN.value,
+    }
+)
+
+
+def is_guardrail_family_reason(reason_code: str, error_msg: str | None = None) -> bool:
+    if reason_code in _GUARDRAIL_FAMILY_CODES:
+        return True
+    return classify_system_core_error(error_msg or "") is not None
+
+
+def humanize_guardrail_reason(
+    reason: str,
+    symbol: str | None = None,
+    side: str = "BUY",
+) -> str:
+    """Map a raw guardrail reason string to a human-readable Spanish message."""
+    base = (symbol or "la moneda").split("_")[0] if symbol else "la moneda"
+    action = "Compra" if (side or "BUY").upper() == "BUY" else "Venta"
+    r = (reason or "").lower()
+    if "one_active_trade_per_coin" in r:
+        return (
+            f"🚫 {action} no ejecutada: {base} ya tiene una posición abierta "
+            f"(regla: 1 trade activo por moneda)."
+        )
+    if "max_open_trades" in r:
+        return (
+            f"🚫 {action} no ejecutada: alcanzado el máximo de posiciones "
+            f"abiertas simultáneas."
+        )
+    if "max_trade_usd" in r:
+        return f"🚫 {action} no ejecutada: el importe supera el máximo por operación."
+    if "daily_drawdown" in r:
+        return (
+            f"🚫 {action} no ejecutada: alcanzado el límite de pérdida diaria "
+            f"(drawdown)."
+        )
+    if "system_core_rsi" in r or r.startswith("system_core_rsi"):
+        return f"🚫 {action} no ejecutada: RSI fuera del rango permitido."
+    if "system_core_ma200" in r or r.startswith("system_core_ma200"):
+        return f"🚫 {action} no ejecutada: el precio no cumple el filtro vs MA200."
+    if "max_orders_per_symbol_per_day" in r or "orders_today" in r:
+        return f"🚫 {action} no ejecutada: {base} alcanzó el máximo de órdenes de hoy."
+    return f"🚫 {action} no ejecutada: {reason}"
+
+
+def order_failed_telegram_error_section(
+    error_msg: str,
+    symbol: str | None,
+    reason_code: str,
+    side: str = "BUY",
+) -> tuple[str, str]:
+    """
+    Build user-facing ORDER FAILED error lines for Telegram.
+
+    Returns (html_error_section, reason_message_for_storage).
+    """
+    if is_guardrail_family_reason(reason_code, error_msg):
+        human = humanize_guardrail_reason(error_msg, symbol, side=side)
+        section = f"{human}\n<i>Detalle técnico: {error_msg}</i>"
+        return section, human
+    return f"❌ Error: {error_msg}", error_msg
+
+
+def order_failed_store_message(
+    symbol: str,
+    side: str,
+    error_msg: str,
+    reason_code: str,
+    *,
+    display_reason: str,
+) -> str:
+    """Flat message for telegram_messages DB row."""
+    base = f"❌ ORDER FAILED | {symbol} {side} | {display_reason} | reason_code={reason_code}"
+    if is_guardrail_family_reason(reason_code, error_msg):
+        return f"{base} | tech={error_msg}"
+    return base
