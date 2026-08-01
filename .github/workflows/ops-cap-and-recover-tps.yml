@@ -1,5 +1,7 @@
 # Ops: lower maxOpenOrdersTotal to 10 and recover missing short TPs.
-# Requires repo secrets: API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+# Cap step uses public GET /api/config (and PUT merge if needed).
+# Recover step requires repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+# Optional: secrets.API_KEY / secrets.API_URL (sent as x-api-key when present).
 name: Ops — cap open orders + recover missing TPs
 
 on:
@@ -25,29 +27,51 @@ jobs:
   set-open-order-cap:
     runs-on: ubuntu-latest
     steps:
-      - name: Set maxOpenOrdersTotal=10 via API
+      - name: Ensure maxOpenOrdersTotal=10 via API
         env:
           API_URL: ${{ secrets.API_URL }}
           API_KEY: ${{ secrets.API_KEY }}
         run: |
           set -euo pipefail
           API_URL="${API_URL:-https://dashboard.hilovivo.com/api}"
-          if [ -z "${API_KEY:-}" ]; then
-            echo "API_KEY secret is required" >&2
-            exit 1
-          fi
           sudo apt-get update -qq && sudo apt-get install -y -qq jq >/dev/null
+
+          AUTH_ARGS=()
+          if [ -n "${API_KEY:-}" ]; then
+            AUTH_ARGS=(-H "x-api-key: $API_KEY")
+          else
+            echo "Note: secrets.API_KEY unset; using unauthenticated config GET/PUT merge"
+          fi
+
           echo "Fetching current config..."
-          curl -sk -H "x-api-key: $API_KEY" "$API_URL/config" -o /tmp/cfg.json
+          curl -sk "${AUTH_ARGS[@]}" "$API_URL/config" -o /tmp/cfg.json
           before=$(jq -r '.trading_limits.maxOpenOrdersTotal // "unset"' /tmp/cfg.json)
           echo "BEFORE maxOpenOrdersTotal=$before"
-          jq '.trading_limits = ((.trading_limits // {}) + {"maxOpenOrdersTotal": 10})' /tmp/cfg.json > /tmp/cfg_new.json
+          if [ "$before" = "10" ]; then
+            echo "Already at maxOpenOrdersTotal=10; skipping PUT"
+            exit 0
+          fi
+
+          # PUT /api/config merges into existing config; send trading_limits only.
+          jq -n --argjson tl "$(jq '.trading_limits // {}' /tmp/cfg.json)" \
+            '{trading_limits: ($tl + {maxOpenOrdersTotal: 10})}' > /tmp/cfg_patch.json
           echo "PUTting trading_limits.maxOpenOrdersTotal=10..."
-          curl -sk -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
-            -X PUT "$API_URL/config" \
-            --data-binary @/tmp/cfg_new.json -o /tmp/cfg_saved.json
-          after=$(jq -r '.trading_limits.maxOpenOrdersTotal // "missing"' /tmp/cfg_saved.json)
+          http_code=$(curl -sk -o /tmp/cfg_saved.json -w '%{http_code}' \
+            "${AUTH_ARGS[@]}" -H "Content-Type: application/json" \
+            -X PUT "$API_URL/config" --data-binary @/tmp/cfg_patch.json)
+          echo "PUT http_code=$http_code"
+          # Response shape is {"ok":true,"config":{...}} (not raw config).
+          after=$(jq -r '
+            (.config.trading_limits.maxOpenOrdersTotal
+             // .trading_limits.maxOpenOrdersTotal
+             // "missing")
+          ' /tmp/cfg_saved.json)
+          if [ "$after" = "missing" ] || [ "$after" = "null" ]; then
+            curl -sk "${AUTH_ARGS[@]}" "$API_URL/config" -o /tmp/cfg_after.json
+            after=$(jq -r '.trading_limits.maxOpenOrdersTotal // "missing"' /tmp/cfg_after.json)
+          fi
           echo "AFTER maxOpenOrdersTotal=$after"
+          test "$http_code" = "200"
           test "$after" = "10"
 
   recover-missing-tps:
