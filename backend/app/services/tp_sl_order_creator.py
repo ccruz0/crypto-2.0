@@ -793,13 +793,32 @@ def create_stop_loss_order(
 
         existing_sl = get_active_protection_order(db, parent_order_id, "STOP_LOSS")
         if existing_sl:
+            existing_qty = float(getattr(existing_sl, "quantity", 0) or 0)
+            requested_qty = float(quantity or 0)
+            # Reuse when qty unknown/missing (legacy idempotency) or already covers request.
+            # Ops ALGO gap fill: existing SL qty=124 with requested gap=470 must place more.
+            covers_request = (
+                existing_qty <= 0
+                or requested_qty <= 0
+                or existing_qty + 1e-9 >= requested_qty * 0.98
+            )
+            if covers_request:
+                logger.info(
+                    "[%s_SL] Reusing active SL %s for parent %s (qty=%s requested=%s)",
+                    source.upper(),
+                    existing_sl.exchange_order_id,
+                    parent_order_id,
+                    existing_qty,
+                    requested_qty,
+                )
+                return {"order_id": existing_sl.exchange_order_id, "error": None}
             logger.info(
-                "[%s_SL] Reusing active SL %s for parent %s",
+                "[%s_SL] Active SL %s qty=%s < requested=%s; placing additional SL",
                 source.upper(),
                 existing_sl.exchange_order_id,
-                parent_order_id,
+                existing_qty,
+                requested_qty,
             )
-            return {"order_id": existing_sl.exchange_order_id, "error": None}
     
     logger.info(
         f"[{source.upper()}_SL] Creating SL order: {symbol}, entry_side={entry_side}, closing_side={sl_side}, "

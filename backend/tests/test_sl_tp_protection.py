@@ -153,6 +153,7 @@ class TestTpSlCreatorIdempotency(unittest.TestCase):
             exchange_order_id="sl-existing",
             order_role="STOP_LOSS",
             status=OrderStatusEnum.ACTIVE,
+            quantity=0.0558,
         )
         with patch(
             "app.services.sl_tp_protection.get_active_protection_order",
@@ -172,6 +173,50 @@ class TestTpSlCreatorIdempotency(unittest.TestCase):
         self.assertEqual(result["order_id"], "sl-existing")
         self.assertIsNone(result["error"])
         mock_trade_client.place_stop_loss_order.assert_not_called()
+
+    @patch("app.services.tp_sl_order_creator.trade_client")
+    def test_create_stop_loss_places_when_existing_undercovers(self, mock_trade_client):
+        """Gap fill must not reuse a smaller active SL (ops ALGO undercoverage)."""
+        db = MagicMock()
+        existing = ExchangeOrder(
+            exchange_order_id="sl-small",
+            order_role="STOP_LOSS",
+            status=OrderStatusEnum.ACTIVE,
+            quantity=124.0,
+        )
+        mock_trade_client.place_stop_loss_order.return_value = {"order_id": "sl-gap"}
+        mock_trade_client._get_instrument_metadata.return_value = {
+            "min_quantity": "1",
+            "qty_tick_size": "1",
+            "min_notional": "0",
+            "quantity_decimals": 0,
+        }
+        mock_trade_client.normalize_quantity.return_value = "470"
+        with patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            return_value=existing,
+        ), patch(
+            "app.services.tp_sl_order_creator.can_place_real_order",
+            return_value=(True, None),
+        ), patch(
+            "app.utils.sl_trigger_guard.fetch_last_price",
+            return_value=0.08,
+        ):
+            result = create_stop_loss_order(
+                db=db,
+                symbol="ALGO_USD",
+                side="SELL",
+                sl_price=0.0845,
+                quantity=470.0,
+                entry_price=0.0804,
+                parent_order_id="parent-algo",
+                dry_run=False,
+                source="manual",
+                sl_percentage=10.0,
+            )
+        self.assertEqual(result["order_id"], "sl-gap")
+        self.assertIsNone(result["error"])
+        mock_trade_client.place_stop_loss_order.assert_called_once()
 
     @patch("app.services.tp_sl_order_creator.trade_client")
     def test_create_take_profit_reuses_active_order(self, mock_trade_client):
