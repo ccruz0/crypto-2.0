@@ -74,6 +74,9 @@ TELEGRAM_AUTH_USER_ID=-1001234567890,839853931
 | `TELEGRAM_CHAT_ID` | Primary command chat (ATP Control group or direct chat ID) |
 | `TELEGRAM_AUTH_USER_ID` | Comma-separated list of authorized chat IDs and user IDs |
 | `TELEGRAM_CHAT_ID_TRADING` | ATP Alerts — alerts only. Do NOT add to command auth. |
+| `JARVIS_TELEGRAM_ENABLED` | Enables `/mission` and investigation alert CTAs (Ver detalle / Crear tarea / Snooze) |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | Jarvis CTA/chat allowlist (also derived from `TELEGRAM_CHAT_ID` / ATP Control) |
+| `TELEGRAM_ALLOWED_USER_IDS` | Jarvis CTA/user allowlist (also derived from `TELEGRAM_AUTH_USER_ID`; operator `839853931`) |
 
 ---
 
