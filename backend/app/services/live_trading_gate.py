@@ -15,12 +15,14 @@ Contract (stable for future enforcement)
 - **Read-only:** ``get_live_trading`` is a status helper; it does not block.
 
 **Current posture:** ``assert_exchange_mutation_allowed`` is still a no-op after the live-trading
-early exit. ``require_mutation_allowed_for_broker`` now enforces the **global trading kill switch**
-(``TradingSettings.TRADING_KILL_SWITCH``) as defense-in-depth for order-placement operations:
-when the kill switch is ON (or its state cannot be verified) it raises ``LiveTradingBlockedError``
-so no real order can reach the exchange. Because the broker only invokes this hook after the
-``actual_dry_run`` short-circuit, dry-run / simulation behavior is unchanged, and behavior is also
-identical to before whenever the kill switch is OFF.
+early exit. ``require_mutation_allowed_for_broker`` enforces the **global trading kill switch**
+(``TradingSettings.TRADING_KILL_SWITCH``) as defense-in-depth for NEW entry order placements
+(``place_market_order`` / ``place_limit_order``): when the kill switch is ON (or its state cannot
+be verified) it raises ``LiveTradingBlockedError`` so no new entry can reach the exchange.
+Protective SL/TP placements for existing positions and cancels are intentionally exempt so an
+emergency stop never strips protection from open positions. Because the broker only invokes this
+hook after the ``actual_dry_run`` short-circuit, dry-run / simulation behavior is unchanged, and
+behavior is also identical to before whenever the kill switch is OFF.
 
 The file must exist in the tree (it was previously missing, causing ``ModuleNotFoundError``).
 See ``docs/development/SERVICES_SINGLETON_IMPORTS.md`` for import/mocking notes.
@@ -59,17 +61,20 @@ def assert_exchange_mutation_allowed(
     _ = operation, symbol, _context  # reserved for logging / future policy
 
 
-# Broker operations that PLACE a real order. The global trading kill switch must
-# block every one of these as defense-in-depth, even if an orchestration-layer gate
-# (``can_place_real_order``) was missed. Non-placement mutations (e.g. ``cancel_order``)
-# are intentionally NOT blocked so the operator can still reduce exposure.
+# Broker operations that open/extend exposure with a NEW entry order. The global
+# trading kill switch blocks these as defense-in-depth, even if an orchestration-layer
+# gate (``can_place_real_order``) was missed.
+#
+# Deliberately EXCLUDED so an emergency stop never strips protection from open
+# positions (operator prudent-default, PR #90):
+#   - ``place_stop_loss_order`` / ``place_take_profit_order`` /
+#     ``create_stop_loss_take_profit_with_variations`` -> protective SL/TP for EXISTING
+#     positions are still allowed.
+#   - ``cancel_order`` -> cancels are still allowed (operator can reduce exposure).
 _KILL_SWITCH_GUARDED_OPERATIONS = frozenset(
     {
         "place_market_order",
         "place_limit_order",
-        "place_stop_loss_order",
-        "place_take_profit_order",
-        "create_stop_loss_take_profit_with_variations",
     }
 )
 
@@ -110,9 +115,14 @@ def require_mutation_allowed_for_broker(operation: str, symbol: Optional[str] = 
     (after ``actual_dry_run`` / live short-circuits in ``crypto_com_trade``).
 
     No DB session is passed in. Enforces the global trading **kill switch** as a last-resort
-    defense-in-depth control for order-placement operations: if the kill switch is ON (or its
-    state cannot be verified), raises ``LiveTradingBlockedError`` so the order never reaches the
-    exchange. Non-placement mutations (e.g. cancels) are not blocked.
+    defense-in-depth control for NEW entry order placements (``place_market_order`` /
+    ``place_limit_order``): if the kill switch is ON (or its state cannot be verified), raises
+    ``LiveTradingBlockedError`` so the entry never reaches the exchange.
+
+    Protective Stop-Loss / Take-Profit placements for EXISTING positions
+    (``place_stop_loss_order``, ``place_take_profit_order``,
+    ``create_stop_loss_take_profit_with_variations``) and ``cancel_order`` are intentionally
+    NOT blocked, so an emergency stop never strips protection from open positions.
 
     Callers typically do not catch this—prefer ``assert_exchange_mutation_allowed`` at the
     orchestration layer for graceful handling.
