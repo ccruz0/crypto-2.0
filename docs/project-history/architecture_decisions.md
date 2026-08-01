@@ -35,6 +35,8 @@ detonante de la decisión ADR-0002.
 
 **Estado:** PARCIALMENTE IMPLEMENTADA (Opción A aplicada 2026-07-22; Opción B
 sigue recomendada a medio plazo).
+**Actualización 2026-07-17:** ver `host-swap-status-2026-07-17.md` (síntesis +
+corrección de target LAB / OpenClaw-only).
 **Depende de:** `swap_investigation.md`, `host-swap-investigation-2026-07-10.md`,
 `host-swap-followup-2026-07-22.md`.
 
@@ -45,6 +47,9 @@ como riesgo primario; el riesgo dominante pasó a memoria. Investigación
 read-only en `i-087953603011543c5` confirmó swap ~50–55% en `t3.small`,
 MemAvailable bajo, y oversubscription (prod + canary + observabilidad +
 Cursor/IDE en el mismo host).
+
+Mitigación aguda 2026-07-06 (procesos huérfanos `docker compose logs` → dockerd
+CPU 183%) **no sustituye** esta ADR: el snapshot 2026-07-10 seguía con ~50% swap.
 
 ### Opciones
 
@@ -63,22 +68,26 @@ Subir el tipo de instancia (p. ej. `t3.small` → `t3.medium` (4 GB) o
 - **Riesgo:** bajo (resize instance type, breve reinicio).
 - **Blast radius:** sin cambio (compartido).
 
-#### Opción B — Split Producción / LAB (hosts separados)
+#### Opción B — Split Producción / Jarvis Builder (hosts separados)
 
-Mover LAB (Jarvis Builder) al host dedicado `atp-lab-ssm-clean`
-(`i-0d82c172235770a0d`), como describe el runbook original.
+Sacar `backend-lab` / Jarvis Builder del host PROD. **No** usar
+`atp-lab-ssm-clean` (`i-0d82c172235770a0d`) — ese host es **OpenClaw only**
+(`INSTANCE_SOURCE_OF_TRUTH.md`). Destino correcto: host Builder dedicado
+(p. ej. `atp-lab-builder` en `LAB_JARVIS_BUILDER_BOOTSTRAP.md`) o mantener
+Builder apagado en PROD cuando idle.
 
 - **Pros:** aísla Producción del ruido de LAB; reduce blast radius; permite
   `runtime.env.lab` sin `cp` a `runtime.env` compartido; alinea docs y diseño.
 - **Contras:** migración LAB (compose, secretos, verificación); dos hosts que
-  mantener.
-- **Coste:** ~USD 15/mo incremental (segundo t3.small).
+  mantener (o coste de un Builder nuevo).
+- **Coste:** ~USD 15/mo incremental (segundo t3.small) si se lanza Builder;
+  ~$0 si solo se para `backend-lab` en PROD cuando idle.
 - **Riesgo:** medio (solo LAB afectado en migración; prod intacto si scope estricto).
 - **Blast radius:** reducido para Producción.
 
 #### Opción C — Híbrido
 
-Upgrade prod a t3.medium **y** mover LAB a host dedicado.
+Upgrade prod a t3.medium **y** mover Jarvis Builder fuera de PROD (no a OpenClaw LAB).
 
 - **Pros:** máximo headroom en prod + aislamiento LAB.
 - **Contras:** mayor coste y complejidad.
@@ -87,15 +96,15 @@ Upgrade prod a t3.medium **y** mover LAB a host dedicado.
 
 ### Matriz de decisión
 
-| Criterio | A. Upgrade | B. Split | C. Híbrido |
+| Criterio | A. Upgrade | B. Split Builder | C. Híbrido |
 |---|---|---|---|
-| Coste mensual | ~+$15 | ~+$15 | ~+$30 |
-| Riesgo de migración | bajo | medio (solo LAB) | medio-alto |
+| Coste mensual | ~+$15 | ~+$15 (o $0 si pause) | ~+$30 |
+| Riesgo de migración | bajo | medio (solo Builder) | medio-alto |
 | Blast radius resultante | sin cambio | reducido | mínimo |
 | Complejidad operativa | baja | media | alta |
-| Tiempo a implementar | horas | 1–2 días | 2–3 días |
 | Reversibilidad / rollback | alta | media | media |
 | Alineación arquitectura LAB | no | **sí** | **sí** |
+| Respeta OpenClaw-only LAB | n/a | **sí** (Builder ≠ OpenClaw) | **sí** |
 
 ### Decisión
 
@@ -104,9 +113,9 @@ Upgrade prod a t3.medium **y** mover LAB a host dedicado.
 MemAvailable ≈ 1.7 GiB, `/api/health` y `/api/health/ready` OK. Canary se
 reinició tras exit 137 del reboot.
 
-**Opción B (split LAB/canary/obs)** sigue siendo la recomendación arquitectónica
-a medio plazo para reducir blast radius; ya no es el paliativo de emergencia de
-RAM.
+**Opción B (sacar Jarvis Builder de PROD; destino ≠ OpenClaw LAB)** sigue siendo
+la recomendación arquitectónica a medio plazo para reducir blast radius; ya no
+es el paliativo de emergencia de RAM.
 
 **No implementar sin aprobación humana:** prune agresivo de disco, migrate LAB,
 o bajar de nuevo a `t3.small`.

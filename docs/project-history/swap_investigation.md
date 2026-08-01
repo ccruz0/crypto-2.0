@@ -4,6 +4,7 @@
 > **Hallazgo 2026-06-26:** sobreaprovisionamiento de RAM — recomendó upgrade/split.
 > **Hallazgo 2026-07-06:** CPU dockerd (no RAM) — causa raíz del episodio agudo; RESUELTA ($0, matar 2 procesos).
 > **Acción 2026-07-06:** matar PIDs 2712707 y 3552257 (dockerd CPU 183% → 0%).
+> **Síntesis 2026-07-17:** ver `host-swap-status-2026-07-17.md` (Builder ≠ OpenClaw LAB).
 > **Acción estructural (antes de 2026-07-31):** Opción A aplicada — misma instancia `i-087953603011543c5` ahora es **`t3.medium`** (3.7 GiB RAM).
 > **Rechequeo 2026-07-31:** swap ~14%, sin thrashing; `HostSwapHigh` no es el riesgo activo. **No tocar umbrales.**
 
@@ -330,4 +331,6 @@ en la sesión). Seguimiento opcional / higiene — **fuera del alcance HostSwapH
 | 2026-06-26 | Cursor agent | Runbook read-only ejecutado en i-087953603011543c5 | Datos pegados; causa raíz confirmada |
 | 2026-06-26 | Cursor agent | Cierre investigación + ADR-0002 actualizado | Recomendación: split LAB (B) |
 | 2026-07-06 | Cursor agent | Investigación CPU + kill de 2 `docker compose logs` huérfanos | dockerd 183% → 0%; HostSwapHigh como síntoma downstream |
+| 2026-07-10 | Cursor agent | Snapshot post-fix | Swap aún ~50% → capacidad estructural abierta |
+| 2026-07-17 | Cursor agent | `host-swap-status-2026-07-17.md` + ADR-0002 | Split = Builder off PROD; OpenClaw LAB intacto |
 | 2026-07-31 | Carlos (SSM) + Cursor agent | Rechequeo read-only post-upgrade | `t3.medium`, swap ~14%, LAB ausente; HostSwapHigh cerrado como mitigado |

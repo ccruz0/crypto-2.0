@@ -18,15 +18,17 @@ Single `t3.small` runs production, canary, LAB-adjacent services, PostgreSQL, an
 
 ## Options (recommendation order)
 
-1. **Hybrid (recommended):** Upgrade production host to `t3.medium` (4 GB) **and** move canary + non-prod workloads to a small LAB host. Lowest risk, moderate cost, reduces blast radius.
-2. **Upgrade only:** `t3.small` → `t3.medium` on same host layout. Fastest fix; all workloads still share one failure domain.
-3. **Split only:** Keep `t3.small` for production; move canary/LAB/observability to second host. More ops overhead; production may still swap under load.
+See **`host-swap-status-2026-07-17.md`** for the reconciled recommendation (OpenClaw LAB must stay OpenClaw-only).
+
+1. **Split Builder off PROD (recommended):** Stop or migrate `backend-lab` / Jarvis Builder to a dedicated Builder host — **not** `atp-lab-ssm-clean` (OpenClaw only). Optionally pause idle canary.
+2. **Upgrade only:** `t3.small` → `t3.medium` on same host layout. Fastest relief if thrashing is active; blast radius unchanged.
+3. **Hybrid:** Upgrade prod **and** remove Builder from PROD. Highest isolation; highest cost.
 
 ## Next investigation steps (read-only)
 
-- `docker stats --no-stream` during signal monitor cycle peak
-- PromQL: `node_memory_MemAvailable_bytes`, swap used %, per-container `container_memory_usage_bytes`
-- Correlate swap spikes with `exchange_sync` and `signal_monitor` log timestamps
+- Paste-back commands in `host-swap-status-2026-07-17.md` (fresh `free`/`vmstat`/`docker stats`/PromQL).
+- Confirm whether Jul 6 residual swap is inert (`si/so≈0`) or still thrashing.
+- Correlate swap spikes with `exchange_sync` and `signal_monitor` log timestamps if active.
 
 ## Decision
 
