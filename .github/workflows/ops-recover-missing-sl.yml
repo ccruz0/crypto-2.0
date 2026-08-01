@@ -50,7 +50,10 @@ jobs:
           # Prefer host-mounted /repo script (compose mounts .:/repo:ro) so this
           # workflow picks up undercoverage fix without waiting for ECR rebuild.
           sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- backend/scripts/recover_missing_tps.py
+          # Script imports app from /repo/backend (sys.path); pull SL gap-fill reuse fix too.
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- \
+            backend/scripts/recover_missing_tps.py \
+            backend/app/services/tp_sl_order_creator.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER
           test -n "\$CONTAINER"
@@ -100,7 +103,9 @@ jobs:
           set -eu
           cd /home/ubuntu/crypto-2.0
           sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- backend/scripts/recover_missing_tps.py
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- \
+            backend/scripts/recover_missing_tps.py \
+            backend/app/services/tp_sl_order_creator.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER
           test -n "\$CONTAINER"
