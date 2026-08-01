@@ -85,6 +85,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-southeast-1
 
+      # AWS-RunShellScript uses /bin/sh (dash on Ubuntu) — no bash pipefail.
       - name: Dry-run recover_missing_tps on PROD
         env:
           INSTANCE_ID: i-087953603011543c5
@@ -98,10 +99,11 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --comment "dry-run recover_missing_tps" \
             --parameters commands="[
-              \"set -euo pipefail\",
+              \"set -eu\",
               \"cd /home/ubuntu/crypto-2.0\",
               \"CONTAINER=\\\$(docker ps --format '{{.Names}}' | grep -E 'backend-aws-1$' | head -1)\",
               \"echo CONTAINER=\\\$CONTAINER\",
+              \"test -n \\\"\\\$CONTAINER\\\"\",
               \"docker exec \\\$CONTAINER python3 /app/scripts/recover_missing_tps.py --tp-only $SYMBOLS\"
             ]" \
             --timeout-seconds 300 \
@@ -140,10 +142,11 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --comment "live recover_missing_tps cancel-sl-first" \
             --parameters commands="[
-              \"set -euo pipefail\",
+              \"set -eu\",
               \"cd /home/ubuntu/crypto-2.0\",
               \"CONTAINER=\\\$(docker ps --format '{{.Names}}' | grep -E 'backend-aws-1$' | head -1)\",
               \"echo CONTAINER=\\\$CONTAINER\",
+              \"test -n \\\"\\\$CONTAINER\\\"\",
               \"docker exec \\\$CONTAINER python3 /app/scripts/recover_missing_tps.py --live --tp-only --cancel-sl-first $SYMBOLS\"
             ]" \
             --timeout-seconds 600 \
