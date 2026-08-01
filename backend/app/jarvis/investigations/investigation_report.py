@@ -482,9 +482,16 @@ def _extract_open_orders_snapshot(tool_outputs: list[dict[str, Any]] | None) -> 
     if exchange is None and diagnose:
         exchange = _int_or_none(diagnose.get("exchange_total_count"))
 
-    dashboard = _int_or_none(counts.get("dashboard_cache"))
-    if dashboard is None and diagnose:
+    # Prefer effective dashboard API count (cache + DB fallback via resolve_open_orders)
+    # over raw in-memory cache. Reconcile historically reported only raw cache as
+    # "dashboard_cache", which falsely marked healthy DB-fallback UIs as CRITICAL.
+    dashboard = None
+    if diagnose:
         dashboard = _int_or_none(diagnose.get("dashboard_effective_count"))
+    if dashboard is None:
+        dashboard = _int_or_none(counts.get("dashboard_effective"))
+    if dashboard is None:
+        dashboard = _int_or_none(counts.get("dashboard_cache"))
 
     db_count = _int_or_none(counts.get("database_open"))
     if db_count is None and diagnose:
@@ -493,6 +500,8 @@ def _extract_open_orders_snapshot(tool_outputs: list[dict[str, Any]] | None) -> 
     cache_raw = _int_or_none((diagnose or {}).get("cache_raw_count"))
     if cache_raw is None and diagnose:
         cache_raw = _int_or_none(diagnose.get("cache_open_count"))
+    if cache_raw is None:
+        cache_raw = _int_or_none(counts.get("dashboard_raw_cache"))
 
     data_verified = False
     if diagnose is not None and diagnose.get("exchange_data_verified") is not None:
@@ -510,6 +519,12 @@ def _extract_open_orders_snapshot(tool_outputs: list[dict[str, Any]] | None) -> 
     if trigger_error is None:
         trigger_error = exchange_meta.get("trigger_orders_error")
 
+    dashboard_source = (diagnose or {}).get("dashboard_source")
+    if not dashboard_source:
+        dashboard_source = ((reconcile or {}).get("sources") or {}).get("dashboard", {}).get(
+            "source"
+        )
+
     return {
         "exchange_count": exchange,
         "dashboard_count": dashboard,
@@ -518,7 +533,7 @@ def _extract_open_orders_snapshot(tool_outputs: list[dict[str, Any]] | None) -> 
         "data_verified": data_verified,
         "trigger_error_code": trigger_code,
         "trigger_error": trigger_error,
-        "dashboard_source": (diagnose or {}).get("dashboard_source"),
+        "dashboard_source": dashboard_source,
     }
 
 
@@ -548,6 +563,18 @@ def classify_open_orders_mismatch(
         notes: list[str] = []
         if db_count is not None and db_count != exchange:
             notes.append(_DB_COVERAGE_NOTE)
+        cache_raw = snapshot.get("cache_raw_count")
+        dashboard_source = str(snapshot.get("dashboard_source") or "")
+        if (
+            cache_raw is not None
+            and int(cache_raw) == 0
+            and exchange > 0
+            and dashboard_source == "database_fallback"
+        ):
+            notes.append(
+                "Raw open_orders_cache is empty; dashboard API is healthy via database_fallback "
+                "(not an empty-UI incident)."
+            )
         return OpenOrdersClassification(
             active_mismatch=False,
             root_cause=_NO_ACTIVE_MISMATCH,
