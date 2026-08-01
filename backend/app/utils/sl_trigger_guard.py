@@ -95,6 +95,102 @@ def compute_market_relative_sl(
     return last_price * (1.0 - pct / 100.0)
 
 
+def is_tp_trigger_valid(
+    entry_side: str,
+    tp_price: float,
+    last_price: float,
+    *,
+    buffer: float = _SIDE_BUFFER,
+) -> bool:
+    """True if TP trigger is on the exchange-valid side of last.
+
+    Long (BUY entry): sell-TP must be above market.
+    Short (SELL entry): buy-TP must be below market.
+    """
+    if tp_price <= 0 or last_price <= 0:
+        return False
+    side = (entry_side or "BUY").upper()
+    if side == "SELL":
+        return tp_price < last_price * (1.0 - buffer)
+    return tp_price > last_price * (1.0 + buffer)
+
+
+def is_abs_level_valid_vs_entry(
+    entry_side: str,
+    level: float,
+    entry_price: float,
+    *,
+    is_tp: bool,
+) -> bool:
+    """True when an absolute SL/TP sits on the profit/loss side of entry."""
+    if level <= 0 or entry_price <= 0:
+        return False
+    side = (entry_side or "BUY").upper()
+    if side == "SELL":
+        # Short: TP buys lower, SL buys higher
+        return level < entry_price if is_tp else level > entry_price
+    # Long: TP sells higher, SL sells lower
+    return level > entry_price if is_tp else level < entry_price
+
+
+def derive_tp_percentage(
+    entry_side: str,
+    entry_price: Optional[float],
+    tp_price: Optional[float],
+    explicit_pct: Optional[float] = None,
+) -> float:
+    if explicit_pct is not None and explicit_pct > 0:
+        return float(explicit_pct)
+    if entry_price and entry_price > 0 and tp_price and tp_price > 0:
+        side = (entry_side or "BUY").upper()
+        if side == "SELL":
+            return abs((entry_price - tp_price) / entry_price * 100.0)
+        return abs((tp_price - entry_price) / entry_price * 100.0)
+    return 1.0
+
+
+def compute_market_relative_tp(
+    entry_side: str,
+    last_price: float,
+    tp_percentage: float,
+) -> float:
+    pct = abs(float(tp_percentage)) if tp_percentage else 1.0
+    pct = max(pct, _SIDE_BUFFER * 100.0 * 2)
+    side = (entry_side or "BUY").upper()
+    if side == "SELL":
+        return last_price * (1.0 - pct / 100.0)
+    return last_price * (1.0 + pct / 100.0)
+
+
+def ensure_valid_tp_trigger(
+    *,
+    entry_side: str,
+    tp_price: float,
+    last_price: Optional[float],
+    tp_percentage: Optional[float] = None,
+    entry_price: Optional[float] = None,
+) -> Tuple[float, Optional[str]]:
+    """
+    Return (tp_price, reason) where reason is set if the price was adjusted.
+
+    Stale absolute TPs (e.g. short TP above last after a drop) are rejected by
+    Crypto.com with INVALID_TRIGGER_PRICE — recompute from last using %.
+    """
+    if last_price is None or last_price <= 0:
+        return tp_price, None
+    if is_tp_trigger_valid(entry_side, tp_price, last_price):
+        return tp_price, None
+
+    pct = derive_tp_percentage(entry_side, entry_price, tp_price, tp_percentage)
+    repaired = compute_market_relative_tp(entry_side, last_price, pct)
+    reason = (
+        f"stale/invalid TP {tp_price} vs last {last_price} "
+        f"(entry_side={entry_side}); recomputed to {repaired} using {pct:.4g}%"
+    )
+    logger.warning("TP trigger guard: %s", reason)
+    return repaired, reason
+
+
 def ensure_valid_sl_trigger(
     *,
     entry_side: str,

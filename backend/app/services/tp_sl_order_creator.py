@@ -469,8 +469,35 @@ def create_take_profit_order(
             )
             return {"order_id": existing_tp.exchange_order_id, "error": None}
 
-    # Place TP at the agreed watchlist/calculated price only.
-    # Do not widen, tighten, or skip based on current market (auto and manual).
+    # Repair stale TP vs live market (short TP above last → INVALID_TRIGGER_PRICE).
+    tp_percentage = None
+    try:
+        from app.models.watchlist import WatchlistItem
+
+        wl = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+        if wl and wl.tp_percentage is not None and float(wl.tp_percentage) > 0:
+            tp_percentage = float(wl.tp_percentage)
+    except Exception as wl_err:
+        logger.debug("Could not read watchlist tp_percentage for %s: %s", symbol, wl_err)
+
+    if not dry_run:
+        from app.utils.sl_trigger_guard import (
+            ensure_valid_tp_trigger,
+            fetch_last_price,
+        )
+
+        last_price = fetch_last_price(symbol)
+        tp_price, tp_adjust = ensure_valid_tp_trigger(
+            entry_side=entry_side,
+            tp_price=float(tp_price),
+            last_price=last_price,
+            tp_percentage=tp_percentage,
+            entry_price=float(entry_price) if entry_price else None,
+        )
+        if tp_adjust:
+            logger.warning("[%s_TP] Adjusted TP for %s: %s", source.upper(), symbol, tp_adjust)
+
+    # Place TP at the (possibly repaired) watchlist/calculated price.
     
     # Price formatting is handled by place_take_profit_order using normalize_price()
     # which follows docs/trading/crypto_com_order_formatting.md rules:

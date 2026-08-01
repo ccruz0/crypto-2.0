@@ -12,6 +12,40 @@ from app.utils.sl_trigger_guard import (
 )
 
 
+class TestTpTriggerValidity(unittest.TestCase):
+    def test_short_tp_must_be_below_last(self):
+        from app.utils.sl_trigger_guard import is_tp_trigger_valid
+
+        self.assertTrue(is_tp_trigger_valid("SELL", 0.076, 0.07725))
+        self.assertFalse(is_tp_trigger_valid("SELL", 0.0911, 0.07725))
+
+    def test_long_tp_must_be_above_last(self):
+        from app.utils.sl_trigger_guard import is_tp_trigger_valid
+
+        self.assertTrue(is_tp_trigger_valid("BUY", 100.0, 95.0))
+        self.assertFalse(is_tp_trigger_valid("BUY", 90.0, 95.0))
+
+    def test_algo_style_stale_short_tp_repaired(self):
+        from app.utils.sl_trigger_guard import (
+            ensure_valid_tp_trigger,
+            is_abs_level_valid_vs_entry,
+        )
+
+        self.assertFalse(
+            is_abs_level_valid_vs_entry("SELL", 0.0911, 0.08386, is_tp=True)
+        )
+        repaired, reason = ensure_valid_tp_trigger(
+            entry_side="SELL",
+            tp_price=0.08302,  # entry-based 1% — still above last
+            last_price=0.07725,
+            tp_percentage=1.0,
+            entry_price=0.08386,
+        )
+        self.assertIsNotNone(reason)
+        self.assertLess(repaired, 0.07725)
+        self.assertAlmostEqual(repaired, 0.07725 * 0.99, places=6)
+
+
 class TestSlTriggerValidity(unittest.TestCase):
     def test_long_sl_must_be_below_last(self):
         self.assertTrue(is_sl_trigger_valid("BUY", 0.003, 0.0035))
