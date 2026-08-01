@@ -4,13 +4,16 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from app.utils.indicator_format import format_indicator_value
+from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.sl_tp_checker import (
     SLTPCheckerService,
     _classify_open_protection_leg,
     _db_protection_covers_wallet,
     _derive_entry_from_abs_prices,
     _entry_symbol_variants,
+    _heal_half_protected_tp_parents,
     _is_expected_ensure_skip,
+    _iter_half_protected_entry_parents,
     _order_entry_price,
     _parent_lot_qty,
     _protection_create_qty,
@@ -194,9 +197,12 @@ class TestDbSisterBookCoverage(unittest.TestCase):
 
 
 class TestEnsureMissingProtection(unittest.TestCase):
+    @patch.object(SLTPCheckerService, "_ensure_multilot_tp_heal")
     @patch.object(SLTPCheckerService, "_create_protection_order")
     @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
-    def test_auto_creates_only_missing_leg(self, mock_check, mock_create):
+    def test_auto_creates_only_missing_leg(
+        self, mock_check, mock_create, mock_multilot
+    ):
         svc = SLTPCheckerService()
         mock_check.return_value = {
             "positions_missing_sl_tp": [
@@ -229,13 +235,21 @@ class TestEnsureMissingProtection(unittest.TestCase):
         self.assertFalse(kwargs["create_tp"])
         self.assertTrue(kwargs["force"])
         self.assertEqual(kwargs["source"], "auto_ensure")
+        mock_multilot.assert_not_called()
         self.assertEqual(len(result["created"]), 1)
         self.assertEqual(result["still_missing"], [])
         self.assertEqual(result.get("skipped"), [])
 
+    @patch.object(
+        SLTPCheckerService,
+        "_ensure_multilot_tp_heal",
+        return_value={"healed": [], "skipped": [], "failed": []},
+    )
     @patch.object(SLTPCheckerService, "_create_protection_order")
     @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
-    def test_wallet_side_mismatch_is_skipped_not_failed(self, mock_check, mock_create):
+    def test_wallet_side_mismatch_is_skipped_not_failed(
+        self, mock_check, mock_create, _mock_multilot
+    ):
         """Hourly Telegram must not page expected wallet_side_mismatch skips."""
         svc = SLTPCheckerService()
         mock_check.return_value = {
@@ -268,6 +282,204 @@ class TestEnsureMissingProtection(unittest.TestCase):
         self.assertEqual(len(result["skipped"]), 1)
         self.assertIn("wallet_side_mismatch", result["skipped"][0]["skip_reason"])
         self.assertEqual(result["created"], [])
+
+    @patch.object(SLTPCheckerService, "_ensure_multilot_tp_heal")
+    @patch.object(SLTPCheckerService, "_create_protection_order")
+    @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+    def test_multilot_tp_heal_runs_when_tp_missing(
+        self, mock_check, mock_create, mock_multilot
+    ):
+        """AAVE-style: recent parent ensure ok, older SL-only lots still healed."""
+        svc = SLTPCheckerService()
+        mock_check.return_value = {
+            "positions_missing_sl_tp": [
+                {
+                    "symbol": "AAVE_USD",
+                    "currency": "AAVE",
+                    "balance": 0.518,
+                    "has_sl": True,
+                    "has_tp": False,
+                    "sl_price": None,
+                    "tp_price": None,
+                    "skip_reminder": False,
+                    "watchlist_item": None,
+                }
+            ],
+            "total_positions": 1,
+            "oco_issues": {},
+            "checked_at": None,
+        }
+        mock_create.return_value = {
+            "success": True,
+            "sl_order_id": "sl-recent",
+            "tp_order_id": "tp-recent",
+            "status": "already_protected",
+        }
+        mock_multilot.return_value = {
+            "healed": [
+                {
+                    "parent_order_id": "5755600492313745241",
+                    "sl_order_id": "sl-old",
+                    "tp_order_id": "tp-new",
+                    "oco_group_id": "oco_new",
+                    "status": "oco_created",
+                }
+            ],
+            "skipped": [],
+            "failed": [],
+        }
+
+        result = svc.ensure_missing_protection(MagicMock())
+
+        mock_multilot.assert_called_once()
+        self.assertEqual(len(result["healed_parents"]), 1)
+        self.assertEqual(
+            result["healed_parents"][0]["parent_order_id"], "5755600492313745241"
+        )
+        self.assertTrue(
+            any(c.get("source") == "multilot_tp_heal" for c in result["created"])
+        )
+
+
+class TestHalfProtectedMultilotHeal(unittest.TestCase):
+    def test_iter_half_protected_keeps_sl_only_parents(self):
+        older = MagicMock(spec=ExchangeOrder)
+        older.exchange_order_id = "parent-old"
+        older.symbol = "AAVE_USD"
+        older.side = OrderSideEnum.BUY
+        older.status = OrderStatusEnum.FILLED
+        older.order_role = None
+        older.quantity = 0.103
+        older.cumulative_quantity = 0.103
+        older.avg_price = 96.812
+        older.exchange_create_time = None
+
+        recent = MagicMock(spec=ExchangeOrder)
+        recent.exchange_order_id = "parent-new"
+        recent.symbol = "AAVE_USD"
+        recent.side = OrderSideEnum.BUY
+        recent.status = OrderStatusEnum.FILLED
+        recent.order_role = None
+
+        db = MagicMock()
+        query = MagicMock()
+        db.query.return_value = query
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.all.return_value = [recent, older]
+
+        def _active(_db, parent_id, role):
+            if parent_id == "parent-old" and role == "STOP_LOSS":
+                return MagicMock()
+            if parent_id == "parent-old" and role == "TAKE_PROFIT":
+                return None
+            if parent_id == "parent-new" and role in ("STOP_LOSS", "TAKE_PROFIT"):
+                return MagicMock()
+            return None
+
+        with patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            side_effect=_active,
+        ):
+            half = _iter_half_protected_entry_parents(
+                db, "AAVE_USD", entry_side="BUY"
+            )
+
+        self.assertEqual([p.exchange_order_id for p in half], ["parent-old"])
+
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=91.43)
+    def test_heal_calls_native_oco_per_half_protected_parent(self, _mock_mark):
+        parent = MagicMock(spec=ExchangeOrder)
+        parent.exchange_order_id = "5755600492313745241"
+        parent.symbol = "AAVE_USD"
+        parent.side = OrderSideEnum.BUY
+        parent.avg_price = 96.812
+        parent.quantity = 0.103
+        parent.cumulative_quantity = 0.103
+        parent.price = 96.812
+        parent.cumulative_value = None
+
+        sl = MagicMock(spec=ExchangeOrder)
+        sl.exchange_order_id = "sl-old"
+        sl.order_role = "STOP_LOSS"
+
+        db = MagicMock()
+        with patch(
+            "app.services.sl_tp_checker._iter_half_protected_entry_parents",
+            return_value=[parent],
+        ), patch(
+            "app.services.sl_tp_protection.should_skip_rejected_tp_backfill",
+            return_value=False,
+        ), patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            side_effect=lambda _db, _pid, role: sl if role == "STOP_LOSS" else None,
+        ), patch(
+            "app.services.tp_sl_order_creator.is_native_oco_enabled",
+            return_value=True,
+        ), patch(
+            "app.services.tp_sl_order_creator.resolve_sltp_margin_context",
+            return_value=(False, None),
+        ), patch(
+            "app.services.tp_sl_order_creator.ensure_spot_oco_protection",
+            return_value={
+                "sl_result": {"order_id": "sl-new"},
+                "tp_result": {"order_id": "tp-new"},
+                "oco_group_id": "oco-1",
+                "error": None,
+                "status": "oco_created",
+            },
+        ) as mock_oco:
+            result = _heal_half_protected_tp_parents(
+                db,
+                "AAVE_USD",
+                position_balance=0.518,
+                entry_side="BUY",
+                sl_percentage=10.0,
+                tp_percentage=1.0,
+                dry_run=False,
+            )
+
+        mock_oco.assert_called_once()
+        kwargs = mock_oco.call_args.kwargs
+        self.assertEqual(kwargs["parent_order_id"], "5755600492313745241")
+        self.assertAlmostEqual(float(kwargs["quantity"]), 0.103)
+        self.assertEqual(len(result["healed"]), 1)
+        self.assertEqual(result["healed"][0]["tp_order_id"], "tp-new")
+
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=91.43)
+    def test_heal_skips_margin_rejected_terminal(self, _mock_mark):
+        parent = MagicMock(spec=ExchangeOrder)
+        parent.exchange_order_id = "parent-margin"
+        parent.avg_price = 96.0
+        parent.quantity = 0.1
+        parent.cumulative_quantity = 0.1
+        parent.price = 96.0
+        parent.cumulative_value = None
+        parent.side = OrderSideEnum.BUY
+
+        db = MagicMock()
+        with patch(
+            "app.services.sl_tp_checker._iter_half_protected_entry_parents",
+            return_value=[parent],
+        ), patch(
+            "app.services.sl_tp_protection.should_skip_rejected_tp_backfill",
+            return_value=True,
+        ), patch(
+            "app.services.tp_sl_order_creator.ensure_spot_oco_protection"
+        ) as mock_oco:
+            result = _heal_half_protected_tp_parents(
+                db,
+                "AAVE_USD",
+                position_balance=0.1,
+                entry_side="BUY",
+                sl_percentage=10.0,
+                tp_percentage=1.0,
+                dry_run=False,
+            )
+
+        mock_oco.assert_not_called()
+        self.assertEqual(result["healed"], [])
+        self.assertEqual(result["skipped"][0]["reason"], "tp_rejected_terminal")
 
 
 class TestExpectedEnsureSkip(unittest.TestCase):

@@ -443,6 +443,267 @@ def _db_protection_covers_wallet(
     return covered >= wallet * (1.0 - tolerance)
 
 
+def _iter_half_protected_entry_parents(
+    db: Session,
+    symbol: str,
+    *,
+    entry_side: Optional[str] = None,
+) -> List[ExchangeOrder]:
+    """FILLED entry parents with active SL and no active TP (multi-lot TP gap).
+
+    Hourly ensure previously bound only to the most-recent fill. Older lots with
+    REJECTED TP history stayed SL-only forever (prod AAVE_USD 2026-08-01).
+    """
+    from app.services.sl_tp_protection import get_active_protection_order
+
+    variants = _entry_symbol_variants(symbol)
+    if not variants:
+        return []
+    q = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol.in_(variants),
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+        )
+        .filter(
+            (ExchangeOrder.order_role.is_(None))
+            | (~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]))
+        )
+    )
+    side_u = (entry_side or "").strip().upper()
+    if side_u == "BUY":
+        q = q.filter(ExchangeOrder.side == OrderSideEnum.BUY)
+    elif side_u == "SELL":
+        q = q.filter(ExchangeOrder.side == OrderSideEnum.SELL)
+    else:
+        q = q.filter(ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]))
+
+    parents = q.order_by(ExchangeOrder.exchange_create_time.desc()).all()
+    half: List[ExchangeOrder] = []
+    for parent in parents:
+        pid = (parent.exchange_order_id or "").strip()
+        if not pid:
+            continue
+        if get_active_protection_order(db, pid, "STOP_LOSS") is None:
+            continue
+        if get_active_protection_order(db, pid, "TAKE_PROFIT") is not None:
+            continue
+        half.append(parent)
+    return half
+
+
+def _heal_half_protected_tp_parents(
+    db: Session,
+    symbol: str,
+    *,
+    position_balance: float,
+    entry_side: str,
+    sl_percentage: float,
+    tp_percentage: float,
+    dry_run: bool,
+    source: str = "auto_ensure_multilot",
+) -> Dict:
+    """Heal every SL-only parent lot for ``symbol`` (spot native OCO preferred)."""
+    from app.services.sl_tp_protection import (
+        get_active_protection_order,
+        should_skip_rejected_tp_backfill,
+    )
+    from app.services.tp_sl_order_creator import (
+        ensure_spot_oco_protection,
+        is_native_oco_enabled,
+        resolve_sltp_margin_context,
+    )
+    from app.utils.sl_trigger_guard import ensure_valid_sl_trigger, ensure_valid_tp_trigger
+
+    healed: List[Dict] = []
+    skipped: List[Dict] = []
+    failed: List[Dict] = []
+
+    parents = _iter_half_protected_entry_parents(
+        db, symbol, entry_side=entry_side
+    )
+    if not parents:
+        return {"healed": healed, "skipped": skipped, "failed": failed, "parents": 0}
+
+    is_margin, _leverage = resolve_sltp_margin_context(db, symbol)
+    mark = _fetch_mark_price(symbol)
+
+    for parent in parents:
+        pid = str(parent.exchange_order_id)
+        if should_skip_rejected_tp_backfill(db, pid, symbol=symbol):
+            skipped.append(
+                {"parent_order_id": pid, "reason": "tp_rejected_terminal"}
+            )
+            continue
+
+        qty = _protection_create_qty(
+            position_balance=position_balance, parent_order=parent
+        )
+        if qty <= 0:
+            skipped.append({"parent_order_id": pid, "reason": "zero_qty"})
+            continue
+
+        entry_price = _order_entry_price(parent) or mark
+        if not entry_price or float(entry_price) <= 0:
+            failed.append({"parent_order_id": pid, "error": "no_entry_price"})
+            continue
+
+        parent_side = _entry_side_from_order(parent) or entry_side or "BUY"
+        sl_price, tp_price = _compute_sl_tp_from_entry(
+            float(entry_price),
+            parent_side,
+            float(sl_percentage),
+            float(tp_percentage),
+        )
+        if mark and float(mark) > 0:
+            tp_price, _ = ensure_valid_tp_trigger(
+                entry_side=parent_side,
+                tp_price=float(tp_price),
+                last_price=float(mark),
+                tp_percentage=float(tp_percentage),
+                entry_price=float(entry_price),
+            )
+            sl_price, _ = ensure_valid_sl_trigger(
+                entry_side=parent_side,
+                sl_price=float(sl_price),
+                last_price=float(mark),
+                sl_percentage=float(sl_percentage),
+                entry_price=float(entry_price),
+            )
+
+        existing_sl = get_active_protection_order(db, pid, "STOP_LOSS")
+        existing_tp = get_active_protection_order(db, pid, "TAKE_PROFIT")
+        if existing_tp is not None:
+            skipped.append({"parent_order_id": pid, "reason": "already_has_tp"})
+            continue
+
+        logger.info(
+            "[%s] Multi-lot TP heal %s parent=%s qty=%s entry=%s sl=%s tp=%s "
+            "margin=%s",
+            source.upper(),
+            symbol,
+            pid,
+            qty,
+            entry_price,
+            sl_price,
+            tp_price,
+            is_margin,
+        )
+
+        try:
+            if not is_margin and is_native_oco_enabled():
+                oco_res = ensure_spot_oco_protection(
+                    db=db,
+                    symbol=symbol,
+                    side=parent_side,
+                    tp_price=float(tp_price),
+                    sl_price=float(sl_price),
+                    quantity=float(qty),
+                    entry_price=float(entry_price),
+                    parent_order_id=pid,
+                    dry_run=dry_run,
+                    source=source,
+                    existing_sl=existing_sl,
+                    existing_tp=existing_tp,
+                )
+                if oco_res.get("status") == "already_protected" or (
+                    not oco_res.get("error")
+                    and not oco_res.get("skipped")
+                    and (
+                        (oco_res.get("tp_result") or {}).get("order_id")
+                        or oco_res.get("oco_group_id")
+                    )
+                ):
+                    healed.append(
+                        {
+                            "parent_order_id": pid,
+                            "sl_order_id": (oco_res.get("sl_result") or {}).get(
+                                "order_id"
+                            ),
+                            "tp_order_id": (oco_res.get("tp_result") or {}).get(
+                                "order_id"
+                            ),
+                            "oco_group_id": oco_res.get("oco_group_id"),
+                            "status": oco_res.get("status") or "oco_created",
+                        }
+                    )
+                    continue
+                failed.append(
+                    {
+                        "parent_order_id": pid,
+                        "error": oco_res.get("error") or "native_oco_failed",
+                    }
+                )
+                continue
+
+            # Margin / OCO-off: cancel-SL-first dual create via shared impl.
+            if dry_run:
+                skipped.append({"parent_order_id": pid, "reason": "dry_run_margin"})
+                continue
+            from app.services.exchange_sync import ExchangeSyncService
+
+            impl = ExchangeSyncService()._create_sl_tp_impl(
+                db=db,
+                symbol=symbol,
+                side_upper=parent_side.upper(),
+                filled_price_f=float(entry_price),
+                filled_qty=float(qty),
+                order_id=pid,
+                source=source,
+                strict_percentages=False,
+                sl_price_override_f=float(sl_price),
+                tp_price_override_f=float(tp_price),
+            )
+            tp_res = impl.get("tp_result") or {}
+            sl_res = impl.get("sl_result") or {}
+            if tp_res.get("order_id") or impl.get("status") == "already_protected":
+                healed.append(
+                    {
+                        "parent_order_id": pid,
+                        "sl_order_id": sl_res.get("order_id"),
+                        "tp_order_id": tp_res.get("order_id"),
+                        "oco_group_id": impl.get("oco_group_id"),
+                        "status": impl.get("status") or "margin_dual",
+                    }
+                )
+            else:
+                failed.append(
+                    {
+                        "parent_order_id": pid,
+                        "error": tp_res.get("error")
+                        or sl_res.get("error")
+                        or impl.get("skip_tp_reason")
+                        or "margin_dual_failed",
+                    }
+                )
+        except Exception as exc:
+            logger.error(
+                "[%s] Multi-lot TP heal failed %s parent=%s: %s",
+                source.upper(),
+                symbol,
+                pid,
+                exc,
+                exc_info=True,
+            )
+            failed.append({"parent_order_id": pid, "error": str(exc)})
+
+    logger.info(
+        "[%s] Multi-lot TP heal %s: parents=%d healed=%d skipped=%d failed=%d",
+        source.upper(),
+        symbol,
+        len(parents),
+        len(healed),
+        len(skipped),
+        len(failed),
+    )
+    return {
+        "healed": healed,
+        "skipped": skipped,
+        "failed": failed,
+        "parents": len(parents),
+    }
+
+
 class SLTPCheckerService:
     """Service to check open positions for missing SL/TP orders and OCO integrity"""
     
@@ -1023,6 +1284,43 @@ class SLTPCheckerService:
                 'error': str(e)
             }
     
+    def _ensure_multilot_tp_heal(self, db: Session, pos: Dict) -> Dict:
+        """Heal SL-only entry lots for a wallet that still needs TP coverage."""
+        symbol = pos["symbol"]
+        balance = float(pos.get("balance") or 0.0)
+        entry_side = "BUY" if balance >= 0 else "SELL"
+        watchlist_item = pos.get("watchlist_item")
+        strategy_mode = (
+            (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower()
+            if watchlist_item
+            else "conservative"
+        )
+        sl_percentage = 3.0 if strategy_mode == "conservative" else 2.0
+        tp_percentage = 3.0 if strategy_mode == "conservative" else 2.0
+        if watchlist_item is not None:
+            if (
+                getattr(watchlist_item, "sl_percentage", None) is not None
+                and float(watchlist_item.sl_percentage) > 0
+            ):
+                sl_percentage = abs(float(watchlist_item.sl_percentage))
+            if (
+                getattr(watchlist_item, "tp_percentage", None) is not None
+                and float(watchlist_item.tp_percentage) > 0
+            ):
+                tp_percentage = abs(float(watchlist_item.tp_percentage))
+
+        live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
+        return _heal_half_protected_tp_parents(
+            db,
+            symbol,
+            position_balance=balance,
+            entry_side=entry_side,
+            sl_percentage=sl_percentage,
+            tp_percentage=tp_percentage,
+            dry_run=not live_trading,
+            source="auto_ensure_multilot",
+        )
+
     def ensure_missing_protection(self, db: Session) -> Dict:
         """
         Always create missing SL and/or TP for open positions.
@@ -1036,6 +1334,8 @@ class SLTPCheckerService:
         failed: List[Dict] = []
         skipped: List[Dict] = []
         still_missing: List[Dict] = []
+
+        healed_parents: List[Dict] = []
 
         for pos in positions_missing:
             symbol = pos["symbol"]
@@ -1116,6 +1416,39 @@ class SLTPCheckerService:
                 if not still_pos.get("has_sl") or not still_pos.get("has_tp"):
                     still_missing.append(still_pos)
 
+            # Multi-lot TP gap: recent-parent ensure can succeed while older lots
+            # remain SL-only (REJECTED TP). Heal every half-protected parent.
+            if create_tp:
+                try:
+                    multilot = self._ensure_multilot_tp_heal(db, pos)
+                    for item in multilot.get("healed") or []:
+                        healed_parents.append({"symbol": symbol, **item})
+                        created.append(
+                            {
+                                "symbol": symbol,
+                                "sl_order_id": item.get("sl_order_id"),
+                                "tp_order_id": item.get("tp_order_id"),
+                                "parent_order_id": item.get("parent_order_id"),
+                                "source": "multilot_tp_heal",
+                            }
+                        )
+                    for item in multilot.get("failed") or []:
+                        failed.append({"symbol": symbol, **item})
+                except Exception as multilot_exc:
+                    logger.error(
+                        "Multi-lot TP heal failed for %s: %s",
+                        symbol,
+                        multilot_exc,
+                        exc_info=True,
+                    )
+                    failed.append(
+                        {
+                            "symbol": symbol,
+                            "error": f"multilot_tp_heal: {multilot_exc}",
+                            **pos,
+                        }
+                    )
+
         return {
             "checked_at": result.get("checked_at"),
             "total_positions": result.get("total_positions", 0),
@@ -1125,6 +1458,7 @@ class SLTPCheckerService:
             "skipped": skipped,
             "still_missing": still_missing,
             "positions_missing_sl_tp": still_missing,
+            "healed_parents": healed_parents,
         }
 
     def send_sl_tp_reminder(self, db: Session) -> bool:
