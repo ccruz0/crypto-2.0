@@ -115,6 +115,76 @@ def _is_expected_ensure_skip(creation: Optional[Dict]) -> bool:
     return any(marker in blob for marker in _EXPECTED_ENSURE_SKIP_MARKERS)
 
 
+def _parent_ids_from_oco_legs(orders: List, oco_id: str) -> List[str]:
+    """Collect parent entry ids from OCO legs, with oco_{parent}_{ts} fallback."""
+    parent_ids: List[str] = []
+    seen = set()
+    for order in orders:
+        pid = (getattr(order, "parent_order_id", None) or "").strip()
+        if pid and pid not in seen:
+            seen.add(pid)
+            parent_ids.append(pid)
+    if not parent_ids and oco_id:
+        parts = str(oco_id).split("_")
+        if len(parts) >= 3 and parts[0] == "oco" and parts[1].isdigit():
+            parent_ids.append(parts[1])
+    return parent_ids
+
+
+def _is_expected_incomplete_missing_tp(
+    db: Session,
+    still_active: List,
+    oco_id: str,
+) -> bool:
+    """True when a missing TP leg is expected / not an actionable OCO break.
+
+    Suppress Telegram incomplete-group noise when:
+    - parent already has an active TP under any OCO linkage, or
+    - exchange already REJECTED TP for that parent (terminal / unreachable), or
+    - a tp_unreachable / short_tp_not_widened claim is active, or
+    - this OCO group itself has a REJECTED TAKE_PROFIT row.
+    """
+    from app.services.sl_tp_protection import (
+        get_active_protection_order,
+        has_rejected_protection_order,
+    )
+    from app.services.telegram_event_dedup import is_telegram_event_claimed
+
+    for parent_id in _parent_ids_from_oco_legs(still_active, oco_id):
+        if get_active_protection_order(db, parent_id, "TAKE_PROFIT") is not None:
+            return True
+        if has_rejected_protection_order(db, parent_id, "TAKE_PROFIT"):
+            return True
+        if is_telegram_event_claimed(
+            db, f"tp_unreachable:{parent_id}", ttl_minutes=24 * 60
+        ):
+            return True
+        if is_telegram_event_claimed(
+            db, f"short_tp_not_widened:{parent_id}", ttl_minutes=24 * 60
+        ):
+            return True
+
+    try:
+        rejected_tp = (
+            db.query(ExchangeOrder)
+            .filter(
+                ExchangeOrder.oco_group_id == oco_id,
+                ExchangeOrder.order_role == "TAKE_PROFIT",
+                ExchangeOrder.status == OrderStatusEnum.REJECTED,
+            )
+            .first()
+        )
+        if rejected_tp is not None:
+            return True
+    except Exception as exc:
+        logger.debug(
+            "expected-incomplete OCO rejected-TP lookup failed oco=%s: %s",
+            oco_id,
+            exc,
+        )
+    return False
+
+
 def _fetch_mark_price(symbol: str) -> Optional[float]:
     """Mark/last price via simple_price_fetcher (correct API; module has no get_price())."""
     try:
@@ -420,10 +490,19 @@ class SLTPCheckerService:
         - Sibling in OCO group already FILLED (other leg should be cancelled)
         - ACTIVE in DB but not present on exchange open orders (ghost/stale)
 
+        Incomplete OCO groups missing TAKE_PROFIT are suppressed when the parent
+        already has a REJECTED/unreachable TP (or an active TP under another
+        linkage); those land in ``expected_incomplete_groups`` and are not paged.
+
         Standalone trigger TPs/SLs on the exchange without parent_order_id or
         oco_group_id are valid (legacy/manual orders) and must not be flagged.
         """
-        issues = {'orphaned_orders': [], 'incomplete_groups': [], 'total_oco_groups': 0}
+        issues = {
+            'orphaned_orders': [],
+            'incomplete_groups': [],
+            'expected_incomplete_groups': [],
+            'total_oco_groups': 0,
+        }
         sl_tp_types = [
             'STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT',
         ]
@@ -585,18 +664,30 @@ class SLTPCheckerService:
                 has_tp = any(o.order_role == "TAKE_PROFIT" for o in still_active)
                 if not (has_sl and has_tp):
                     symbol = still_active[0].symbol if still_active else "Unknown"
-                    issues['incomplete_groups'].append({
+                    missing = "STOP_LOSS" if not has_sl else "TAKE_PROFIT"
+                    group = {
                         'oco_group_id': oco_id,
                         'symbol': symbol,
                         'has_sl': has_sl,
                         'has_tp': has_tp,
-                        'missing': "STOP_LOSS" if not has_sl else "TAKE_PROFIT",
-                    })
+                        'missing': missing,
+                    }
+                    # SL-only + REJECTED/unreachable TP is expected half-protection,
+                    # not an actionable OCO integrity break (prod: 31-group noise).
+                    if (
+                        missing == "TAKE_PROFIT"
+                        and has_sl
+                        and _is_expected_incomplete_missing_tp(db, still_active, oco_id)
+                    ):
+                        issues['expected_incomplete_groups'].append(group)
+                        continue
+                    issues['incomplete_groups'].append(group)
 
             logger.info(
-                "OCO check: %d orphaned, %d incomplete",
+                "OCO check: %d orphaned, %d incomplete, %d expected-incomplete",
                 len(issues['orphaned_orders']),
                 len(issues['incomplete_groups']),
+                len(issues['expected_incomplete_groups']),
             )
 
         except Exception as e:
