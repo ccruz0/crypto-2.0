@@ -306,6 +306,61 @@ def create_oco_protection_orders(
                 "error": err,
             }
 
+    # Native OCO previously sent entry-based TP/SL without a live-mark check.
+    # Late post-fill (or delayed ensure) with tight TP% (e.g. +1%) already behind
+    # the market → Crypto.com REJECTED → stuck SL-only lots (prod AAVE_USD).
+    # Standalone create_take_profit_order already repairs; OCO must too.
+    tp_adjust = None
+    sl_adjust = None
+    if not dry_run:
+        from app.utils.sl_trigger_guard import (
+            ensure_valid_sl_trigger,
+            ensure_valid_tp_trigger,
+            fetch_last_price,
+        )
+
+        tp_percentage = None
+        sl_percentage = None
+        try:
+            from app.models.watchlist import WatchlistItem
+
+            wl = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+            if wl and wl.tp_percentage is not None and float(wl.tp_percentage) > 0:
+                tp_percentage = float(wl.tp_percentage)
+            if wl and wl.sl_percentage is not None and float(wl.sl_percentage) > 0:
+                sl_percentage = float(wl.sl_percentage)
+        except Exception as wl_err:
+            logger.debug(
+                "[%s_OCO] watchlist pct lookup failed for %s: %s",
+                source.upper(),
+                symbol,
+                wl_err,
+            )
+
+        last_price = fetch_last_price(symbol)
+        tp_price, tp_adjust = ensure_valid_tp_trigger(
+            entry_side=entry_side,
+            tp_price=float(tp_price),
+            last_price=last_price,
+            tp_percentage=tp_percentage,
+            entry_price=float(entry_price) if entry_price else None,
+        )
+        sl_price, sl_adjust = ensure_valid_sl_trigger(
+            entry_side=entry_side,
+            sl_price=float(sl_price),
+            last_price=last_price,
+            sl_percentage=sl_percentage,
+            entry_price=float(entry_price) if entry_price else None,
+        )
+        if tp_adjust:
+            logger.warning(
+                "[%s_OCO] Adjusted TP for %s: %s", source.upper(), symbol, tp_adjust
+            )
+        if sl_adjust:
+            logger.warning(
+                "[%s_OCO] Adjusted SL for %s: %s", source.upper(), symbol, sl_adjust
+            )
+
     logger.info(
         "[%s_OCO] Creating native OCO: %s closing_side=%s qty=%s tp=%s sl=%s entry=%s",
         source.upper(),
