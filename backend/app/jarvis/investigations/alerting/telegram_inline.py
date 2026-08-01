@@ -16,10 +16,7 @@ from typing import Any, Callable
 
 from app.jarvis.telegram_control import (
     actor_from_telegram_user,
-    is_jarvis_telegram_enabled,
-    jarvis_allowlists_configured,
-    jarvis_telegram_allowed,
-    jarvis_telegram_token_present,
+    jarvis_telegram_gate_deny_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,13 +28,7 @@ SendFn = Callable[[str], None]
 
 
 def _jarvis_alert_gate_ok(chat_id: str, actor_user_id: str) -> bool:
-    if not is_jarvis_telegram_enabled():
-        return False
-    if not jarvis_telegram_token_present():
-        return False
-    if not jarvis_allowlists_configured():
-        return False
-    return jarvis_telegram_allowed(chat_id, actor_user_id)
+    return jarvis_telegram_gate_deny_reason(chat_id, actor_user_id) is None
 
 
 def _parse_alert_callback(callback_data: str) -> tuple[str, str] | None:
@@ -245,11 +236,9 @@ def handle_jarvis_investigation_alert_callback(
     if not parsed:
         return False
 
-    if not _jarvis_alert_gate_ok(chat_id, user_id):
-        send(
-            "⛔ Acciones de alerta no permitidas: este chat o usuario no está en la lista "
-            "(mismas reglas que /mission)."
-        )
+    _deny = jarvis_telegram_gate_deny_reason(chat_id, user_id)
+    if _deny:
+        send(_deny)
         return True
 
     op, alert_id = parsed

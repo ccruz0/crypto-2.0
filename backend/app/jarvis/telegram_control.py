@@ -190,19 +190,104 @@ def _split_id_list(raw: str | None) -> set[str]:
     return out
 
 
+def _is_private_telegram_id(tid: str) -> bool:
+    """Positive numeric Telegram ids are private chats / user ids (not groups/channels)."""
+    s = str(tid or "").strip()
+    return bool(s) and s.isdigit() and not s.startswith("-")
+
+
+def effective_allowed_chat_ids() -> set[str]:
+    """
+    Explicit Jarvis chat allowlist plus outbound/control destinations.
+
+    Alert CTAs are often pressed in the same chat that receives
+    ``JARVIS_TELEGRAM_CHAT_ID`` / ``TELEGRAM_CHAT_ID`` / ATP Control — those
+    destinations must authorize CTAs without a separate allowlist copy.
+    """
+    chats = _split_id_list(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS"))
+    for key in (
+        "JARVIS_TELEGRAM_CHAT_ID",
+        "TELEGRAM_CHAT_ID",
+        "TELEGRAM_CHAT_ID_AWS",
+        "TELEGRAM_ATP_CONTROL_CHAT_ID",
+    ):
+        chats |= _split_id_list(os.getenv(key))
+    # Group/channel ids are commonly listed under TELEGRAM_AUTH_USER_ID.
+    for tid in _split_id_list(os.getenv("TELEGRAM_AUTH_USER_ID")):
+        if tid.startswith("-"):
+            chats.add(tid)
+    return chats
+
+
+def effective_allowed_user_ids() -> set[str]:
+    """
+    Explicit Jarvis user allowlist plus ``TELEGRAM_AUTH_USER_ID`` and private
+    chat destinations (where chat_id == operator user id).
+    """
+    users = _split_id_list(os.getenv("TELEGRAM_ALLOWED_USER_IDS"))
+    users |= _split_id_list(os.getenv("TELEGRAM_AUTH_USER_ID"))
+    for key in ("JARVIS_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID_AWS"):
+        for tid in _split_id_list(os.getenv(key)):
+            if _is_private_telegram_id(tid):
+                users.add(tid)
+    return users
+
+
 def jarvis_allowlists_configured() -> bool:
-    """Both lists must be non-empty (fail closed)."""
-    chats = (os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or "").strip()
-    users = (os.getenv("TELEGRAM_ALLOWED_USER_IDS") or "").strip()
-    return bool(chats and users)
+    """Fail closed unless at least one effective chat and one effective user exist."""
+    return bool(effective_allowed_chat_ids() and effective_allowed_user_ids())
 
 
 def jarvis_telegram_allowed(chat_id: str, user_id: str) -> bool:
     if not jarvis_allowlists_configured():
         return False
-    chats = _split_id_list(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS"))
-    users = _split_id_list(os.getenv("TELEGRAM_ALLOWED_USER_IDS"))
-    return str(chat_id) in chats and str(user_id) in users
+    chats = effective_allowed_chat_ids()
+    users = effective_allowed_user_ids()
+    cid = str(chat_id or "").strip()
+    uid = str(user_id or "").strip()
+    if not cid or not uid or uid not in users:
+        return False
+    if cid in chats:
+        return True
+    # Private DM with the bot: Telegram chat.id == user.id.
+    if cid == uid and _is_private_telegram_id(cid):
+        return True
+    return False
+
+
+def jarvis_telegram_gate_deny_reason(chat_id: str, user_id: str) -> str | None:
+    """Spanish operator-facing deny reason, or None when the gate allows."""
+    if not is_jarvis_telegram_enabled():
+        return (
+            "⛔ Acciones Jarvis no permitidas: JARVIS_TELEGRAM_ENABLED no está activo."
+        )
+    if not jarvis_telegram_token_present():
+        return "⛔ Acciones Jarvis no permitidas: falta TELEGRAM_BOT_TOKEN."
+    if not jarvis_allowlists_configured():
+        return (
+            "⛔ Acciones Jarvis no permitidas: allowlist incompleta "
+            "(TELEGRAM_ALLOWED_* o TELEGRAM_CHAT_ID + TELEGRAM_AUTH_USER_ID)."
+        )
+    if jarvis_telegram_allowed(chat_id, user_id):
+        return None
+    chats = effective_allowed_chat_ids()
+    users = effective_allowed_user_ids()
+    cid = str(chat_id or "").strip()
+    uid = str(user_id or "").strip()
+    if uid not in users:
+        return (
+            f"⛔ Acciones no permitidas: usuario {uid or '?'} fuera de la lista "
+            "(mismas reglas que /mission)."
+        )
+    if cid not in chats and not (cid == uid and _is_private_telegram_id(cid)):
+        return (
+            f"⛔ Acciones no permitidas: chat {cid or '?'} fuera de la lista "
+            "(mismas reglas que /mission)."
+        )
+    return (
+        "⛔ Acciones de alerta no permitidas: chat o usuario fuera de la lista "
+        "(mismas reglas que /mission)."
+    )
 
 
 def actor_from_telegram_user(from_user: dict[str, Any] | None) -> str:
@@ -238,7 +323,8 @@ def log_jarvis_telegram_startup_status() -> None:
         )
     if en and not wl:
         logger.warning(
-            "JarvisTelegram: allowlists empty or incomplete — set non-empty TELEGRAM_ALLOWED_CHAT_IDS and TELEGRAM_ALLOWED_USER_IDS",
+            "JarvisTelegram: allowlists empty or incomplete — set TELEGRAM_ALLOWED_CHAT_IDS / "
+            "TELEGRAM_ALLOWED_USER_IDS or TELEGRAM_CHAT_ID + TELEGRAM_AUTH_USER_ID",
         )
 
 
@@ -1210,29 +1296,28 @@ def maybe_handle_jarvis_telegram_message(
     if classified is None:
         return False
 
-    if not is_jarvis_telegram_enabled():
-        send("Jarvis Telegram control is disabled (JARVIS_TELEGRAM_ENABLED).")
-        return True
-
-    if not jarvis_telegram_token_present():
-        logger.warning("JarvisTelegram: command ignored — TELEGRAM_BOT_TOKEN missing")
-        send("Jarvis Telegram is misconfigured: missing TELEGRAM_BOT_TOKEN.")
-        return True
-
-    if not jarvis_allowlists_configured():
-        logger.warning("JarvisTelegram: allowlists not configured")
-        send(
-            "Jarvis Telegram: configure non-empty TELEGRAM_ALLOWED_CHAT_IDS and TELEGRAM_ALLOWED_USER_IDS.",
-        )
-        return True
-
-    if not jarvis_telegram_allowed(chat_id, actor_user_id):
+    _deny = jarvis_telegram_gate_deny_reason(chat_id, actor_user_id)
+    if _deny:
+        if not is_jarvis_telegram_enabled():
+            send("Jarvis Telegram control is disabled (JARVIS_TELEGRAM_ENABLED).")
+            return True
+        if not jarvis_telegram_token_present():
+            logger.warning("JarvisTelegram: command ignored — TELEGRAM_BOT_TOKEN missing")
+            send("Jarvis Telegram is misconfigured: missing TELEGRAM_BOT_TOKEN.")
+            return True
+        if not jarvis_allowlists_configured():
+            logger.warning("JarvisTelegram: allowlists not configured")
+            send(
+                "Jarvis Telegram: configure non-empty TELEGRAM_ALLOWED_CHAT_IDS and "
+                "TELEGRAM_ALLOWED_USER_IDS (or TELEGRAM_CHAT_ID + TELEGRAM_AUTH_USER_ID).",
+            )
+            return True
         logger.info(
             "JarvisTelegram: denied chat_id=%s user_id=%s",
             chat_id,
             actor_user_id,
         )
-        send("⛔ Jarvis: chat or user not allowlisted.")
+        send(_deny)
         return True
 
     kind, args = classified

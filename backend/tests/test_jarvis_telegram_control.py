@@ -311,3 +311,46 @@ def test_duplicate_begin_overwrites_single_pending(tmp_path):
     st = get_state("c6", "u6")
     assert st is not None
     assert st.pending_secret_key == "google_ads_developer_token"
+
+
+def test_effective_allowlist_derives_from_telegram_chat_and_auth(monkeypatch):
+    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1:tok")
+    monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "839853931")
+    monkeypatch.setenv("TELEGRAM_AUTH_USER_ID", "839853931")
+    monkeypatch.delenv("JARVIS_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_ATP_CONTROL_CHAT_ID", raising=False)
+
+    assert tc.jarvis_allowlists_configured() is True
+    assert tc.jarvis_telegram_allowed("839853931", "839853931") is True
+    assert tc.jarvis_telegram_gate_deny_reason("839853931", "839853931") is None
+
+
+def test_effective_allowlist_includes_atp_control_group(monkeypatch):
+    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1:tok")
+    monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "839853931")
+    monkeypatch.setenv("TELEGRAM_ATP_CONTROL_CHAT_ID", "-1001234567890")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_AUTH_USER_ID", raising=False)
+
+    assert tc.jarvis_telegram_allowed("-1001234567890", "839853931") is True
+    assert tc.jarvis_telegram_allowed("-100999", "839853931") is False
+
+
+def test_gate_deny_reason_distinguishes_disabled_and_user(monkeypatch):
+    monkeypatch.delenv("JARVIS_TELEGRAM_ENABLED", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1:tok")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "1")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "2")
+    reason = tc.jarvis_telegram_gate_deny_reason("1", "2")
+    assert reason is not None
+    assert "JARVIS_TELEGRAM_ENABLED" in reason
+
+    monkeypatch.setenv("JARVIS_TELEGRAM_ENABLED", "true")
+    reason_user = tc.jarvis_telegram_gate_deny_reason("1", "999")
+    assert reason_user is not None
+    assert "usuario 999" in reason_user

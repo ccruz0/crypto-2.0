@@ -185,6 +185,12 @@ PRESERVE_JARVIS_PATCH_APPLY_ENABLED="$(read_runtime_env_flag JARVIS_PATCH_APPLY_
 PRESERVE_JARVIS_PR_CREATION_ENABLED="$(read_runtime_env_flag JARVIS_PR_CREATION_ENABLED)"
 PRESERVE_JARVIS_GITHUB_WRITE_ENABLED="$(read_runtime_env_flag JARVIS_GITHUB_WRITE_ENABLED)"
 PRESERVE_JARVIS_REQUIRE_DOUBLE_APPROVAL="$(read_runtime_env_flag JARVIS_REQUIRE_DOUBLE_APPROVAL)"
+# Preserve Jarvis Telegram control allowlists (alert CTAs /mission) before overwrite.
+PRESERVE_JARVIS_TELEGRAM_ENABLED="$(read_runtime_env_flag JARVIS_TELEGRAM_ENABLED)"
+PRESERVE_JARVIS_TELEGRAM_CHAT_ID="$(read_runtime_env_flag JARVIS_TELEGRAM_CHAT_ID)"
+PRESERVE_TELEGRAM_ALLOWED_CHAT_IDS="$(read_runtime_env_flag TELEGRAM_ALLOWED_CHAT_IDS)"
+PRESERVE_TELEGRAM_ALLOWED_USER_IDS="$(read_runtime_env_flag TELEGRAM_ALLOWED_USER_IDS)"
+PRESERVE_TELEGRAM_AUTH_USER_ID="$(read_runtime_env_flag TELEGRAM_AUTH_USER_ID)"
 EXCHANGE_API_KEY_VAL=""
 EXCHANGE_API_SECRET_VAL=""
 EXCHANGE_CREDS_SOURCE="none"
@@ -293,6 +299,64 @@ fi
 # ATP Control (@ATP_control_bot): tasks, approvals, investigations. Auto-authorizes channel for commands.
 [[ -n "$ATP_CONTROL_CHAT_ID_VAL" ]] && printf "TELEGRAM_ATP_CONTROL_CHAT_ID=%s\n" "$ATP_CONTROL_CHAT_ID_VAL" >> "$RUNTIME_ENV"
 [[ -n "$ATP_CONTROL_BOT_TOKEN_VAL" ]] && printf "TELEGRAM_ATP_CONTROL_BOT_TOKEN=%s\n" "$ATP_CONTROL_BOT_TOKEN_VAL" >> "$RUNTIME_ENV"
+
+# Jarvis Telegram control (investigation alert CTAs + /mission). Operator private id is known.
+# Prefer preserved / .env.aws values; always ensure operator 839853931 is on the user allowlist.
+OPERATOR_TG_USER_ID="839853931"
+JARVIS_TG_ENABLED_VAL="${PRESERVE_JARVIS_TELEGRAM_ENABLED:-}"
+JARVIS_TG_CHAT_VAL="${PRESERVE_JARVIS_TELEGRAM_CHAT_ID:-}"
+ALLOWED_CHATS_VAL="${PRESERVE_TELEGRAM_ALLOWED_CHAT_IDS:-}"
+ALLOWED_USERS_VAL="${PRESERVE_TELEGRAM_ALLOWED_USER_IDS:-}"
+AUTH_USER_VAL="${PRESERVE_TELEGRAM_AUTH_USER_ID:-}"
+_read_env_aws_key() {
+  local key="$1"
+  if [[ -f "$ROOT_DIR/.env.aws" ]]; then
+    grep -E "^${key}=" "$ROOT_DIR/.env.aws" 2>/dev/null | cut -d= -f2- | head -1 || true
+  fi
+}
+if [[ -z "$JARVIS_TG_ENABLED_VAL" ]]; then
+  JARVIS_TG_ENABLED_VAL="$(_read_env_aws_key JARVIS_TELEGRAM_ENABLED)"
+fi
+if [[ -z "$JARVIS_TG_CHAT_VAL" ]]; then
+  JARVIS_TG_CHAT_VAL="$(_read_env_aws_key JARVIS_TELEGRAM_CHAT_ID)"
+fi
+if [[ -z "$ALLOWED_CHATS_VAL" ]]; then
+  ALLOWED_CHATS_VAL="$(_read_env_aws_key TELEGRAM_ALLOWED_CHAT_IDS)"
+fi
+if [[ -z "$ALLOWED_USERS_VAL" ]]; then
+  ALLOWED_USERS_VAL="$(_read_env_aws_key TELEGRAM_ALLOWED_USER_IDS)"
+fi
+if [[ -z "$AUTH_USER_VAL" ]]; then
+  AUTH_USER_VAL="$(_read_env_aws_key TELEGRAM_AUTH_USER_ID)"
+fi
+[[ -z "$JARVIS_TG_ENABLED_VAL" ]] && JARVIS_TG_ENABLED_VAL="true"
+[[ -z "$JARVIS_TG_CHAT_VAL" ]] && JARVIS_TG_CHAT_VAL="${CHAT_ID}"
+# Build comma-separated chat allowlist: destinations + operator DM.
+_chat_parts=()
+[[ -n "$ALLOWED_CHATS_VAL" ]] && _chat_parts+=("$ALLOWED_CHATS_VAL")
+[[ -n "$CHAT_ID" ]] && _chat_parts+=("$CHAT_ID")
+[[ -n "$ATP_CONTROL_CHAT_ID_VAL" ]] && _chat_parts+=("$ATP_CONTROL_CHAT_ID_VAL")
+[[ -n "$JARVIS_TG_CHAT_VAL" ]] && _chat_parts+=("$JARVIS_TG_CHAT_VAL")
+_chat_parts+=("$OPERATOR_TG_USER_ID")
+ALLOWED_CHATS_VAL="$(printf "%s," "${_chat_parts[@]}" | sed 's/,$//' | tr ',' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd, -)"
+# User allowlist: preserved + auth users + operator.
+_user_parts=()
+[[ -n "$ALLOWED_USERS_VAL" ]] && _user_parts+=("$ALLOWED_USERS_VAL")
+[[ -n "$AUTH_USER_VAL" ]] && _user_parts+=("$AUTH_USER_VAL")
+_user_parts+=("$OPERATOR_TG_USER_ID")
+ALLOWED_USERS_VAL="$(printf "%s," "${_user_parts[@]}" | sed 's/,$//' | tr ',' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd, -)"
+# Ensure TELEGRAM_AUTH_USER_ID includes the operator (legacy command auth path).
+if [[ -z "$AUTH_USER_VAL" ]]; then
+  AUTH_USER_VAL="$OPERATOR_TG_USER_ID"
+elif [[ ",${AUTH_USER_VAL}," != *",${OPERATOR_TG_USER_ID},"* ]]; then
+  AUTH_USER_VAL="${AUTH_USER_VAL},${OPERATOR_TG_USER_ID}"
+fi
+printf "JARVIS_TELEGRAM_ENABLED=%s\n" "$JARVIS_TG_ENABLED_VAL" >> "$RUNTIME_ENV"
+printf "JARVIS_TELEGRAM_CHAT_ID=%s\n" "$JARVIS_TG_CHAT_VAL" >> "$RUNTIME_ENV"
+printf "TELEGRAM_ALLOWED_CHAT_IDS=%s\n" "$ALLOWED_CHATS_VAL" >> "$RUNTIME_ENV"
+printf "TELEGRAM_ALLOWED_USER_IDS=%s\n" "$ALLOWED_USERS_VAL" >> "$RUNTIME_ENV"
+printf "TELEGRAM_AUTH_USER_ID=%s\n" "$AUTH_USER_VAL" >> "$RUNTIME_ENV"
+echo "JarvisTelegram allowlists: enabled=${JARVIS_TG_ENABLED_VAL} chats_set=YES users_include_operator=YES"
 
 # GitHub auth mode (after all merges): App preferred; PAT-only sets legacy escape hatch for PR #32+.
 GITHUB_APP_ALL=no
