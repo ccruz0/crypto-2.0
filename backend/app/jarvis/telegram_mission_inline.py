@@ -23,10 +23,7 @@ from app.jarvis.autonomous_schemas import (
 from app.jarvis.telegram_control import (
     actor_from_telegram_user,
     format_compact_jarvis_reply,
-    is_jarvis_telegram_enabled,
-    jarvis_allowlists_configured,
-    jarvis_telegram_allowed,
-    jarvis_telegram_token_present,
+    jarvis_telegram_gate_deny_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,13 +64,7 @@ def clear_pending_jarvis_mission_input(chat_id: str, user_id: str) -> None:
 
 
 def _jarvis_mission_gate_ok(chat_id: str, actor_user_id: str) -> bool:
-    if not is_jarvis_telegram_enabled():
-        return False
-    if not jarvis_telegram_token_present():
-        return False
-    if not jarvis_allowlists_configured():
-        return False
-    return jarvis_telegram_allowed(chat_id, actor_user_id)
+    return jarvis_telegram_gate_deny_reason(chat_id, actor_user_id) is None
 
 
 def try_consume_pending_jarvis_mission_input(
@@ -147,8 +138,9 @@ def handle_jarvis_mission_telegram_callback(
     if not parsed:
         return False
     op, mission_id = parsed
-    if not _jarvis_mission_gate_ok(chat_id, user_id):
-        send("⛔ Acciones de misión no permitidas: este chat o usuario no está en la lista (mismas reglas que /mission).")
+    _deny = jarvis_telegram_gate_deny_reason(chat_id, user_id)
+    if _deny:
+        send(_deny)
         return True
 
     actor = actor_from_telegram_user(from_user)

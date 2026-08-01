@@ -5232,12 +5232,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
 
         _cb_raw = (callback_data or "").strip()
         if _cb_raw.startswith("jia:"):
-            from app.jarvis.telegram_control import (
-                is_jarvis_telegram_enabled,
-                jarvis_allowlists_configured,
-                jarvis_telegram_allowed,
-                jarvis_telegram_token_present,
-            )
+            from app.jarvis.telegram_control import jarvis_telegram_gate_deny_reason
             from app.jarvis.investigations.alerting.telegram_inline import (
                 handle_jarvis_investigation_alert_callback,
             )
@@ -5245,12 +5240,8 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             def _jarvis_alert_send(msg: str) -> None:
                 send_command_response(chat_id, msg)
 
-            if (
-                not is_jarvis_telegram_enabled()
-                or not jarvis_telegram_token_present()
-                or not jarvis_allowlists_configured()
-                or not jarvis_telegram_allowed(chat_id, actor_user_id)
-            ):
+            _jia_deny = jarvis_telegram_gate_deny_reason(chat_id, actor_user_id)
+            if _jia_deny:
                 try:
                     token = _get_effective_bot_token()
                     if token and callback_query_id:
@@ -5262,11 +5253,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         )
                 except Exception:
                     pass
-                send_command_response(
-                    chat_id,
-                    "⛔ Acciones de alerta no permitidas: chat o usuario fuera de la lista "
-                    "(mismas reglas que /mission).",
-                )
+                send_command_response(chat_id, _jia_deny)
                 return
 
             if callback_query_id:
@@ -5296,23 +5283,14 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             return
 
         if _cb_raw.startswith("jm:"):
-            from app.jarvis.telegram_control import (
-                is_jarvis_telegram_enabled,
-                jarvis_allowlists_configured,
-                jarvis_telegram_allowed,
-                jarvis_telegram_token_present,
-            )
+            from app.jarvis.telegram_control import jarvis_telegram_gate_deny_reason
             from app.jarvis.telegram_mission_inline import handle_jarvis_mission_telegram_callback
 
             def _jarvis_mission_send(msg: str) -> None:
                 send_command_response(chat_id, msg)
 
-            if (
-                not is_jarvis_telegram_enabled()
-                or not jarvis_telegram_token_present()
-                or not jarvis_allowlists_configured()
-                or not jarvis_telegram_allowed(chat_id, actor_user_id)
-            ):
+            _jm_deny = jarvis_telegram_gate_deny_reason(chat_id, actor_user_id)
+            if _jm_deny:
                 try:
                     token = _get_effective_bot_token()
                     if token and callback_query_id:
@@ -5324,10 +5302,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         )
                 except Exception:
                     pass
-                send_command_response(
-                    chat_id,
-                    "⛔ Acciones de misión no permitidas: chat o usuario fuera de la lista (mismas reglas que /mission).",
-                )
+                send_command_response(chat_id, _jm_deny)
                 return
 
             if callback_query_id:
