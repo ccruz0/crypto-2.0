@@ -64,12 +64,20 @@ Health: `https://dashboard.hilovivo.com/api/health`
 
 ## 3. Current priorities (in order)
 
-1. **`ApprovalQueueStale` / `JarvisApprovalQueueStale`** — alerts + 7-day expire
-   (agent + ACW low) + objective dedup + **ops escalation for medium/high ACW
-   waiters ≥`APPROVAL_QUEUE_JARVIS_ESCALATE_DAYS` (default 3)** (once per task).
-2. Capacity move **only if pressure returns**: split observability or canary
+1. Capacity move **only if pressure returns**: split observability or canary
    off the prod host (not another RAM bump). See
    `docs/project-history/swap_investigation.md` §7.4.
+
+### ApprovalQueue lifecycle — closed (2026-08-01)
+- **Shipped and verified in production.** Alerts, 7-day expire (agent + ACW
+  low), objective dedup, and ops escalation for medium/high ACW waiters
+  (≥`APPROVAL_QUEUE_JARVIS_ESCALATE_DAYS`, default 3, once per task) are live.
+- PRs: #162 (agent stale alert + metrics), #234 (`JarvisApprovalQueueStale`),
+  #299 (expire), #300 (dedup), #302 (escalate).
+- Prod check 2026-08-01: `approval_queue_stale_total=0`,
+  `jarvis_approval_queue_stale_total=0`, empty waiting queues.
+- **Do not reopen as active priority** unless metrics/alerts regress.
+- Write-up: `docs/project-history/approval-queue-lifecycle-closed-2026-08-01.md`.
 
 ### HostSwapHigh — closed (2026-07-31)
 - **Mitigated.** Same instance `i-087953603011543c5` is now **`t3.medium`**;
