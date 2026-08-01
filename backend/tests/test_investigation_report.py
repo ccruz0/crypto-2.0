@@ -250,3 +250,57 @@ class TestOpenOrdersMismatchClassification:
             tool_outputs=tool_outputs,
         )
         assert ranked[0].cause != "No active dashboard/exchange mismatch detected"
+
+    def test_raw_cache_empty_but_effective_dashboard_matches_exchange_is_resolved(self):
+        """Regression: empty in-memory cache must not CRITICAL when API serves DB fallback."""
+        tool_outputs = [
+            {
+                "tool": "diagnose_open_orders",
+                "ok": True,
+                "root_cause": "Open orders cache empty but dashboard API serves database fallback",
+                "exchange_total_count": 80,
+                "dashboard_effective_count": 80,
+                "dashboard_source": "database_fallback",
+                "db_open_count": 80,
+                "cache_raw_count": 0,
+                "exchange_data_verified": True,
+            },
+            {
+                "tool": "reconcile_crypto_com_open_orders",
+                "ok": True,
+                "counts": {
+                    "exchange_live": 80,
+                    "database_open": 80,
+                    # Legacy reconcile reported raw cache only — must not win over effective.
+                    "dashboard_cache": 0,
+                    "dashboard_effective": 80,
+                    "dashboard_raw_cache": 0,
+                },
+                "root_cause": "Reconciliation found 1 discrepancy(ies)",
+                "sources": {
+                    "exchange": {"data_verified": True},
+                    "dashboard": {"source": "database_fallback", "raw_cache_count": 0},
+                },
+            },
+        ]
+        classification = classify_open_orders_mismatch(tool_outputs)
+        assert classification is not None
+        assert classification.active_mismatch is False
+        assert classification.resolution == "resolved"
+        assert any("database_fallback" in note for note in classification.notes)
+
+        ranked = rank_root_causes(
+            evidence=[
+                {
+                    "source": "api",
+                    "reference": "cache",
+                    "detail": "Database has open orders but dashboard cache is empty",
+                    "confidence": "high",
+                }
+            ],
+            category="orders",
+            tool_outputs=tool_outputs,
+            objective="Why are open orders empty?",
+            template_id="open_orders_empty",
+        )
+        assert ranked[0].cause == "No active dashboard/exchange mismatch detected"

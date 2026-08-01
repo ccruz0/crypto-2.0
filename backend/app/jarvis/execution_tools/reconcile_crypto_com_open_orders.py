@@ -200,15 +200,44 @@ def _is_trigger_order_type(order_type: str | None, order_role: str | None) -> bo
 
 
 def _fetch_dashboard_orders() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Effective dashboard open orders — same path as GET /api/orders/open
+    (healthy in-memory cache, else DB fallback via resolve_open_orders).
+    """
+    from app.database import create_db_session
     from app.services.open_orders_cache import get_open_orders_cache
+    from app.services.open_orders_resolver import resolve_open_orders
 
-    meta: dict[str, Any] = {"error": None, "last_updated": None, "total_count": 0}
+    meta: dict[str, Any] = {
+        "error": None,
+        "last_updated": None,
+        "total_count": 0,
+        "source": None,
+        "raw_cache_count": 0,
+    }
     cache = get_open_orders_cache() or {}
-    last_updated = cache.get("last_updated")
-    meta["last_updated"] = last_updated.isoformat() if last_updated else None
+    meta["raw_cache_count"] = len(cache.get("orders") or [])
+
+    db = None
+    try:
+        try:
+            db = create_db_session()
+        except Exception as exc:
+            meta["error"] = str(exc)
+            db = None
+        resolved = resolve_open_orders(db)
+    except Exception as exc:
+        meta["error"] = str(exc)
+        return [], meta
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     orders: list[dict[str, Any]] = []
-    for item in cache.get("orders") or []:
+    for item in resolved.orders or []:
         orders.append(
             _order_snapshot(
                 order_id=item.order_id,
@@ -217,10 +246,16 @@ def _fetch_dashboard_orders() -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 side=item.side,
                 order_type=item.order_type,
                 is_trigger=item.is_trigger,
-                source="dashboard_cache",
+                source=resolved.source or "dashboard",
             )
         )
     meta["total_count"] = len(orders)
+    meta["source"] = resolved.source
+    last_updated = resolved.last_updated
+    if hasattr(last_updated, "isoformat"):
+        meta["last_updated"] = last_updated.isoformat()
+    else:
+        meta["last_updated"] = last_updated
     return orders, meta
 
 
@@ -385,7 +420,7 @@ def reconcile_crypto_com_open_orders(
     Read-only three-way reconciliation:
     - Crypto.com live open orders (regular + trigger)
     - exchange_orders rows with open statuses
-    - dashboard open orders cache (GET /api/orders/open source)
+    - dashboard effective open orders (same as GET /api/orders/open)
     """
     exchange_orders, exchange_meta = _fetch_exchange_orders()
     db_orders, db_meta = _fetch_db_open_orders()
@@ -422,6 +457,8 @@ def reconcile_crypto_com_open_orders(
         reconciliations=reconciliations,
     )
 
+    effective_count = len(dashboard_orders)
+    raw_cache_count = int(dashboard_meta.get("raw_cache_count") or 0)
     return {
         "tool": "reconcile_crypto_com_open_orders",
         "ok": True,
@@ -430,7 +467,10 @@ def reconcile_crypto_com_open_orders(
         "counts": {
             "exchange_live": len(exchange_orders),
             "database_open": len(db_orders),
-            "dashboard_cache": len(dashboard_orders),
+            # dashboard_cache keeps legacy key name but now means effective API count
+            "dashboard_cache": effective_count,
+            "dashboard_effective": effective_count,
+            "dashboard_raw_cache": raw_cache_count,
         },
         "sources": {
             "exchange": exchange_meta,
