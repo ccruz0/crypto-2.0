@@ -85,7 +85,8 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-southeast-1
 
-      # AWS-RunShellScript uses /bin/sh (dash on Ubuntu) — no bash pipefail.
+      # AWS-RunShellScript uses /bin/sh. Avoid docker --format '{{.Names}}':
+      # SSM document templating mangles {{...}} and yields "Syntax error: ( unexpected".
       - name: Dry-run recover_missing_tps on PROD
         env:
           INSTANCE_ID: i-087953603011543c5
@@ -93,19 +94,24 @@ jobs:
         run: |
           set -euo pipefail
           SYMBOLS="${SYMBOLS:-ALGO_USD DOGE_USD DOT_USD ETH_USDT ETH_USD}"
-          # shellcheck disable=SC2016
+          case "$SYMBOLS" in
+            *[!A-Za-z0-9_\ ]*) echo "Invalid symbols input: $SYMBOLS" >&2; exit 1 ;;
+          esac
+          # Match deploy-backend.yml: heredoc + jq so escaping is reliable.
+          read -r -d '' REMOTE <<EOF || true
+          set -eu
+          cd /home/ubuntu/crypto-2.0
+          CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
+          echo CONTAINER=\$CONTAINER
+          test -n "\$CONTAINER"
+          docker exec "\$CONTAINER" python3 /app/scripts/recover_missing_tps.py --tp-only ${SYMBOLS}
+          EOF
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "dry-run recover_missing_tps" \
-            --parameters commands="[
-              \"set -eu\",
-              \"cd /home/ubuntu/crypto-2.0\",
-              \"CONTAINER=\\\$(docker ps --format '{{.Names}}' | grep -E 'backend-aws-1$' | head -1)\",
-              \"echo CONTAINER=\\\$CONTAINER\",
-              \"test -n \\\"\\\$CONTAINER\\\"\",
-              \"docker exec \\\$CONTAINER python3 /app/scripts/recover_missing_tps.py --tp-only $SYMBOLS\"
-            ]" \
+            --parameters "$PARAMS" \
             --timeout-seconds 300 \
             --output text \
             --query "Command.CommandId")
@@ -137,18 +143,23 @@ jobs:
         run: |
           set -euo pipefail
           SYMBOLS="${SYMBOLS:-ALGO_USD DOGE_USD DOT_USD ETH_USDT ETH_USD}"
+          case "$SYMBOLS" in
+            *[!A-Za-z0-9_\ ]*) echo "Invalid symbols input: $SYMBOLS" >&2; exit 1 ;;
+          esac
+          read -r -d '' REMOTE <<EOF || true
+          set -eu
+          cd /home/ubuntu/crypto-2.0
+          CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
+          echo CONTAINER=\$CONTAINER
+          test -n "\$CONTAINER"
+          docker exec "\$CONTAINER" python3 /app/scripts/recover_missing_tps.py --live --tp-only --cancel-sl-first ${SYMBOLS}
+          EOF
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "live recover_missing_tps cancel-sl-first" \
-            --parameters commands="[
-              \"set -eu\",
-              \"cd /home/ubuntu/crypto-2.0\",
-              \"CONTAINER=\\\$(docker ps --format '{{.Names}}' | grep -E 'backend-aws-1$' | head -1)\",
-              \"echo CONTAINER=\\\$CONTAINER\",
-              \"test -n \\\"\\\$CONTAINER\\\"\",
-              \"docker exec \\\$CONTAINER python3 /app/scripts/recover_missing_tps.py --live --tp-only --cancel-sl-first $SYMBOLS\"
-            ]" \
+            --parameters "$PARAMS" \
             --timeout-seconds 600 \
             --output text \
             --query "Command.CommandId")
