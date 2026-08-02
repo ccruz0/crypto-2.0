@@ -266,10 +266,6 @@ services:
       # Telegram/admin keys are injected via secrets/runtime.env (rendered by scripts/aws/render_runtime_env.sh)
       # Persist strategy config so dashboard strategy changes survive restarts (RUNBOOK 8.5)
       - TRADING_CONFIG_PATH=/data/trading_config.json
-      # Brief Telethon user-session (api_id/hash from env_file; session on dedicated volume)
-      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
-      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
-      - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram/hilovivo.session}
       # Option A: tail_logs + host-visible ai_runs
       - AI_ENGINE_COMPOSE_DIR=/app
       - AI_RUNS_DIR=/app/backend/ai_runs
@@ -301,8 +297,6 @@ services:
       - ./docs:/app/docs
       - ./logs:/app/logs
       - aws_trading_config_data:/data
-      # Telethon session for brief Telegram reader (chmod 700 inside login script)
-      - telegram_session_data:/data/telegram
       # Auto ML artifacts (current.joblib + manifest); host path ./models/auto_entry
       - ./models/auto_entry:/data/auto_ml
       # Mount secrets directory (not only runtime.env): persist uses mkstemp beside the file;
@@ -729,8 +723,6 @@ volumes:
   grafana_data:
   # For RUNBOOK 8.5: persist strategy config; uncomment backend-aws volume mount and TRADING_CONFIG_PATH to use
   aws_trading_config_data:
-  # Brief Telethon user session (never commit *.session)
-  telegram_session_data:
 
 secrets:
   pg_password:
