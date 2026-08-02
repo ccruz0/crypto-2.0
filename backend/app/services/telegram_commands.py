@@ -6927,15 +6927,25 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
                     # Handle bot being added/removed from groups
                     chat = my_chat_member.get("chat", {})
                     chat_id = str(chat.get("id", ""))
+                    chat_type = str(chat.get("type") or "")
                     new_status = my_chat_member.get("new_chat_member", {}).get("status", "")
                     old_status = my_chat_member.get("old_chat_member", {}).get("status", "")
                     logger.info(f"[TG] ⚡ Processing my_chat_member: chat_id={chat_id}, status: {old_status} -> {new_status}, update_id={update_id}")
                     # If bot was added to group, send welcome message (main menu)
                     if new_status == "member" or new_status == "administrator":
-                        logger.info(f"[TG] Bot added to group {chat_id}, sending welcome message")
-                        _from_member = my_chat_member.get("from") or {}
-                        _welcome_actor = _resolve_actor_user_id(_from_member, None, chat_id)
-                        send_welcome_message(chat_id, db, actor_user_id=_welcome_actor)
+                        brief_chat = (os.getenv("BRIEF_TELEGRAM_CHAT_ID") or "").strip()
+                        # Broadcast / brief channels are outbound-only — never post the control menu there.
+                        if chat_type == "channel" or (brief_chat and chat_id == brief_chat):
+                            logger.info(
+                                "[TG] Bot added to chat_id=%s type=%s — skipping welcome menu (brief/channel)",
+                                chat_id,
+                                chat_type or "unknown",
+                            )
+                        else:
+                            logger.info(f"[TG] Bot added to group {chat_id}, sending welcome message")
+                            _from_member = my_chat_member.get("from") or {}
+                            _welcome_actor = _resolve_actor_user_id(_from_member, None, chat_id)
+                            send_welcome_message(chat_id, db, actor_user_id=_welcome_actor)
                     # Update ID to skip this update
                     _save_last_update_id(db, update_id)
                     LAST_UPDATE_ID = update_id
