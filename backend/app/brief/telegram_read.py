@@ -13,8 +13,11 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _SESSION_LOCK = threading.Lock()
-_TIMEOUT_S = 30.0
+_CONNECT_TIMEOUT_S = 20.0
+_COLLECT_TIMEOUT_S = 45.0
 _MAX_MESSAGES = 80
+_MAX_DIALOGS = 60
+_PER_CHAT_LIMIT = 25
 _TEXT_MAX = 500
 
 
@@ -122,44 +125,64 @@ async def _fetch_async(hours: int) -> dict[str, Any]:
 
     api_id, api_hash = _api_credentials()
     client = TelegramClient(session_name, api_id, api_hash)
+    chats_raw: list[dict[str, Any]] = []
+    timed_out = False
 
     try:
-        await asyncio.wait_for(client.connect(), timeout=_TIMEOUT_S)
-        authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=_TIMEOUT_S)
+        await asyncio.wait_for(client.connect(), timeout=_CONNECT_TIMEOUT_S)
+        authorized = await asyncio.wait_for(
+            client.is_user_authorized(), timeout=_CONNECT_TIMEOUT_S
+        )
         if not authorized:
             raise TelegramSessionMissing("session_not_authorized")
 
-        chats_raw: list[dict[str, Any]] = []
-
         async def _collect() -> None:
-            async for dialog in client.iter_dialogs():
+            dialogs = await client.get_dialogs(limit=_MAX_DIALOGS)
+
+            def _dialog_sort_key(d: Any) -> tuple:
+                unread = int(getattr(d, "unread_count", 0) or 0)
+                last_date = getattr(d, "date", None)
+                ts = 0.0
+                if last_date is not None:
+                    if last_date.tzinfo is None:
+                        last_date = last_date.replace(tzinfo=timezone.utc)
+                    ts = last_date.timestamp()
+                return (unread, ts)
+
+            dialogs = sorted(dialogs, key=_dialog_sort_key, reverse=True)
+            collected = 0
+
+            for dialog in dialogs:
+                if collected >= _MAX_MESSAGES:
+                    break
                 entity = dialog.entity
                 if _is_broadcast_channel(entity):
                     continue
                 unread = int(getattr(dialog, "unread_count", 0) or 0)
                 title = _entity_title(entity)
                 ctype = _chat_type(entity)
-                # Skip dialogs with no recent activity and no unread
                 last_date = getattr(dialog, "date", None)
                 if last_date is not None:
                     if last_date.tzinfo is None:
                         last_date = last_date.replace(tzinfo=timezone.utc)
                     if last_date < since and unread <= 0:
                         continue
-                else:
-                    if unread <= 0:
-                        continue
+                elif unread <= 0:
+                    continue
 
+                remaining = _MAX_MESSAGES - collected
+                fetch_limit = min(_PER_CHAT_LIMIT, max(remaining, 1))
                 messages_out: list[dict[str, Any]] = []
-                async for msg in client.iter_messages(entity, limit=40):
+                # get_messages is faster than streaming iter_messages for small caps
+                batch = await client.get_messages(entity, limit=fetch_limit)
+                for msg in batch or []:
                     msg_date = getattr(msg, "date", None)
                     if msg_date is None:
                         continue
                     if msg_date.tzinfo is None:
                         msg_date = msg_date.replace(tzinfo=timezone.utc)
                     if msg_date < since:
-                        break
-                    # Incoming only
+                        continue
                     if getattr(msg, "out", False):
                         continue
                     text = _msg_text(msg)
@@ -168,18 +191,26 @@ async def _fetch_async(hours: int) -> dict[str, Any]:
                     messages_out.append(
                         {
                             "from": _sender_name(msg, title),
-                            "at": msg_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "at": msg_date.astimezone(timezone.utc).strftime(
+                                "%Y-%m-%dT%H:%M:%SZ"
+                            ),
                             "text": text,
                         }
                     )
+                    if len(messages_out) >= remaining:
+                        break
 
                 if not messages_out and unread <= 0:
                     continue
 
-                last_at = messages_out[0]["at"] if messages_out else (
-                    last_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    if last_date is not None
-                    else ""
+                last_at = (
+                    messages_out[0]["at"]
+                    if messages_out
+                    else (
+                        last_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        if last_date is not None
+                        else ""
+                    )
                 )
                 chats_raw.append(
                     {
@@ -190,8 +221,19 @@ async def _fetch_async(hours: int) -> dict[str, Any]:
                         "_last_at": last_at,
                     }
                 )
+                collected += len(messages_out)
 
-        await asyncio.wait_for(_collect(), timeout=_TIMEOUT_S)
+        try:
+            await asyncio.wait_for(_collect(), timeout=_COLLECT_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            # Prefer partial brief over opaque 504 when we already have data.
+            if not chats_raw:
+                raise
+            timed_out = True
+            logger.warning(
+                "brief_telegram collect timed out with partial chats=%s",
+                len(chats_raw),
+            )
     except TelegramSessionMissing:
         raise
     except (AuthKeyError, SessionPasswordNeededError) as exc:
@@ -207,7 +249,7 @@ async def _fetch_async(hours: int) -> dict[str, Any]:
     # Most active first (unread, then last activity)
     chats_raw.sort(key=lambda c: (int(c.get("unread") or 0), c.get("_last_at") or ""), reverse=True)
 
-    truncated = False
+    truncated = bool(timed_out)
     total = 0
     chats: list[dict[str, Any]] = []
     for chat in chats_raw:
@@ -227,21 +269,21 @@ async def _fetch_async(hours: int) -> dict[str, Any]:
                 "messages": msgs,
             }
         )
-        if truncated:
+        if truncated and total >= _MAX_MESSAGES:
             break
 
-    # If we dropped remaining chats entirely
-    if len(chats) < len(chats_raw) and not truncated:
+    if len(chats) < len(chats_raw):
         truncated = True
-    if sum(len(c["messages"]) for c in chats_raw) > _MAX_MESSAGES:
+    if sum(len(c.get("messages") or []) for c in chats_raw) > _MAX_MESSAGES:
         truncated = True
 
     logger.info(
-        "brief_telegram window_hours=%s chats=%s messages=%s truncated=%s",
+        "brief_telegram window_hours=%s chats=%s messages=%s truncated=%s timed_out=%s",
         hours,
         len(chats),
         total,
         truncated,
+        timed_out,
     )
     return {
         "window_hours": hours,
