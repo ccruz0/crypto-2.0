@@ -88,6 +88,8 @@ secrets/*
 secrets/*.env
 secrets/pg_password
 secrets/runtime.env
+# Brief IMAP mailbox credentials (copy from backend/app/brief/brief_mailboxes.example.json)
+secrets/brief_mailboxes.json
 var/
 venv.bak/
 venv/
@@ -107,3 +109,7 @@ yarn-error.log*
 tmp/telegram_updates.json
 tmp/telegram_updates_sample.json
 tmp/*.json
+# Telethon / Telegram session files (full account access)
+*.session
+*.session-journal
+**/telegram/*.session

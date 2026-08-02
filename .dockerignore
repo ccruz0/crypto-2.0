@@ -53,3 +53,11 @@ backend/tests/
 deploy_key.pem
 *.tar.gz
 .DS_Store
+
+# --- Host secrets (mounted at runtime; never bake into image) ---
+secrets/
+
+# --- Telethon session files (never bake into image) ---
+*.session
+*.session-journal
+**/telegram/*.session
