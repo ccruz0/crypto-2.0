@@ -879,7 +879,7 @@ def create_protection_smart(
     from app.services.sl_tp_price_adjust import compute_strategy_sl_tp_prices, resolve_watchlist_percentages
     from app.services.sl_tp_protection import get_active_protection_order
     from app.utils.live_trading import get_live_trading_status
-    from app.utils.http_client import http_get
+    from app.utils.sl_trigger_guard import fetch_last_price
 
     prev_live = False
     live_toggled = False
@@ -935,18 +935,10 @@ def create_protection_smart(
                     break
         sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
 
+        # Use exchange v1 get-tickers (same as sl_trigger_guard). Legacy v2 get-ticker 404s.
         current_price = None
         try:
-            ticker_response = http_get(
-                "https://api.crypto.com/v2/public/get-ticker",
-                params={"instrument_name": symbol},
-                timeout=5,
-                calling_module="create_protection_smart",
-            )
-            if ticker_response.status_code == 200:
-                data = ticker_response.json().get("result", {}).get("data") or []
-                if data:
-                    current_price = float(data[0].get("a") or data[0].get("b") or data[0].get("k") or 0) or None
+            current_price = fetch_last_price(symbol)
         except Exception as ticker_err:
             logger.warning("create_protection_smart ticker failed: %s", ticker_err)
 
