@@ -109,7 +109,7 @@ def brief_send(
     _: None = Depends(require_brief_key),
     __: None = Depends(_brief_guards),
 ) -> dict[str, Any]:
-    """Send a brief message to TELEGRAM_CHAT_ID via the existing bot token."""
+    """Send a brief message to BRIEF_TELEGRAM_CHAT_ID (fallback TELEGRAM_CHAT_ID)."""
     try:
         result = send_brief_message(body.text, parse_mode=body.parse_mode)
         metrics.inc_send_parts(int(result.get("parts") or 0))

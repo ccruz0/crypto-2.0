@@ -29,7 +29,8 @@ Logging / metrics never include message bodies, email addresses, passwords, ICS 
 | `BRIEF_ICS_URLS` | for calendar | Comma-separated secret ICS URLs |
 | `BRIEF_RATE_LIMIT_PER_MINUTE` | no | Default `30` |
 | `TELEGRAM_BOT_TOKEN` | for send | Existing alert bot (fallback `TELEGRAM_BOT_TOKEN_AWS`) |
-| `TELEGRAM_CHAT_ID` | for send | Existing destination chat (fallback `TELEGRAM_CHAT_ID_AWS`) |
+| `BRIEF_TELEGRAM_CHAT_ID` | for send | Preferred destination (e.g. **Hilo vivo** channel) |
+| `TELEGRAM_CHAT_ID` | for send | Fallback destination (fallback `TELEGRAM_CHAT_ID_AWS`) |
 | `TELEGRAM_API_ID` | for telegram read | From https://my.telegram.org |
 | `TELEGRAM_API_HASH` | for telegram read | From https://my.telegram.org |
 | `TELEGRAM_SESSION_PATH` | no | Default `/data/telegram/hilovivo.session` |
@@ -71,9 +72,10 @@ Outlook.com → **Configuración → Calendario → Calendarios compartidos → 
 
 ### Bot send (reuses existing alert credentials)
 
-Outbound `/brief/send` uses the same bot/chat as production alerts:
-`TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_TOKEN_AWS` and `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_ID_AWS`
-(via `telegram_notifier` / `secrets/runtime.env`). Do **not** create a second bot token for brief.
+Outbound `/brief/send` reuses the existing bot token
+(`TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_TOKEN_AWS`) but should post to a dedicated chat via
+`BRIEF_TELEGRAM_CHAT_ID` (e.g. the **Hilo vivo** channel). Falls back to
+`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_ID_AWS` if unset. Do **not** create a second bot token for brief.
 
 ### User-session read (Telethon)
 

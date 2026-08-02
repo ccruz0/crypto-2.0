@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.brief.rate_limit import reset_brief_rate_limit_for_tests
 from app.brief.router import router as brief_router
 from app.brief.telegram_read import TelegramSessionMissing, _is_broadcast_channel
-from app.brief.telegram_send import split_telegram_text
+from app.brief.telegram_send import resolve_chat_id, split_telegram_text
 
 
 @pytest.fixture(autouse=True)
@@ -108,6 +108,20 @@ def test_split_over_4096():
     assert len(parts) >= 2
     assert all(len(p) <= 4096 for p in parts)
     assert "".join(parts) == text
+
+
+def test_resolve_chat_id_prefers_brief_channel(monkeypatch):
+    monkeypatch.setenv("BRIEF_TELEGRAM_CHAT_ID", "-1004411138753")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID_AWS", "999")
+    assert resolve_chat_id() == "-1004411138753"
+
+
+def test_resolve_chat_id_falls_back_to_telegram_chat_id(monkeypatch):
+    monkeypatch.delenv("BRIEF_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID_AWS", raising=False)
+    assert resolve_chat_id() == "12345"
 
 
 def test_send_unauthorized(client):
