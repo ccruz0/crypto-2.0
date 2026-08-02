@@ -11169,20 +11169,72 @@ class SignalMonitorService:
                                 )
                                 
                                 # PART A (real path): a SELL fills two very different roles.
-                                # Only a SHORT ENTRY (margin, no existing position, shorting enabled)
-                                # needs SL/TP. A SELL that CLOSES A LONG must NOT get new protection.
-                                base_symbol = symbol.split("_")[0] if "_" in symbol else symbol
+                                # Prefer live wallet: negative base balance = short that MUST be
+                                # protected. Flat/long wallet = long-close → no new SL/TP.
+                                # Fallback heuristic (wallet API down): margin + no open bot
+                                # position + shorting enabled (legacy).
+                                is_short_entry = False
+                                wallet_balance = None
                                 try:
-                                    from app.services.order_position_service import count_open_positions_for_symbol
-                                    position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
-                                except Exception:
-                                    position_exists = False
-                                is_short_entry = bool(user_wants_margin) and (not position_exists)
-                                try:
-                                    from app.services.risk_guard import shorting_enabled
-                                    is_short_entry = is_short_entry and shorting_enabled()
-                                except Exception:
-                                    pass
+                                    from app.services.exchange_sync import (
+                                        _base_wallet_balance_from_accounts,
+                                    )
+                                    summary = trade_client.get_account_summary()
+                                    wallet_balance = _base_wallet_balance_from_accounts(
+                                        summary.get("accounts") or [],
+                                        symbol,
+                                    )
+                                except Exception as wallet_err:
+                                    logger.debug(
+                                        "[SL/TP] wallet unavailable for SELL short-entry check "
+                                        "%s %s: %s",
+                                        symbol,
+                                        order_id,
+                                        wallet_err,
+                                    )
+                                if wallet_balance is not None:
+                                    is_short_entry = float(wallet_balance) < 0
+                                    logger.info(
+                                        "[SL/TP] SELL %s order %s short-entry via wallet: "
+                                        "balance=%s is_short_entry=%s",
+                                        symbol,
+                                        order_id,
+                                        wallet_balance,
+                                        is_short_entry,
+                                    )
+                                else:
+                                    base_symbol = (
+                                        symbol.split("_")[0] if "_" in symbol else symbol
+                                    )
+                                    try:
+                                        from app.services.order_position_service import (
+                                            count_open_positions_for_symbol,
+                                        )
+                                        position_exists = (
+                                            count_open_positions_for_symbol(db, base_symbol)
+                                            > 0
+                                        )
+                                    except Exception:
+                                        position_exists = False
+                                    is_short_entry = bool(user_wants_margin) and (
+                                        not position_exists
+                                    )
+                                    try:
+                                        from app.services.risk_guard import shorting_enabled
+                                        is_short_entry = (
+                                            is_short_entry and shorting_enabled()
+                                        )
+                                    except Exception:
+                                        pass
+                                    logger.info(
+                                        "[SL/TP] SELL %s order %s short-entry via fallback: "
+                                        "margin=%s position_exists=%s is_short_entry=%s",
+                                        symbol,
+                                        order_id,
+                                        bool(user_wants_margin),
+                                        position_exists,
+                                        is_short_entry,
+                                    )
 
                                 if is_short_entry:
                                     # Create SL/TP directly via the working, side-aware mechanism.

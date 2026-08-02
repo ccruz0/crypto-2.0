@@ -5,8 +5,8 @@ Covers the fix in ``fix/real-path-sltp-and-cap-race``:
 PART A — the automatic order paths (``_create_buy_order`` / ``_create_sell_order``) now call
 ``_create_protection_after_entry_fill(...)`` directly (the working, side-aware mechanism) instead
 of publishing an ``OrderFilled`` event that is a no-op in prod. A SELL only creates protection when
-it is a SHORT ENTRY (margin, no existing position, shorting enabled); a SELL that closes a long does
-NOT create SL/TP.
+it leaves a short wallet (or legacy: margin + no open bot position + shorting enabled); a SELL that
+closes a long (flat/long wallet) does NOT create SL/TP.
 
 PART B — a near-simultaneous second order for the same (symbol, side) is suppressed by an atomic
 in-memory dedup slot claimed before any cap check.
@@ -80,43 +80,81 @@ class TestBuyRealPathProtection:
 
 
 class TestSellRealPathProtection:
-    def _run_sell(self, svc, db, w, *, positions, shorting):
+    def _run_sell(self, svc, db, w, *, positions, shorting, wallet_balance=None):
+        """wallet_balance=None → wallet API unavailable (legacy heuristic).
+        Negative wallet → short inventory must be protected.
+        Flat/positive → long-close, no SL/TP.
+        """
         with patch("app.services.signal_monitor.trade_client") as mock_tc, \
              patch("app.services.signal_monitor._emit_lifecycle_event"), \
              patch("app.utils.live_trading.get_live_trading_status", return_value=False), \
              patch("app.services.live_trading_gate.assert_exchange_mutation_allowed"), \
+             patch("app.utils.trading_guardrails.can_place_real_order", return_value=(True, None)), \
              patch("app.services.order_position_service.count_open_positions_for_symbol", return_value=positions), \
              patch("app.services.risk_guard.shorting_enabled", return_value=shorting), \
+             patch(
+                 "app.services.exchange_sync._base_wallet_balance_from_accounts",
+                 return_value=wallet_balance,
+             ), \
              patch.object(svc, "_create_protection_after_entry_fill", return_value={"status": "ok"}) as mock_protect:
             mock_tc.place_market_order.return_value = _filled_market_result("sell-1")
             mock_tc.normalize_quantity_safe_with_fallback.return_value = ("0.05", {})
+            mock_tc.get_account_summary.return_value = {"accounts": []}
             asyncio.run(svc._create_sell_order(db, w, 2000.0, 0.0, 0.0))
         return mock_protect
 
     def test_sell_short_entry_calls_protection_with_sell_side(self):
         svc = SignalMonitorService()
         mock_protect = self._run_sell(
-            svc, _make_db(), _make_watchlist_item(margin=True), positions=0, shorting=True
+            svc,
+            _make_db(),
+            _make_watchlist_item(margin=True),
+            positions=0,
+            shorting=True,
+            wallet_balance=-0.05,
         )
         mock_protect.assert_called_once()
         assert mock_protect.call_args.kwargs["entry_side"] == "SELL"
         assert mock_protect.call_args.kwargs["order_id"] == "sell-1"
 
     def test_sell_long_close_does_not_create_protection(self):
-        # Position already exists -> this SELL closes a long -> NO SL/TP.
+        # Flat/long wallet after SELL → long-close → NO SL/TP.
         svc = SignalMonitorService()
         mock_protect = self._run_sell(
-            svc, _make_db(), _make_watchlist_item(margin=True), positions=1, shorting=True
+            svc,
+            _make_db(),
+            _make_watchlist_item(margin=True),
+            positions=1,
+            shorting=True,
+            wallet_balance=0.0,
         )
         mock_protect.assert_not_called()
 
     def test_sell_margin_but_shorting_disabled_does_not_create_protection(self):
-        # No position, margin on, but shorting is globally disabled -> not a short entry.
+        # Wallet API down + shorting disabled → legacy heuristic blocks.
         svc = SignalMonitorService()
         mock_protect = self._run_sell(
-            svc, _make_db(), _make_watchlist_item(margin=True), positions=0, shorting=False
+            svc,
+            _make_db(),
+            _make_watchlist_item(margin=True),
+            positions=0,
+            shorting=False,
+            wallet_balance=None,
         )
         mock_protect.assert_not_called()
+
+    def test_sell_negative_wallet_protects_even_if_shorting_disabled(self):
+        # Live short inventory must get SL/TP regardless of the shorting flag.
+        svc = SignalMonitorService()
+        mock_protect = self._run_sell(
+            svc,
+            _make_db(),
+            _make_watchlist_item(margin=True),
+            positions=0,
+            shorting=False,
+            wallet_balance=-1.5,
+        )
+        mock_protect.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

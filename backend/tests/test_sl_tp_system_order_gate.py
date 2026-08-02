@@ -6,6 +6,7 @@ import pytest
 
 from app.models.exchange_order import OrderStatusEnum
 from app.services.exchange_sync import (
+    ensure_system_order_attribution,
     has_complete_sl_tp_protection,
     is_system_created_order,
     link_system_trade_signal_to_order,
@@ -27,20 +28,43 @@ def test_is_system_created_order_via_trade_signal_id():
     db = MagicMock()
     order = _order(trade_signal_id=42)
     assert is_system_created_order(db, order) is True
-    db.query.assert_not_called()
 
 
-def test_is_system_created_order_via_trade_signal_table():
+def test_ensure_attribution_links_trade_signal_row():
     db = MagicMock()
     order = _order(trade_signal_id=None)
-    db.query.return_value.filter.return_value.first.side_effect = [(99,), None]
-    assert is_system_created_order(db, order) is True
+    signal = MagicMock()
+    signal.id = 99
+    db.query.return_value.filter.return_value.first.return_value = signal
+    ts_id, is_system, source = ensure_system_order_attribution(db, order)
+    assert is_system is True
+    assert ts_id == 99
+    assert order.trade_signal_id == 99
+    assert source in ("trade_signal_id", "trade_signal_relink")
+
+
+def test_ensure_attribution_via_order_intent_without_trade_signal():
+    """Bot OrderIntent must attribute even when TradeSignal link raced."""
+    db = MagicMock()
+    order = _order(trade_signal_id=None, exchange_order_id="5755600492526823562", symbol="APT_USD")
+    intent = MagicMock()
+    intent.id = 7
+    # link TradeSignal → None; relink TradeSignal → None; OrderIntent → intent
+    db.query.return_value.filter.return_value.first.side_effect = [None, None]
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = intent
+    ts_id, is_system, source = ensure_system_order_attribution(db, order)
+    assert is_system is True
+    assert ts_id is None
+    assert source == "order_intent"
 
 
 def test_is_system_created_order_via_order_intent():
     db = MagicMock()
     order = _order(trade_signal_id=None)
-    db.query.return_value.filter.return_value.first.side_effect = [None, (42,)]
+    intent = MagicMock()
+    intent.id = 42
+    db.query.return_value.filter.return_value.first.side_effect = [None, None]
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = intent
     assert is_system_created_order(db, order) is True
 
 
@@ -50,10 +74,13 @@ def test_two_doge_orders_both_detected_as_system():
     order_a = _order(exchange_order_id="5755600491448633454", symbol="DOGE_USD")
     order_b = _order(exchange_order_id="5755600491449038884", symbol="DOGE_USD")
 
-    db.query.return_value.filter.return_value.first.side_effect = [(11,), None, (12,), None]
+    sig_a = MagicMock(); sig_a.id = 11
+    sig_b = MagicMock(); sig_b.id = 12
+    db.query.return_value.filter.return_value.first.return_value = sig_a
     assert is_system_created_order(db, order_a) is True
 
-    db.query.return_value.filter.return_value.first.side_effect = [(12,), None]
+    order_b.trade_signal_id = None
+    db.query.return_value.filter.return_value.first.return_value = sig_b
     assert is_system_created_order(db, order_b) is True
 
 
@@ -118,6 +145,7 @@ def test_should_skip_external_old_fill():
     db = MagicMock()
     order = _order()
     db.query.return_value.filter.return_value.first.return_value = None
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
     now = datetime.now(timezone.utc)
     filled = now - timedelta(hours=5)
     with patch(
