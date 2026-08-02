@@ -25,6 +25,37 @@ def _is_primary_report_sender() -> bool:
         "on",
     )
 
+
+def _classify_hourly_sl_tp_create_result(
+    create_result: dict | None,
+    *,
+    sl_count: int,
+    tp_count: int,
+    symbol: str,
+    ensured_symbols: set[str],
+) -> str:
+    """Classify a post-create outcome for the hourly fill backfill.
+
+    Returns one of: ``created``, ``expected_skip``, ``covered_by_ensure``, ``failed``.
+    """
+    from app.services.exchange_sync import sl_tp_creation_result_ok
+
+    if sl_count > 0 and tp_count > 0:
+        return "created"
+    if sl_tp_creation_result_ok(create_result):
+        return "created"
+    status = str((create_result or {}).get("status") or "").strip().lower()
+    if "wallet_side_mismatch" in status or status == "tp_rejected_terminal":
+        return "expected_skip"
+    sl_err = str(((create_result or {}).get("sl_result") or {}).get("error") or "").lower()
+    tp_err = str(((create_result or {}).get("tp_result") or {}).get("error") or "").lower()
+    if "wallet_side_mismatch" in sl_err or "wallet_side_mismatch" in tp_err:
+        return "expected_skip"
+    if (symbol or "").upper() in ensured_symbols:
+        # Position-level ensure already placed legs (may use a different parent id).
+        return "covered_by_ensure"
+    return "failed"
+
 logger = logging.getLogger(__name__)
 
 # Bali timezone (UTC+8)
@@ -367,8 +398,14 @@ class TradingScheduler:
                     ~ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT'])
                 ).all()
                 
+                ensured_symbols = {
+                    str(c.get("symbol") or "").upper()
+                    for c in (ensure_result.get("created") or [])
+                    if c.get("symbol")
+                }
                 orders_missing_sl_tp = []
                 orders_too_old = []
+                orders_expected_skip = []
                 orders_created = 0
                 
                 for order in filled_orders:
@@ -411,7 +448,7 @@ class TradingScheduler:
                                     
                                     if filled_price > 0 and filled_qty > 0:
                                         logger.info(f"🔄 Attempting to create SL/TP for missed order {order.exchange_order_id} ({order.symbol}) - filled {time_since_filled:.2f} hours ago")
-                                        exchange_sync._create_sl_tp_for_filled_order(
+                                        create_result = exchange_sync._create_sl_tp_for_filled_order(
                                             db=db,
                                             symbol=order.symbol,
                                             side=order.side.value,
@@ -432,27 +469,57 @@ class TradingScheduler:
                                             ExchangeOrder.parent_order_id == order.exchange_order_id,
                                             ExchangeOrder.order_role == 'TAKE_PROFIT'
                                         ).count()
-                                        
-                                        if sl_new > 0 and tp_new > 0:
+
+                                        outcome = _classify_hourly_sl_tp_create_result(
+                                            create_result,
+                                            sl_count=sl_new,
+                                            tp_count=tp_new,
+                                            symbol=order.symbol,
+                                            ensured_symbols=ensured_symbols,
+                                        )
+                                        if outcome == "created":
                                             orders_created += 1
-                                            logger.info(f"✅ Successfully created SL/TP for order {order.exchange_order_id}")
+                                            logger.info(
+                                                "✅ Successfully created SL/TP for order %s",
+                                                order.exchange_order_id,
+                                            )
+                                        elif outcome in ("expected_skip", "covered_by_ensure"):
+                                            order_info["skip_reason"] = outcome
+                                            if create_result and create_result.get("status"):
+                                                order_info["skip_reason"] = (
+                                                    f"{outcome}:{create_result.get('status')}"
+                                                )
+                                            orders_expected_skip.append(order_info)
+                                            logger.info(
+                                                "Hourly SL/TP skip (not paging) for %s (%s): %s",
+                                                order.exchange_order_id,
+                                                order.symbol,
+                                                order_info["skip_reason"],
+                                            )
                                         else:
+                                            err = None
+                                            if isinstance(create_result, dict):
+                                                err = (
+                                                    create_result.get("status")
+                                                    or (create_result.get("sl_result") or {}).get("error")
+                                                    or (create_result.get("tp_result") or {}).get("error")
+                                                )
+                                            order_info["error"] = err or "create_incomplete"
                                             orders_missing_sl_tp.append(order_info)
                                     else:
+                                        order_info["error"] = "invalid_fill_price_or_qty"
                                         orders_missing_sl_tp.append(order_info)
                                 except Exception as e:
                                     logger.error(f"❌ Failed to create SL/TP for order {order.exchange_order_id}: {e}", exc_info=True)
+                                    order_info["error"] = str(e)[:200]
                                     orders_missing_sl_tp.append(order_info)
                             else:
                                 # Order is >3 hours old — position ensure above covers open balances
                                 orders_too_old.append(order_info)
                 
-                # Send Telegram notification if there are issues
-                if (
-                    positions_failed
-                    or orders_too_old
-                    or (orders_missing_sl_tp and orders_created == 0)
-                ):
+                # Operator Telegram: primary instance only (canary duplicates observed 2026-08-02).
+                # Page only real failures — not expected skips / ensure-covered fills / old fills.
+                if positions_failed or orders_missing_sl_tp:
                     try:
                         message_parts = ["🔍 <b>HOURLY SL/TP CHECK</b>\n\n"]
 
@@ -472,17 +539,28 @@ class TradingScheduler:
                         
                         if orders_created > 0:
                             message_parts.append(f"✅ Created SL/TP for {orders_created} missed order(s)\n\n")
-                        
-                        if orders_too_old:
-                            message_parts.append(
-                                f"ℹ️ {len(orders_too_old)} old fill(s) (>3h) — "
-                                "covered by open-position ensure if balance still open\n"
+
+                        if orders_expected_skip:
+                            logger.info(
+                                "Hourly SL/TP expected skips (not paging): %s",
+                                len(orders_expected_skip),
                             )
                         
-                        if orders_missing_sl_tp and orders_created == 0:
-                            message_parts.append(f"❌ <b>{len(orders_missing_sl_tp)} order(s) failed SL/TP creation:</b>\n")
+                        if orders_too_old:
+                            logger.info(
+                                "Hourly SL/TP: %s old fill(s) (>3h) — covered by open-position ensure if still open",
+                                len(orders_too_old),
+                            )
+                        
+                        if orders_missing_sl_tp:
+                            message_parts.append(
+                                f"❌ <b>{len(orders_missing_sl_tp)} order(s) failed SL/TP creation:</b>\n"
+                            )
                             for o in orders_missing_sl_tp[:3]:
-                                message_parts.append(f"• {o['symbol']} {o['side']} - {o['order_id']}\n")
+                                err = o.get("error") or "unknown"
+                                message_parts.append(
+                                    f"• {o['symbol']} {o['side']} - {o['order_id']} ({err})\n"
+                                )
                             if len(orders_missing_sl_tp) > 3:
                                 message_parts.append(f"  ... and {len(orders_missing_sl_tp) - 3} more\n")
                         
@@ -837,9 +915,10 @@ class TradingScheduler:
                     await self.check_sl_tp_positions()
                     await self.check_orphan_orders()
                     await self.check_nightly_consistency()
+                    # Hourly SL/TP ensure + Telegram: primary only.
+                    # Canary was duplicating "HOURLY SL/TP CHECK" (2026-08-02).
+                    await self.check_hourly_sl_tp_missed()
                 await self.check_approval_queue()
-                # Hourly: ensure open positions always have SL/TP (no fill-age gate)
-                await self.check_hourly_sl_tp_missed()
                 # Update dashboard snapshot periodically (every 60 seconds)
                 await self.update_dashboard_snapshot()
                 # Check Telegram commands continuously (long polling handles timing)
