@@ -1031,7 +1031,8 @@ class TelegramNotifier:
                            open_orders_count: Optional[int] = None,
                            order_role: Optional[str] = None,
                            trade_signal_id: Optional[int] = None,
-                           parent_order_id: Optional[str] = None):
+                           parent_order_id: Optional[str] = None,
+                           system_attributed: bool = False):
         """Send an executed order notification with profit/loss calculations
         
         WORKING PATH (Order Executed Alerts):
@@ -1042,12 +1043,15 @@ class TelegramNotifier:
         Args:
             trade_signal_id: ID of the trade signal that triggered this order (if created by alert)
             parent_order_id: ID of the parent order (if this is a SL/TP order)
+            system_attributed: True when ATP placed the order (OrderIntent / TradeSignal /
+                parent) even if trade_signal_id is not yet linked — do not label "Manual".
         """
         side_emoji = "🟢" if side == "BUY" else "🔴"
         order_id_text = f"\n🆔 Order ID: {order_id}" if order_id else ""
         
         # Determine order origin
-        # Priority: order_role (SL/TP) > trade_signal_id (alert) > parent_order_id > manual
+        # Priority: order_role (SL/TP) > trade_signal_id (alert) > parent >
+        # system_attributed (OrderIntent race) > unlinked
         origin_text = ""
         if order_role:
             # This is a SL/TP order
@@ -1065,10 +1069,12 @@ class TelegramNotifier:
         elif parent_order_id:
             # Order has a parent but no explicit role - likely SL/TP without role set
             origin_text = f"\n🎯 Origen: 🔗 Orden relacionada (Parent: {parent_order_id[:8]}...)"
+        elif system_attributed:
+            # Bot placed it (e.g. OrderIntent) but TradeSignal link raced — never say Manual.
+            origin_text = "\n🎯 Origen: 🤖 Bot / alerta ATP"
         else:
-            # No linked signal/parent found. This can also happen for bot orders when
-            # the TradeSignal link is not visible yet, so do not assert "Manual".
-            origin_text = "\n🎯 Origen: ✋ Manual / externa (sin señal vinculada)"
+            # Truly unlinked. Do not assert "Manual" — sync can also miss bot links.
+            origin_text = "\n🎯 Origen: ❔ Sin señal vinculada"
         
         # Build order type text - include role (TP/SL) if available
         if order_role:

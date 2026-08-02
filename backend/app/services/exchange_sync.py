@@ -273,61 +273,82 @@ def link_system_trade_signal_to_order(db: Session, order: ExchangeOrder) -> bool
     return True
 
 
-def is_system_created_order(db: Session, order: ExchangeOrder) -> bool:
-    """True when the order was created by ATP (signal monitor / alerts), not manual exchange."""
-    order_id = str(order.exchange_order_id)
+def ensure_system_order_attribution(
+    db: Session, order: ExchangeOrder
+) -> Tuple[Optional[int], bool, str]:
+    """Attribute bot-placed orders before Telegram / SL-TP decisions.
+
+    ``signal_monitor`` does not write ``exchange_orders`` (sync owns that table), so
+    ORDER EXECUTED often fires before ``trade_signal_id`` is set. OrderIntent is
+    usually written first — treat that as proof the bot placed the order so Telegram
+    never labels it "Manual" (APT_USD 2026-08-02 false-manual incident).
+
+    Returns ``(trade_signal_id, is_system, source)``. May set ``order.trade_signal_id``.
+    """
+    link_system_trade_signal_to_order(db, order)
     trade_signal_id = getattr(order, "trade_signal_id", None)
     if trade_signal_id is not None:
-        logger.debug(
-            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=trade_signal_id=%s",
-            order_id,
-            order.symbol,
-            trade_signal_id,
-        )
-        return True
-    if getattr(order, "parent_order_id", None) is not None:
-        logger.debug(
-            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=parent_order_id",
-            order_id,
-            order.symbol,
-        )
-        return True
+        return int(trade_signal_id), True, "trade_signal_id"
 
-    signal_match = (
-        db.query(TradeSignal.id)
+    if getattr(order, "parent_order_id", None) is not None:
+        return None, True, "parent_order_id"
+
+    order_id = str(order.exchange_order_id)
+
+    # Defensive re-link (same query as link_*, kept for callers that stub link).
+    signal = (
+        db.query(TradeSignal)
         .filter(TradeSignal.exchange_order_id == order_id)
         .first()
     )
-    if signal_match is not None:
-        logger.debug(
-            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=trade_signal_exchange_order_id",
+    if signal is not None:
+        order.trade_signal_id = signal.id
+        logger.info(
+            "[SLTP_SYSTEM_ATTR] order=%s symbol=%s linked trade_signal_id=%s",
             order_id,
             order.symbol,
+            signal.id,
         )
-        return True
+        return int(signal.id), True, "trade_signal_relink"
 
     from app.models.order_intent import OrderIntent
 
-    intent_match = (
-        db.query(OrderIntent.id)
+    intent = (
+        db.query(OrderIntent)
         .filter(OrderIntent.order_id == order_id)
+        .order_by(OrderIntent.id.desc())
         .first()
     )
-    if intent_match is not None:
-        logger.debug(
-            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=order_intent",
+    if intent is not None:
+        logger.info(
+            "[SLTP_SYSTEM_ATTR] order=%s symbol=%s attributed via order_intent id=%s "
+            "(trade_signal_id still unset — Telegram must not say Manual)",
             order_id,
             order.symbol,
+            intent.id,
         )
-        return True
+        return None, True, "order_intent"
 
     logger.info(
-        "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=False "
-        "(no trade_signal_id, TradeSignal row, or OrderIntent)",
+        "[SLTP_SYSTEM_ATTR] order=%s symbol=%s unattributed "
+        "(no trade_signal_id, TradeSignal row, parent, or OrderIntent)",
         order_id,
         order.symbol,
     )
-    return False
+    return None, False, "unattributed"
+
+
+def is_system_created_order(db: Session, order: ExchangeOrder) -> bool:
+    """True when the order was created by ATP (signal monitor / alerts), not manual exchange."""
+    _trade_signal_id, is_system, source = ensure_system_order_attribution(db, order)
+    if is_system:
+        logger.debug(
+            "[SLTP_SYSTEM_CHECK] order=%s symbol=%s is_system=True reason=%s",
+            order.exchange_order_id,
+            order.symbol,
+            source,
+        )
+    return is_system
 
 
 def _order_entry_side(order: ExchangeOrder) -> str:
@@ -1358,8 +1379,9 @@ class ExchangeSyncService:
                 )
                 return False
 
-            if order.trade_signal_id is None:
-                link_system_trade_signal_to_order(db, order)
+            trade_signal_id, system_attributed, attr_source = ensure_system_order_attribution(
+                db, order
+            )
 
             inferred_role = self._infer_protection_order_role(order)
             entry_price = None
@@ -1381,8 +1403,10 @@ class ExchangeSyncService:
                     "price": fill_price,
                     "order_type": order.order_type,
                     "order_role": inferred_role,
-                    "trade_signal_id": order.trade_signal_id,
+                    "trade_signal_id": trade_signal_id,
                     "parent_order_id": order.parent_order_id,
+                    "system_attributed": system_attributed,
+                    "attribution_source": attr_source,
                     "notify_reason": notify_reason,
                     "handler": source,
                 }
@@ -1400,8 +1424,9 @@ class ExchangeSyncService:
                 entry_price=entry_price,
                 open_orders_count=open_orders_count,
                 order_role=inferred_role,
-                trade_signal_id=order.trade_signal_id,
+                trade_signal_id=trade_signal_id,
                 parent_order_id=order.parent_order_id,
+                system_attributed=system_attributed,
             )
             if result:
                 order.execution_notified_at = datetime.now(timezone.utc)
@@ -5232,6 +5257,13 @@ class ExchangeSyncService:
                                 elif order_type_upper == 'TAKE_PROFIT_LIMIT':
                                     inferred_order_role = 'TAKE_PROFIT'
                                 # For other order types, leave as None (don't mislabel)
+
+                            # Attribute bot orders before Telegram (TradeSignal and/or OrderIntent).
+                            # Without OrderIntent fallback, bot sells were labeled "Manual"
+                            # (2026-07-21 ETH/DOT/DOGE; 2026-08-02 APT_USD).
+                            trade_signal_id, system_attributed, attr_source = (
+                                ensure_system_order_attribution(db, existing)
+                            )
                             
                             # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
                             audit_log = make_json_safe({
@@ -5247,20 +5279,14 @@ class ExchangeSyncService:
                                 "order_type": order_type,
                                 "order_role": inferred_order_role,
                                 "client_oid": existing.client_oid,
-                                "trade_signal_id": existing.trade_signal_id,
+                                "trade_signal_id": trade_signal_id,
                                 "parent_order_id": existing.parent_order_id,
+                                "system_attributed": system_attributed,
+                                "attribution_source": attr_source,
                                 "notify_reason": notify_reason,
                                 "handler": "exchange_sync.update_existing_order"
                             })
                             logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
-
-                            # Last-chance link retry: the TradeSignal row may have been
-                            # committed by signal_monitor AFTER this order row was first
-                            # synced, so an earlier link attempt could have found nothing.
-                            # Without this the notification says "Origen: Manual" for
-                            # bot-created orders (observed 2026-07-21 ETH/DOT/DOGE sells).
-                            if existing.trade_signal_id is None:
-                                link_system_trade_signal_to_order(db, existing)
 
                             result = telegram_notifier.send_executed_order(
                                 symbol=order_symbol,
@@ -5273,8 +5299,9 @@ class ExchangeSyncService:
                                 entry_price=entry_price,  # Add entry_price for profit/loss calculation
                                 open_orders_count=open_orders_count,  # Add open orders count for monitoring
                                 order_role=inferred_order_role,  # Use inferred role if order_role is not set
-                                trade_signal_id=existing.trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
-                                parent_order_id=existing.parent_order_id  # Pass parent_order_id to determine if order is SL/TP
+                                trade_signal_id=trade_signal_id,
+                                parent_order_id=existing.parent_order_id,
+                                system_attributed=system_attributed,
                             )
                             if result:
                                 existing.execution_notified_at = datetime.now(timezone.utc)
@@ -5658,23 +5685,12 @@ class ExchangeSyncService:
                         # Count open entry BUY orders for this symbol (SL/TP excluded, see helper)
                         open_orders_count = _count_open_entry_buy_orders(db, symbol)
                         
-                        # Get order_role, trade_signal_id, and parent_order_id from the order if it exists in database
-                        order_role = None
-                        trade_signal_id = None
-                        parent_order_id = None
-                        if order_id:
-                            existing_order = db.query(ExchangeOrder).filter(
-                                ExchangeOrder.exchange_order_id == order_id
-                            ).first()
-                            if existing_order:
-                                # Last-chance link retry: the TradeSignal may have been
-                                # committed after the earlier link attempt; without this
-                                # bot-created orders are notified as "Origen: Manual".
-                                if existing_order.trade_signal_id is None:
-                                    link_system_trade_signal_to_order(db, existing_order)
-                                order_role = existing_order.order_role
-                                trade_signal_id = existing_order.trade_signal_id
-                                parent_order_id = existing_order.parent_order_id
+                        # Attribute bot origin on the just-synced row before Telegram.
+                        trade_signal_id, system_attributed, attr_source = (
+                            ensure_system_order_attribution(db, new_order)
+                        )
+                        order_role = new_order.order_role
+                        parent_order_id = new_order.parent_order_id
                         
                         # Infer order_role from order_type if order_role is not set
                         # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
@@ -5703,6 +5719,8 @@ class ExchangeSyncService:
                             "client_oid": order_data.get('client_oid'),
                             "trade_signal_id": trade_signal_id,
                             "parent_order_id": parent_order_id,
+                            "system_attributed": system_attributed,
+                            "attribution_source": attr_source,
                             "notify_reason": notify_reason,
                             "handler": "exchange_sync.new_order"
                         })
@@ -5719,8 +5737,9 @@ class ExchangeSyncService:
                             entry_price=entry_price,  # Add entry_price for profit/loss calculation
                             open_orders_count=open_orders_count,  # Add open orders count for monitoring
                             order_role=order_role,  # Use inferred role if order_role is not set
-                            trade_signal_id=trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
-                            parent_order_id=parent_order_id  # Pass parent_order_id to determine if order is SL/TP
+                            trade_signal_id=trade_signal_id,
+                            parent_order_id=parent_order_id,
+                            system_attributed=system_attributed,
                         )
                         if result:
                             new_order.execution_notified_at = datetime.now(timezone.utc)
