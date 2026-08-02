@@ -1,4 +1,4 @@
-"""Bot API sender for POST /brief/send (reuses TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)."""
+"""Bot API sender for POST /brief/send (reuses TELEGRAM_BOT_TOKEN)."""
 
 from __future__ import annotations
 
@@ -20,8 +20,10 @@ def resolve_bot_token() -> str:
 
 
 def resolve_chat_id() -> str:
+    """Prefer BRIEF_TELEGRAM_CHAT_ID so briefs do not share the alerts chat."""
     return (
-        (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+        (os.getenv("BRIEF_TELEGRAM_CHAT_ID") or "").strip()
+        or (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
         or (os.getenv("TELEGRAM_CHAT_ID_AWS") or "").strip()
     )
 
@@ -54,7 +56,7 @@ def split_telegram_text(text: str, limit: int = _TELEGRAM_MAX) -> list[str]:
 
 
 def send_brief_message(text: str, parse_mode: Optional[str] = "HTML") -> dict[str, Any]:
-    """Send text to TELEGRAM_CHAT_ID via Bot API. Never logs token or message body."""
+    """Send text via Bot API to BRIEF_TELEGRAM_CHAT_ID (fallback TELEGRAM_CHAT_ID). Never logs token or body."""
     from app.utils.http_client import http_post
 
     token = resolve_bot_token()
