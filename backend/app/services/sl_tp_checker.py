@@ -973,7 +973,7 @@ class SLTPCheckerService:
             if len(accounts) > 0:
                 logger.info(f"Sample account: {accounts[0]}")
             
-            # Filter positions with positive balance (excluding USDT/USD)
+            # Filter non-flat wallets (long > 0 or short < 0), excluding USDT/USD
             open_positions = []
             for account in accounts:
                 # Handle both 'currency' and 'instrument_name' fields
@@ -985,18 +985,20 @@ class SLTPCheckerService:
                 if not currency:
                     logger.warning(f"Account missing currency/instrument_name: {account}")
                     continue
-                    
-                balance_str = account.get('balance', '0')
+
+                # Prefer quantity (signed) then balance — same source as position_review /
+                # OCO wrong-side reconcile. Shorts are negative wallets.
+                balance_raw = account.get("quantity", account.get("balance", "0"))
                 
                 # Handle balance format - could be string or number
                 try:
-                    balance = float(balance_str)
+                    balance = float(balance_raw)
                 except (ValueError, TypeError):
-                    logger.warning(f"Invalid balance format for {currency}: {balance_str}")
+                    logger.warning(f"Invalid balance format for {currency}: {balance_raw}")
                     continue
                 
-                # Skip if balance is zero or negative
-                if balance <= 0:
+                # Skip flat wallets only. Negative = SHORT and must be ensured.
+                if abs(balance) <= 1e-12:
                     logger.debug(f"Skipping {currency} - balance is {balance}")
                     continue
                 
@@ -1523,8 +1525,11 @@ class SLTPCheckerService:
                     continue  # Skip if nothing is missing (shouldn't happen, but just in case)
                 
                 # Spanish operator copy: state the problem, then list actionable options.
-                # Reminder path currently tracks long balances only → close = SELL.
-                close_key = f"{symbol}:LONG"
+                # Close side follows wallet: LONG → SELL, SHORT → BUY cover.
+                side = "SHORT" if float(balance) < 0 else "LONG"
+                close_key = f"{symbol}:{side}"
+                close_verb = "comprar" if side == "SHORT" else "vender"
+                close_side = "BUY" if side == "SHORT" else "SELL"
                 message = f"⚠️ <b>POSICIÓN SIN PROTECCIÓN: {symbol}</b>\n\n"
                 message += (
                     "⚠️ <b>Problema:</b> auto-creación falló; la posición sigue "
@@ -1532,6 +1537,7 @@ class SLTPCheckerService:
                     "Sin esa protección la posición queda expuesta.\n\n"
                 )
                 message += f"📊 Símbolo: <b>{symbol}</b>\n"
+                message += f"🔄 Lado: <b>{side}</b>\n"
                 message += f"💰 Balance: {balance:.6f} {currency}\n\n"
 
                 sl_status = "✅ Activo" if has_sl else "❌ Falta"
@@ -1555,7 +1561,9 @@ class SLTPCheckerService:
                 if not has_tp:
                     message += f"{opt_n}. Crear un TP\n"
                     opt_n += 1
-                message += f"{opt_n}. Cerrar la posición (vender a mercado → SELL)\n\n"
+                message += (
+                    f"{opt_n}. Cerrar la posición ({close_verb} a mercado → {close_side})\n\n"
+                )
                 message += "Elige un botón abajo."
 
                 buttons = []
@@ -1578,7 +1586,10 @@ class SLTPCheckerService:
                     ])
 
                 buttons.append([
-                    {"text": "🔴 Cerrar (vender)", "callback_data": f"posrev_close:{close_key}"},
+                    {
+                        "text": f"🔴 Cerrar ({close_verb})",
+                        "callback_data": f"posrev_close:{close_key}",
+                    },
                     {"text": "⏭️ No preguntar más", "callback_data": f"skip_sl_tp_{symbol}"}
                 ])
                 

@@ -570,6 +570,105 @@ class TestCheckPositionsUsesUnifiedOrders(unittest.TestCase):
         self.assertEqual(result["total_positions"], 0)
 
     @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=0.55)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_includes_short_wallet_missing_tp(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        """Negative wallets are SHORT positions — must enter ensure/REVISIÓN path."""
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [
+                {
+                    "currency": "APT",
+                    "quantity": "-17.661",
+                    "balance": "-17.661",
+                    "market_value": "-9.85",
+                }
+            ]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [
+                {
+                    "instrument_name": "APT_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "17.661",
+                    "order_id": "sl-short-1",
+                    "side": "BUY",
+                }
+            ],
+        }
+        db = MagicMock()
+        # Prefer APT_USD watchlist / entry pair resolution
+        wl = MagicMock()
+        wl.symbol = "APT_USD"
+        wl.skip_sl_tp_reminder = False
+        wl.sl_price = None
+        wl.tp_price = None
+        db.query.return_value.filter.return_value.first.return_value = wl
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        missing = result["positions_missing_sl_tp"]
+        self.assertEqual(len(missing), 1)
+        self.assertIn("APT", str(missing[0]["symbol"]))
+        self.assertLess(float(missing[0]["balance"]), 0)
+        self.assertTrue(missing[0]["has_sl"])
+        self.assertFalse(missing[0]["has_tp"])
+        self.assertEqual(result["total_positions"], 1)
+
+    @patch.object(
+        SLTPCheckerService,
+        "_ensure_multilot_tp_heal",
+        return_value={"healed": [], "skipped": [], "failed": []},
+    )
+    @patch.object(SLTPCheckerService, "_create_protection_order")
+    @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+    def test_ensure_creates_missing_tp_for_short(
+        self, mock_check, mock_create, mock_multilot
+    ):
+        svc = SLTPCheckerService()
+        mock_check.return_value = {
+            "positions_missing_sl_tp": [
+                {
+                    "symbol": "DOGE_USD",
+                    "currency": "DOGE",
+                    "balance": -845.19,
+                    "has_sl": True,
+                    "has_tp": False,
+                    "sl_price": None,
+                    "tp_price": None,
+                    "skip_reminder": False,
+                }
+            ],
+            "total_positions": 1,
+            "oco_issues": {},
+            "checked_at": None,
+        }
+        mock_create.return_value = {
+            "success": True,
+            "sl_order_id": None,
+            "tp_order_id": "tp-short-1",
+        }
+
+        result = svc.ensure_missing_protection(MagicMock())
+
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        self.assertFalse(kwargs["create_sl"])
+        self.assertTrue(kwargs["create_tp"])
+        self.assertTrue(kwargs["force"])
+        mock_multilot.assert_called_once()
+        self.assertEqual(len(result["created"]), 1)
+        self.assertEqual(result["still_missing"], [])
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
     @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=95.0)
     @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
     @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
