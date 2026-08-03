@@ -1048,11 +1048,13 @@ class TelegramNotifier:
         """
         side_emoji = "🟢" if side == "BUY" else "🔴"
         order_id_text = f"\n🆔 Order ID: {order_id}" if order_id else ""
-        
+        entry_alert_phrase = self._entry_alert_phrase(side)
+
         # Determine order origin
         # Priority: order_role (SL/TP) > trade_signal_id (alert) > parent >
         # system_attributed (OrderIntent race) > unlinked
         origin_text = ""
+        alert_entry_subtitle = ""
         if order_role:
             # This is a SL/TP order
             role_emoji = "🚀" if order_role == "TAKE_PROFIT" else "🛑" if order_role == "STOP_LOSS" else ""
@@ -1064,14 +1066,18 @@ class TelegramNotifier:
                 # SL/TP order (manual or auto-created)
                 origin_text = f"\n🎯 Origen: {role_emoji} {role_text}"
         elif trade_signal_id:
-            # Order was created by an alert/signal (BUY/SELL from alert)
-            origin_text = f"\n🎯 Origen: 📢 Alerta (Signal ID: {trade_signal_id})"
+            # Entry fill from alert/signal (BUY → compra, SELL → venta)
+            origin_text = (
+                f"\n🎯 Origen: 📢 {entry_alert_phrase} (Signal ID: {trade_signal_id})"
+            )
+            alert_entry_subtitle = f"\n📢 <b>{entry_alert_phrase}</b>"
         elif parent_order_id:
             # Order has a parent but no explicit role - likely SL/TP without role set
             origin_text = f"\n🎯 Origen: 🔗 Orden relacionada (Parent: {parent_order_id[:8]}...)"
         elif system_attributed:
             # Bot placed it (e.g. OrderIntent) but TradeSignal link raced — never say Manual.
-            origin_text = "\n🎯 Origen: 🤖 Bot / alerta ATP"
+            origin_text = f"\n🎯 Origen: 📢 {entry_alert_phrase}"
+            alert_entry_subtitle = f"\n📢 <b>{entry_alert_phrase}</b>"
         else:
             # Truly unlinked. Do not assert "Manual" — sync can also miss bot links.
             origin_text = "\n🎯 Origen: ❔ Sin señal vinculada"
@@ -1135,7 +1141,7 @@ class TelegramNotifier:
         
         timestamp = self._format_timestamp()
         message = f"""
-{side_emoji} <b>ORDER EXECUTED</b>
+{side_emoji} <b>ORDER EXECUTED</b>{alert_entry_subtitle}
 
 📊 Symbol: <b>{symbol}</b>
 📈 Side: {side}
@@ -1147,6 +1153,13 @@ class TelegramNotifier:
         # Executed order alert → send_message() → get_runtime_origin() → Telegram
         # This works because backend-aws service has RUNTIME_ORIGIN=AWS
         return self.send_message(message.strip())
+
+    @staticmethod
+    def _entry_alert_phrase(side: Optional[str]) -> str:
+        """Spanish label for alert-driven entry fills (BUY=compra, SELL=venta)."""
+        if (side or "").upper() == "BUY":
+            return "Compra generada por alerta"
+        return "Venta generada por alerta"
 
     @staticmethod
     def _position_label_from_entry_side(entry_side: Optional[str]) -> str:
