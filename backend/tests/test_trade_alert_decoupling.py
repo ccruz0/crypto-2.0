@@ -1,10 +1,7 @@
 """Regression tests for trade-alert decoupling and price move alert channel.
 
-These tests ensure:
-1. Trade execution is independent of alert sending
-2. Price move alerts work independently of buy/sell signals
-3. Price move alerts have their own throttle bucket
-4. Throttle reset works for price move alerts
+Note: ``SIGNAL_ORDER_REQUIRES_ALERT`` defaults to true — orders follow alerts.
+Set ``SIGNAL_ORDER_REQUIRES_ALERT=false`` to restore alert-independent trading.
 """
 from __future__ import annotations
 
@@ -13,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import os
 
-from app.services.signal_monitor import SignalMonitorService
+from app.services.signal_order_policy import resolve_legacy_buy_order_gate
 from app.services.signal_throttle import (
     LastSignalSnapshot,
     SignalThrottleConfig,
@@ -50,59 +47,44 @@ def _mock_watchlist_item(
 
 
 def test_trade_execution_independent_of_alert_sending():
-    """Test that trade execution is NOT blocked by alert sending failure.
-    
-    Scenario:
-    - trade_enabled=True, alert_enabled=False
-    - buy_signal=True (forced)
-    - Alert sending fails or is disabled
-    - Trade should still attempt order creation
-    """
-    service = SignalMonitorService()
-    
-    # Setup: trade enabled, alert disabled
-    watchlist_item = _mock_watchlist_item(
-        alert_enabled=False,  # Alerts disabled
-        trade_enabled=True,   # Trade enabled
-    )
-    
-    # Mock signal calculation to return buy_signal=True
-    with patch('app.services.signal_monitor.calculate_trading_signals') as mock_signals:
-        mock_signals.return_value = {
-            "buy_signal": True,
-            "sell_signal": False,
-            "strategy": {"decision": "BUY"},
-        }
-        
-        # Mock price data
-        current_price = 3400.0
-        
-        # Mock order creation path to capture if it's called
-        order_creation_called = []
-        
-        def mock_should_create_order(*args, **kwargs):
-            # This should be True if trade is independent of alert
-            order_creation_called.append(True)
-            return True
-        
-        # The key assertion: trade path should not check alert sending
-        # We verify by checking that should_create_order logic doesn't depend on buy_alert_sent_successfully
-        
-        # Simulate the trade decision logic
+    """Legacy mode: trade may proceed without alert when SIGNAL_ORDER_REQUIRES_ALERT=false."""
+    os.environ["SIGNAL_ORDER_REQUIRES_ALERT"] = "false"
+    try:
+        watchlist_item = _mock_watchlist_item(
+            alert_enabled=False,
+            trade_enabled=True,
+        )
+
         buy_signal = True
         trade_enabled = watchlist_item.trade_enabled
         trade_amount_usd = watchlist_item.trade_amount_usd
-        
-        # Trade should proceed if signal exists and trade is enabled
-        should_create_order = (
-            buy_signal and
-            trade_enabled and
-            trade_amount_usd and trade_amount_usd > 0
+
+        legacy_eligible = (
+            buy_signal
+            and trade_enabled
+            and trade_amount_usd
+            and trade_amount_usd > 0
         )
-        
-        # Assert: Trade should proceed even if alert is disabled
-        assert should_create_order is True, "Trade should proceed when signal exists and trade_enabled=True"
-        assert "ALERT_NOT_SENT" not in str(should_create_order), "Trade should not depend on alert sending"
+        should_create_order, _ = resolve_legacy_buy_order_gate(
+            blocked_by_limits=False,
+            buy_alert_sent_successfully=False,
+        )
+
+        assert legacy_eligible is True
+        assert should_create_order is True
+    finally:
+        os.environ.pop("SIGNAL_ORDER_REQUIRES_ALERT", None)
+
+
+def test_trade_blocked_without_alert_when_required():
+    """Default: no alert → no legacy order (orchestrator path only on alert send)."""
+    os.environ.pop("SIGNAL_ORDER_REQUIRES_ALERT", None)
+    should_create_order, reason = resolve_legacy_buy_order_gate(
+        blocked_by_limits=False,
+        buy_alert_sent_successfully=False,
+    )
+    assert should_create_order is False
+    assert reason == "alert_required_not_sent"
 
 
 def test_price_move_alert_triggers_without_signal():
@@ -118,8 +100,6 @@ def test_price_move_alert_triggers_without_signal():
     os.environ["PRICE_MOVE_ALERT_PCT"] = "0.10"  # 0.10% threshold
     
     try:
-        service = SignalMonitorService()
-        
         watchlist_item = _mock_watchlist_item(
             alert_enabled=True,
             trade_enabled=False,

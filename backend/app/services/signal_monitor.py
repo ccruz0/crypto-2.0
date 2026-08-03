@@ -5177,27 +5177,46 @@ class SignalMonitorService:
                     )
                 blocked_by_limits = True
 
-            # ORDERS: Trade execution is independent of alert sending
-            # Trade should NOT be blocked by alert throttle/cooldown
-            # Only block by order limits and cooldown (MAX_OPEN_ORDERS, RECENT_ORDERS_COOLDOWN)
+            # ORDERS: alert → orchestrator is the canonical path when alert fires.
+            # Legacy _create_buy_order runs only when alert-independent mode is enabled.
+            from app.services.signal_order_policy import resolve_legacy_buy_order_gate
+
             guard_reason = None
-            if blocked_by_limits:
-                should_create_order = False
-                guard_reason = "MAX_OPEN_ORDERS" if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL else "RECENT_ORDERS_COOLDOWN"
+            should_create_order, order_gate_reason = resolve_legacy_buy_order_gate(
+                blocked_by_limits=blocked_by_limits,
+                buy_alert_sent_successfully=buy_alert_sent_successfully,
+            )
+            if not should_create_order:
+                guard_reason = order_gate_reason
+                if order_gate_reason == "blocked_by_limits":
+                    guard_reason = (
+                        "MAX_OPEN_ORDERS"
+                        if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL
+                        else "RECENT_ORDERS_COOLDOWN"
+                    )
                 self._log_pipeline_stage(
-                    stage="BUY_BLOCKED",
+                    stage="BUY_BLOCKED" if blocked_by_limits else "BUY_ELIGIBLE_CHECK",
                     symbol=normalized_symbol,
                     strategy_key=strategy_key,
                     decision="BUY",
                     last_price=current_price,
                     timestamp=now_utc.isoformat(),
                     correlation_id=evaluation_id,
-                    reason=guard_reason,
+                    reason=guard_reason or "OK",
                 )
+                if order_gate_reason == "orchestrator_handled":
+                    logger.info(
+                        f"🟢 {symbol}: BUY alert sent — order handled by orchestrator; "
+                        f"skipping legacy _create_buy_order"
+                    )
+                elif order_gate_reason == "alert_required_not_sent":
+                    logger.info(
+                        f"ℹ️ {symbol}: BUY alert not sent — skipping order "
+                        f"(SIGNAL_ORDER_REQUIRES_ALERT=true)"
+                    )
+                elif blocked_by_limits:
+                    pass  # guard_reason already set above
             else:
-                # Trade execution is independent - proceed if signal exists and trade_enabled
-                # Alert sending is informational only, not a gate for trade execution
-                should_create_order = True
                 self._log_pipeline_stage(
                     stage="BUY_ELIGIBLE_CHECK",
                     symbol=normalized_symbol,
@@ -5208,16 +5227,10 @@ class SignalMonitorService:
                     correlation_id=evaluation_id,
                     reason="OK",
                 )
-                if buy_alert_sent_successfully:
-                    logger.info(
-                        f"🟢 BUY alert was sent successfully for {symbol}. "
-                        f"Proceeding to order creation (trade_enabled, limits, cooldown)."
-                    )
-                else:
-                    logger.info(
-                        f"ℹ️ {symbol}: BUY alert not sent (may be throttled/disabled), "
-                        f"but proceeding with trade execution (trade is independent of alert)."
-                    )
+                logger.info(
+                    f"ℹ️ {symbol}: proceeding with legacy BUY order path "
+                    f"(SIGNAL_ORDER_REQUIRES_ALERT=false)"
+                )
             
             # DIAG_MODE: Print TRADE decision trace for diagnostic symbol (BUY)
             if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
@@ -6910,153 +6923,26 @@ class SignalMonitorService:
                             except Exception as state_err:
                                 logger.warning(f"Failed to persist SELL throttle state for {symbol}: {state_err}")
                         
-                        # ========================================================================
-                        # CREAR ORDEN SELL AUTOMÁTICA: Si trade_enabled=True y trade_amount_usd > 0
-                        # ========================================================================
-                        # CRITICAL: Refresh trade_enabled and trade_amount_usd from database before checking
-                        # This ensures we use the latest values even if they were just changed in the dashboard
-                        db.expire_all()  # Force refresh from database
-                        try:
-                            fresh_trade_check = db.query(WatchlistItem).filter(
-                                WatchlistItem.symbol == symbol
-                            ).first()
-                            if fresh_trade_check:
-                                trade_enabled = getattr(fresh_trade_check, 'trade_enabled', False)
-                                trade_amount_usd = getattr(fresh_trade_check, 'trade_amount_usd', None)
-                                logger.debug(f"🔄 Última verificación de trade_enabled para {symbol}: trade_enabled={trade_enabled}, trade_amount_usd={trade_amount_usd}")
-                                # Update watchlist_item with fresh values
-                                watchlist_item.trade_enabled = trade_enabled
-                                watchlist_item.trade_amount_usd = trade_amount_usd
-                        except Exception as e:
-                            logger.warning(f"Error en última verificación de trade_enabled para {symbol}: {e}")
-                            # Use existing values if refresh fails
-                            trade_enabled = getattr(watchlist_item, 'trade_enabled', False)
-                            trade_amount_usd = getattr(watchlist_item, 'trade_amount_usd', None)
-                        
-                        # DIAGNOSTIC: Log order creation check for TRX_USDT
-                        if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                            logger.info(
-                                f"🔍 [DIAGNOSTIC] {symbol} SELL order creation check: "
-                                f"trade_enabled={watchlist_item.trade_enabled}, "
-                                f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
-                                f"balance_check_warning={balance_check_warning is not None}, "
-                                f"will_create_order={'YES' if (watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 and not balance_check_warning) else 'NO'}"
-                            )
-                        
+                        # Order placement when alert is sent is handled by the orchestrator above.
+                        # Legacy _create_sell_order duplicate removed to prevent double orders.
                         if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
-                            # Skip order creation if early balance check already detected insufficient balance
-                            # We already warned in the alert, so don't try to create order and send duplicate message
-                            if balance_check_warning:
-                                logger.info(
-                                    f"🚫 Trade enabled for {symbol} but skipping SELL order creation - "
-                                    f"insufficient balance already detected and warned in alert"
-                                )
-                            else:
-                                logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
-                                
-                                # DIAGNOSTIC: Log before calling _create_sell_order for TRX_USDT
-                                if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                                    logger.info(
-                                        f"🔍 [DIAGNOSTIC] {symbol} Calling _create_sell_order: "
-                                        f"current_price={current_price}, "
-                                        f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
-                                        f"trade_on_margin={getattr(watchlist_item, 'trade_on_margin', False)}"
-                                    )
-                                
-                                try:
-                                    # CRITICAL: Validate trade_enabled from DB one final time before creating order (PR #129)
-                                    if not self._validate_trade_enabled_from_db(db, symbol):
-                                        logger.warning(
-                                            f"🚫 [SELL_ORDER_BLOCKED] {symbol} - trade_enabled=False in DB. "
-                                            f"Order creation cancelled."
-                                        )
-                                        telegram_notifier.notify_telegram(
-                                            f"🚫 SELL order blocked for {symbol}: trade_enabled=False in database"
-                                        )
-                                        # Set error result to be handled by existing error handling code
-                                        order_result = {
-                                            "error_type": "trade_disabled",
-                                            "message": "trade_enabled=False in database",
-                                            "error": "trade_enabled validation failed"
-                                        }
-                                    else:
-                                        # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
-                                        order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
-                                    
-                                    # DIAGNOSTIC: Log result for TRX_USDT
-                                    if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                                        logger.info(
-                                            f"🔍 [DIAGNOSTIC] {symbol} _create_sell_order result: "
-                                            f"result_type={type(order_result).__name__}, "
-                                            f"has_error={'error' in order_result if isinstance(order_result, dict) else 'N/A'}, "
-                                            f"result={order_result}"
-                                        )
-                                    # Check for errors first (error dicts are truthy but have "error" key)
-                                    if order_result and isinstance(order_result, dict) and "error" in order_result:
-                                        # Handle error cases
-                                        error_type = order_result.get("error_type")
-                                        error_msg = order_result.get("message")
-                                        if error_type == "balance":
-                                            logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
-                                        elif error_type == "trade_disabled":
-                                            logger.warning(f"🚫 SELL order creation blocked for {symbol}: Trade is disabled - {error_msg}")
-                                        elif error_type == "authentication":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
-                                        elif error_type == "order_placement":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Order placement error - {error_msg}")
-                                        elif error_type == "no_order_id":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: No order ID returned - {error_msg}")
-                                        elif error_type == "exception":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Exception - {error_msg}")
-                                        else:
-                                            logger.warning(f"⚠️ SELL order creation failed for {symbol} (error_type: {error_type}, reason: {error_msg or 'unknown'})")
-                                    elif order_result:
-                                        # Success case - order was created
-                                        filled_price = order_result.get("filled_price")
-                                        if filled_price:
-                                            logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
-                                        persist_price = filled_price or current_price
-                                        if not sell_state_recorded:
-                                            try:
-                                                record_signal_event(
-                                                    db,
-                                                    symbol=symbol,
-                                                    strategy_key=strategy_key,
-                                                    side="SELL",
-                                                    price=persist_price,
-                                                    source="order",
-                                                    emit_reason="Order created",
-                                                )
-                                                sell_state_recorded = True
-                                            except Exception as state_err:
-                                                logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
-                                    else:
-                                        # order_result is None or falsy
-                                        logger.warning(f"⚠️ SELL order creation returned None for {symbol} (unknown reason)")
-                                except Exception as order_err:
-                                    logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
-                                    # Don't raise - alert was sent, order creation is secondary
+                            logger.debug(
+                                "%s SELL alert sent — order handled by orchestrator; "
+                                "legacy _create_sell_order skipped",
+                                symbol,
+                            )
                         else:
-                            # Log specific reason why order wasn't created
                             reasons = []
                             if not watchlist_item.trade_enabled:
                                 reasons.append("trade_enabled=False")
                             if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
-                                reasons.append(f"trade_amount_usd={'not configured' if not watchlist_item.trade_amount_usd else f'{watchlist_item.trade_amount_usd} (invalid)'}")
-                            
-                            # DIAGNOSTIC: Enhanced logging for TRX_USDT
-                            if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                                logger.warning(
-                                    f"🔍 [DIAGNOSTIC] {symbol} SELL order NOT created - "
-                                    f"trade_enabled={watchlist_item.trade_enabled}, "
-                                    f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
-                                    f"reasons: {', '.join(reasons)}"
+                                reasons.append(
+                                    f"trade_amount_usd={'not configured' if not watchlist_item.trade_amount_usd else f'{watchlist_item.trade_amount_usd} (invalid)'}"
                                 )
-                            
                             logger.warning(
-                                f"🚫 SELL alert sent for {symbol} but order NOT created - "
+                                f"🚫 SELL alert sent for {symbol} but orchestrator may skip order — "
                                 f"Reasons: {', '.join(reasons)}. "
-                                f"To enable automatic SELL orders, set trade_enabled=True and trade_amount_usd > 0 in watchlist configuration."
+                                f"Set trade_enabled=True and trade_amount_usd > 0 to enable trading."
                             )
                     except Exception as e:
                         logger.warning(f"Failed to send Telegram SELL alert for {symbol}: {e}")
