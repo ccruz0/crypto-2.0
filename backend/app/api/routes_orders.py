@@ -2986,6 +2986,7 @@ def quick_order(
 @router.post("/orders/create-sl-tp-for-last-order")
 def create_sl_tp_for_last_order(
     symbol: str = Query(..., description="Trading symbol (e.g., BTC_USDT, BTC_USD)"),
+    entry_side: str = Query("BUY", description="Entry side of parent fill: BUY (long) or SELL (short)"),
     sl_percentage: Optional[float] = Query(None, description="Custom SL % (e.g., 10.0 for 10%)"),
     tp_percentage: Optional[float] = Query(None, description="Custom TP % (e.g., 3.0 for 3%)"),
     force: bool = Query(False, description="Bypass rejected/cooldown protections and attempt to place SL/TP again"),
@@ -3049,15 +3050,19 @@ def create_sl_tp_for_last_order(
                 raise HTTPException(status_code=500, detail=f"Failed to enable LIVE_TRADING: {str(e)}")
 
         symbol_upper = symbol.upper()
+        entry_side_upper = (entry_side or "BUY").upper()
+        if entry_side_upper not in ("BUY", "SELL"):
+            raise HTTPException(status_code=400, detail="entry_side must be BUY or SELL")
+        side_enum = OrderSideEnum.BUY if entry_side_upper == "BUY" else OrderSideEnum.SELL
         logger.info(
-            f"Creating SL/TP for last order of {symbol_upper} "
+            f"Creating SL/TP for last order of {symbol_upper} entry_side={entry_side_upper} "
             f"(SL={sl_percentage}%, TP={tp_percentage}%, force={force}, strict={strict}, place_live={place_live})"
         )
         
-        # Find the last filled BUY order for the symbol
+        # Find the last filled entry order for the symbol (long=BUY, short=SELL)
         last_order = db.query(ExchangeOrder).filter(
             ExchangeOrder.symbol == symbol_upper,
-            ExchangeOrder.side == OrderSideEnum.BUY,
+            ExchangeOrder.side == side_enum,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
             ExchangeOrder.order_type.in_(["MARKET", "LIMIT"])
         ).order_by(
@@ -3071,7 +3076,7 @@ def create_sl_tp_for_last_order(
         if not last_order:
             raise HTTPException(
                 status_code=404,
-                detail=f"No filled BUY orders found for {symbol}"
+                detail=f"No filled {entry_side_upper} orders found for {symbol}"
             )
         
         # Check if this order already has SL/TP orders (ACTIVE).
