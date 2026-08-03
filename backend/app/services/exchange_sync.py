@@ -368,6 +368,11 @@ def should_auto_create_sl_tp_on_sync(
     entry_side: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Gate SL/TP backfill during exchange_sync history processing."""
+    from app.services.sl_tp_protection import is_sltp_healing_enabled
+
+    if not is_sltp_healing_enabled():
+        return False, "healing_disabled"
+
     linked = link_system_trade_signal_to_order(db, order)
 
     parent_id = str(order.exchange_order_id)

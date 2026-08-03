@@ -358,11 +358,18 @@ class TradingScheduler:
         await asyncio.to_thread(self.check_telegram_commands_sync)
     
     def check_hourly_sl_tp_missed_sync(self):
-        """Hourly: ensure every open position has SL/TP (no fill-age gate).
+        """Hourly SL/TP audit.
 
-        Also attempts SL/TP for recent FILLED entries missing protection.
+        When ``SLTP_HEALING_ENABLED`` is false (default): read-only scan + alert.
+        When enabled: legacy ensure/backfill (position heal + 3h fill backfill).
         """
-        logger.info("Checking for open positions / FILLED orders missing SL/TP (hourly)...")
+        from app.services.sl_tp_protection import is_sltp_healing_enabled
+
+        healing = is_sltp_healing_enabled()
+        logger.info(
+            "Checking for open positions / FILLED orders missing SL/TP (hourly, healing=%s)...",
+            healing,
+        )
         
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
@@ -373,7 +380,48 @@ class TradingScheduler:
             
             db = SessionLocal()
             try:
-                # Primary path: open balances must always have both legs
+                if not healing:
+                    audit = sl_tp_checker_service.check_positions_for_sl_tp(db)
+                    positions_missing = audit.get("positions_missing_sl_tp") or []
+                    if positions_missing:
+                        logger.warning(
+                            "Hourly SL/TP read-only audit: %s unprotected position(s): %s",
+                            len(positions_missing),
+                            [p.get("symbol") for p in positions_missing[:10]],
+                        )
+                        try:
+                            lines = [
+                                "🔍 <b>HOURLY SL/TP AUDIT (read-only)</b>\n\n",
+                                f"⚠️ {len(positions_missing)} open position(s) missing SL and/or TP.\n",
+                                "Background healing is disabled — no orders were created or cancelled.\n\n",
+                            ]
+                            for pos in positions_missing[:5]:
+                                missing = []
+                                if not pos.get("has_sl"):
+                                    missing.append("SL")
+                                if not pos.get("has_tp"):
+                                    missing.append("TP")
+                                lines.append(
+                                    f"• {pos.get('symbol')}: missing {'+'.join(missing) or '?'}\n"
+                                )
+                            if len(positions_missing) > 5:
+                                lines.append(f"  ... and {len(positions_missing) - 5} more\n")
+                            telegram_notifier.send_message("".join(lines))
+                        except Exception as notify_err:
+                            logger.warning(
+                                "Failed to send hourly SL/TP audit notification: %s",
+                                notify_err,
+                                exc_info=True,
+                            )
+                    else:
+                        logger.info(
+                            "✅ Hourly SL/TP read-only audit: all open positions protected"
+                        )
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("hourly_sl_tp_check", "success", None)
+                    return
+
+                # Legacy healing path (SLTP_HEALING_ENABLED=true)
                 ensure_result = sl_tp_checker_service.ensure_missing_protection(db)
                 positions_created = len(ensure_result.get("created") or [])
                 positions_failed = len(ensure_result.get("failed") or [])

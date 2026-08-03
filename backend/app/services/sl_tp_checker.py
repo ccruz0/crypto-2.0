@@ -1323,12 +1323,33 @@ class SLTPCheckerService:
 
     def ensure_missing_protection(self, db: Session) -> Dict:
         """
-        Always create missing SL and/or TP for open positions.
+        Create missing SL and/or TP for open positions when healing is enabled.
 
-        Age of the entry fill does not matter — open balance without both
-        legs is unprotected and must be healed.
+        When ``SLTP_HEALING_ENABLED`` is false (default), this is read-only: it
+        reports unprotected positions but does not mutate orders on the exchange.
         """
+        from app.services.sl_tp_protection import is_sltp_healing_enabled
+
         result = self.check_positions_for_sl_tp(db)
+        if not is_sltp_healing_enabled():
+            positions_missing = result.get("positions_missing_sl_tp", [])
+            logger.info(
+                "SL/TP healing disabled — read-only scan: %s unprotected position(s)",
+                len(positions_missing),
+            )
+            return {
+                "checked_at": result.get("checked_at"),
+                "total_positions": result.get("total_positions", 0),
+                "oco_issues": result.get("oco_issues", {}),
+                "created": [],
+                "failed": [],
+                "skipped": [],
+                "still_missing": positions_missing,
+                "positions_missing_sl_tp": positions_missing,
+                "healed_parents": [],
+                "healing_disabled": True,
+            }
+
         positions_missing = result.get("positions_missing_sl_tp", [])
         created: List[Dict] = []
         failed: List[Dict] = []
@@ -1463,8 +1484,11 @@ class SLTPCheckerService:
 
     def send_sl_tp_reminder(self, db: Session) -> bool:
         """
-        Ensure every open position has SL/TP, then remind only if still missing.
-        Also sends OCO issues alerts
+        Scan open positions for missing SL/TP and send reminders.
+
+        When ``SLTP_HEALING_ENABLED`` is true, auto-creates missing legs first.
+        When false (default), read-only scan + operator reminder with manual actions.
+        Also sends OCO issues alerts.
         
         Returns:
             bool: True if reminder was sent, False otherwise
@@ -1526,11 +1550,21 @@ class SLTPCheckerService:
                 # Reminder path currently tracks long balances only → close = SELL.
                 close_key = f"{symbol}:LONG"
                 message = f"⚠️ <b>POSICIÓN SIN PROTECCIÓN: {symbol}</b>\n\n"
-                message += (
-                    "⚠️ <b>Problema:</b> auto-creación falló; la posición sigue "
-                    f"<b>sin {' y '.join(missing_items)}</b>.\n"
-                    "Sin esa protección la posición queda expuesta.\n\n"
-                )
+                from app.services.sl_tp_protection import is_sltp_healing_enabled
+
+                if is_sltp_healing_enabled():
+                    message += (
+                        "⚠️ <b>Problema:</b> auto-creación falló; la posición sigue "
+                        f"<b>sin {' y '.join(missing_items)}</b>.\n"
+                        "Sin esa protección la posición queda expuesta.\n\n"
+                    )
+                else:
+                    message += (
+                        "⚠️ <b>Problema:</b> la posición no tiene "
+                        f"<b>{' y '.join(missing_items)}</b> activos.\n"
+                        "La auto-creación en segundo plano está desactivada; "
+                        "crea protección manualmente o cierra la posición.\n\n"
+                    )
                 message += f"📊 Símbolo: <b>{symbol}</b>\n"
                 message += f"💰 Balance: {balance:.6f} {currency}\n\n"
 
