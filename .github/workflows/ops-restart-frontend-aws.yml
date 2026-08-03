@@ -13,10 +13,6 @@ on:
         options:
           - "false"
           - "true"
-  push:
-    branches: [main]
-    paths:
-      - ".ops-run-restart-frontend"
 
 permissions:
   contents: read
@@ -39,7 +35,7 @@ jobs:
         env:
           INSTANCE_ID: i-087953603011543c5
           COMPOSE_DIR: /home/ubuntu/crypto-2.0
-          PULL_ECR: ${{ github.event_name == 'push' && 'true' || (github.event.inputs.skip_pull == 'true' && 'false' || 'true') }}
+          PULL_ECR: ${{ github.event.inputs.skip_pull == 'true' && 'false' || 'true' }}
         run: |
           set -euo pipefail
           read -r -d '' REMOTE <<EOF || true
