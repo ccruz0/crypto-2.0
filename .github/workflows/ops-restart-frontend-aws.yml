@@ -5,8 +5,8 @@ name: Ops — restart frontend-aws
 on:
   workflow_dispatch:
     inputs:
-      pull_ecr:
-        description: "If true, docker pull latest ECR image before up"
+      skip_pull:
+        description: "If true, skip ECR pull (only restart existing local image)"
         required: false
         default: "false"
         type: choice
@@ -39,7 +39,7 @@ jobs:
         env:
           INSTANCE_ID: i-087953603011543c5
           COMPOSE_DIR: /home/ubuntu/crypto-2.0
-          PULL_ECR: ${{ github.event_name == 'push' && 'false' || github.event.inputs.pull_ecr }}
+          PULL_ECR: ${{ github.event_name == 'push' && 'true' || (github.event.inputs.skip_pull == 'true' && 'false' || 'true') }}
         run: |
           set -euo pipefail
           read -r -d '' REMOTE <<EOF || true
@@ -50,16 +50,22 @@ jobs:
           docker compose --profile aws ps frontend-aws || true
           echo ""
           echo "=== Localhost :3000 ==="
-          curl -sS -o /dev/null -w "before http_code=%{http_code}\n" http://127.0.0.1:3000/ || echo "before: not reachable"
-          if [ "${PULL_ECR}" = "true" ]; then
-            echo "=== ECR login + pull ==="
-            REGION=ap-southeast-1
-            REGISTRY=634531197711.dkr.ecr.ap-southeast-1.amazonaws.com
-            aws ecr get-login-password --region "\$REGION" | docker login --username AWS --password-stdin "\$REGISTRY"
-            docker pull "\$REGISTRY/atp-frontend:latest" || true
+          curl -sS -o /dev/null -w "before http_code=%{http_code}\n" http://127.0.0.1:3000/ 2>/dev/null || echo "before: not reachable"
+          REGION=ap-southeast-1
+          REGISTRY=634531197711.dkr.ecr.ap-southeast-1.amazonaws.com
+          IMAGE_URI="\${REGISTRY}/atp-frontend:latest"
+          if [ -f .env ] && grep -q '^FRONTEND_IMAGE=' .env; then
+            IMAGE_URI=\$(grep '^FRONTEND_IMAGE=' .env | tail -1 | cut -d= -f2-)
           fi
-          echo "=== Restart frontend-aws ==="
-          docker compose --profile aws up -d --no-deps frontend-aws
+          if [ "${PULL_ECR}" = "true" ]; then
+            echo "=== ECR login + pull \${IMAGE_URI} ==="
+            aws ecr get-login-password --region "\$REGION" | docker login --username AWS --password-stdin "\$REGISTRY"
+            docker pull "\$IMAGE_URI"
+          else
+            echo "=== Skip ECR pull (restart local image only) ==="
+          fi
+          echo "=== Start frontend-aws (\${IMAGE_URI}) ==="
+          IMAGE="\$IMAGE_URI" docker compose --profile aws up -d --no-deps frontend-aws
           ok=0
           for i in \$(seq 1 30); do
             code=\$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ 2>/dev/null || echo 000)
