@@ -146,12 +146,13 @@ def test_create_sl_tp_impl_uses_native_oco_when_both_missing(db_session, monkeyp
 
 
 def test_create_sl_tp_impl_falls_back_when_oco_fails(db_session, monkeypatch):
+    """Spot OCO failure must NOT fall through to dual create (balance-lock bug)."""
     monkeypatch.setenv("SLTP_NATIVE_OCO", "true")
     legacy_sl = []
     legacy_tp = []
 
     monkeypatch.setattr(
-        "app.services.tp_sl_order_creator.create_oco_protection_orders",
+        "app.services.tp_sl_order_creator.ensure_spot_oco_protection",
         lambda **kwargs: {
             "sl_result": {"order_id": None, "error": "rejected"},
             "tp_result": {"order_id": None, "error": "rejected"},
@@ -185,8 +186,8 @@ def test_create_sl_tp_impl_falls_back_when_oco_fails(db_session, monkeypatch):
         sl_price_override_f=90.0,
         tp_price_override_f=110.0,
     )
-    assert len(legacy_sl) == 1 and len(legacy_tp) == 1
-    assert result["sl_result"]["order_id"] == "legacy-sl"
+    assert legacy_sl == [] and legacy_tp == []
+    assert result.get("error") == "rejected"
 
 
 def test_create_sl_tp_impl_skips_oco_for_margin(db_session, monkeypatch):

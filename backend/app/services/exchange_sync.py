@@ -1908,6 +1908,18 @@ class ExchangeSyncService:
                                             )
                                     except Exception as alert_err:
                                         logger.warning("Failed protection reject alert: %s", alert_err)
+                                    try:
+                                        self._retry_protection_after_reject(
+                                            db,
+                                            protection_order=order,
+                                            reject_reason=reject_reason,
+                                        )
+                                    except Exception as retry_err:
+                                        logger.warning(
+                                            "Protection reject retry failed for %s: %s",
+                                            order.exchange_order_id,
+                                            retry_err,
+                                        )
                                 
                                 # Emit ORDER_CANCELED event if status actually changed
                                 if old_status != OrderStatusEnum(resolved_status):
@@ -3052,6 +3064,86 @@ class ExchangeSyncService:
                 exc_info=True,
             )
             return None
+
+    def _retry_protection_after_reject(
+        self,
+        db: Session,
+        *,
+        protection_order: ExchangeOrder,
+        reject_reason: str,
+    ) -> None:
+        """One-shot OCO retry when exchange async-rejects a protection leg (fill-time only).
+
+        Not background healing: runs once per parent when sync confirms REJECTED.
+        """
+        from app.services.tp_sl_order_creator import is_insufficient_acc_balance_error
+
+        parent_id = protection_order.parent_order_id
+        if not parent_id:
+            return
+        if not is_insufficient_acc_balance_error(reject_reason):
+            return
+        if has_complete_sl_tp_protection(db, str(parent_id)):
+            return
+
+        parent = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == str(parent_id))
+            .first()
+        )
+        if not parent or parent.status != OrderStatusEnum.FILLED:
+            return
+        filled_at = parent.exchange_update_time or parent.created_at
+        if not filled_at:
+            return
+        if filled_at.tzinfo is None:
+            filled_at = filled_at.replace(tzinfo=timezone.utc)
+        age_min = (datetime.now(timezone.utc) - filled_at).total_seconds() / 60.0
+        if age_min > 30:
+            return
+
+        try:
+            from app.services.telegram_event_dedup import claim_telegram_event
+
+            if not claim_telegram_event(
+                db,
+                f"sltp_reject_retry:{parent_id}",
+                symbol=protection_order.symbol,
+                ttl_minutes=60,
+                action="sltp_reject_retry",
+            ):
+                return
+        except Exception:
+            pass
+
+        filled_price = float(parent.avg_price or parent.price or 0)
+        filled_qty = float(
+            parent.cumulative_quantity or parent.quantity or protection_order.quantity or 0
+        )
+        entry_side = (
+            parent.side.value if hasattr(parent.side, "value") else str(parent.side or "BUY")
+        )
+        if filled_price <= 0 or filled_qty <= 0:
+            return
+
+        logger.warning(
+            "[SLTP_REJECT_RETRY] parent=%s symbol=%s role=%s reason=%s — one-shot OCO retry",
+            parent_id,
+            protection_order.symbol,
+            protection_order.order_role,
+            reject_reason,
+        )
+        self._create_sl_tp_for_filled_order(
+            db=db,
+            symbol=protection_order.symbol,
+            side=str(entry_side).upper(),
+            filled_price=filled_price,
+            filled_qty=filled_qty,
+            order_id=str(parent_id),
+            force=True,
+            source="reject_retry",
+            skip_gate=True,
+        )
     
     def _create_sl_tp_for_filled_order(
         self,
@@ -3082,6 +3174,21 @@ class ExchangeSyncService:
 
         side_upper = (side or "").upper()
         # Never invent short protection on a long wallet (or vice versa).
+        # Skip for margin (spot wallet does not reflect margin inventory) and for
+        # confirmed system fills (wallet snapshot can lag or show 0 when qty is locked).
+        from app.services.tp_sl_order_creator import resolve_sltp_margin_context
+
+        is_margin, _margin_lev = resolve_sltp_margin_context(db, symbol)
+        parent_row = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == str(order_id))
+            .first()
+        )
+        confirmed_system_fill = (
+            parent_row is not None
+            and parent_row.status == OrderStatusEnum.FILLED
+            and filled_qty > 0
+        )
         try:
             summary = trade_client.get_account_summary()
             wallet_balance = _base_wallet_balance_from_accounts(
@@ -3096,7 +3203,12 @@ class ExchangeSyncService:
                 bal_err,
             )
             wallet_balance = None
-        if wallet_balance is not None and side_upper in ("BUY", "SELL"):
+        if (
+            not is_margin
+            and not confirmed_system_fill
+            and wallet_balance is not None
+            and side_upper in ("BUY", "SELL")
+        ):
             if not wallet_balance_matches_entry_side(side_upper, wallet_balance):
                 logger.info(
                     "Skipping SL/TP for order %s (%s): wallet_side_mismatch "
@@ -3723,13 +3835,34 @@ class ExchangeSyncService:
                     "tp_newly_created": False,
                     "error": err,
                 }
-            logger.warning(
-                "[SLTP_NATIVE_OCO] failed for parent=%s symbol=%s err=%s — "
-                "falling back to dual create-order (both legs missing)",
+            err = oco_res.get("error") or "native_oco_failed"
+            logger.error(
+                "[SLTP_NATIVE_OCO] spot OCO failed parent=%s symbol=%s err=%s "
+                "— refusing dual create-order (both legs missing)",
                 order_id,
                 symbol,
-                oco_res.get("error"),
+                err,
             )
+            sl_res = oco_res.get("sl_result") or {}
+            tp_res = oco_res.get("tp_result") or {}
+            return {
+                "sl_result": {
+                    "order_id": sl_res.get("order_id"),
+                    "error": sl_res.get("error") or err,
+                },
+                "tp_result": {
+                    "order_id": tp_res.get("order_id"),
+                    "error": tp_res.get("error") or err,
+                },
+                "oco_group_id": oco_res.get("oco_group_id"),
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+                "skip_tp_creation": False,
+                "skip_tp_reason": None,
+                "sl_newly_created": False,
+                "tp_newly_created": False,
+                "error": err,
+            }
 
         # When backfilling a missing leg, reuse the surviving leg's OCO group so Jarvis
         # and OCO checks do not treat the new TP/SL as an incomplete orphan group.

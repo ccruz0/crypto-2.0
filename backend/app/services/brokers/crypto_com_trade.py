@@ -7117,19 +7117,20 @@ class CryptoComTradeClient:
             )
             return qty_str_aggressive, diagnostics
         
-        # Strategy 3: Use min_quantity as absolute last resort (only for SL/TP)
-        if for_sl_tp:
-            diagnostics["strategies_tried"].append("min_quantity_fallback")
-            min_qty_str = format(min_qty_decimal, f'.{quantity_decimals}f')
-            diagnostics["final_result"] = min_qty_str
-            diagnostics["final_reason"] = "min_quantity_fallback_warning_larger_than_executed"
-            logger.warning(
-                f"⚠️ [NORMALIZE_SAFE] {symbol}: Using min_quantity as fallback. "
-                f"raw={raw_quantity} -> minQty={min_qty_str}. "
-                f"WARNING: This is LARGER than executed quantity - protection may over-close position."
+        # Strategy 3: Never inflate qty above executed fill — that causes
+        # INSUFFICIENT_ACC_BALANCE on Crypto.com (prod ALGO_USD incident).
+        if for_sl_tp and min_qty_decimal > qty_decimal:
+            diagnostics["strategies_tried"].append("min_quantity_skipped_exceeds_fill")
+            diagnostics["final_reason"] = "below_minqty_cannot_inflate"
+            logger.error(
+                "❌ [NORMALIZE_SAFE] %s: Executed qty %s below minQty %s — "
+                "refusing to inflate protection qty (would cause INSUFFICIENT_ACC_BALANCE).",
+                symbol,
+                raw_quantity,
+                min_quantity_str,
             )
-            return min_qty_str, diagnostics
-        
+            return None, diagnostics
+
         # All strategies failed
         diagnostics["final_reason"] = "all_strategies_failed"
         logger.error(

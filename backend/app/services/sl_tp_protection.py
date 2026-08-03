@@ -28,6 +28,35 @@ def is_sltp_healing_enabled() -> bool:
     )
 
 
+def cap_protection_quantity_to_wallet(
+    symbol: str,
+    entry_side: str,
+    requested_qty: float,
+    wallet_balance: Optional[float],
+) -> Tuple[float, Optional[str]]:
+    """Cap SL/TP qty to signed wallet balance so OCO never exceeds available coins.
+
+    Long (BUY entry): use min(requested, max(0, wallet_balance)).
+    Returns (capped_qty, skip_reason).
+    """
+    if wallet_balance is None:
+        return requested_qty, None
+    side = (entry_side or "").upper()
+    if side == "BUY":
+        available = max(0.0, float(wallet_balance))
+        if available <= 0:
+            return requested_qty, "wallet_empty_long"
+        if requested_qty > available + 1e-12:
+            logger.warning(
+                "[SLTP_QTY_CAP] %s long protection qty %s > wallet %s — capping",
+                symbol,
+                requested_qty,
+                available,
+            )
+            return available, "capped_to_wallet_balance"
+    return requested_qty, None
+
+
 ACTIVE_PROTECTION_STATUSES = [
     OrderStatusEnum.NEW,
     OrderStatusEnum.ACTIVE,
