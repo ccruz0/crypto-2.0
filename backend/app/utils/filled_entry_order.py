@@ -7,6 +7,9 @@ from typing import Optional, Union
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 
 PROTECTION_ROLES = frozenset({"STOP_LOSS", "TAKE_PROFIT"})
+# Emergency close after failed SL/TP — exit fill, never an entry needing protection.
+FLATTEN_CLOSE_ROLE = "FLATTEN"
+NON_ENTRY_ROLES = frozenset(PROTECTION_ROLES | {FLATTEN_CLOSE_ROLE})
 TRIGGER_ORDER_TYPES = frozenset({
     "STOP_LIMIT",
     "STOP_LOSS",
@@ -37,13 +40,14 @@ def is_filled_entry_order(
 ) -> bool:
     """Return True for filled long (BUY) or short (SELL) entry orders.
 
-    Excludes protection legs (SL/TP roles or trigger order types).
+    Excludes protection legs (SL/TP roles or trigger order types) and
+    emergency flatten closes (role FLATTEN).
     """
     if _normalize_status(status) != OrderStatusEnum.FILLED.value:
         return False
 
     role = (order_role or "").upper()
-    if role in PROTECTION_ROLES:
+    if role in NON_ENTRY_ROLES:
         return False
 
     order_type_upper = (order_type or "").upper()
