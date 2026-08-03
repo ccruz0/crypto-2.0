@@ -96,6 +96,46 @@ def _make_raw_email(
     return msg.as_bytes()
 
 
+def test_mail_skips_disabled_and_incomplete(tmp_path, monkeypatch):
+    from app.brief.mail import fetch_mail
+
+    mailboxes = [
+        {
+            "id": "active",
+            "label": "Active",
+            "host": "imap.example.com",
+            "user": "a@example.com",
+            "password": "secret",
+            "enabled": True,
+        },
+        {
+            "id": "disabled",
+            "label": "Disabled",
+            "host": "imap.example.com",
+            "user": "b@example.com",
+            "password": "secret",
+            "enabled": False,
+        },
+        {
+            "id": "stub",
+            "label": "Stub",
+            "host": "",
+            "user": "",
+            "password": "",
+            "enabled": True,
+        },
+    ]
+    cfg = tmp_path / "brief_mailboxes.json"
+    cfg.write_text(json.dumps(mailboxes), encoding="utf-8")
+    monkeypatch.setenv("BRIEF_MAILBOXES_PATH", str(cfg))
+
+    with patch("app.brief.mail._fetch_one_account", return_value={"messages": []}) as fetch:
+        out = fetch_mail(hours=24)
+    assert out["errors"] == []
+    assert [a["id"] for a in out["accounts"]] == ["active"]
+    assert fetch.call_count == 1
+
+
 def test_mail_unauthorized(client):
     r = client.get("/api/brief/mail")
     assert r.status_code == 401
