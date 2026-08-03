@@ -13,6 +13,10 @@ on:
         options:
           - "false"
           - "true"
+      git_ref:
+        description: "Git ref on EC2 to checkout script from"
+        required: false
+        default: "main"
 
 permissions:
   contents: read
@@ -35,6 +39,7 @@ jobs:
         env:
           INSTANCE_ID: i-087953603011543c5
           DRY_RUN: ${{ github.event.inputs.dry_run_only }}
+          GIT_REF: ${{ github.event.inputs.git_ref || github.ref_name }}
         run: |
           set -euo pipefail
           LIVE_FLAG=""
@@ -44,12 +49,13 @@ jobs:
           read -r -d '' REMOTE <<EOF || true
           set -eu
           cd /home/ubuntu/crypto-2.0
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- \
+          REF="${GIT_REF}"
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin "\$REF"
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q "origin/\$REF" -- \
             backend/scripts/cancel_session_orphan_triggers.py \
             backend/scripts/cancel_duplicate_sl_tp.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
-          echo CONTAINER=\$CONTAINER
+          echo CONTAINER=\$CONTAINER REF=\$REF
           test -n "\$CONTAINER"
           docker exec "\$CONTAINER" python3 /repo/backend/scripts/cancel_session_orphan_triggers.py ${LIVE_FLAG}
           EOF
