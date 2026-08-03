@@ -17,6 +17,10 @@ on:
         description: "Git ref on EC2 to checkout script from"
         required: false
         default: "main"
+  push:
+    branches: [main]
+    paths:
+      - ".ops-run-cancel-orphans"
 
 permissions:
   contents: read
@@ -38,7 +42,7 @@ jobs:
       - name: Cancel session orphan triggers on prod
         env:
           INSTANCE_ID: i-087953603011543c5
-          DRY_RUN: ${{ github.event.inputs.dry_run_only }}
+          DRY_RUN: ${{ github.event_name == 'push' && 'false' || github.event.inputs.dry_run_only }}
           GIT_REF: ${{ github.event.inputs.git_ref || github.ref_name }}
         run: |
           set -euo pipefail
