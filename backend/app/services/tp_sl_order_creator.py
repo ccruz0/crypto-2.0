@@ -361,6 +361,35 @@ def create_oco_protection_orders(
                 "[%s_OCO] Adjusted SL for %s: %s", source.upper(), symbol, sl_adjust
             )
 
+    if not dry_run:
+        try:
+            from app.services.exchange_sync import _base_wallet_balance_from_accounts
+            from app.services.sl_tp_protection import cap_protection_quantity_to_wallet
+            from app.services.brokers.crypto_com_trade import trade_client
+
+            summary = trade_client.get_account_summary()
+            accounts = summary.get("accounts") or []
+            wallet_bal = _base_wallet_balance_from_accounts(accounts, symbol)
+            quantity, cap_reason = cap_protection_quantity_to_wallet(
+                symbol, entry_side, float(quantity), wallet_bal
+            )
+            if cap_reason == "wallet_empty_long":
+                err = f"wallet_empty_long: no {symbol} balance for protection"
+                logger.error("[%s_OCO] %s", source.upper(), err)
+                return {
+                    "sl_result": {"order_id": None, "error": err},
+                    "tp_result": {"order_id": None, "error": err},
+                    "oco_group_id": None,
+                    "error": err,
+                }
+        except Exception as bal_err:
+            logger.warning(
+                "[%s_OCO] wallet balance lookup failed for %s: %s",
+                source.upper(),
+                symbol,
+                bal_err,
+            )
+
     logger.info(
         "[%s_OCO] Creating native OCO: %s closing_side=%s qty=%s tp=%s sl=%s entry=%s",
         source.upper(),

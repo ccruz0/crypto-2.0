@@ -214,12 +214,14 @@ async def simulate_alert(
                     detail=error_message
                 )
             
+            trade_enabled_from_payload = payload.get("trade_enabled")
             watchlist_item = WatchlistItem(
                 symbol=symbol,
                 exchange="CRYPTO_COM",
                 alert_enabled=force_order or True,
-                trade_amount_usd=trade_amount_usd,  # Use provided amount from payload
-                trade_on_margin=False
+                trade_enabled=bool(trade_enabled_from_payload) if trade_enabled_from_payload is not None else False,
+                trade_amount_usd=trade_amount_usd,
+                trade_on_margin=False,
             )
             db.add(watchlist_item)
             db.commit()
@@ -402,13 +404,28 @@ async def simulate_alert(
                             
                             # Create BUY order using the same logic as signal_monitor
                             logger.info(f"🔍 [Background] Calling _create_buy_order for {symbol} with amount_usd={bg_watchlist_item.trade_amount_usd}")
-                            order_result = await signal_monitor._create_buy_order(
-                                db=bg_db,
-                                watchlist_item=bg_watchlist_item,
-                                current_price=current_price,
-                                res_up=res_up,
-                                res_down=res_down
-                            )
+                            if force_order:
+                                from unittest.mock import patch
+
+                                with patch(
+                                    "app.utils.trading_guardrails.can_place_real_order",
+                                    return_value=(True, None),
+                                ):
+                                    order_result = await signal_monitor._create_buy_order(
+                                        db=bg_db,
+                                        watchlist_item=bg_watchlist_item,
+                                        current_price=current_price,
+                                        res_up=res_up,
+                                        res_down=res_down,
+                                    )
+                            else:
+                                order_result = await signal_monitor._create_buy_order(
+                                    db=bg_db,
+                                    watchlist_item=bg_watchlist_item,
+                                    current_price=current_price,
+                                    res_up=res_up,
+                                    res_down=res_down,
+                                )
                             logger.info(f"🔍 [Background] _create_buy_order returned: {order_result}")
                             
                             # Check if this is an authentication error (already handled with specific message)
@@ -459,25 +476,62 @@ async def simulate_alert(
                                 )
                                 
                                 if is_filled:
-                                    logger.info(f"✅ [Background] Order {order_id} is FILLED - creating SL/TP orders automatically")
-                                    
-                                    # Trigger SL/TP creation immediately
+                                    logger.info(f"✅ [Background] Order {order_id} is FILLED - creating SL/TP via protection choke point")
                                     try:
-                                        from app.services.exchange_sync import ExchangeSyncService
-                                        exchange_sync = ExchangeSyncService()
-                                        
-                                        # Create SL/TP orders for the filled order
-                                        exchange_sync._create_sl_tp_for_filled_order(
+                                        from decimal import Decimal
+                                        filled_confirmation = {
+                                            "status": "FILLED",
+                                            "cumulative_quantity": Decimal(str(filled_qty)),
+                                            "avg_price": float(filled_price),
+                                            "filled_price": float(filled_price),
+                                        }
+                                        protection_result = signal_monitor._create_protection_after_entry_fill(
                                             db=bg_db,
                                             symbol=symbol,
-                                            side="BUY",
-                                            filled_price=float(filled_price),
-                                            filled_qty=float(filled_qty),
-                                            order_id=str(order_id)
+                                            entry_side="BUY",
+                                            order_id=str(order_id),
+                                            placement_result=order_result,
+                                            estimated_price=float(filled_price),
+                                            source="test_simulate_alert",
+                                            filled_confirmation=filled_confirmation,
                                         )
-                                        logger.info(f"✅ [Background] SL/TP orders created for {symbol} order {order_id}")
+                                        sl_ok = (
+                                            protection_result
+                                            and SignalMonitorService._protection_confirms_stop_loss(
+                                                protection_result
+                                            )
+                                        )
+                                        if sl_ok:
+                                            logger.info(
+                                                "✅ [Background] SL/TP confirmed for %s order %s",
+                                                symbol,
+                                                order_id,
+                                            )
+                                            try:
+                                                sl_id = (protection_result.get("sl_result") or {}).get("order_id")
+                                                tp_id = (protection_result.get("tp_result") or {}).get("order_id")
+                                                telegram_notifier.send_message(
+                                                    f"🛡️ <b>TEST: SL/TP CONFIRMED</b>\n\n"
+                                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                                    f"🆔 Entry: {order_id}\n"
+                                                    f"🛑 SL: {sl_id or '?'}\n"
+                                                    f"🚀 TP: {tp_id or '?'}\n"
+                                                    f"📦 Qty: {filled_qty}"
+                                                )
+                                            except Exception:
+                                                pass
+                                        else:
+                                            logger.error(
+                                                "❌ [Background] SL/TP NOT confirmed for %s order %s: %s",
+                                                symbol,
+                                                order_id,
+                                                protection_result,
+                                            )
                                     except Exception as sl_tp_err:
-                                        logger.warning(f"⚠️ [Background] Could not create SL/TP orders: {sl_tp_err}. Exchange sync will handle this.", exc_info=True)
+                                        logger.error(
+                                            f"❌ [Background] Protection creation failed: {sl_tp_err}",
+                                            exc_info=True,
+                                        )
                                 else:
                                     logger.info(f"ℹ️ [Background] Order {order_id} status={order_status} - SL/TP will be created when order is filled")
                             else:
@@ -1012,6 +1066,99 @@ def diagnose_alert_issue(
     except Exception as e:
         logger.error(f"Error diagnosing alert issue for {symbol}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error diagnosing: {str(e)}")
+
+
+@router.get("/test/verify-protection/{symbol}")
+def verify_protection(
+    symbol: str,
+    parent_order_id: Optional[str] = None,
+    minutes: int = 30,
+    db: Session = Depends(get_db),
+):
+    """Verify SL+TP exist for a recent entry fill (post test-order check)."""
+    from datetime import timedelta
+
+    from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
+    from app.services.position_review_service import _get_protection_status
+    from app.services.sl_tp_protection import (
+        get_active_protection_order,
+        has_complete_sl_tp_protection,
+    )
+
+    symbol = symbol.upper()
+    threshold = datetime.now(timezone.utc) - timedelta(minutes=max(1, minutes))
+
+    parent_q = db.query(ExchangeOrder).filter(
+        ExchangeOrder.symbol == symbol,
+        ExchangeOrder.side == OrderSideEnum.BUY,
+        ExchangeOrder.status == OrderStatusEnum.FILLED,
+    )
+    if parent_order_id:
+        parent_q = parent_q.filter(ExchangeOrder.exchange_order_id == str(parent_order_id))
+    else:
+        parent_q = parent_q.filter(ExchangeOrder.exchange_update_time >= threshold)
+    parent = parent_q.order_by(ExchangeOrder.exchange_update_time.desc()).first()
+
+    if not parent:
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "error": "no_recent_filled_entry",
+            "minutes": minutes,
+            "parent_order_id": parent_order_id,
+        }
+
+    pid = str(parent.exchange_order_id)
+    sl_row = get_active_protection_order(db, pid, "STOP_LOSS")
+    tp_row = get_active_protection_order(db, pid, "TAKE_PROFIT")
+    db_complete = has_complete_sl_tp_protection(db, pid)
+    exchange_status = _get_protection_status(db, symbol)
+
+    sl_rejected = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.parent_order_id == pid,
+            ExchangeOrder.order_role == "STOP_LOSS",
+            ExchangeOrder.status == OrderStatusEnum.REJECTED,
+        )
+        .count()
+    )
+    tp_rejected = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.parent_order_id == pid,
+            ExchangeOrder.order_role == "TAKE_PROFIT",
+            ExchangeOrder.status == OrderStatusEnum.REJECTED,
+        )
+        .count()
+    )
+
+    exchange_complete = exchange_status.get("has_sl") and exchange_status.get("has_tp")
+    verified = db_complete and exchange_complete
+
+    return {
+        "ok": verified,
+        "symbol": symbol,
+        "parent_order_id": pid,
+        "entry": {
+            "filled_qty": float(parent.cumulative_quantity or parent.quantity or 0),
+            "avg_price": float(parent.avg_price or parent.price or 0),
+            "filled_at": (
+                parent.exchange_update_time.isoformat()
+                if parent.exchange_update_time
+                else None
+            ),
+        },
+        "db": {
+            "complete": db_complete,
+            "sl_order_id": sl_row.exchange_order_id if sl_row else None,
+            "tp_order_id": tp_row.exchange_order_id if tp_row else None,
+            "sl_rejected_count": sl_rejected,
+            "tp_rejected_count": tp_rejected,
+        },
+        "exchange": exchange_status,
+        "verified": verified,
+    }
 
 
 @router.post("/test/send-telegram-message")
