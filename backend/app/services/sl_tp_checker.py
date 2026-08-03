@@ -973,7 +973,10 @@ class SLTPCheckerService:
             if len(accounts) > 0:
                 logger.info(f"Sample account: {accounts[0]}")
             
-            # Filter positions with positive balance (excluding USDT/USD)
+            # Filter non-flat wallets (long > 0 or short < 0), excluding USDT/USD.
+            # Shorts are negative on Crypto.com — they still need SL/TP ensure.
+            # Skipping balance <= 0 left APT/DOGE SHORT missing-TP as REVISIÓN-only
+            # noise while auto-ensure never healed them (2026-08-02/03 Telegram).
             open_positions = []
             for account in accounts:
                 # Handle both 'currency' and 'instrument_name' fields
@@ -986,17 +989,19 @@ class SLTPCheckerService:
                     logger.warning(f"Account missing currency/instrument_name: {account}")
                     continue
                     
-                balance_str = account.get('balance', '0')
+                # Prefer signed wallet size; quantity is the Crypto.com native field
+                # (get_account_summary normalizes both; or-chain matches OCO wallet path).
+                balance_raw = account.get('balance') or account.get('quantity') or '0'
                 
                 # Handle balance format - could be string or number
                 try:
-                    balance = float(balance_str)
+                    balance = float(balance_raw)
                 except (ValueError, TypeError):
-                    logger.warning(f"Invalid balance format for {currency}: {balance_str}")
+                    logger.warning(f"Invalid balance format for {currency}: {balance_raw}")
                     continue
                 
-                # Skip if balance is zero or negative
-                if balance <= 0:
+                # Skip flat wallets only. Negative = short position (must ensure).
+                if abs(balance) <= 1e-12:
                     logger.debug(f"Skipping {currency} - balance is {balance}")
                     continue
                 
