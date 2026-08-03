@@ -635,7 +635,14 @@ export default function ExpectedTakeProfitTab({
               </button>
             </div>
             {createMessage && (
-              <div className="mb-3 text-sm rounded px-3 py-2 bg-slate-100 dark:bg-slate-700 text-gray-800 dark:text-gray-100">
+              <div
+                className={`mb-3 text-sm rounded px-3 py-2 ${
+                  createMessage.startsWith('Created:')
+                    ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-900 dark:text-emerald-100 border border-emerald-200 dark:border-emerald-800'
+                    : 'bg-red-50 dark:bg-red-900/30 text-red-800 dark:text-red-100 border border-red-200 dark:border-red-800'
+                }`}
+                role="alert"
+              >
                 {createMessage}
               </div>
             )}

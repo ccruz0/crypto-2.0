@@ -21,6 +21,9 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ARG BACKEND_URL=http://backend-aws:8002
 ENV BACKEND_URL=${BACKEND_URL}
+# Inlined into the client bundle at build time (must match backend ATP_API_KEY).
+ARG NEXT_PUBLIC_ATP_API_KEY=
+ENV NEXT_PUBLIC_ATP_API_KEY=${NEXT_PUBLIC_ATP_API_KEY}
 
 RUN npm run build
 

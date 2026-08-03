@@ -66,14 +66,21 @@ jobs:
         id: build
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
+          # Must match backend ATP_API_KEY (same value as secrets.API_KEY used by ops workflows).
+          ATP_API_KEY_BUILD: ${{ secrets.API_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "${ATP_API_KEY_BUILD:-}" ]; then
+            echo "Missing repository secret: API_KEY (required to bake NEXT_PUBLIC_ATP_API_KEY)" >&2
+            exit 1
+          fi
           IMAGE_TAG="sha-${GITHUB_SHA::12}"
           IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
           LATEST_URI="${REGISTRY}/${ECR_REPOSITORY}:latest"
           echo "Building ${IMAGE_URI}"
           docker build \
             --build-arg BACKEND_URL=http://backend-aws:8002 \
+            --build-arg NEXT_PUBLIC_ATP_API_KEY="${ATP_API_KEY_BUILD}" \
             -t "${IMAGE_URI}" -t "${LATEST_URI}" \
             -f frontend/Dockerfile frontend
           docker push "${IMAGE_URI}"

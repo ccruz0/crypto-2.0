@@ -493,6 +493,8 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - NEXT_PUBLIC_API_URL=http://localhost:8002/api
       - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-local}
+      # Must match backend ATP_API_KEY for Create TP/SL and other protected POSTs.
+      - NEXT_PUBLIC_ATP_API_KEY=${ATP_API_KEY:-demo-key}
     ports:
       - "3000:3000"
     volumes:
@@ -542,6 +544,8 @@ services:
       # Empty string can cause issues, so use relative path which works in both SSR and browser
       - NEXT_PUBLIC_API_URL=/api
       - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-aws}
+      # Client bundle is baked at image build (CI --build-arg). Host env is for SSR/dev only.
+      - NEXT_PUBLIC_ATP_API_KEY=${ATP_API_KEY:-}
     ports:
       - "127.0.0.1:3000:3000"
     # Production build: use CMD from Dockerfile (node server.js)

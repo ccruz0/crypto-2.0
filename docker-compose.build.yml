@@ -18,6 +18,7 @@ services:
       dockerfile: Dockerfile
       args:
         BACKEND_URL: http://backend-aws:8002
+        NEXT_PUBLIC_ATP_API_KEY: ${ATP_API_KEY:-demo-key}
 
   backend-aws:
     build:

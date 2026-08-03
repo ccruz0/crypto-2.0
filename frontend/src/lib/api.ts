@@ -1,4 +1,5 @@
 import { getApiUrl } from './environment';
+import { getClientApiKey } from './clientApiKey';
 
 const DEFAULT_API_URL = getApiUrl();
 
@@ -699,7 +700,7 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': 'demo-key', // Add authentication header
+        'x-api-key': getClientApiKey(),
         ...options?.headers,
       },
     });
@@ -1591,7 +1592,7 @@ export async function getCurrentPrice(symbol: string): Promise<number> {
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': 'demo-key',
+        'x-api-key': getClientApiKey(),
       },
     });
     
