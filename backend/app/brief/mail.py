@@ -43,6 +43,10 @@ class MailboxConfig:
     password: str
     folder: str
     priority: str
+    enabled: bool = True
+
+    def is_ready(self) -> bool:
+        return self.enabled and bool(self.host and self.user and self.password)
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -113,6 +117,11 @@ def load_mailboxes() -> list[MailboxConfig]:
         mid = str(item.get("id") or "").strip()
         if not mid:
             continue
+        enabled_raw = item.get("enabled", True)
+        if isinstance(enabled_raw, str):
+            enabled = enabled_raw.strip().lower() not in ("0", "false", "no", "off")
+        else:
+            enabled = bool(enabled_raw)
         out.append(
             MailboxConfig(
                 id=mid,
@@ -124,6 +133,7 @@ def load_mailboxes() -> list[MailboxConfig]:
                 password=str(item.get("password") or ""),
                 folder=str(item.get("folder") or "INBOX").strip() or "INBOX",
                 priority=str(item.get("priority") or "").strip(),
+                enabled=enabled,
             )
         )
     return out
@@ -338,6 +348,11 @@ def fetch_mail(hours: int = 24) -> dict[str, Any]:
             "accounts": [],
         }
 
+    active = [cfg for cfg in mailboxes if cfg.is_ready()]
+    skipped = [cfg.id for cfg in mailboxes if not cfg.is_ready()]
+    if skipped:
+        logger.info("brief_mail skipped_inactive=%s", ",".join(skipped))
+
     def _job(cfg: MailboxConfig) -> tuple[MailboxConfig, dict[str, Any] | Exception]:
         try:
             return cfg, _fetch_one_account(cfg, since, _MAX_PER_ACCOUNT)
@@ -346,8 +361,8 @@ def fetch_mail(hours: int = 24) -> dict[str, Any]:
 
     # Parallel connect; 20s timeout per account (IMAP socket + future.result)
     results: list[tuple[MailboxConfig, dict[str, Any] | Exception]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(mailboxes)))) as pool:
-        futures = {pool.submit(_job, cfg): cfg for cfg in mailboxes}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(active)))) as pool:
+        futures = {pool.submit(_job, cfg): cfg for cfg in active}
         for fut, cfg in futures.items():
             try:
                 results.append(fut.result(timeout=_ACCOUNT_TIMEOUT_S))
@@ -358,7 +373,7 @@ def fetch_mail(hours: int = 24) -> dict[str, Any]:
 
     # Preserve config order; apply global 80-message cap after merge
     by_id = {cfg.id: (cfg, res) for cfg, res in results}
-    for cfg in mailboxes:
+    for cfg in active:
         pair = by_id.get(cfg.id)
         if pair is None:
             errors.append({"id": cfg.id, "error": "timeout"})
