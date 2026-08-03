@@ -88,6 +88,9 @@ def test_should_create_for_system_order_without_timestamp():
     db = MagicMock()
     order = _order(trade_signal_id=7)
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(
@@ -106,6 +109,9 @@ def test_should_skip_wallet_side_mismatch_for_system_order():
     order = _order(trade_signal_id=7)
     order.side = "SELL"
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(
@@ -128,6 +134,9 @@ def test_should_skip_rejected_tp_terminal():
     db = MagicMock()
     order = _order(trade_signal_id=7)
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(
@@ -149,6 +158,9 @@ def test_should_skip_external_old_fill():
     now = datetime.now(timezone.utc)
     filled = now - timedelta(hours=5)
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(

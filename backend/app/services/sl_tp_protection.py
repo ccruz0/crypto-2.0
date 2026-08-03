@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional, Tuple, Union  # noqa: F401 — Union used by helpers below
 
 from sqlalchemy import text
@@ -11,6 +12,21 @@ from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.utils.filled_entry_order import PROTECTION_ROLES, TRIGGER_ORDER_TYPES
 
 logger = logging.getLogger(__name__)
+
+
+def is_sltp_healing_enabled() -> bool:
+    """Background SL/TP heal/backfill (hourly ensure, sync backfill, OCO cancel-recreate).
+
+    Business rule: alert → fill → SL+TP once at fill time only. Healing is OFF by default.
+    Set ``SLTP_HEALING_ENABLED=true`` to restore legacy reconciliation loops (rollback).
+    """
+    return os.getenv("SLTP_HEALING_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
 
 ACTIVE_PROTECTION_STATUSES = [
     OrderStatusEnum.NEW,

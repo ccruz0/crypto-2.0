@@ -197,6 +197,18 @@ class TestDbSisterBookCoverage(unittest.TestCase):
 
 
 class TestEnsureMissingProtection(unittest.TestCase):
+    """ensure_missing_protection mutation tests — healing must be enabled."""
+
+    def setUp(self):
+        self._healing_patch = patch(
+            "app.services.sl_tp_protection.is_sltp_healing_enabled",
+            return_value=True,
+        )
+        self._healing_patch.start()
+
+    def tearDown(self):
+        self._healing_patch.stop()
+
     @patch.object(SLTPCheckerService, "_ensure_multilot_tp_heal")
     @patch.object(SLTPCheckerService, "_create_protection_order")
     @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
