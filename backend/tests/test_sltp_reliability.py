@@ -37,6 +37,30 @@ def test_cap_protection_quantity_to_wallet_long():
     assert reason == "capped_to_wallet_balance"
 
 
+def test_cap_protection_quantity_prefers_available_over_total():
+    qty, reason = cap_protection_quantity_to_wallet(
+        "DOGE_USD",
+        "BUY",
+        1000.0,
+        wallet_balance=1000.0,
+        wallet_available=0.0,
+    )
+    assert qty == 1000.0
+    assert reason == "wallet_empty_long"
+
+
+def test_cap_protection_quantity_uses_available_when_lower():
+    qty, reason = cap_protection_quantity_to_wallet(
+        "DOGE_USD",
+        "BUY",
+        500.0,
+        wallet_balance=1000.0,
+        wallet_available=120.0,
+    )
+    assert qty == 120.0
+    assert reason == "capped_to_wallet_balance"
+
+
 def test_cap_protection_quantity_skips_when_wallet_none():
     qty, reason = cap_protection_quantity_to_wallet("ALGO_USD", "BUY", 10.0, None)
     assert qty == 10.0

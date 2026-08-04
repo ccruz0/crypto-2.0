@@ -33,27 +33,50 @@ def cap_protection_quantity_to_wallet(
     entry_side: str,
     requested_qty: float,
     wallet_balance: Optional[float],
+    *,
+    wallet_available: Optional[float] = None,
 ) -> Tuple[float, Optional[str]]:
-    """Cap SL/TP qty to signed wallet balance so OCO never exceeds available coins.
+    """Cap SL/TP qty to spendable wallet balance so orders are not rejected.
 
-    Long (BUY entry): use min(requested, max(0, wallet_balance)).
+    Long (BUY entry): use min(requested, max(0, available)). Prefer
+    ``wallet_available`` (free / max_withdrawal) over total ``wallet_balance``
+    because sibling TP/SL legs or other open orders lock coins — posting full
+    wallet qty then yields exchange ``INSUFFICIENT_ACC_BALANCE`` (prod DOGE_USD).
+
     Returns (capped_qty, skip_reason).
     """
-    if wallet_balance is None:
-        return requested_qty, None
     side = (entry_side or "").upper()
     if side == "BUY":
-        available = max(0.0, float(wallet_balance))
-        if available <= 0:
+        if wallet_available is not None:
+            spendable = max(0.0, float(wallet_available))
+        elif wallet_balance is not None:
+            spendable = max(0.0, float(wallet_balance))
+        else:
+            return requested_qty, None
+        if spendable <= 0:
             return requested_qty, "wallet_empty_long"
-        if requested_qty > available + 1e-12:
+        if requested_qty > spendable + 1e-12:
             logger.warning(
-                "[SLTP_QTY_CAP] %s long protection qty %s > wallet %s — capping",
+                "[SLTP_QTY_CAP] %s long protection qty %s > available %s — capping",
                 symbol,
                 requested_qty,
-                available,
+                spendable,
             )
-            return available, "capped_to_wallet_balance"
+            return spendable, "capped_to_wallet_balance"
+    elif side == "SELL" and wallet_balance is not None:
+        # Short: wallet is negative; cap to abs(borrowed) when spendable known.
+        if wallet_available is not None:
+            spendable = max(0.0, abs(float(wallet_available)))
+            if spendable <= 0:
+                return requested_qty, "wallet_empty_short"
+            if requested_qty > spendable + 1e-12:
+                logger.warning(
+                    "[SLTP_QTY_CAP] %s short protection qty %s > available %s — capping",
+                    symbol,
+                    requested_qty,
+                    spendable,
+                )
+                return spendable, "capped_to_wallet_balance"
     return requested_qty, None
 
 
@@ -311,10 +334,11 @@ def should_send_protection_rejected_alert(
     except Exception:
         is_insufficient_acc_balance_error = lambda _t: False  # noqa: E731
 
-    if role == "TAKE_PROFIT" and is_insufficient_acc_balance_error(reason):
+    if is_insufficient_acc_balance_error(reason) and role in ("TAKE_PROFIT", "STOP_LOSS"):
         logger.warning(
-            "Suppressing INSUFFICIENT_ACC_BALANCE TP reject Telegram "
-            "order=%s symbol=%s reason=%s (known dual-trigger / margin lock)",
+            "Suppressing INSUFFICIENT_ACC_BALANCE %s reject Telegram "
+            "order=%s symbol=%s reason=%s (dual-trigger lock / qty cap — auto-heal)",
+            role,
             order_id,
             symbol,
             reason,

@@ -87,6 +87,16 @@ class TestSlTpProtectionHelpers(unittest.TestCase):
                 reject_reason="INSUFFICIENT_ACC_BALANCE",
             )
         )
+        self.assertFalse(
+            should_send_protection_rejected_alert(
+                None,
+                old_status=OrderStatusEnum.ACTIVE,
+                order_id="oid-2b",
+                symbol="DOGE_USD",
+                order_role="STOP_LOSS",
+                reject_reason="INSUFFICIENT_ACC_BALANCE",
+            )
+        )
         self.assertTrue(
             should_send_protection_rejected_alert(
                 None,
