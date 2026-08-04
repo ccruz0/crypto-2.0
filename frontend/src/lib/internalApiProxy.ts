@@ -13,17 +13,6 @@ export function isInternalApiProxyPath(path: string): boolean {
   return INTERNAL_API_PROXY_PATHS.has(path.replace(/^\/+/, ''));
 }
 
-export function getBackendApiKey(): string {
-  return (
-    (process.env.ATP_API_KEY || process.env.INTERNAL_API_KEY || '').trim() ||
-    'demo-key'
-  );
-}
-
-export function getBackendBaseUrl(): string {
-  return (process.env.BACKEND_URL || 'http://localhost:8002').replace(/\/$/, '');
-}
-
 /** True when the browser should call /internal-api instead of /api for auth-gated POSTs. */
 export function shouldUseInternalApiProxy(): boolean {
   if (typeof window === 'undefined') {

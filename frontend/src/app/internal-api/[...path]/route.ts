@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  getBackendApiKey,
-  getBackendBaseUrl,
-  isInternalApiProxyPath,
-} from '@/lib/internalApiProxy';
+import { isInternalApiProxyPath } from '@/lib/internalApiProxy';
+import { getBackendApiKey, getBackendBaseUrl } from '@/lib/internalApiProxyServer';
 
 async function proxyToBackend(
   request: NextRequest,
