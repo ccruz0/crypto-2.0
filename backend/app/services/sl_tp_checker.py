@@ -1245,30 +1245,84 @@ class SLTPCheckerService:
                     # Fallback to database check
                     try:
                         from sqlalchemy import or_
+                        from app.services.sl_tp_protection import (
+                            protection_closing_side_matches_wallet,
+                        )
+
+                        position_balance = position.get("balance", 0)
+
+                        def _db_order_matches_wallet(order: ExchangeOrder) -> bool:
+                            side = getattr(order, "side", None)
+                            if side is None:
+                                return True
+                            return protection_closing_side_matches_wallet(
+                                side, position_balance
+                            )
+
                         # Check database for active orders (status NEW or ACTIVE, not FILLED)
-                        sl_orders_db = db.query(ExchangeOrder).filter(
-                            or_(*[ExchangeOrder.symbol == variant for variant in symbol_variants]),
-                            ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS']),
-                            ExchangeOrder.status.in_([
-                                OrderStatusEnum.NEW,
-                                OrderStatusEnum.ACTIVE,
-                                OrderStatusEnum.PENDING
-                            ])
-                        ).all()
-                        
-                        tp_orders_db = db.query(ExchangeOrder).filter(
-                            or_(*[ExchangeOrder.symbol == variant for variant in symbol_variants]),
-                            ExchangeOrder.order_type.in_(['TAKE_PROFIT_LIMIT', 'TAKE_PROFIT']),
-                            ExchangeOrder.status.in_([
-                                OrderStatusEnum.NEW,
-                                OrderStatusEnum.ACTIVE,
-                                OrderStatusEnum.PENDING
-                            ])
-                        ).all()
-                        
+                        sl_orders_db = [
+                            o
+                            for o in db.query(ExchangeOrder)
+                            .filter(
+                                or_(
+                                    *[
+                                        ExchangeOrder.symbol == variant
+                                        for variant in symbol_variants
+                                    ]
+                                ),
+                                ExchangeOrder.order_type.in_(
+                                    ["STOP_LIMIT", "STOP_LOSS"]
+                                ),
+                                ExchangeOrder.status.in_(
+                                    [
+                                        OrderStatusEnum.NEW,
+                                        OrderStatusEnum.ACTIVE,
+                                        OrderStatusEnum.PENDING,
+                                    ]
+                                ),
+                            )
+                            .all()
+                            if _db_order_matches_wallet(o)
+                        ]
+
+                        tp_orders_db = [
+                            o
+                            for o in db.query(ExchangeOrder)
+                            .filter(
+                                or_(
+                                    *[
+                                        ExchangeOrder.symbol == variant
+                                        for variant in symbol_variants
+                                    ]
+                                ),
+                                ExchangeOrder.order_type.in_(
+                                    ["TAKE_PROFIT_LIMIT", "TAKE_PROFIT"]
+                                ),
+                                ExchangeOrder.status.in_(
+                                    [
+                                        OrderStatusEnum.NEW,
+                                        OrderStatusEnum.ACTIVE,
+                                        OrderStatusEnum.PENDING,
+                                    ]
+                                ),
+                            )
+                            .all()
+                            if _db_order_matches_wallet(o)
+                        ]
+
                         has_sl = len(sl_orders_db) > 0
                         has_tp = len(tp_orders_db) > 0
-                        logger.info(f"Position {symbol}: Found {len(sl_orders_db)} SL and {len(tp_orders_db)} TP orders from database")
+                        sl_covered_qty = sum(
+                            float(o.quantity or 0) for o in sl_orders_db
+                        )
+                        tp_covered_qty = sum(
+                            float(o.quantity or 0) for o in tp_orders_db
+                        )
+                        logger.info(
+                            f"Position {symbol}: Found {len(sl_orders_db)} SL and "
+                            f"{len(tp_orders_db)} TP orders from database "
+                            f"(wallet-side filtered, balance={position_balance})"
+                        )
                     except Exception as db_err:
                         logger.error(f"Error querying orders from database for {symbol}: {db_err}", exc_info=True)
                         has_sl = False
