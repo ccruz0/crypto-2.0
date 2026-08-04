@@ -556,6 +556,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - ./secrets/runtime.env:/run/secrets/runtime.env:ro
     restart: always
     healthcheck:
       test: ["CMD", "sh", "-c", "exit 0"]
