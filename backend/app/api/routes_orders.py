@@ -854,6 +854,89 @@ class CreateProtectionSmartRequest(BaseModel):
     quantity: Optional[float] = None
 
 
+def _notify_create_protection_smart_telegram(
+    db: Session,
+    *,
+    symbol: str,
+    order_id: str,
+    entry_side: str,
+    entry_price: float,
+    quantity: float,
+    sl_price: float,
+    tp_price: float,
+    sl_pct: Optional[float],
+    tp_pct: Optional[float],
+    mode: str,
+    created: list,
+    existing_sl_id: Optional[str] = None,
+    existing_tp_id: Optional[str] = None,
+) -> None:
+    """Send SL/TP created Telegram after dashboard Create SL/TP (deduped)."""
+    if not created:
+        return
+    try:
+        from app.services.telegram_event_dedup import claim_telegram_event
+        from app.services.telegram_notifier import telegram_notifier
+
+        sl_newly = any(c.get("role") == "STOP_LOSS" for c in created)
+        tp_newly = any(c.get("role") == "TAKE_PROFIT" for c in created)
+        sl_order_id = next(
+            (str(c["order_id"]) for c in created if c.get("role") == "STOP_LOSS" and c.get("order_id")),
+            existing_sl_id,
+        )
+        tp_order_id = next(
+            (str(c["order_id"]) for c in created if c.get("role") == "TAKE_PROFIT" and c.get("order_id")),
+            existing_tp_id,
+        )
+        if tp_newly and not sl_newly:
+            claim_key = f"sl_tp_created:{order_id}:tp_ok"
+        elif sl_newly and not tp_newly:
+            claim_key = f"sl_tp_created:{order_id}:sl_ok"
+        else:
+            claim_key = f"sl_tp_created:{order_id}"
+        if not claim_telegram_event(
+            db,
+            claim_key,
+            symbol=symbol,
+            ttl_minutes=7 * 24 * 60,
+            action="sl_tp_created",
+        ):
+            logger.info(
+                "Skipping create-protection-smart Telegram for %s: already claimed %s",
+                order_id,
+                claim_key,
+            )
+            return
+
+        side_u = (entry_side or "").upper()
+        exit_side = "SELL" if side_u == "BUY" else "BUY"
+        telegram_notifier.send_sl_tp_orders(
+            symbol=symbol,
+            sl_price=float(sl_price or 0),
+            tp_price=float(tp_price or 0),
+            quantity=float(quantity),
+            mode=mode or "conservative",
+            sl_order_id=str(sl_order_id) if sl_order_id else None,
+            tp_order_id=str(tp_order_id) if tp_order_id else None,
+            original_order_id=str(order_id),
+            entry_price=float(entry_price) if entry_price else None,
+            sl_percentage=sl_pct,
+            tp_percentage=tp_pct,
+            original_order_side=side_u or None,
+            sl_side=exit_side if sl_order_id else None,
+            tp_side=exit_side if tp_order_id else None,
+            sl_newly_created=sl_newly,
+            tp_newly_created=tp_newly,
+        )
+    except Exception as notify_err:
+        logger.warning(
+            "create-protection-smart Telegram notify failed for %s: %s",
+            order_id,
+            notify_err,
+            exc_info=True,
+        )
+
+
 @router.post("/orders/create-protection-smart")
 def create_protection_smart(
     request: CreateProtectionSmartRequest,
@@ -1004,6 +1087,30 @@ def create_protection_smart(
                     created.append({"role": "TAKE_PROFIT", "order_id": tp_id, "price": tp_price})
                 if sl_id and (want_sl or oco_res.get("replaced_standalone")):
                     created.append({"role": "STOP_LOSS", "order_id": sl_id, "price": sl_price})
+                _notify_create_protection_smart_telegram(
+                    db,
+                    symbol=symbol,
+                    order_id=order_id,
+                    entry_side=side,
+                    entry_price=entry_price,
+                    quantity=qty,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    sl_pct=sl_pct,
+                    tp_pct=tp_pct,
+                    mode=mode,
+                    created=created,
+                    existing_sl_id=(
+                        str(existing_sl.exchange_order_id)
+                        if existing_sl and getattr(existing_sl, "exchange_order_id", None)
+                        else None
+                    ),
+                    existing_tp_id=(
+                        str(existing_tp.exchange_order_id)
+                        if existing_tp and getattr(existing_tp, "exchange_order_id", None)
+                        else None
+                    ),
+                )
                 return {
                     "ok": True,
                     "order_id": order_id,
@@ -1076,6 +1183,30 @@ def create_protection_smart(
             else:
                 errors.append({"role": "STOP_LOSS", "error": sl_res.get("error") or sl_res})
 
+        _notify_create_protection_smart_telegram(
+            db,
+            symbol=symbol,
+            order_id=order_id,
+            entry_side=side,
+            entry_price=entry_price,
+            quantity=qty,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            sl_pct=sl_pct,
+            tp_pct=tp_pct,
+            mode=mode,
+            created=created,
+            existing_sl_id=(
+                str(existing_sl.exchange_order_id)
+                if existing_sl and getattr(existing_sl, "exchange_order_id", None)
+                else None
+            ),
+            existing_tp_id=(
+                str(existing_tp.exchange_order_id)
+                if existing_tp and getattr(existing_tp, "exchange_order_id", None)
+                else None
+            ),
+        )
         return {
             "ok": len(created) > 0 and not errors,
             "order_id": order_id,
