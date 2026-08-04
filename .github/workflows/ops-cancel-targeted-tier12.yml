@@ -13,10 +13,6 @@ on:
         options:
           - "false"
           - "true"
-  push:
-    branches: [main]
-    paths:
-      - ".ops-run-cancel-tier12"
 
 permissions:
   contents: read
@@ -38,7 +34,7 @@ jobs:
       - name: Cancel Tier 1+2 orders on prod
         env:
           INSTANCE_ID: i-087953603011543c5
-          DRY_RUN: ${{ github.event_name == 'push' && 'false' || github.event.inputs.dry_run_only }}
+          DRY_RUN: ${{ github.event.inputs.dry_run_only }}
         run: |
           set -euo pipefail
           LIVE_FLAG=""
