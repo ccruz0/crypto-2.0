@@ -1,4 +1,5 @@
 import { getApiUrl } from '@/lib/environment';
+import { shouldUseInternalApiProxy } from '@/lib/internalApiProxy';
 
 const DEFAULT_API_URL = getApiUrl();
 
@@ -1908,17 +1909,42 @@ export async function createProtectionSmart(params: {
   force?: boolean;
   place_live?: boolean;
 }): Promise<CreateProtectionSmartResult> {
+  const payload = {
+    order_id: params.order_id,
+    create_sl: params.create_sl ?? true,
+    create_tp: params.create_tp ?? true,
+    quantity: params.quantity,
+    force: params.force ?? true,
+    place_live: params.place_live ?? true,
+  };
+
+  // Production backend requires ATP_API_KEY; browser cannot hold that secret.
+  // Route through Next.js /internal-api proxy (server injects x-api-key).
+  if (shouldUseInternalApiProxy()) {
+    const response = await fetch('/internal-api/orders/create-protection-smart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      let detail = `HTTP error! status: ${response.status}`;
+      try {
+        const errJson = await response.json();
+        detail = errJson.detail || errJson.message || detail;
+      } catch {
+        const errText = await response.text();
+        if (errText) detail = errText;
+      }
+      throw new Error(detail);
+    }
+    return response.json() as Promise<CreateProtectionSmartResult>;
+  }
+
   return fetchAPI<CreateProtectionSmartResult>('/orders/create-protection-smart', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      order_id: params.order_id,
-      create_sl: params.create_sl ?? true,
-      create_tp: params.create_tp ?? true,
-      quantity: params.quantity,
-      force: params.force ?? true,
-      place_live: params.place_live ?? true,
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
