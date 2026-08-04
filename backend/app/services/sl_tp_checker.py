@@ -1277,7 +1277,7 @@ class SLTPCheckerService:
                                     [
                                         OrderStatusEnum.NEW,
                                         OrderStatusEnum.ACTIVE,
-                                        OrderStatusEnum.PENDING,
+                                        OrderStatusEnum.PARTIALLY_FILLED,
                                     ]
                                 ),
                             )
@@ -1302,7 +1302,7 @@ class SLTPCheckerService:
                                     [
                                         OrderStatusEnum.NEW,
                                         OrderStatusEnum.ACTIVE,
-                                        OrderStatusEnum.PENDING,
+                                        OrderStatusEnum.PARTIALLY_FILLED,
                                     ]
                                 ),
                             )
@@ -1310,18 +1310,46 @@ class SLTPCheckerService:
                             if _db_order_matches_wallet(o)
                         ]
 
-                        has_sl = len(sl_orders_db) > 0
-                        has_tp = len(tp_orders_db) > 0
+                        # Match primary path: qty coverage, not mere presence.
+                        def _db_rows_as_open_dicts(
+                            orders: List[ExchangeOrder],
+                        ) -> List[dict]:
+                            rows: List[dict] = []
+                            for o in orders:
+                                status = getattr(o, "status", None)
+                                status_s = (
+                                    str(getattr(status, "value", status) or "ACTIVE")
+                                    .upper()
+                                )
+                                rows.append(
+                                    {
+                                        "quantity": float(o.quantity or 0),
+                                        "order_status": status_s,
+                                        "status": status_s,
+                                        "order_id": getattr(o, "order_id", None),
+                                    }
+                                )
+                            return rows
+
+                        sl_open_dicts = _db_rows_as_open_dicts(sl_orders_db)
+                        tp_open_dicts = _db_rows_as_open_dicts(tp_orders_db)
                         sl_covered_qty = sum(
-                            float(o.quantity or 0) for o in sl_orders_db
+                            _order_protection_qty(o) for o in sl_open_dicts
                         )
                         tp_covered_qty = sum(
-                            float(o.quantity or 0) for o in tp_orders_db
+                            _order_protection_qty(o) for o in tp_open_dicts
+                        )
+                        has_sl = _protection_quantities_cover_position(
+                            sl_open_dicts, position_balance
+                        )
+                        has_tp = _protection_quantities_cover_position(
+                            tp_open_dicts, position_balance
                         )
                         logger.info(
                             f"Position {symbol}: Found {len(sl_orders_db)} SL and "
                             f"{len(tp_orders_db)} TP orders from database "
-                            f"(wallet-side filtered, balance={position_balance})"
+                            f"(wallet-side+qty filtered, balance={position_balance}, "
+                            f"sl_covered={sl_covered_qty}, tp_covered={tp_covered_qty})"
                         )
                     except Exception as db_err:
                         logger.error(f"Error querying orders from database for {symbol}: {db_err}", exc_info=True)

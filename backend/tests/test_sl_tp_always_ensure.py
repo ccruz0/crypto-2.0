@@ -801,6 +801,72 @@ class TestCheckPositionsUsesUnifiedOrders(unittest.TestCase):
         self.assertFalse(eth_missing[0]["has_sl"])
         self.assertFalse(eth_missing[0]["has_tp"])
 
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=2000.0)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch(
+        "app.services.sl_tp_checker._protection_orders_match_wallet",
+        side_effect=RuntimeError("force db fallback"),
+    )
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_db_fallback_requires_qty_coverage(
+        self, mock_trade, mock_fetch, _mock_match, _mock_oco, _mock_mark, _mock_entry
+    ):
+        """Partial same-side legs must not mark the wallet as fully covered."""
+        from app.models.watchlist import WatchlistItem
+
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "ETH", "balance": "-0.05"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [],
+        }
+
+        partial_sl = MagicMock()
+        partial_sl.side = OrderSideEnum.BUY
+        partial_sl.quantity = 0.01
+        partial_sl.status = OrderStatusEnum.ACTIVE
+        partial_tp = MagicMock()
+        partial_tp.side = OrderSideEnum.BUY
+        partial_tp.quantity = 0.01
+        partial_tp.status = OrderStatusEnum.ACTIVE
+
+        ex_calls = {"n": 0}
+
+        def _query(model):
+            q = MagicMock()
+            if model is WatchlistItem:
+                q.filter.return_value.first.return_value = None
+                return q
+            if model is ExchangeOrder:
+                # Fallback issues STOP_* then TAKE_PROFIT_* queries.
+                ex_calls["n"] += 1
+                q.filter.return_value.all.return_value = (
+                    [partial_sl] if ex_calls["n"] == 1 else [partial_tp]
+                )
+                return q
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = _query
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        eth_missing = [
+            m
+            for m in result["positions_missing_sl_tp"]
+            if str(m.get("symbol", "")).startswith("ETH")
+        ]
+        self.assertEqual(len(eth_missing), 1)
+        self.assertFalse(eth_missing[0]["has_sl"])
+        self.assertFalse(eth_missing[0]["has_tp"])
+        self.assertAlmostEqual(eth_missing[0]["uncovered_qty"], 0.04, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
