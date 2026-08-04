@@ -1,2 +1,3 @@
 # One-shot trigger: merge to main runs ops-restart-frontend-aws (git pull + ECR pull + recreate).
 # Delete this file in a follow-up PR after success (see ops-cancel-orphans pattern).
+# retry after safe.directory fix 2026-08-04T00:15:30Z
