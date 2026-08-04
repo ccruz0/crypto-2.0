@@ -16,6 +16,8 @@ interface MissingPosition {
   quantity?: number | null;
   side?: string | null;
   entry_price?: number | null;
+  current_price?: number | null;
+  uncovered_qty?: number | null;
 }
 
 interface SlTpCheckReport {
@@ -263,7 +265,11 @@ export default function SlTpCheckReportPage() {
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Side</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Balance</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Uncovered</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Entry</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Current</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Entry order</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">SL</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">TP</th>
@@ -280,7 +286,11 @@ export default function SlTpCheckReportPage() {
                     return (
                       <tr key={`${pos.symbol}-${pos.order_id || 'no-order'}`} className="hover:bg-gray-50">
                         <td className="px-4 py-3 text-sm font-medium text-gray-900">{pos.symbol}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{pos.side || '—'}</td>
                         <td className="px-4 py-3 text-sm text-gray-700">{formatNumber(pos.balance)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{formatNumber(pos.uncovered_qty)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{formatNumber(pos.entry_price)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{formatNumber(pos.current_price)}</td>
                         <td className="px-4 py-3 text-sm font-mono text-xs text-gray-700">
                           {pos.order_id || (
                             <span className="text-amber-700" title="Cannot create via smart path without entry order">

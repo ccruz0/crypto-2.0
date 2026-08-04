@@ -170,13 +170,15 @@ def test_store_sl_tp_check_report_serializes_entry_order():
                     {
                         "symbol": "ETH_USD",
                         "currency": "ETH",
-                        "balance": 0.5,
+                        "balance": -0.05,
                         "has_sl": False,
                         "has_tp": True,
                         "order_id": "ord-123",
-                        "quantity": 0.5,
-                        "side": "BUY",
+                        "quantity": 0.05,
+                        "side": "SELL",
                         "entry_price": 3000.0,
+                        "current_price": 2950.0,
+                        "uncovered_qty": 0.05,
                     }
                 ],
             },
@@ -196,6 +198,11 @@ def test_store_sl_tp_check_report_serializes_entry_order():
         assert row["order_id"] == "ord-123"
         assert row["has_sl"] is False
         assert row["has_tp"] is True
+        assert row["side"] == "SELL"
+        assert row["current_price"] == 2950.0
+        assert row["uncovered_qty"] == 0.05
+        assert row["entry_price"] == 3000.0
+        assert row["balance"] == -0.05
     finally:
         monitoring._sl_tp_check_report_cache = prev
 

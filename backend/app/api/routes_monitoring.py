@@ -1794,6 +1794,8 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
     if side is not None:
         side = str(side).upper()
     entry_price = _safe_float(pos.get("entry_price"))
+    current_price = _safe_float(pos.get("current_price") or pos.get("mark_price"))
+    uncovered_qty = _safe_float(pos.get("uncovered_qty"))
     return {
         "symbol": symbol,
         "currency": currency,
@@ -1806,6 +1808,8 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
         "quantity": quantity,
         "side": side,
         "entry_price": entry_price,
+        "current_price": current_price,
+        "uncovered_qty": uncovered_qty,
     }
 
 

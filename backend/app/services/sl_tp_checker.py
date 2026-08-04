@@ -291,10 +291,28 @@ def _classify_open_protection_leg(order: dict) -> Optional[str]:
         return "SL"
     if contingency in ("TAKE_PROFIT", "OCO_TAKE_PROFIT"):
         return "TP"
-    # Legacy Crypto.com pattern: LIMIT + trigger SELL on a long = stop loss
-    if order_type == "LIMIT" and trigger_price and side == "SELL":
+    # Legacy Crypto.com pattern: LIMIT + trigger closes inventory (SELL long / BUY short)
+    if order_type == "LIMIT" and trigger_price and side in ("SELL", "BUY"):
         return "SL"
     return None
+
+
+def _protection_orders_match_wallet(
+    orders: List[dict], position_balance: float
+) -> List[dict]:
+    """Keep protection legs whose closing side matches the wallet (drop wrong-side ghosts)."""
+    from app.services.sl_tp_protection import protection_closing_side_matches_wallet
+
+    matched: List[dict] = []
+    for order in orders:
+        side = order.get("side") or ""
+        if not str(side).strip():
+            # Legacy open-order payloads sometimes omit side — keep and size-match.
+            matched.append(order)
+            continue
+        if protection_closing_side_matches_wallet(side, position_balance):
+            matched.append(order)
+    return matched
 
 
 def _order_matches_symbol_variants(order: dict, symbol_variants: List[str]) -> bool:
@@ -995,9 +1013,10 @@ class SLTPCheckerService:
                     logger.warning(f"Invalid balance format for {currency}: {balance_str}")
                     continue
                 
-                # Skip if balance is zero or negative
-                if balance <= 0:
-                    logger.debug(f"Skipping {currency} - balance is {balance}")
+                # Skip flat wallets only. Margin shorts are negative balances and must
+                # be scanned (Expected TP already includes them; skipping here under-reports).
+                if abs(balance) <= 1e-12:
+                    logger.debug(f"Skipping {currency} - flat balance {balance}")
                     continue
                 
                 # Handle currency format - could be "ETH" or "ETH_USDT"
@@ -1019,12 +1038,14 @@ class SLTPCheckerService:
                             symbol = preferred
                             break
                     # Prefer the pair that actually has a recent filled entry
+                    entry_side = "BUY" if balance > 0 else "SELL"
                     for preferred in (f"{currency}_USD", f"{currency}_USDT"):
-                        if _find_recent_entry_order(db, preferred):
+                        if _find_recent_entry_order(db, preferred, side=entry_side):
                             symbol = preferred
                             break
                 
                 # Skip stablecoins (USDT, USD, USDC, etc.) and fiat (EUR, GBP, JPY, etc.)
+                # Negative stablecoin rows are margin debt, not short crypto inventory.
                 stablecoins = ['USDT', 'USD', 'USDC', 'BUSD', 'DAI', 'TUSD']
                 fiat = ['EUR', 'GBP', 'JPY', 'CNY', 'AUD', 'CAD', 'CHF', 'NZD', 'SGD', 'HKD', 'KRW']
                 if base_currency in stablecoins or base_currency in fiat:
@@ -1033,6 +1054,7 @@ class SLTPCheckerService:
 
                 # Skip dust leftovers (AKT/ATOM/CRO/LINK residual balances) — cannot protect
                 # meaningfully and entry fills are usually gone after the position was closed.
+                mark = None
                 if _MIN_ENSURE_POSITION_USD > 0:
                     mark = _fetch_mark_price(symbol)
                     if mark and mark > 0:
@@ -1052,7 +1074,9 @@ class SLTPCheckerService:
                 open_positions.append({
                     'currency': base_currency,
                     'symbol': symbol,
-                    'balance': balance
+                    'balance': balance,
+                    'mark_price': mark,
+                    'side': 'BUY' if balance > 0 else 'SELL',
                 })
                 
                 logger.info(f"Found open position: {symbol} ({base_currency}) = {balance}")
@@ -1125,6 +1149,8 @@ class SLTPCheckerService:
                 # This is more reliable than checking database status
                 has_sl = False
                 has_tp = False
+                sl_covered_qty = 0.0
+                tp_covered_qty = 0.0
                 
                 try:
                     open_orders_data = [
@@ -1162,12 +1188,23 @@ class SLTPCheckerService:
                     )
                     
                     position_balance = position.get('balance', 0)
-                    active_sl_orders = [
-                        o for o in sl_orders_open if _is_active_open_order_status(o)
-                    ]
-                    active_tp_orders = [
-                        o for o in tp_orders_open if _is_active_open_order_status(o)
-                    ]
+                    # Drop wrong-side ghosts (e.g. residual SELL legs on a short wallet).
+                    active_sl_orders = _protection_orders_match_wallet(
+                        [
+                            o
+                            for o in sl_orders_open
+                            if _is_active_open_order_status(o)
+                        ],
+                        position_balance,
+                    )
+                    active_tp_orders = _protection_orders_match_wallet(
+                        [
+                            o
+                            for o in tp_orders_open
+                            if _is_active_open_order_status(o)
+                        ],
+                        position_balance,
+                    )
                     sl_covered_qty = sum(_order_protection_qty(o) for o in active_sl_orders)
                     tp_covered_qty = sum(_order_protection_qty(o) for o in active_tp_orders)
                     has_sl = _protection_quantities_cover_position(
@@ -1251,7 +1288,13 @@ class SLTPCheckerService:
                     # Get SL/TP prices from watchlist if available
                     sl_price = watchlist_item.sl_price if watchlist_item else None
                     tp_price = watchlist_item.tp_price if watchlist_item else None
-                    
+                    wallet_abs = abs(float(position.get("balance") or 0.0))
+                    sl_gap = 0.0 if has_sl else max(0.0, wallet_abs - float(sl_covered_qty or 0.0))
+                    tp_gap = 0.0 if has_tp else max(0.0, wallet_abs - float(tp_covered_qty or 0.0))
+                    current_price = position.get("mark_price")
+                    if current_price is None:
+                        current_price = _fetch_mark_price(symbol)
+
                     positions_missing_sl_tp.append({
                         'symbol': symbol,
                         'currency': currency,
@@ -1261,7 +1304,14 @@ class SLTPCheckerService:
                         'sl_price': sl_price,
                         'tp_price': tp_price,
                         'skip_reminder': skip_reminder,
-                        'watchlist_item': watchlist_item
+                        'watchlist_item': watchlist_item,
+                        'side': position.get('side') or (
+                            'BUY' if float(position.get('balance') or 0) >= 0 else 'SELL'
+                        ),
+                        'current_price': current_price,
+                        'uncovered_qty': max(sl_gap, tp_gap),
+                        'sl_covered_qty': sl_covered_qty,
+                        'tp_covered_qty': tp_covered_qty,
                     })
             
             logger.info(f"Found {len(positions_missing_sl_tp)} positions missing SL/TP")
