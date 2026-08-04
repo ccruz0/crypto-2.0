@@ -47,11 +47,10 @@ jobs:
           set -eu
           COMPOSE_DIR="${COMPOSE_DIR}"
           cd "\$COMPOSE_DIR"
-          echo "=== git pull (compose + env) ==="
-          git config --global --add safe.directory "\$COMPOSE_DIR" 2>/dev/null || true
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
+          echo "=== git pull (compose + env) as ubuntu ==="
+          sudo -u ubuntu git -C "\$COMPOSE_DIR" fetch origin main
+          sudo -u ubuntu git -C "\$COMPOSE_DIR" checkout main
+          sudo -u ubuntu git -C "\$COMPOSE_DIR" pull --ff-only origin main
           echo "=== BEFORE ==="
           docker compose --profile aws ps frontend-aws || true
           echo ""
