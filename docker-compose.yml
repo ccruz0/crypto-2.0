@@ -535,6 +535,7 @@ services:
       - .env
       - .env.local
       - .env.aws
+      - ./secrets/runtime.env
     environment:
       - NODE_ENV=production
       - BACKEND_URL=http://backend-aws:8002
