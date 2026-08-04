@@ -86,6 +86,14 @@ function WorkflowRow({
   // Get report URL if available
   const getReportUrl = (reportPath: string | null | undefined): string | null => {
     if (!reportPath) return null;
+    // Dashboard-hosted interactive reports (Next.js pages)
+    if (
+      workflow.id === 'sl_tp_check' ||
+      reportPath === 'reports/sl-tp-check' ||
+      reportPath.endsWith('/sl-tp-check')
+    ) {
+      return '/reports/sl-tp-check';
+    }
     // If it's already a full URL, return it
     if (reportPath.startsWith('http://') || reportPath.startsWith('https://')) {
       return reportPath;
@@ -382,6 +390,9 @@ export default function MonitoringPanel({
       }
       
       setWorkflowMessages(prev => ({ ...prev, [workflowId]: 'Started successfully' }));
+      // Background workflows update status asynchronously — refresh a few times.
+      setTimeout(() => { void fetchWorkflows(false); }, 1500);
+      setTimeout(() => { void fetchWorkflows(false); }, 5000);
       setTimeout(() => {
         setWorkflowMessages(prev => {
           const updated = { ...prev };
@@ -403,21 +414,26 @@ export default function MonitoringPanel({
     } finally {
       setWorkflowRunning(prev => ({ ...prev, [workflowId]: false }));
     }
-  }, [workflows]);
+  }, [workflows, fetchWorkflows]);
 
   useEffect(() => {
     fetchData();
     fetchThrottle();
     fetchWorkflows(true); // Initial load
 
-    // Auto-refresh polling every 15 seconds
+    // Auto-refresh monitoring summary every 15 seconds
     pollingIntervalRef.current = setInterval(() => {
       if (!isFetchingRef.current) {
         fetchData();
       }
     }, 15000); // 15 seconds
 
-    // Cleanup on unmount
+    // Refresh workflows / throttle on the panel interval (was dead code after early return)
+    const interval = setInterval(() => {
+      fetchThrottle();
+      fetchWorkflows(false);
+    }, refreshInterval);
+
     return () => {
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
@@ -427,17 +443,7 @@ export default function MonitoringPanel({
         fetchDataControllerRef.current.abort();
         fetchDataControllerRef.current = null;
       }
-    };
-
-    const interval = setInterval(() => {
-      fetchData();
-      fetchThrottle();
-      fetchWorkflows(false); // Refresh (not initial load)
-    }, refreshInterval);
-
-    return () => {
       clearInterval(interval);
-      // Cancel any in-flight request on unmount
       if (workflowsFetchControllerRef.current) {
         workflowsFetchControllerRef.current.abort();
       }

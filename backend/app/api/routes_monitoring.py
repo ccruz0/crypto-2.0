@@ -1746,6 +1746,7 @@ _workflow_locks: Dict[str, asyncio.Lock] = {}
 # Latest SL/TP check report (in-memory).
 # We keep it lightweight and JSON-serializable so the dashboard can render it.
 _sl_tp_check_report_cache: Optional[Dict[str, Any]] = None
+SL_TP_CHECK_REPORT_PATH = "reports/sl-tp-check"
 
 
 def _to_iso(dt_value: Any) -> Optional[str]:
@@ -1785,6 +1786,14 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
     has_tp = bool(pos.get("has_tp", False))
     sl_price = _safe_float(pos.get("sl_price"))
     tp_price = _safe_float(pos.get("tp_price"))
+    order_id = pos.get("order_id") or pos.get("entry_order_id")
+    if order_id is not None:
+        order_id = str(order_id)
+    quantity = _safe_float(pos.get("quantity") if pos.get("quantity") is not None else pos.get("balance"))
+    side = pos.get("side")
+    if side is not None:
+        side = str(side).upper()
+    entry_price = _safe_float(pos.get("entry_price"))
     return {
         "symbol": symbol,
         "currency": currency,
@@ -1793,7 +1802,93 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
         "has_tp": has_tp,
         "sl_price": sl_price,
         "tp_price": tp_price,
+        "order_id": order_id,
+        "quantity": quantity,
+        "side": side,
+        "entry_price": entry_price,
     }
+
+
+def _enrich_sl_tp_positions_with_entry_orders(
+    db: Optional[Session],
+    positions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Attach latest filled entry order_id/qty/side so the report can Create SL/TP."""
+    if not db or not positions:
+        return positions
+    try:
+        from app.services.sl_tp_checker import _find_recent_entry_order
+    except Exception:
+        return positions
+
+    enriched: List[Dict[str, Any]] = []
+    for pos in positions:
+        row = dict(pos) if isinstance(pos, dict) else {}
+        symbol = (row.get("symbol") or "").upper()
+        if not symbol or row.get("order_id") or row.get("entry_order_id"):
+            enriched.append(row)
+            continue
+        try:
+            balance = _safe_float(row.get("balance")) or 0.0
+            entry_side = "BUY" if balance >= 0 else "SELL"
+            entry = _find_recent_entry_order(db, symbol, side=entry_side)
+            if entry is not None:
+                row["order_id"] = getattr(entry, "exchange_order_id", None)
+                row["entry_order_id"] = row["order_id"]
+                side_val = getattr(entry, "side", None)
+                row["side"] = side_val.value if hasattr(side_val, "value") else side_val
+                row["entry_price"] = getattr(entry, "avg_price", None) or getattr(entry, "price", None)
+                qty = getattr(entry, "cumulative_quantity", None) or getattr(entry, "quantity", None)
+                if qty is not None:
+                    row["quantity"] = qty
+        except Exception as enrich_err:
+            log.warning("Failed to enrich SL/TP report row for %s: %s", symbol, enrich_err)
+        enriched.append(row)
+    return enriched
+
+
+def store_sl_tp_check_report_from_result(
+    check_result: Any,
+    *,
+    reminder_sent: bool = False,
+    db: Optional[Session] = None,
+    error: Optional[str] = None,
+) -> str:
+    """Build + store the in-memory SL/TP check report. Returns dashboard report path."""
+    global _sl_tp_check_report_cache
+
+    result = check_result if isinstance(check_result, dict) else {}
+    positions_missing = result.get("positions_missing_sl_tp", []) or []
+    if not isinstance(positions_missing, list):
+        positions_missing = []
+    positions_missing = _enrich_sl_tp_positions_with_entry_orders(db, positions_missing)
+
+    serialized_positions: List[Dict[str, Any]] = []
+    try:
+        serialized_positions = [_serialize_sl_tp_position(p) for p in positions_missing]
+        serialized_positions = [p for p in serialized_positions if p and p.get("symbol")]
+    except Exception:
+        serialized_positions = []
+
+    check_error = error or result.get("error") or None
+    oco_issues = result.get("oco_issues", {}) if isinstance(result.get("oco_issues"), dict) else {}
+    checked_at = _to_iso(result.get("checked_at")) or datetime.now(timezone.utc).isoformat()
+    total_positions = int(result.get("total_positions") or 0)
+
+    _sl_tp_check_report_cache = {
+        "stored_at": datetime.now(timezone.utc).isoformat(),
+        "report": {
+            "workflow": "sl_tp_check",
+            "checked_at": checked_at,
+            "total_positions": total_positions,
+            "missing_count": len(serialized_positions),
+            "positions_missing": serialized_positions,
+            "oco_issues": oco_issues,
+            "reminder_sent": bool(reminder_sent),
+            "error": check_error,
+        },
+    }
+    return SL_TP_CHECK_REPORT_PATH
 
 def _resolve_project_root_from_backend_root(backend_root: str) -> str:
     """
@@ -1982,7 +2077,7 @@ async def get_workflows(db: Session = Depends(get_db)):
         # Always expose the SL/TP report link in the dashboard, even before the first run.
         # The report page will show "not found" until the workflow stores a report.
         if workflow_id == "sl_tp_check" and not workflow.get("last_report"):
-            workflow["last_report"] = "reports/sl-tp-check"
+            workflow["last_report"] = SL_TP_CHECK_REPORT_PATH
         workflows.append(workflow)
     
     return JSONResponse({"workflows": workflows}, headers=_NO_CACHE_HEADERS)
@@ -2424,73 +2519,70 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
     elif workflow_id == "sl_tp_check":
         try:
             from app.services.sl_tp_checker import sl_tp_checker_service
+            from app.database import SessionLocal
             
             async def run_sl_tp_check():
-                global _sl_tp_check_report_cache
+                # Background task must open its own DB session — request-scoped
+                # `db` is closed once the HTTP response returns.
+                db_session = SessionLocal()
                 try:
-                    # Run in thread to avoid blocking
-                    check_result = await asyncio.to_thread(sl_tp_checker_service.check_positions_for_sl_tp, db)
-                    positions_missing = check_result.get('positions_missing_sl_tp', []) if isinstance(check_result, dict) else []
-                    oco_issues = check_result.get("oco_issues", {}) if isinstance(check_result, dict) else {}
-                    checked_at = _to_iso(check_result.get("checked_at")) if isinstance(check_result, dict) else None
-                    total_positions = int(check_result.get("total_positions") or 0) if isinstance(check_result, dict) else 0
-                    check_error = (check_result.get("error") if isinstance(check_result, dict) else None) or None
-
-                    # Build + store dashboard report (JSON-safe)
-                    report_path = "reports/sl-tp-check"
-                    serialized_positions = []
-                    try:
-                        if isinstance(positions_missing, list):
-                            serialized_positions = [_serialize_sl_tp_position(p) for p in positions_missing]
-                            serialized_positions = [p for p in serialized_positions if p and p.get("symbol")]
-                    except Exception:
-                        serialized_positions = []
+                    check_result = await asyncio.to_thread(
+                        sl_tp_checker_service.check_positions_for_sl_tp, db_session
+                    )
+                    positions_missing = (
+                        check_result.get("positions_missing_sl_tp", [])
+                        if isinstance(check_result, dict)
+                        else []
+                    )
+                    check_error = (
+                        (check_result.get("error") if isinstance(check_result, dict) else None)
+                        or None
+                    )
 
                     reminder_sent = False
-                    
                     # Send reminder if there are positions missing SL/TP
                     if positions_missing:
-                        await asyncio.to_thread(sl_tp_checker_service.send_sl_tp_reminder, db)
+                        await asyncio.to_thread(
+                            sl_tp_checker_service.send_sl_tp_reminder, db_session
+                        )
                         reminder_sent = True
 
-                    _sl_tp_check_report_cache = {
-                        "stored_at": datetime.now(timezone.utc).isoformat(),
-                        "report": {
-                            "workflow": "sl_tp_check",
-                            "checked_at": checked_at,
-                            "total_positions": total_positions,
-                            "missing_count": len(serialized_positions),
-                            "positions_missing": serialized_positions,
-                            "oco_issues": oco_issues if isinstance(oco_issues, dict) else {},
-                            "reminder_sent": reminder_sent,
-                            "error": check_error,
-                        },
-                    }
-                    
+                    report_path = store_sl_tp_check_report_from_result(
+                        check_result,
+                        reminder_sent=reminder_sent,
+                        db=db_session,
+                        error=check_error if isinstance(check_error, str) else None,
+                    )
+
                     if check_error:
-                        record_workflow_execution(workflow_id, "error", report_path, str(check_error))
+                        record_workflow_execution(
+                            workflow_id, "error", report_path, str(check_error)
+                        )
                     else:
-                        record_workflow_execution(workflow_id, "success", report_path, error=None)
-                    log.info(f"Workflow {workflow_id} completed successfully: {len(positions_missing)} positions missing SL/TP")
+                        record_workflow_execution(
+                            workflow_id, "success", report_path, error=None
+                        )
+                    missing_n = len(positions_missing) if isinstance(positions_missing, list) else 0
+                    log.info(
+                        f"Workflow {workflow_id} completed successfully: "
+                        f"{missing_n} positions missing SL/TP"
+                    )
                 except Exception as e:
                     # Still provide a report link so the dashboard can show details.
-                    report_path = "reports/sl-tp-check"
-                    _sl_tp_check_report_cache = {
-                        "stored_at": datetime.now(timezone.utc).isoformat(),
-                        "report": {
-                            "workflow": "sl_tp_check",
-                            "checked_at": datetime.now(timezone.utc).isoformat(),
-                            "total_positions": 0,
-                            "missing_count": 0,
-                            "positions_missing": [],
-                            "oco_issues": {},
-                            "reminder_sent": False,
-                            "error": str(e),
-                        },
-                    }
+                    report_path = store_sl_tp_check_report_from_result(
+                        {"positions_missing_sl_tp": [], "total_positions": 0, "oco_issues": {}},
+                        reminder_sent=False,
+                        db=None,
+                        error=str(e),
+                    )
                     record_workflow_execution(workflow_id, "error", report_path, str(e))
                     log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
                     raise
+                finally:
+                    try:
+                        db_session.close()
+                    except Exception:
+                        pass
             
             workflow_lock = _workflow_locks.setdefault(workflow_id, asyncio.Lock())
             async with workflow_lock:
@@ -2502,7 +2594,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                         detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
                     )
                 
-                record_workflow_execution(workflow_id, "running", "reports/sl-tp-check")
+                record_workflow_execution(workflow_id, "running", SL_TP_CHECK_REPORT_PATH)
                 task = asyncio.create_task(run_sl_tp_check())
                 _background_tasks[workflow_id] = task
                 captured_workflow_id = workflow_id

@@ -148,17 +148,38 @@ class TradingScheduler:
         try:
             db = SessionLocal()
             try:
-                sl_tp_checker_service.send_sl_tp_reminder(db)
+                # Capture report before reminder so the dashboard shows unprotected legs
+                check_result = sl_tp_checker_service.check_positions_for_sl_tp(db)
+                reminder_sent = bool(sl_tp_checker_service.send_sl_tp_reminder(db))
+                from app.api.routes_monitoring import (
+                    record_workflow_execution,
+                    store_sl_tp_check_report_from_result,
+                )
+                report_path = store_sl_tp_check_report_from_result(
+                    check_result,
+                    reminder_sent=reminder_sent,
+                    db=db,
+                )
                 logger.info("SL/TP check completed")
-                # Record successful execution (no report file for SL/TP check)
-                from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("sl_tp_check", "success", None)
+                record_workflow_execution("sl_tp_check", "success", report_path)
             finally:
                 db.close()
         except Exception as e:
             logger.error(f"Error checking SL/TP positions: {e}", exc_info=True)
-            from app.api.routes_monitoring import record_workflow_execution
-            record_workflow_execution("sl_tp_check", "error", None, str(e))
+            from app.api.routes_monitoring import (
+                record_workflow_execution,
+                store_sl_tp_check_report_from_result,
+                SL_TP_CHECK_REPORT_PATH,
+            )
+            try:
+                store_sl_tp_check_report_from_result(
+                    {"positions_missing_sl_tp": [], "total_positions": 0},
+                    reminder_sent=False,
+                    error=str(e),
+                )
+                record_workflow_execution("sl_tp_check", "error", SL_TP_CHECK_REPORT_PATH, str(e))
+            except Exception:
+                record_workflow_execution("sl_tp_check", "error", None, str(e))
     
     async def check_sl_tp_positions(self):
         """Check if it's time to check positions for SL/TP - async wrapper"""
