@@ -15,6 +15,13 @@ def _db_no_existing_protection():
     return db
 
 
+def _sltp_ok():
+    return {
+        "sl_result": {"order_id": "sl-1", "error": None},
+        "tp_result": {"order_id": "tp-1", "error": None},
+    }
+
+
 def test_create_protection_skips_repoll_when_filled_confirmation_provided():
     svc = SignalMonitorService.__new__(SignalMonitorService)
     db = _db_no_existing_protection()
@@ -37,11 +44,7 @@ def test_create_protection_skips_repoll_when_filled_confirmation_provided():
             "0.103",
             {},
         )
-        mock_sync._create_sl_tp_for_filled_order.return_value = {
-            "sl_order_id": "sl-1",
-            "tp_order_id": "tp-1",
-            "status": "ok",
-        }
+        mock_sync._create_sl_tp_for_filled_order.return_value = _sltp_ok()
 
         # Raw placement often lacks fill qty — would have triggered a second poll.
         result = svc._create_protection_after_entry_fill(
@@ -58,6 +61,7 @@ def test_create_protection_skips_repoll_when_filled_confirmation_provided():
     mock_poll.assert_not_called()
     mock_sync._create_sl_tp_for_filled_order.assert_called_once()
     assert result is not None
+    assert result["sl_result"]["order_id"] == "sl-1"
 
 
 def test_create_protection_polls_when_confirmation_missing():
@@ -81,7 +85,7 @@ def test_create_protection_polls_when_confirmation_missing():
         svc, "_flatten_unprotected_entry"
     ):
         mock_trade.normalize_quantity_safe_with_fallback.return_value = ("0.1", {})
-        mock_sync._create_sl_tp_for_filled_order.return_value = {"status": "ok"}
+        mock_sync._create_sl_tp_for_filled_order.return_value = _sltp_ok()
 
         svc._create_protection_after_entry_fill(
             db=db,
@@ -95,3 +99,4 @@ def test_create_protection_polls_when_confirmation_missing():
         )
 
     mock_poll.assert_called_once()
+    mock_sync._create_sl_tp_for_filled_order.assert_called_once()
