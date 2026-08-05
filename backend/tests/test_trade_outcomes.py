@@ -11,6 +11,7 @@ import pytest
 from app.services.trade_outcome_builder import (
     build_outcome_for_intent,
     build_outcomes_from_fixtures,
+    classify_missing_exit_fill,
     compute_pnl,
     coverage_report_dict,
     has_active_protection_children,
@@ -132,7 +133,8 @@ def test_stub_only_exit_not_complete_train_row():
     stats = CoverageStats()
     row = build_outcome_for_intent(intent, entry=entry, children=children, stats=stats)
     assert row is None
-    assert stats.dropped["missing_exit_fill"] == 1
+    assert stats.dropped["protection_cancelled_no_exit"] == 1
+    assert stats.dropped.get("missing_exit_fill", 0) == 0
 
 
 def test_complete_round_trip_tp_win():
@@ -221,9 +223,142 @@ def test_drop_open_position_missing_exit():
         intent, entry=entry, children=children, orphan_candidates=orphans, stats=stats
     )
     assert row is None
-    assert stats.dropped["missing_exit_fill"] == 1
+    assert stats.dropped["still_open"] == 1
+    assert stats.dropped.get("orphan_rejected_by_guards", 0) == 0
     assert stats.complete == 0
     assert has_active_protection_children(children)
+    assert (
+        classify_missing_exit_fill(
+            entry=entry,
+            entry_side="BUY",
+            entry_ts=BASE,
+            children=children,
+            orphan_candidates=orphans,
+        )
+        == "still_open"
+    )
+
+
+def test_drop_protection_cancelled_no_exit():
+    intent = {
+        "id": 21,
+        "signal_id": 121,
+        "symbol": "DOT_USD",
+        "side": "BUY",
+        "status": "ORDER_PLACED",
+        "order_id": "e-cancel",
+    }
+    entry = {
+        "exchange_order_id": "e-cancel",
+        "symbol": "DOT_USD",
+        "side": "BUY",
+        "status": "FILLED",
+        "avg_price": 10.0,
+        "quantity": 1.0,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "sl-cancelled",
+            "parent_order_id": "e-cancel",
+            "order_role": "STOP_LOSS",
+            "status": "CANCELLED",
+            "price": 9.0,
+        },
+        {
+            "exchange_order_id": "tp-rejected",
+            "parent_order_id": "e-cancel",
+            "order_role": "TAKE_PROFIT",
+            "status": "REJECTED",
+            "price": 11.0,
+        },
+    ]
+    from app.services.trade_outcome_builder import CoverageStats
+
+    stats = CoverageStats()
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=children, orphan_candidates=[], stats=stats
+    )
+    assert row is None
+    assert stats.dropped["protection_cancelled_no_exit"] == 1
+
+
+def test_drop_no_children():
+    intent = {
+        "id": 22,
+        "signal_id": 122,
+        "symbol": "ALGO_USD",
+        "side": "BUY",
+        "status": "ORDER_PLACED",
+        "order_id": "e-none",
+    }
+    entry = {
+        "exchange_order_id": "e-none",
+        "symbol": "ALGO_USD",
+        "side": "BUY",
+        "status": "FILLED",
+        "avg_price": 0.1,
+        "quantity": 100.0,
+        "exchange_create_time": BASE,
+    }
+    from app.services.trade_outcome_builder import CoverageStats
+
+    stats = CoverageStats()
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=[], orphan_candidates=[], stats=stats
+    )
+    assert row is None
+    assert stats.dropped["no_children"] == 1
+
+
+def test_drop_orphan_rejected_by_guards_qty():
+    """Opposite MARKET exists but qty gate rejects — still dropped, not COMPLETE."""
+    intent = {
+        "id": 23,
+        "signal_id": 123,
+        "symbol": "AAVE_USD",
+        "side": "BUY",
+        "status": "ORDER_PLACED",
+        "order_id": "e-qty",
+    }
+    entry = {
+        "exchange_order_id": "e-qty",
+        "symbol": "AAVE_USD",
+        "side": "BUY",
+        "status": "FILLED",
+        "avg_price": 100.0,
+        "quantity": 1.0,
+        "exchange_create_time": BASE,
+    }
+    orphans = [
+        {
+            "exchange_order_id": "wrong-qty-exit",
+            "symbol": "AAVE_USD",
+            "side": "SELL",
+            "order_type": "MARKET",
+            "status": "FILLED",
+            "avg_price": 99.0,
+            "quantity": 10.0,  # far outside DEFAULT_ORPHAN_QTY_TOLERANCE
+            "parent_order_id": None,
+            "exchange_update_time": BASE + timedelta(hours=1),
+        }
+    ]
+    from app.services.trade_outcome_builder import CoverageStats
+
+    stats = CoverageStats()
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=[], orphan_candidates=orphans, stats=stats
+    )
+    assert row is None
+    assert stats.dropped["orphan_rejected_by_guards"] == 1
+    # Guarantees attribution still rejects — not a COMPLETE.
+    assert select_orphan_exit(
+        entry=entry,
+        entry_side="BUY",
+        entry_qty=1.0,
+        entry_ts=BASE,
+        candidates=orphans,
+    ) is None
 
 
 def test_batch_excludes_dry_run_from_eligible_denom():
@@ -495,7 +630,7 @@ def test_orphan_exit_claimed_once_across_batch():
     )
     assert len(rows) == 1
     assert rows[0]["exit_exchange_order_id"] == "shared-exit"
-    assert stats.dropped["missing_exit_fill"] == 1
+    assert stats.dropped["orphan_rejected_by_guards"] == 1
 
 
 def test_batch_coverage_demo_shape():
@@ -595,7 +730,8 @@ def test_batch_coverage_demo_shape():
     )
     assert len(rows) == 2
     assert stats.complete == 2
-    assert stats.dropped["missing_exit_fill"] == 1
+    assert stats.dropped["still_open"] == 1
+    assert stats.dropped.get("missing_exit_fill", 0) == 0
     assert stats.join_coverage_pct() == pytest.approx(66.67)
     labels = sorted(r["label"] for r in rows)
     assert labels == [0, 1]
