@@ -3320,10 +3320,35 @@ class ExchangeSyncService:
         if not lock_acquired:
             existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
             existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
-            if existing_sl or existing_tp:
+            if existing_sl and existing_tp:
                 logger.info(
                     "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
                     "Reusing existing protection (SL=%s, TP=%s).",
+                    order_id,
+                    symbol,
+                    existing_sl.exchange_order_id,
+                    existing_tp.exchange_order_id,
+                )
+                return {
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "source": source,
+                    "status": "already_protected",
+                    "sl_result": {
+                        "order_id": existing_sl.exchange_order_id,
+                        "error": None,
+                    },
+                    "tp_result": {
+                        "order_id": existing_tp.exchange_order_id,
+                        "error": None,
+                    },
+                    "sl_price": _protection_order_price(existing_sl),
+                    "tp_price": _protection_order_price(existing_tp),
+                }
+            if existing_sl or existing_tp:
+                logger.warning(
+                    "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s) with "
+                    "PARTIAL protection (SL=%s, TP=%s). Not treating as complete — caller should retry.",
                     order_id,
                     symbol,
                     existing_sl.exchange_order_id if existing_sl else None,
@@ -3333,14 +3358,14 @@ class ExchangeSyncService:
                     "symbol": symbol,
                     "order_id": order_id,
                     "source": source,
-                    "status": "already_protected",
+                    "status": "creation_in_progress_partial",
                     "sl_result": {
                         "order_id": existing_sl.exchange_order_id if existing_sl else None,
-                        "error": None,
+                        "error": None if existing_sl else "creation_in_progress",
                     },
                     "tp_result": {
                         "order_id": existing_tp.exchange_order_id if existing_tp else None,
-                        "error": None,
+                        "error": None if existing_tp else "creation_in_progress",
                     },
                     "sl_price": _protection_order_price(existing_sl) if existing_sl else None,
                     "tp_price": _protection_order_price(existing_tp) if existing_tp else None,
