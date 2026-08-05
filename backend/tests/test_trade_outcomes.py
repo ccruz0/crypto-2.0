@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -14,6 +15,7 @@ from app.services.trade_outcome_builder import (
     coverage_report_dict,
     has_active_protection_children,
     infer_exit_role,
+    load_rows_from_db,
     select_exit_child,
     select_orphan_exit,
 )
@@ -609,3 +611,14 @@ def test_trade_outcome_model_importable():
 
     assert TradeOutcome.__tablename__ == "trade_outcomes"
     assert Reexported is TradeOutcome
+
+
+def test_orphan_sql_casts_enum_columns_to_text():
+    """Prod Postgres uses enums; UPPER(enum) fails — cast ::text before UPPER."""
+    src = inspect.getsource(load_rows_from_db)
+    assert "UPPER(status::text)" in src
+    assert "UPPER(order_type::text)" in src
+    assert "UPPER(order_role::text)" in src
+    assert "UPPER(status)" not in src.replace("UPPER(status::text)", "")
+    assert "UPPER(order_type)" not in src.replace("UPPER(order_type::text)", "")
+    assert "UPPER(order_role)" not in src.replace("UPPER(order_role::text)", "")

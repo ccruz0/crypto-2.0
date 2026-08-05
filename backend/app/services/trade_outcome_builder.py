@@ -612,11 +612,11 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
                     FROM exchange_orders
                     WHERE symbol IN ({placeholders})
                       AND parent_order_id IS NULL
-                      AND UPPER(status) IN ('FILLED', 'PARTIALLY_FILLED')
-                      AND UPPER(order_type) IN ('MARKET', 'LIMIT')
+                      AND UPPER(status::text) IN ('FILLED', 'PARTIALLY_FILLED')
+                      AND UPPER(order_type::text) IN ('MARKET', 'LIMIT')
                       AND LOWER(exchange_order_id) NOT LIKE 'dry\\_%' ESCAPE '\\'
                       AND UPPER(exchange_order_id) NOT LIKE 'STUB-CLOSED-%'
-                      AND (order_role IS NULL OR UPPER(order_role) NOT IN ('STOP_LOSS', 'TAKE_PROFIT'))
+                      AND (order_role IS NULL OR UPPER(order_role::text) NOT IN ('STOP_LOSS', 'TAKE_PROFIT'))
                       AND (:cutoff IS NULL
                            OR COALESCE(exchange_update_time, exchange_create_time, created_at) >= :cutoff)
                     """
