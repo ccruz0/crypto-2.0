@@ -33,6 +33,7 @@ from app.models.jarvis_control_models import (
     JarvisControlTask,
 )
 from app.models.position_review_state import PositionReviewState
+from app.models.trade_outcome import TradeOutcome
 
 __all__ = [
     "WatchlistItem",
@@ -66,6 +67,7 @@ __all__ = [
     "JarvisControlApproval",
     "JarvisControlAuditEvent",
     "PositionReviewState",
+    "TradeOutcome",
 ]
 
 
