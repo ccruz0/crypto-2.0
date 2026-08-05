@@ -93,3 +93,114 @@ Strategy Config UI shows the same when preset = Auto.
 - Host is memory-constrained; keep sklearn offline train off the hot path when possible (cron / LAB).
 - Fail-open: missing model → allow rule BUY + log warning.
 - Never commit `.joblib` binaries (gitignored under `models/auto_entry/`).
+
+---
+
+## Phase 0 — Honest retrain from prod alerts (no force)
+
+**Goal:** Replace / challenge the force-promoted demo model with a merit promote
+from **real prod alerts**. Labels are still **alert-path** (OHLCV forward:
+`dir_acc_1h OR tp_before_sl`) until Phase 1 wires `trade_outcomes`.
+
+**Do not use `--force-promote`.** Do not deploy from this section; ops only.
+
+### Success / fail criteria
+
+| Gate | Pass | Fail |
+|------|------|------|
+| Labeled fit rows | `n_fit_rows ≥ 20` (`AUTO_ML_PROMOTE_MIN_ROWS`) | Below floor → no promote |
+| Holdout metric | Candidate primary metric ≥ current + `AUTO_ML_PROMOTE_MIN_DELTA` (default 0) | Flat/worse → leave current |
+| Class balance | Holdout usable (not single-class) | `single_class_or_no_holdout` |
+| Flag | `AUTO_ML_AUTONOMOUS_PROMOTE=true` for merit path | Disabled → `autonomous_promote_disabled` |
+
+Primary metric: holdout `roc_auc`, else `accuracy` (see `auto_entry_promote.primary_metric`).
+
+### 1) Inspect dataset size first (read-only)
+
+On the AWS host (or any machine that can reach the dashboard API):
+
+```bash
+cd /home/ubuntu/crypto-2.0   # or your deploy path
+
+backend/.venv/bin/python -m pip install -r scripts/requirements-auto-ml.txt
+
+backend/.venv/bin/python scripts/build_auto_ml_dataset.py \
+  --api-url https://dashboard.hilovivo.com --days 30 \
+  --out docs/analysis/auto-ml-dataset-prod.json
+```
+
+Inspect before training (never print secrets):
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+d = json.loads(Path("docs/analysis/auto-ml-dataset-prod.json").read_text())
+meta = d.get("meta") or {}
+rows = d.get("rows") or []
+print({
+    "source": meta.get("source"),
+    "n_dataset_rows": meta.get("n_dataset_rows", len(rows)),
+    "n_positive": meta.get("n_positive"),
+    "n_negative": meta.get("n_negative"),
+    "label_def": meta.get("label_def"),
+})
+PY
+```
+
+- If **n &lt; 20**: stop. Do **not** train+promote. Either widen `--days`, leave the live
+  model as-is, or set `AUTO_ML_ENABLED=false` / rely on shadow-only until enough labels
+  (operator choice; prefer no force).
+- If **n ≥ 20**: continue.
+
+### 2) Retrain without `--force-promote`
+
+```bash
+AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+  scripts/retrain_and_promote_auto_entry.py \
+  --api-url https://dashboard.hilovivo.com --days 30 \
+  --out-dir models/auto_entry
+# Optional first pass: add --dry-run to print the decision without writing current.joblib
+```
+
+Expect JSON on stdout with `decision.should_promote` and `decision.reason`.
+
+### 3) If `should_promote` is false
+
+| `decision.reason` (typical) | Action |
+|-----------------------------|--------|
+| `n_fit_rows=…<20` | Collect more labeled alerts; do not force |
+| `metric_not_improved:…` | Keep current `current.joblib`; candidate stays in `candidate.joblib` for inspection |
+| `single_class_or_no_holdout` | Dataset not usable for promote; fix class balance / window |
+| `autonomous_promote_disabled` | Export `AUTO_ML_AUTONOMOUS_PROMOTE=true` and re-run (still no `--force-promote`) |
+
+**Do not** add `--force-promote` to “make it green.” If the live model is still the
+old force-demo and merit cannot pass, prefer gate off or shadow-only until Phase 1
+trade labels are ready:
+
+```bash
+# Optional: disable live BUY block (compose/env), then recreate backend-aws
+# AUTO_ML_ENABLED=false
+```
+
+### 4) Verify
+
+```bash
+curl -sS https://dashboard.hilovivo.com/api/config/auto-ml | jq \
+  '{gate_enabled, autonomous_promote, model_present, version, n_fit_rows, promote_reason, metrics, promoted_at}'
+
+# On host loopback if preferred:
+curl -sS http://127.0.0.1:8002/api/config/auto-ml | jq \
+  '{gate_enabled, autonomous_promote, model_present, version, n_fit_rows, promote_reason, metrics}'
+```
+
+**Pass:** `promote_reason` is merit-style (e.g. contains `metric_improved` / first promote),
+`n_fit_rows ≥ 20`, metrics better than coin-flip baseline when a prior model exists.  
+**Fail / no-op:** `promoted: false` in retrain JSON and API still shows prior version /
+`promote_reason: force` from the old seed — that is OK; leave it until data improves.
+
+### Label provenance (until Phase 1)
+
+Phase 0 still trains on **alert-path** labels, not realized fill PnL.
+Trade round-trips land in `trade_outcomes` via Phase 1a
+(`scripts/build_trade_outcomes.py`); wiring those labels into train/promote is Phase 1b.

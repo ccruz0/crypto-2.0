@@ -91,3 +91,27 @@ AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
 
 Primary metric: holdout `roc_auc`, else `accuracy`. Telegram notify on promote when bot token/chat env is set (secrets never logged). Runtime model cache reloads when `current.joblib` mtime changes.
 Tests: `backend/tests/test_auto_ml_promote.py`.
+
+## Trade outcomes (Phase 1a — LAB foundation)
+
+Round-trip fact table + offline labeler. **Not** wired to Auto ML promote yet (1b).
+
+```bash
+# Demo fixtures (no DB)
+backend/.venv/bin/python scripts/build_trade_outcomes.py --demo
+
+# LAB DB after applying migration (never prints URL/secrets)
+# psql ... -f backend/migrations/create_trade_outcomes.sql
+backend/.venv/bin/python scripts/build_trade_outcomes.py \
+  --database-url "$DATABASE_URL" --days 90 --dry-run
+# Upsert COMPLETE rows:
+backend/.venv/bin/python scripts/build_trade_outcomes.py \
+  --database-url "$DATABASE_URL" --days 90 --write-db
+```
+
+Files: `backend/migrations/create_trade_outcomes.sql`,
+`backend/app/models/trade_outcome.py`,
+`backend/app/services/trade_outcome_builder.py`,
+`scripts/build_trade_outcomes.py`.
+Tests: `backend/tests/test_trade_outcomes.py`.
+Ops (Phase 0 alert-path retrain): [`docs/runbooks/auto_ml_entry.md`](../runbooks/auto_ml_entry.md) § Phase 0.
