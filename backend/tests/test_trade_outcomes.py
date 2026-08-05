@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -11,9 +12,12 @@ from app.services.trade_outcome_builder import (
     build_outcomes_from_fixtures,
     compute_pnl,
     coverage_report_dict,
+    has_active_protection_children,
     infer_exit_role,
     select_exit_child,
+    select_orphan_exit,
 )
+from app.utils.dry_run_orders import is_dry_run_order_id
 
 
 BASE = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
@@ -25,6 +29,15 @@ def test_infer_exit_role_from_type_and_role():
     assert infer_exit_role(order_type="TAKE_PROFIT_LIMIT") == "TAKE_PROFIT"
     assert infer_exit_role(order_type="STOP_LIMIT") == "STOP_LOSS"
     assert infer_exit_role(order_type="LIMIT") is None
+
+
+def test_is_dry_run_order_id():
+    assert is_dry_run_order_id("dry_market_1782920132")
+    assert is_dry_run_order_id("dry_client_market_1")
+    assert is_dry_run_order_id("dry_abc")
+    assert not is_dry_run_order_id("5755600492596115675")
+    assert not is_dry_run_order_id(None)
+    assert not is_dry_run_order_id("")
 
 
 def test_compute_pnl_long_and_short():
@@ -56,6 +69,68 @@ def test_select_exit_child_earliest_filled():
     chosen = select_exit_child(children)
     assert chosen is not None
     assert chosen["exchange_order_id"] == "sl"
+
+
+def test_select_exit_child_skips_stub_closed():
+    children = [
+        {
+            "exchange_order_id": "STUB-CLOSED-STOP_LOSS-5755600492155811564",
+            "order_role": "STOP_LOSS",
+            "status": "FILLED",
+            "avg_price": 90.0,
+            "quantity": 1.0,
+            "exchange_update_time": BASE + timedelta(hours=1),
+        },
+        {
+            "exchange_order_id": "tp-real",
+            "order_role": "TAKE_PROFIT",
+            "status": "FILLED",
+            "avg_price": 110.0,
+            "quantity": 1.0,
+            "exchange_update_time": BASE + timedelta(hours=2),
+        },
+    ]
+    chosen = select_exit_child(children)
+    assert chosen is not None
+    assert chosen["exchange_order_id"] == "tp-real"
+
+
+def test_stub_only_exit_not_complete_train_row():
+    """STUB-CLOSED-* fills must not become COMPLETE train labels."""
+    intent = {
+        "id": 9,
+        "signal_id": 19,
+        "symbol": "BTC_USD",
+        "side": "BUY",
+        "status": "ORDER_PLACED",
+        "order_id": "e-stub",
+    }
+    entry = {
+        "exchange_order_id": "e-stub",
+        "symbol": "BTC_USD",
+        "side": "BUY",
+        "status": "FILLED",
+        "avg_price": 100.0,
+        "quantity": 1.0,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "STUB-CLOSED-STOP_LOSS-5755600492155811564",
+            "parent_order_id": "e-stub",
+            "order_role": "STOP_LOSS",
+            "status": "FILLED",
+            "avg_price": 100.0,
+            "quantity": 1.0,
+            "exchange_update_time": BASE + timedelta(hours=1),
+        }
+    ]
+    from app.services.trade_outcome_builder import CoverageStats
+
+    stats = CoverageStats()
+    row = build_outcome_for_intent(intent, entry=entry, children=children, stats=stats)
+    assert row is None
+    assert stats.dropped["missing_exit_fill"] == 1
 
 
 def test_complete_round_trip_tp_win():
@@ -125,10 +200,300 @@ def test_drop_open_position_missing_exit():
     from app.services.trade_outcome_builder import CoverageStats
 
     stats = CoverageStats()
-    row = build_outcome_for_intent(intent, entry=entry, children=children, stats=stats)
+    # Even with a tempting opposite MARKET, active protection blocks orphan attribution.
+    orphans = [
+        {
+            "exchange_order_id": "fake-flatten",
+            "symbol": "ETH_USD",
+            "side": "SELL",
+            "order_type": "MARKET",
+            "status": "FILLED",
+            "avg_price": 55.0,
+            "quantity": 1.0,
+            "parent_order_id": None,
+            "exchange_update_time": BASE + timedelta(hours=1),
+        }
+    ]
+    entry["exchange_create_time"] = BASE
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=children, orphan_candidates=orphans, stats=stats
+    )
     assert row is None
     assert stats.dropped["missing_exit_fill"] == 1
     assert stats.complete == 0
+    assert has_active_protection_children(children)
+
+
+def test_batch_excludes_dry_run_from_eligible_denom():
+    intents = [
+        {
+            "id": 1,
+            "signal_id": 101,
+            "symbol": "BTC_USD",
+            "side": "BUY",
+            "status": "ORDER_PLACED",
+            "order_id": "entry-win",
+        },
+        {
+            "id": 99,
+            "symbol": "ETH_USDT",
+            "side": "SELL",
+            "status": "ORDER_PLACED",
+            "order_id": "dry_market_1782920132",
+        },
+    ]
+    entries = {
+        "entry-win": {
+            "exchange_order_id": "entry-win",
+            "symbol": "BTC_USD",
+            "side": "BUY",
+            "status": "FILLED",
+            "avg_price": 100.0,
+            "quantity": 1.0,
+            "exchange_create_time": BASE,
+        },
+    }
+    children = {
+        "entry-win": [
+            {
+                "exchange_order_id": "tp-win",
+                "parent_order_id": "entry-win",
+                "order_role": "TAKE_PROFIT",
+                "status": "FILLED",
+                "avg_price": 110.0,
+                "quantity": 1.0,
+                "exchange_update_time": BASE + timedelta(hours=2),
+            },
+        ],
+    }
+    rows, stats = build_outcomes_from_fixtures(
+        intents=intents,
+        entries_by_id=entries,
+        children_by_parent=children,
+    )
+    assert len(rows) == 1
+    assert stats.intents_considered == 1  # dry-run excluded from denom
+    assert stats.dropped.get("missing_entry_order", 0) == 0
+    assert stats.dropped.get("dry_run_order_id", 0) == 0
+
+
+def test_orphan_market_flatten_manual_or_flatten():
+    """Investigation sample shape: cancelled SL/TP + opposite FILLED MARKET."""
+    intent = {
+        "id": 5616,
+        "signal_id": 5016,
+        "symbol": "AAVE_USD",
+        "side": "SELL",
+        "status": "ORDER_PLACED",
+        "order_id": "entry-aave-5616",
+    }
+    entry = {
+        "exchange_order_id": "entry-aave-5616",
+        "symbol": "AAVE_USD",
+        "side": "SELL",
+        "order_type": "LIMIT",
+        "status": "FILLED",
+        "avg_price": 200.0,
+        "quantity": 1.5,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "sl-cancelled",
+            "parent_order_id": "entry-aave-5616",
+            "order_role": "STOP_LOSS",
+            "order_type": "STOP_LIMIT",
+            "status": "CANCELLED",
+            "price": 220.0,
+            "quantity": 1.5,
+        },
+        {
+            "exchange_order_id": "tp-cancelled",
+            "parent_order_id": "entry-aave-5616",
+            "order_role": "TAKE_PROFIT",
+            "order_type": "TAKE_PROFIT_LIMIT",
+            "status": "CANCELLED",
+            "price": 180.0,
+            "quantity": 1.5,
+        },
+    ]
+    orphans = [
+        {
+            "exchange_order_id": "exit-aave-913919",
+            "symbol": "AAVE_USD",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "status": "FILLED",
+            "avg_price": 195.0,
+            "quantity": 1.5,
+            "parent_order_id": None,
+            "exchange_update_time": BASE + timedelta(hours=5),
+        }
+    ]
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=children, orphan_candidates=orphans
+    )
+    assert row is not None
+    assert row["exit_reason"] == "MANUAL_OR_FLATTEN"
+    assert row["exit_exchange_order_id"] == "exit-aave-913919"
+    assert row["label"] == 1  # short entry 200 → exit 195
+    assert row["pnl_usd"] == pytest.approx(7.5)
+    meta = json.loads(row["meta_json"])
+    assert meta["exit_via_orphan"] is True
+
+
+def test_orphan_rejects_qty_mismatch_and_out_of_window():
+    entry = {
+        "exchange_order_id": "entry-buy",
+        "symbol": "BTC_USD",
+        "side": "BUY",
+        "status": "FILLED",
+        "avg_price": 100.0,
+        "quantity": 2.0,
+        "exchange_create_time": BASE,
+    }
+    # Wrong qty (would be naive first-opposite trap)
+    wrong_qty = {
+        "exchange_order_id": "opp-wrong-qty",
+        "symbol": "BTC_USD",
+        "side": "SELL",
+        "order_type": "MARKET",
+        "status": "FILLED",
+        "avg_price": 101.0,
+        "quantity": 10.0,
+        "parent_order_id": None,
+        "exchange_update_time": BASE + timedelta(hours=1),
+    }
+    # Out of 14d window
+    too_late = {
+        "exchange_order_id": "opp-too-late",
+        "symbol": "BTC_USD",
+        "side": "SELL",
+        "order_type": "MARKET",
+        "status": "FILLED",
+        "avg_price": 101.0,
+        "quantity": 2.0,
+        "parent_order_id": None,
+        "exchange_update_time": BASE + timedelta(days=20),
+    }
+    assert (
+        select_orphan_exit(
+            entry=entry,
+            entry_side="BUY",
+            entry_qty=2.0,
+            entry_ts=BASE,
+            candidates=[wrong_qty, too_late],
+        )
+        is None
+    )
+
+
+def test_orphan_rejects_parented_and_same_side_false_pair():
+    """Guard against naive first-opposite / later same-side short entry."""
+    entry = {
+        "exchange_order_id": "entry-5592",
+        "symbol": "ETH_USD",
+        "side": "BUY",
+        "status": "FILLED",
+        "avg_price": 50.0,
+        "quantity": 1.0,
+        "exchange_create_time": BASE,
+    }
+    later_short_entry = {
+        # Same-side FILLED MARKET after entry — not an exit for the long.
+        "exchange_order_id": "later-short-entry",
+        "symbol": "ETH_USD",
+        "side": "BUY",
+        "order_type": "MARKET",
+        "status": "FILLED",
+        "avg_price": 48.0,
+        "quantity": 1.0,
+        "parent_order_id": None,
+        "exchange_update_time": BASE + timedelta(hours=2),
+    }
+    parented_childish = {
+        "exchange_order_id": "has-parent",
+        "symbol": "ETH_USD",
+        "side": "SELL",
+        "order_type": "MARKET",
+        "status": "FILLED",
+        "avg_price": 51.0,
+        "quantity": 1.0,
+        "parent_order_id": "someone-else",
+        "exchange_update_time": BASE + timedelta(hours=1),
+    }
+    assert (
+        select_orphan_exit(
+            entry=entry,
+            entry_side="BUY",
+            entry_qty=1.0,
+            entry_ts=BASE,
+            candidates=[later_short_entry, parented_childish],
+        )
+        is None
+    )
+
+
+def test_orphan_exit_claimed_once_across_batch():
+    intents = [
+        {
+            "id": 1,
+            "symbol": "AAVE_USD",
+            "side": "SELL",
+            "status": "ORDER_PLACED",
+            "order_id": "e1",
+        },
+        {
+            "id": 2,
+            "symbol": "AAVE_USD",
+            "side": "SELL",
+            "status": "ORDER_PLACED",
+            "order_id": "e2",
+        },
+    ]
+    entries = {
+        "e1": {
+            "exchange_order_id": "e1",
+            "symbol": "AAVE_USD",
+            "side": "SELL",
+            "status": "FILLED",
+            "avg_price": 200.0,
+            "quantity": 1.0,
+            "exchange_create_time": BASE,
+        },
+        "e2": {
+            "exchange_order_id": "e2",
+            "symbol": "AAVE_USD",
+            "side": "SELL",
+            "status": "FILLED",
+            "avg_price": 201.0,
+            "quantity": 1.0,
+            "exchange_create_time": BASE + timedelta(minutes=10),
+        },
+    }
+    children = {"e1": [], "e2": []}
+    orphans = [
+        {
+            "exchange_order_id": "shared-exit",
+            "symbol": "AAVE_USD",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "status": "FILLED",
+            "avg_price": 195.0,
+            "quantity": 1.0,
+            "parent_order_id": None,
+            "exchange_update_time": BASE + timedelta(hours=1),
+        }
+    ]
+    rows, stats = build_outcomes_from_fixtures(
+        intents=intents,
+        entries_by_id=entries,
+        children_by_parent=children,
+        orphan_candidates=orphans,
+    )
+    assert len(rows) == 1
+    assert rows[0]["exit_exchange_order_id"] == "shared-exit"
+    assert stats.dropped["missing_exit_fill"] == 1
 
 
 def test_batch_coverage_demo_shape():

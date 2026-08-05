@@ -45,6 +45,6 @@ COMMENT ON TABLE trade_outcomes IS
 COMMENT ON COLUMN trade_outcomes.label IS
     '1 if pnl_usd > 0, 0 if pnl_usd <= 0, NULL if incomplete (should not persist COMPLETE without label)';
 COMMENT ON COLUMN trade_outcomes.exit_reason IS
-    'TAKE_PROFIT | STOP_LOSS | UNKNOWN (inferred from child order_role / order_type)';
+    'TAKE_PROFIT | STOP_LOSS | MANUAL_OR_FLATTEN | UNKNOWN (child role/type or orphan MARKET/LIMIT)';
 COMMENT ON COLUMN trade_outcomes.join_status IS
     'COMPLETE for persisted rounds; builder also reports drop reasons in coverage JSON';

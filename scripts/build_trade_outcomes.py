@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Build trade_outcomes round-trip labels (Phase 1a — LAB-safe).
 
-Joins telegram_messages ← order_intents ← exchange_orders entry ← SL/TP children.
-Drops incomplete joins and prints join coverage. Does NOT promote Auto ML models.
+Joins telegram_messages ← order_intents ← exchange_orders entry ← SL/TP children
+(or orphan opposite MARKET/LIMIT flatten). Excludes dry-run synthetic order ids
+and STUB-CLOSED-* exits from COMPLETE train rows. Drops incomplete joins and
+prints join coverage. Does NOT promote Auto ML models.
 
 Usage:
   # Demo / fixtures (no DB)
@@ -44,6 +46,7 @@ def _demo_fixtures() -> tuple[
     dict[str, dict[str, Any]],
     dict[str, list[dict[str, Any]]],
     dict[Any, dict[str, Any]],
+    list[dict[str, Any]],
 ]:
     base = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
     intents = [
@@ -78,6 +81,21 @@ def _demo_fixtures() -> tuple[
             "status": "ORDER_PLACED",
             "order_id": None,  # dropped
         },
+        {
+            "id": 5,
+            "signal_id": 105,
+            "symbol": "AAVE_USD",
+            "side": "SELL",
+            "status": "ORDER_PLACED",
+            "order_id": "entry-orphan",
+        },
+        {
+            "id": 6,
+            "symbol": "ETH_USDT",
+            "side": "SELL",
+            "status": "ORDER_PLACED",
+            "order_id": "dry_market_1782920132",  # excluded from eligible
+        },
     ]
     entries = {
         "entry-win": {
@@ -108,6 +126,16 @@ def _demo_fixtures() -> tuple[
             "status": "FILLED",
             "avg_price": 10.0,
             "quantity": 5.0,
+            "exchange_create_time": base,
+        },
+        "entry-orphan": {
+            "exchange_order_id": "entry-orphan",
+            "symbol": "AAVE_USD",
+            "side": "SELL",
+            "order_type": "LIMIT",
+            "status": "FILLED",
+            "avg_price": 200.0,
+            "quantity": 1.5,
             "exchange_create_time": base,
         },
     }
@@ -157,13 +185,47 @@ def _demo_fixtures() -> tuple[
                 "quantity": 5.0,
             },
         ],
+        "entry-orphan": [
+            {
+                "exchange_order_id": "sl-orphan-cancel",
+                "parent_order_id": "entry-orphan",
+                "order_role": "STOP_LOSS",
+                "order_type": "STOP_LIMIT",
+                "status": "CANCELLED",
+                "price": 220.0,
+                "quantity": 1.5,
+            },
+            {
+                "exchange_order_id": "tp-orphan-cancel",
+                "parent_order_id": "entry-orphan",
+                "order_role": "TAKE_PROFIT",
+                "order_type": "TAKE_PROFIT_LIMIT",
+                "status": "CANCELLED",
+                "price": 180.0,
+                "quantity": 1.5,
+            },
+        ],
     }
+    orphans = [
+        {
+            "exchange_order_id": "orphan-flatten-aave",
+            "symbol": "AAVE_USD",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "status": "FILLED",
+            "avg_price": 195.0,
+            "quantity": 1.5,
+            "parent_order_id": None,
+            "exchange_update_time": base + timedelta(hours=6),
+        },
+    ]
     alerts = {
         101: {"id": 101, "symbol": "BTC_USD"},
         102: {"id": 102, "symbol": "ETH_USD"},
         103: {"id": 103, "symbol": "SOL_USD"},
+        105: {"id": 105, "symbol": "AAVE_USD"},
     }
-    return intents, entries, children, alerts
+    return intents, entries, children, alerts, orphans
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -178,7 +240,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     src.add_argument(
         "--fixtures-json",
         type=Path,
-        help="JSON with intents, entries_by_id, children_by_parent, optional alerts_by_id",
+        help="JSON with intents, entries_by_id, children_by_parent, optional alerts_by_id / orphan_candidates",
     )
     p.add_argument("--days", type=int, default=90, help="Lookback for intents (DB mode)")
     p.add_argument(
@@ -207,8 +269,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if db_url is None and not args.demo and args.fixtures_json is None:
         db_url = os.environ.get("DATABASE_URL")
 
+    orphans: list[dict[str, Any]] = []
     if args.demo:
-        intents, entries, children, alerts = _demo_fixtures()
+        intents, entries, children, alerts, orphans = _demo_fixtures()
         source = "demo"
     elif args.fixtures_json:
         data = json.loads(args.fixtures_json.read_text(encoding="utf-8"))
@@ -216,13 +279,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         entries = data["entries_by_id"]
         children = data["children_by_parent"]
         alerts = {int(k) if str(k).isdigit() else k: v for k, v in (data.get("alerts_by_id") or {}).items()}
+        orphans = list(data.get("orphan_candidates") or [])
         source = f"json:{args.fixtures_json}"
     else:
         url = db_url or os.environ.get("DATABASE_URL")
         if not url:
             print("Provide --demo, --fixtures-json, or --database-url / DATABASE_URL", file=sys.stderr)
             return 2
-        intents, entries, children, alerts = load_rows_from_db(url, days=args.days)
+        intents, entries, children, alerts, orphans = load_rows_from_db(url, days=args.days)
         source = "database"
 
     rows, stats = build_outcomes_from_fixtures(
@@ -230,6 +294,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         entries_by_id=entries,
         children_by_parent=children,
         alerts_by_id=alerts,
+        orphan_candidates=orphans,
     )
 
     report = coverage_report_dict(rows, stats)
