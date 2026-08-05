@@ -51,7 +51,11 @@ class CoverageStats:
             "missing_entry_order": 0,
             "entry_not_filled": 0,
             "missing_entry_price": 0,
-            "missing_exit_fill": 0,
+            # Former missing_exit_fill split for ops visibility (no attribution change).
+            "still_open": 0,
+            "protection_cancelled_no_exit": 0,
+            "no_children": 0,
+            "orphan_rejected_by_guards": 0,
             "missing_exit_price": 0,
             "missing_quantity": 0,
         }
@@ -241,6 +245,78 @@ def has_active_protection_children(children: Sequence[Mapping[str, Any]]) -> boo
     return False
 
 
+def has_protection_role_children(children: Sequence[Mapping[str, Any]]) -> bool:
+    """True when any child maps to STOP_LOSS / TAKE_PROFIT (any status)."""
+    for child in children:
+        if infer_exit_role(order_role=child.get("order_role"), order_type=child.get("order_type")):
+            return True
+    return False
+
+
+def has_loose_orphan_opposite(
+    *,
+    entry: Mapping[str, Any],
+    entry_side: str,
+    entry_ts: Optional[datetime],
+    candidates: Sequence[Mapping[str, Any]],
+) -> bool:
+    """True if an opposite FILLED MARKET/LIMIT exists after entry (diag only).
+
+    Intentionally looser than select_orphan_exit: ignores qty, window end,
+    claimed ids, and parented rows. Used only to bucket drops as
+    orphan_rejected_by_guards — does NOT attribute or loosen COMPLETE guards.
+    """
+    if entry_ts is None:
+        return False
+    entry_symbol = (_as_str(entry.get("symbol")) or "").upper()
+    entry_oid = _as_str(entry.get("exchange_order_id"))
+    want_side = _opposite_side(entry_side)
+    for cand in candidates:
+        cand_oid = _as_str(cand.get("exchange_order_id"))
+        if not cand_oid or cand_oid == entry_oid:
+            continue
+        if is_dry_run_order_id(cand_oid) or is_ops_stub_closed_order_id(cand_oid):
+            continue
+        if (_as_str(cand.get("symbol")) or "").upper() != entry_symbol:
+            continue
+        if (_as_str(cand.get("side")) or "").upper() != want_side:
+            continue
+        if not is_filled_status(cand.get("status")):
+            continue
+        if not _is_orphan_exit_order_type(cand.get("order_type")):
+            continue
+        if infer_exit_role(order_role=cand.get("order_role"), order_type=cand.get("order_type")):
+            continue
+        cand_ts = order_event_ts(cand)
+        if cand_ts is None or cand_ts <= entry_ts:
+            continue
+        return True
+    return False
+
+
+def classify_missing_exit_fill(
+    *,
+    entry: Mapping[str, Any],
+    entry_side: str,
+    entry_ts: Optional[datetime],
+    children: Sequence[Mapping[str, Any]],
+    orphan_candidates: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    """Bucket why a filled entry produced no COMPLETE exit (coverage only)."""
+    if has_active_protection_children(children):
+        return "still_open"
+    if has_loose_orphan_opposite(
+        entry=entry,
+        entry_side=entry_side,
+        entry_ts=entry_ts,
+        candidates=orphan_candidates,
+    ):
+        return "orphan_rejected_by_guards"
+    if has_protection_role_children(children):
+        return "protection_cancelled_no_exit"
+    return "no_children"
+
+
 def select_orphan_exit(
     *,
     entry: Mapping[str, Any],
@@ -375,7 +451,15 @@ def build_outcome_for_intent(
             exit_via_orphan = True
 
     if exit_order is None:
-        drop("missing_exit_fill")
+        drop(
+            classify_missing_exit_fill(
+                entry=entry,
+                entry_side=side,
+                entry_ts=entry_ts,
+                children=children,
+                orphan_candidates=orphan_candidates or (),
+            )
+        )
         return None
 
     exit_price = order_fill_price(exit_order)
