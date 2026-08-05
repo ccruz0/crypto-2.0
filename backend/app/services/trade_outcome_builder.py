@@ -5,6 +5,7 @@ Join path (design ADR closed-loop Phase 1):
     ← order_intents.signal_id
     ← order_intents.order_id = exchange_orders.exchange_order_id (entry)
     ← exchange_orders where parent_order_id = entry (SL/TP children)
+    ← optional orphan opposite MARKET/LIMIT fill (null parent_order_id)
 
 Incomplete joins are dropped. Coverage counters are returned for operators.
 Pure helpers accept dict-shaped rows so unit tests need no live DB.
@@ -15,9 +16,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Optional, Sequence
+
+from app.utils.dry_run_orders import is_dry_run_order_id
+from app.utils.ops_stub_orders import is_ops_stub_closed_order_id
 
 
 EXIT_ROLES = frozenset({"STOP_LOSS", "TAKE_PROFIT"})
@@ -25,6 +29,13 @@ FILLED_STATUSES = frozenset(
     {"FILLED", "PARTIALLY_FILLED"}  # PARTIALLY_FILLED treated as usable exit if price present
 )
 ENTRY_INTENT_STATUSES = frozenset({"ORDER_PLACED"})
+ORPHAN_EXIT_ORDER_TYPES = frozenset({"MARKET", "LIMIT"})
+ACTIVE_PROTECTION_STATUSES = frozenset(
+    {"ACTIVE", "NEW", "PENDING", "OPEN", "TRIGGERED", "PARTIALLY_FILLED"}
+)
+# Orphan flatten/manual close: opposite filled MARKET/LIMIT, null parent, qty+time gates.
+DEFAULT_ORPHAN_EXIT_WINDOW_DAYS = 14
+DEFAULT_ORPHAN_QTY_TOLERANCE = 0.05  # relative |Δqty| / max(entry, exit)
 
 
 @dataclass
@@ -35,6 +46,7 @@ class CoverageStats:
     without_alert: int = 0
     dropped: dict[str, int] = field(
         default_factory=lambda: {
+            "dry_run_order_id": 0,
             "missing_order_id": 0,
             "missing_entry_order": 0,
             "entry_not_filled": 0,
@@ -169,9 +181,15 @@ def compute_pnl(
 
 
 def select_exit_child(children: Sequence[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
-    """Prefer earliest filled SL/TP child by event timestamp."""
+    """Prefer earliest filled SL/TP child by event timestamp.
+
+    Skips ops STUB-CLOSED-* ids (not real fills; weak/zero PnL train labels).
+    """
     filled: list[tuple[datetime, Mapping[str, Any]]] = []
     for child in children:
+        child_oid = _as_str(child.get("exchange_order_id"))
+        if is_ops_stub_closed_order_id(child_oid):
+            continue
         role = infer_exit_role(order_role=child.get("order_role"), order_type=child.get("order_type"))
         if role is None:
             continue
@@ -187,12 +205,114 @@ def select_exit_child(children: Sequence[Mapping[str, Any]]) -> Optional[Mapping
     return filled[0][1]
 
 
+def _opposite_side(side: str) -> str:
+    return "SELL" if side.upper() == "BUY" else "BUY"
+
+
+def _qty_within_tolerance(
+    entry_qty: float,
+    exit_qty: float,
+    *,
+    tolerance: float = DEFAULT_ORPHAN_QTY_TOLERANCE,
+) -> bool:
+    if entry_qty <= 0 or exit_qty <= 0:
+        return False
+    denom = max(entry_qty, exit_qty)
+    return abs(entry_qty - exit_qty) / denom <= tolerance
+
+
+def _is_orphan_exit_order_type(order_type: Any) -> bool:
+    ot = (_as_str(order_type) or "").upper()
+    if not ot:
+        return False
+    # Exact MARKET/LIMIT only — avoid STOP_*/TAKE_PROFIT_* even if loosely named.
+    return ot in ORPHAN_EXIT_ORDER_TYPES
+
+
+def has_active_protection_children(children: Sequence[Mapping[str, Any]]) -> bool:
+    """True when SL/TP children are still working (position likely still open)."""
+    for child in children:
+        role = infer_exit_role(order_role=child.get("order_role"), order_type=child.get("order_type"))
+        if role is None:
+            continue
+        status = (_as_str(child.get("status")) or "").upper()
+        if status in ACTIVE_PROTECTION_STATUSES:
+            return True
+    return False
+
+
+def select_orphan_exit(
+    *,
+    entry: Mapping[str, Any],
+    entry_side: str,
+    entry_qty: float,
+    entry_ts: Optional[datetime],
+    candidates: Sequence[Mapping[str, Any]],
+    claimed_exit_ids: Optional[set[str]] = None,
+    window_days: int = DEFAULT_ORPHAN_EXIT_WINDOW_DAYS,
+    qty_tolerance: float = DEFAULT_ORPHAN_QTY_TOLERANCE,
+) -> Optional[Mapping[str, Any]]:
+    """First opposite-side FILLED MARKET/LIMIT after entry, qty+time gated.
+
+    Requires null parent_order_id. Rejects dry-run / stub ids and SL/TP-typed rows.
+    Does not take a naive first-opposite without qty/time checks.
+    """
+    if entry_ts is None or entry_qty <= 0:
+        return None
+    claimed = claimed_exit_ids or set()
+    entry_symbol = (_as_str(entry.get("symbol")) or "").upper()
+    entry_oid = _as_str(entry.get("exchange_order_id"))
+    want_side = _opposite_side(entry_side)
+    window_end = entry_ts + timedelta(days=window_days)
+
+    matched: list[tuple[datetime, Mapping[str, Any]]] = []
+    for cand in candidates:
+        cand_oid = _as_str(cand.get("exchange_order_id"))
+        if not cand_oid or cand_oid == entry_oid or cand_oid in claimed:
+            continue
+        if is_dry_run_order_id(cand_oid) or is_ops_stub_closed_order_id(cand_oid):
+            continue
+        if (_as_str(cand.get("parent_order_id")) or "").strip():
+            continue
+        if (_as_str(cand.get("symbol")) or "").upper() != entry_symbol:
+            continue
+        if (_as_str(cand.get("side")) or "").upper() != want_side:
+            continue
+        if not is_filled_status(cand.get("status")):
+            continue
+        if not _is_orphan_exit_order_type(cand.get("order_type")):
+            continue
+        # Linked SL/TP roles must go through select_exit_child, not orphan path.
+        if infer_exit_role(order_role=cand.get("order_role"), order_type=cand.get("order_type")):
+            continue
+        if order_fill_price(cand) is None:
+            continue
+        cand_qty = order_qty(cand)
+        if cand_qty is None or not _qty_within_tolerance(
+            entry_qty, cand_qty, tolerance=qty_tolerance
+        ):
+            continue
+        cand_ts = order_event_ts(cand)
+        if cand_ts is None or cand_ts <= entry_ts or cand_ts > window_end:
+            continue
+        matched.append((cand_ts, cand))
+
+    if not matched:
+        return None
+    matched.sort(key=lambda x: x[0])
+    return matched[0][1]
+
+
 def build_outcome_for_intent(
     intent: Mapping[str, Any],
     *,
     entry: Optional[Mapping[str, Any]],
     children: Sequence[Mapping[str, Any]],
     alert: Optional[Mapping[str, Any]] = None,
+    orphan_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    claimed_exit_ids: Optional[set[str]] = None,
+    orphan_window_days: int = DEFAULT_ORPHAN_EXIT_WINDOW_DAYS,
+    orphan_qty_tolerance: float = DEFAULT_ORPHAN_QTY_TOLERANCE,
     stats: Optional[CoverageStats] = None,
 ) -> Optional[dict[str, Any]]:
     """Join one ORDER_PLACED intent to entry + exit; return COMPLETE row or None."""
@@ -207,6 +327,10 @@ def build_outcome_for_intent(
     if not order_id:
         drop("missing_order_id")
         return None
+    if is_dry_run_order_id(order_id):
+        # Defensive: callers should filter these from the eligible set first.
+        drop("dry_run_order_id")
+        return None
     if entry is None:
         drop("missing_entry_order")
         return None
@@ -219,30 +343,55 @@ def build_outcome_for_intent(
         drop("missing_entry_price")
         return None
 
-    exit_child = select_exit_child(children)
-    if exit_child is None:
+    side = (_as_str(intent.get("side")) or _as_str(entry.get("side")) or "BUY").upper()
+    entry_ts = order_event_ts(entry)
+    qty = order_qty(entry)
+
+    exit_order: Optional[Mapping[str, Any]] = select_exit_child(children)
+    exit_reason: Optional[str] = None
+    exit_via_orphan = False
+
+    if exit_order is not None:
+        exit_reason = infer_exit_role(
+            order_role=exit_order.get("order_role"), order_type=exit_order.get("order_type")
+        ) or "UNKNOWN"
+    elif not has_active_protection_children(children):
+        # No filled linked SL/TP and not still-open → try orphan MARKET/LIMIT flatten.
+        if qty is None or qty <= 0:
+            drop("missing_quantity")
+            return None
+        exit_order = select_orphan_exit(
+            entry=entry,
+            entry_side=side,
+            entry_qty=qty,
+            entry_ts=entry_ts,
+            candidates=orphan_candidates or (),
+            claimed_exit_ids=claimed_exit_ids,
+            window_days=orphan_window_days,
+            qty_tolerance=orphan_qty_tolerance,
+        )
+        if exit_order is not None:
+            exit_reason = "MANUAL_OR_FLATTEN"
+            exit_via_orphan = True
+
+    if exit_order is None:
         drop("missing_exit_fill")
         return None
 
-    exit_price = order_fill_price(exit_child)
+    exit_price = order_fill_price(exit_order)
     if exit_price is None or exit_price <= 0:
         drop("missing_exit_price")
         return None
 
-    qty = order_qty(entry) or order_qty(exit_child)
+    qty = qty or order_qty(exit_order)
     if qty is None or qty <= 0:
         drop("missing_quantity")
         return None
 
-    side = (_as_str(intent.get("side")) or _as_str(entry.get("side")) or "BUY").upper()
     pnl_usd, pnl_pct = compute_pnl(
         side=side, entry_price=entry_price, exit_price=exit_price, quantity=qty
     )
-    exit_reason = infer_exit_role(
-        order_role=exit_child.get("order_role"), order_type=exit_child.get("order_type")
-    ) or "UNKNOWN"
-    entry_ts = order_event_ts(entry)
-    exit_ts = order_event_ts(exit_child)
+    exit_ts = order_event_ts(exit_order)
     hold_seconds: Optional[int] = None
     if entry_ts and exit_ts:
         hold_seconds = max(0, int((exit_ts - entry_ts).total_seconds()))
@@ -258,19 +407,24 @@ def build_outcome_for_intent(
         else:
             stats.without_alert += 1
 
+    exit_oid = _as_str(exit_order.get("exchange_order_id"))
+    if claimed_exit_ids is not None and exit_oid:
+        claimed_exit_ids.add(exit_oid)
+
     meta = {
         "entry_order_type": _as_str(entry.get("order_type")),
-        "exit_order_type": _as_str(exit_child.get("order_type")),
-        "exit_order_role": _as_str(exit_child.get("order_role")),
-        "oco_group_id": _as_str(entry.get("oco_group_id") or exit_child.get("oco_group_id")),
+        "exit_order_type": _as_str(exit_order.get("order_type")),
+        "exit_order_role": _as_str(exit_order.get("order_role")),
+        "oco_group_id": _as_str(entry.get("oco_group_id") or exit_order.get("oco_group_id")),
         "has_alert": telegram_message_id is not None,
+        "exit_via_orphan": exit_via_orphan,
     }
 
     return {
         "telegram_message_id": int(telegram_message_id) if telegram_message_id is not None else None,
         "order_intent_id": intent.get("id"),
         "entry_exchange_order_id": order_id,
-        "exit_exchange_order_id": _as_str(exit_child.get("exchange_order_id")),
+        "exit_exchange_order_id": exit_oid,
         "symbol": _as_str(intent.get("symbol") or entry.get("symbol")) or "UNKNOWN",
         "side": side,
         "entry_price": entry_price,
@@ -278,7 +432,7 @@ def build_outcome_for_intent(
         "quantity": qty,
         "pnl_usd": pnl_usd,
         "pnl_pct": pnl_pct,
-        "exit_reason": exit_reason,
+        "exit_reason": exit_reason or "UNKNOWN",
         "label": 1 if pnl_usd > 0 else 0,
         "entry_ts": entry_ts,
         "exit_ts": exit_ts,
@@ -295,16 +449,27 @@ def build_outcomes_from_fixtures(
     entries_by_id: Mapping[str, Mapping[str, Any]],
     children_by_parent: Mapping[str, Sequence[Mapping[str, Any]]],
     alerts_by_id: Optional[Mapping[Any, Mapping[str, Any]]] = None,
+    orphan_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    orphan_window_days: int = DEFAULT_ORPHAN_EXIT_WINDOW_DAYS,
+    orphan_qty_tolerance: float = DEFAULT_ORPHAN_QTY_TOLERANCE,
 ) -> tuple[list[dict[str, Any]], CoverageStats]:
-    """Batch build from in-memory fixtures (unit tests / dry-run JSON)."""
+    """Batch build from in-memory fixtures (unit tests / dry-run JSON).
+
+    Dry-run synthetic order ids are excluded from the eligible set (not counted).
+    """
     alerts_by_id = alerts_by_id or {}
+    orphans = list(orphan_candidates or ())
     stats = CoverageStats()
+    claimed_exit_ids: set[str] = set()
     out: list[dict[str, Any]] = []
     for intent in intents:
         status = (_as_str(intent.get("status")) or "").upper()
         if status and status not in ENTRY_INTENT_STATUSES:
             continue
         oid = _as_str(intent.get("order_id"))
+        # PR1: exclude dry-run synthetics from eligible denom entirely.
+        if oid and is_dry_run_order_id(oid):
+            continue
         entry = entries_by_id.get(oid) if oid else None
         children = list(children_by_parent.get(oid or "", [])) if oid else []
         alert = None
@@ -312,7 +477,15 @@ def build_outcomes_from_fixtures(
         if sid is not None:
             alert = alerts_by_id.get(sid)
         row = build_outcome_for_intent(
-            intent, entry=entry, children=children, alert=alert, stats=stats
+            intent,
+            entry=entry,
+            children=children,
+            alert=alert,
+            orphan_candidates=orphans,
+            claimed_exit_ids=claimed_exit_ids,
+            orphan_window_days=orphan_window_days,
+            orphan_qty_tolerance=orphan_qty_tolerance,
+            stats=stats,
         )
         if row is not None:
             out.append(row)
@@ -324,10 +497,13 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
     dict[str, dict[str, Any]],
     dict[str, list[dict[str, Any]]],
     dict[Any, dict[str, Any]],
+    list[dict[str, Any]],
 ]:
-    """Read intents / orders / alerts. Never logs the URL (may contain credentials)."""
-    from datetime import timedelta
+    """Read intents / orders / alerts / orphan exit candidates.
 
+    Never logs the URL (may contain credentials). Dry-run synthetic order ids
+    are excluded from the eligible intent set.
+    """
     from sqlalchemy import create_engine, text
 
     engine = create_engine(database_url)
@@ -339,6 +515,7 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
     entries_by_id: dict[str, dict[str, Any]] = {}
     children_by_parent: dict[str, list[dict[str, Any]]] = {}
     alerts_by_id: dict[Any, dict[str, Any]] = {}
+    orphan_candidates: list[dict[str, Any]] = []
 
     with engine.connect() as conn:
         intent_sql = text(
@@ -347,16 +524,21 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
             FROM order_intents
             WHERE status = 'ORDER_PLACED'
               AND order_id IS NOT NULL
+              AND LOWER(order_id) NOT LIKE 'dry\\_%' ESCAPE '\\'
               AND (:cutoff IS NULL OR created_at >= :cutoff)
             ORDER BY created_at DESC
             """
         )
         for row in conn.execute(intent_sql, {"cutoff": cutoff}):
-            intents.append(dict(row._mapping))
+            d = dict(row._mapping)
+            # Defense in depth (SQL already filters); keeps unit-testable helper path.
+            if is_dry_run_order_id(_as_str(d.get("order_id"))):
+                continue
+            intents.append(d)
 
         order_ids = [i["order_id"] for i in intents if i.get("order_id")]
         if not order_ids:
-            return intents, entries_by_id, children_by_parent, alerts_by_id
+            return intents, entries_by_id, children_by_parent, alerts_by_id, orphan_candidates
 
         # Chunk IN lists for portability
         chunk = 500
@@ -397,6 +579,51 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
                     continue
                 children_by_parent.setdefault(parent, []).append(d)
 
+        symbols = sorted(
+            {
+                (_as_str(i.get("symbol")) or "")
+                for i in intents
+                if _as_str(i.get("symbol"))
+            }
+            | {
+                (_as_str(e.get("symbol")) or "")
+                for e in entries_by_id.values()
+                if _as_str(e.get("symbol"))
+            }
+        )
+        if symbols:
+            # Orphan flatten/manual closes: FILLED MARKET/LIMIT, unparented.
+            # Extend lookback slightly so exit can fall after intent cutoff.
+            orphan_cutoff = None
+            if cutoff is not None:
+                orphan_cutoff = cutoff - timedelta(days=DEFAULT_ORPHAN_EXIT_WINDOW_DAYS)
+            for i in range(0, len(symbols), chunk):
+                part = symbols[i : i + chunk]
+                placeholders = ", ".join(f":sym{j}" for j in range(len(part)))
+                params: dict[str, Any] = {f"sym{j}": part[j] for j in range(len(part))}
+                params["cutoff"] = orphan_cutoff
+                orphan_sql = text(
+                    f"""
+                    SELECT exchange_order_id, symbol, side, order_type, status,
+                           price, quantity, cumulative_quantity, avg_price,
+                           exchange_create_time, exchange_update_time,
+                           parent_order_id, oco_group_id, order_role,
+                           created_at, updated_at
+                    FROM exchange_orders
+                    WHERE symbol IN ({placeholders})
+                      AND parent_order_id IS NULL
+                      AND UPPER(status) IN ('FILLED', 'PARTIALLY_FILLED')
+                      AND UPPER(order_type) IN ('MARKET', 'LIMIT')
+                      AND LOWER(exchange_order_id) NOT LIKE 'dry\\_%' ESCAPE '\\'
+                      AND UPPER(exchange_order_id) NOT LIKE 'STUB-CLOSED-%'
+                      AND (order_role IS NULL OR UPPER(order_role) NOT IN ('STOP_LOSS', 'TAKE_PROFIT'))
+                      AND (:cutoff IS NULL
+                           OR COALESCE(exchange_update_time, exchange_create_time, created_at) >= :cutoff)
+                    """
+                )
+                for row in conn.execute(orphan_sql, params):
+                    orphan_candidates.append(dict(row._mapping))
+
         signal_ids = [i["signal_id"] for i in intents if i.get("signal_id") is not None]
         for i in range(0, len(signal_ids), chunk):
             part = signal_ids[i : i + chunk]
@@ -415,7 +642,7 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
                 d = dict(row._mapping)
                 alerts_by_id[d["id"]] = d
 
-    return intents, entries_by_id, children_by_parent, alerts_by_id
+    return intents, entries_by_id, children_by_parent, alerts_by_id, orphan_candidates
 
 
 def upsert_outcomes(database_url: str, rows: Iterable[Mapping[str, Any]]) -> int:
