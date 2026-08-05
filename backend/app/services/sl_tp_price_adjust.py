@@ -30,6 +30,10 @@ def compute_strategy_sl_tp_prices(
       If market already >= TP → TP just above market
 
     For a short (SELL entry): mirrored.
+
+    Short example (ALGO): entry=0.0914, last=0.0901, tp%=1 → entry-TP=0.090486
+    is *above* last. Crypto.com BUY take-profit requires trigger below mark, so
+    we clamp TP under current (``market_already_below_tp``).
     """
     side = (entry_side or "BUY").upper()
     entry = float(entry_price)
