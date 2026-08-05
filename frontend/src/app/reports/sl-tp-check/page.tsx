@@ -96,9 +96,44 @@ export default function SlTpCheckReportPage() {
     }
   }, []);
 
+  /** Re-run scanner and replace in-memory report (no Telegram reminder). */
+  const refreshReport = useCallback(async (): Promise<boolean> => {
+    try {
+      const apiUrl = getApiUrl();
+      const response = await fetch(`${apiUrl}/monitoring/reports/sl-tp-check/refresh`, {
+        method: 'POST',
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      if (data.status === 'success' && data.report) {
+        setReport(data.report as SlTpCheckReport);
+        setStoredAt(data.stored_at || null);
+        setError(null);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to refresh SL/TP check report:', err);
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     fetchReport();
   }, [fetchReport]);
+
+  const createQuantityFor = (pos: MissingPosition): number | undefined => {
+    // Scanner marks missing by wallet uncovered qty; prefer that over the linked
+    // entry lot (often a recent dust fill) so Create matches what the report checks.
+    const uncovered = pos.uncovered_qty != null ? Number(pos.uncovered_qty) : NaN;
+    const entryQty = pos.quantity != null ? Number(pos.quantity) : NaN;
+    if (Number.isFinite(uncovered) && uncovered > 0) return uncovered;
+    if (Number.isFinite(entryQty) && entryQty > 0) return entryQty;
+    return undefined;
+  };
 
   const handleCreate = async (
     pos: MissingPosition,
@@ -116,7 +151,7 @@ export default function SlTpCheckReportPage() {
         order_id: pos.order_id,
         create_sl: opts.create_sl,
         create_tp: opts.create_tp,
-        quantity: pos.quantity ?? undefined,
+        quantity: createQuantityFor(pos),
       });
       const created = (result.created || []).map((c) => c.role).join(', ');
       const errText = (result.errors || [])
@@ -133,7 +168,11 @@ export default function SlTpCheckReportPage() {
           `${pos.symbol}: failed — ${result.message || 'no orders created'}${errText ? ` | ${errText}` : ''}`,
         );
       }
-      await fetchReport();
+      // Re-scan so the table matches live coverage (latest cache alone stays stale).
+      const refreshed = await refreshReport();
+      if (!refreshed) {
+        await fetchReport();
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setActionMessage(
@@ -201,7 +240,7 @@ export default function SlTpCheckReportPage() {
           <div className="flex items-center gap-3 text-sm">
             <button
               type="button"
-              onClick={() => fetchReport()}
+              onClick={() => refreshReport().then((ok) => { if (!ok) fetchReport(); })}
               className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
             >
               Refresh

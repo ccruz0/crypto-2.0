@@ -545,13 +545,33 @@ def create_take_profit_order(
 
         existing_tp = get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
         if existing_tp:
+            existing_qty = float(getattr(existing_tp, "quantity", 0) or 0)
+            requested_qty = float(quantity or 0)
+            # Mirror SL gap-fill: reuse only when existing covers requested size.
+            # Dashboard SL/TP Check passes uncovered_qty — a dust TP on the parent
+            # must not block placing the remaining wallet gap.
+            covers_request = (
+                existing_qty <= 0
+                or requested_qty <= 0
+                or existing_qty + 1e-9 >= requested_qty * 0.98
+            )
+            if covers_request:
+                logger.info(
+                    "[%s_TP] Reusing active TP %s for parent %s (qty=%s requested=%s)",
+                    source.upper(),
+                    existing_tp.exchange_order_id,
+                    parent_order_id,
+                    existing_qty,
+                    requested_qty,
+                )
+                return {"order_id": existing_tp.exchange_order_id, "error": None}
             logger.info(
-                "[%s_TP] Reusing active TP %s for parent %s",
+                "[%s_TP] Active TP %s qty=%s < requested=%s; placing additional TP",
                 source.upper(),
                 existing_tp.exchange_order_id,
-                parent_order_id,
+                existing_qty,
+                requested_qty,
             )
-            return {"order_id": existing_tp.exchange_order_id, "error": None}
 
     # Repair stale TP vs live market (short TP above last → INVALID_TRIGGER_PRICE).
     tp_percentage = None

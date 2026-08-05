@@ -224,3 +224,56 @@ def test_run_workflow_sl_tp_check_starts():
         assert data["started"] is True
         mock_create_task.assert_called_once()
 
+
+def test_refresh_sl_tp_check_report_rescans_without_reminder():
+    """POST refresh re-runs scanner, stores report, does not send Telegram reminder."""
+    import app.api.routes_monitoring as monitoring
+
+    prev = monitoring._sl_tp_check_report_cache
+    try:
+        monitoring._sl_tp_check_report_cache = {
+            "stored_at": "2026-08-05T01:00:00+00:00",
+            "report": {
+                "workflow": "sl_tp_check",
+                "checked_at": "2026-08-05T01:00:00+00:00",
+                "total_positions": 1,
+                "missing_count": 1,
+                "positions_missing": [
+                    {
+                        "symbol": "ETH_USD",
+                        "has_sl": True,
+                        "has_tp": False,
+                        "order_id": "stale",
+                        "uncovered_qty": 0.05,
+                    }
+                ],
+                "oco_issues": {},
+                "reminder_sent": True,
+                "error": None,
+            },
+        }
+
+        with patch(
+            "app.services.sl_tp_checker.sl_tp_checker_service.check_positions_for_sl_tp"
+        ) as mock_check, patch(
+            "app.services.sl_tp_checker.sl_tp_checker_service.send_sl_tp_reminder"
+        ) as mock_remind:
+            mock_check.return_value = {
+                "checked_at": "2026-08-05T05:30:00+00:00",
+                "total_positions": 2,
+                "oco_issues": {},
+                "positions_missing_sl_tp": [],
+            }
+            response = client.post("/api/monitoring/reports/sl-tp-check/refresh")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "success"
+            assert data.get("refreshed") is True
+            assert data["report"]["missing_count"] == 0
+            assert data["report"]["positions_missing"] == []
+            assert data["report"]["reminder_sent"] is False
+            mock_check.assert_called_once()
+            mock_remind.assert_not_called()
+    finally:
+        monitoring._sl_tp_check_report_cache = prev
+
