@@ -200,3 +200,135 @@ def test_render_rejects_partial_telegram_api_pair(tmp_path: Path):
     assert "TELEGRAM_API_ID" not in rendered
     assert "TELEGRAM_API_HASH" not in rendered
     assert "TELEGRAM_USER_API=NO" in result.stdout
+
+
+def _write_partial_ssm_aws_mock(bin_dir: Path) -> None:
+    """aws CLI stub: identity ok; SSM returns only telegram/api_id (not api_hash)."""
+    (bin_dir / "aws").write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            if [[ "${1:-}" == "sts" ]]; then
+              exit 0
+            fi
+            if [[ "${1:-}" == "ssm" && "${2:-}" == "get-parameter" ]]; then
+              name=""
+              while [[ $# -gt 0 ]]; do
+                if [[ "$1" == "--name" ]]; then
+                  name="${2:-}"
+                  shift 2
+                  continue
+                fi
+                shift
+              done
+              # Only api_id — never api_hash. Values are fixtures, not real secrets.
+              if [[ "$name" == *"/telegram/api_id" ]]; then
+                printf '%s\\n' 'ssm-only-api-id'
+                exit 0
+              fi
+              exit 1
+            fi
+            exit 1
+            """
+        ),
+        encoding="utf-8",
+    )
+    (bin_dir / "aws").chmod(0o755)
+
+
+def test_render_ssm_partial_telegram_pair_uses_preserved_pair(tmp_path: Path):
+    """SSM returning only api_id must not mix with preserved hash — use preserved pair wholly."""
+    fixture_root = tmp_path / "fixture"
+    scripts_dir = fixture_root / "scripts" / "aws"
+    secrets_dir = fixture_root / "secrets"
+    bin_dir = fixture_root / "bin"
+    scripts_dir.mkdir(parents=True)
+    secrets_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+    _write_partial_ssm_aws_mock(bin_dir)
+    (fixture_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (fixture_root / ".env.aws").write_text(
+        textwrap.dedent(
+            """\
+            TELEGRAM_BOT_TOKEN=test-bot-token
+            TELEGRAM_CHAT_ID=12345
+            ADMIN_ACTIONS_KEY=test-admin-key
+            DIAGNOSTICS_API_KEY=test-diag-key
+            """
+        ),
+        encoding="utf-8",
+    )
+    preserved_id = "12345678"
+    preserved_hash = "preservedhash0123456789abcdef0123"
+    (secrets_dir / "runtime.env").write_text(
+        textwrap.dedent(
+            f"""\
+            TELEGRAM_BOT_TOKEN=old
+            TELEGRAM_CHAT_ID=old
+            ADMIN_ACTIONS_KEY=old
+            TELEGRAM_API_ID={preserved_id}
+            TELEGRAM_API_HASH={preserved_hash}
+            """
+        ),
+        encoding="utf-8",
+    )
+    shutil.copy2(RENDER_SCRIPT, scripts_dir / "render_runtime_env.sh")
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "render_runtime_env.sh")],
+        cwd=str(fixture_root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+    rendered = _parse_env_file(secrets_dir / "runtime.env")
+    assert result.returncode == 0, result.stderr + "\n" + result.stdout
+    assert rendered["TELEGRAM_API_ID"] == preserved_id
+    assert rendered["TELEGRAM_API_HASH"] == preserved_hash
+    assert rendered["TELEGRAM_API_ID"] != "ssm-only-api-id"
+    assert "TELEGRAM_USER_API_SOURCE=preserved" in result.stdout
+    assert "TELEGRAM_USER_API=YES" in result.stdout
+
+
+def test_render_ssm_partial_telegram_pair_no_mix_with_env_aws_hash(tmp_path: Path):
+    """SSM api_id-only + .env.aws hash-only must write neither (no cross-tier mix)."""
+    fixture_root = tmp_path / "fixture"
+    scripts_dir = fixture_root / "scripts" / "aws"
+    secrets_dir = fixture_root / "secrets"
+    bin_dir = fixture_root / "bin"
+    scripts_dir.mkdir(parents=True)
+    secrets_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+    _write_partial_ssm_aws_mock(bin_dir)
+    (fixture_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (fixture_root / ".env.aws").write_text(
+        textwrap.dedent(
+            """\
+            TELEGRAM_BOT_TOKEN=test-bot-token
+            TELEGRAM_CHAT_ID=12345
+            ADMIN_ACTIONS_KEY=test-admin-key
+            DIAGNOSTICS_API_KEY=test-diag-key
+            TELEGRAM_API_HASH=envawshashonly0123456789abcdef01
+            """
+        ),
+        encoding="utf-8",
+    )
+    (secrets_dir / "runtime.env").write_text(
+        "TELEGRAM_BOT_TOKEN=old\nTELEGRAM_CHAT_ID=old\nADMIN_ACTIONS_KEY=old\n",
+        encoding="utf-8",
+    )
+    shutil.copy2(RENDER_SCRIPT, scripts_dir / "render_runtime_env.sh")
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "render_runtime_env.sh")],
+        cwd=str(fixture_root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+    rendered = _parse_env_file(secrets_dir / "runtime.env")
+    assert result.returncode == 0, result.stderr + "\n" + result.stdout
+    assert "TELEGRAM_API_ID" not in rendered
+    assert "TELEGRAM_API_HASH" not in rendered
+    assert "TELEGRAM_USER_API=NO" in result.stdout
