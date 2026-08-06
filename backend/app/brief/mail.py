@@ -22,6 +22,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _ACCOUNT_TIMEOUT_S = 20
+_GRAPH_ACCOUNT_TIMEOUT_S = 45
 _MAX_PER_ACCOUNT = 20
 _MAX_TOTAL = 80
 _PREVIEW_CHARS = 400
@@ -44,9 +45,16 @@ class MailboxConfig:
     folder: str
     priority: str
     enabled: bool = True
+    provider: str = "imap"  # "imap" | "graph"
 
     def is_ready(self) -> bool:
-        return self.enabled and bool(self.host and self.user and self.password)
+        if not self.enabled:
+            return False
+        provider = (self.provider or "imap").strip().lower()
+        if provider == "graph":
+            # Graph uses app credentials from env; mailbox needs UPN in ``user``.
+            return bool(self.user)
+        return bool(self.host and self.user and self.password)
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -134,12 +142,17 @@ def load_mailboxes() -> list[MailboxConfig]:
                 folder=str(item.get("folder") or "INBOX").strip() or "INBOX",
                 priority=str(item.get("priority") or "").strip(),
                 enabled=enabled,
+                provider=str(item.get("provider") or "imap").strip().lower() or "imap",
             )
         )
     return out
 
 
 def _classify_imap_error(exc: BaseException) -> str:
+    from app.brief.graph_mail import GraphAuthError, GraphConfigMissing, classify_graph_error
+
+    if isinstance(exc, (GraphAuthError, GraphConfigMissing)):
+        return classify_graph_error(exc)
     if isinstance(exc, concurrent.futures.TimeoutError):
         return "timeout"
     if isinstance(exc, socket.gaierror):
@@ -252,6 +265,12 @@ def _fetch_one_account(
     since: datetime,
     limit: int,
 ) -> dict[str, Any]:
+    provider = (cfg.provider or "imap").strip().lower()
+    if provider == "graph":
+        from app.brief.graph_mail import fetch_graph_mailbox
+
+        return fetch_graph_mailbox(user=cfg.user, since=since, limit=limit)
+
     if not cfg.host or not cfg.user:
         raise ValueError("incomplete_mailbox_config")
 
@@ -359,13 +378,18 @@ def fetch_mail(hours: int = 24) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 — per-account isolation
             return cfg, exc
 
-    # Parallel connect; 20s timeout per account (IMAP socket + future.result)
+    # Parallel connect; IMAP 20s / Graph 45s (token + messages) per account
     results: list[tuple[MailboxConfig, dict[str, Any] | Exception]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(active)))) as pool:
         futures = {pool.submit(_job, cfg): cfg for cfg in active}
         for fut, cfg in futures.items():
+            wait_s = (
+                _GRAPH_ACCOUNT_TIMEOUT_S
+                if (cfg.provider or "imap").strip().lower() == "graph"
+                else _ACCOUNT_TIMEOUT_S
+            )
             try:
-                results.append(fut.result(timeout=_ACCOUNT_TIMEOUT_S))
+                results.append(fut.result(timeout=wait_s))
             except concurrent.futures.TimeoutError:
                 results.append((cfg, concurrent.futures.TimeoutError()))
             except Exception as exc:  # noqa: BLE001
