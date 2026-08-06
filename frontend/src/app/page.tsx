@@ -3101,7 +3101,9 @@ function resolveDecisionIndexColor(value: number): string {
         if (coin.volume_24h !== undefined) signalData.volume_24h = coin.volume_24h;
         if (coin.current_volume !== undefined) signalData.current_volume = coin.current_volume;
         if (coin.avg_volume !== undefined) signalData.avg_volume = coin.avg_volume;
-        if (coin.volume_ratio !== undefined) signalData.volume_ratio = coin.volume_ratio;
+        // Mirror RSI/MA null checks — assigning null makes tooltip `.toFixed` crash
+        // (`null !== undefined` is true in WatchlistTab guards).
+        if (coin.volume_ratio !== undefined && coin.volume_ratio !== null) signalData.volume_ratio = coin.volume_ratio;
         
         // Extract resistance levels from coin data (newly added from backend)
         if (coin.res_up !== undefined) signalData.res_up = coin.res_up;

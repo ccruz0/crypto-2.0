@@ -12,6 +12,27 @@ export function addThousandSeparators(numStr: string): string {
 }
 
 /**
+ * True when value is a finite number (rejects null/undefined/NaN).
+ * Prefer this over `!== undefined` before calling `.toFixed`.
+ */
+export function isFiniteNumber(num: unknown): num is number {
+  return typeof num === 'number' && Number.isFinite(num);
+}
+
+/**
+ * Safe fixed-decimal formatting. Never throws on null/undefined.
+ * Use for RSI / volume_ratio / percentage tooltips.
+ */
+export function formatFixed(
+  num: number | null | undefined,
+  digits = 2,
+  empty = 'N/A',
+): string {
+  if (!isFiniteNumber(num)) return empty;
+  return num.toFixed(digits);
+}
+
+/**
  * Format numbers with correct decimals based on value magnitude
  */
 export function formatNumber(num: number | null | undefined, symbol?: string): string {
