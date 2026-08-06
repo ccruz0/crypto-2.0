@@ -3,7 +3,8 @@ name: Ops — enable Bumi Beans Graph mail
 # Flips secrets/brief_mailboxes.json bumibeans to provider=graph + enabled,
 # re-renders runtime.env (Graph triad from SSM), recreates backend-aws, probes /api/brief/mail.
 #
-# AWS-RunShellScript uses /bin/sh — pass a single bash -lc script (no bare set -o pipefail).
+# AWS-RunShellScript uses /bin/sh. Match ops-restart-frontend-aws.yml:
+# pass REMOTE via jq --arg (no bash -lc / printf %q nesting).
 on:
   workflow_dispatch:
 
@@ -24,20 +25,23 @@ jobs:
       - name: Enable Bumi via SSM
         env:
           INSTANCE_ID: i-087953603011543c5
+          COMPOSE_DIR: /home/ubuntu/crypto-2.0
         run: |
           set -euo pipefail
-          # AWS-RunShellScript uses /bin/sh. Wrap remote body in bash -lc.
-          REMOTE=$(cat <<'EOF'
-          set -euo pipefail
-          cd /home/ubuntu/crypto-2.0
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
-          chmod +x scripts/aws/enable_bumibeans_graph.sh
-          bash scripts/aws/enable_bumibeans_graph.sh
+          # Same SSM quoting pattern as ops-restart-frontend-aws.yml (proven on prod).
+          read -r -d '' REMOTE <<EOF || true
+          set -eu
+          COMPOSE_DIR="${COMPOSE_DIR}"
+          cd "\$COMPOSE_DIR"
+          echo "=== git sync main as ubuntu ==="
+          sudo -u ubuntu git -C "\$COMPOSE_DIR" fetch origin main
+          sudo -u ubuntu git -C "\$COMPOSE_DIR" checkout main
+          sudo -u ubuntu git -C "\$COMPOSE_DIR" pull --ff-only origin main
+          sudo -u ubuntu git -C "\$COMPOSE_DIR" rev-parse --short HEAD
+          chmod +x "\$COMPOSE_DIR/scripts/aws/enable_bumibeans_graph.sh"
+          bash "\$COMPOSE_DIR/scripts/aws/enable_bumibeans_graph.sh"
           EOF
-          )
-          PARAMS=$(jq -n --arg cmd "bash -lc $(printf '%q' "$REMOTE")" '{commands: [$cmd]}')
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
@@ -66,10 +70,9 @@ jobs:
             --region ap-southeast-1 \
             --query StandardOutputContent --output text || true
           echo "===== STDERR ====="
-          ERR=$(aws ssm get-command-invocation \
+          aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID" \
             --region ap-southeast-1 \
-            --query StandardErrorContent --output text || true)
-          echo "$ERR"
+            --query StandardErrorContent --output text || true
           test "$STATUS" = "Success"
