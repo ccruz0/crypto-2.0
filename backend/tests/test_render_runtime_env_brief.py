@@ -181,3 +181,22 @@ def test_render_reads_brief_from_env_aws_when_not_preserved(tmp_path: Path):
     assert rendered["TELEGRAM_API_HASH"] == "hashfromenvaws0123456789abcdef01"
     assert "BRIEF_SOURCE=env.aws" in result.stdout
     assert "TELEGRAM_USER_API_SOURCE=env.aws" in result.stdout
+
+
+def test_render_rejects_partial_telegram_api_pair(tmp_path: Path):
+    """ID without HASH (or vice versa) must not be written — avoids mixed-source pairs."""
+    result, rendered = _render_in_fixture(
+        tmp_path,
+        textwrap.dedent(
+            """\
+            TELEGRAM_BOT_TOKEN=old
+            TELEGRAM_CHAT_ID=old
+            ADMIN_ACTIONS_KEY=old
+            TELEGRAM_API_ID=only-id-no-hash
+            """
+        ),
+    )
+    assert result.returncode == 0, result.stderr + "\n" + result.stdout
+    assert "TELEGRAM_API_ID" not in rendered
+    assert "TELEGRAM_API_HASH" not in rendered
+    assert "TELEGRAM_USER_API=NO" in result.stdout

@@ -444,6 +444,7 @@ fi
 
 # Brief API + Telethon user session: SSM > preserved runtime.env > .env.aws > safe defaults for paths.
 # Without BRIEF_API_KEY the backend returns brief_not_configured (nginx masks as upstream_unavailable).
+# TELEGRAM_API_ID + TELEGRAM_API_HASH are a pair (same rule as EXCHANGE_CUSTOM_*): never mix sources.
 BRIEF_API_KEY_VAL=""
 BRIEF_MAILBOXES_PATH_VAL=""
 BRIEF_RATE_LIMIT_VAL=""
@@ -458,11 +459,15 @@ if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1
   BRIEF_MAILBOXES_PATH_VAL="$(fetch_ssm "$SSM_BRIEF_MAILBOXES_PATH" || true)"
   BRIEF_RATE_LIMIT_VAL="$(fetch_ssm "$SSM_BRIEF_RATE_LIMIT" || true)"
   BRIEF_ICS_URLS_VAL="$(fetch_ssm "$SSM_BRIEF_ICS_URLS" || true)"
-  TELEGRAM_API_ID_VAL="$(fetch_ssm "$SSM_TELEGRAM_API_ID" || true)"
-  TELEGRAM_API_HASH_VAL="$(fetch_ssm "$SSM_TELEGRAM_API_HASH" || true)"
+  _ssm_tg_id="$(fetch_ssm "$SSM_TELEGRAM_API_ID" || true)"
+  _ssm_tg_hash="$(fetch_ssm "$SSM_TELEGRAM_API_HASH" || true)"
   TELEGRAM_SESSION_PATH_VAL="$(fetch_ssm "$SSM_TELEGRAM_SESSION_PATH" || true)"
   [[ -n "$BRIEF_API_KEY_VAL" ]] && BRIEF_SOURCE="ssm"
-  [[ -n "$TELEGRAM_API_ID_VAL" && -n "$TELEGRAM_API_HASH_VAL" ]] && TELEGRAM_USER_API_SOURCE="ssm"
+  if [[ -n "$_ssm_tg_id" && -n "$_ssm_tg_hash" ]]; then
+    TELEGRAM_API_ID_VAL="$_ssm_tg_id"
+    TELEGRAM_API_HASH_VAL="$_ssm_tg_hash"
+    TELEGRAM_USER_API_SOURCE="ssm"
+  fi
 fi
 if [[ -z "$BRIEF_API_KEY_VAL" && -n "$PRESERVE_BRIEF_API_KEY" ]]; then
   BRIEF_API_KEY_VAL="$PRESERVE_BRIEF_API_KEY"
@@ -477,17 +482,18 @@ fi
 if [[ -z "$BRIEF_ICS_URLS_VAL" && -n "$PRESERVE_BRIEF_ICS_URLS" ]]; then
   BRIEF_ICS_URLS_VAL="$PRESERVE_BRIEF_ICS_URLS"
 fi
-if [[ -z "$TELEGRAM_API_ID_VAL" && -n "$PRESERVE_TELEGRAM_API_ID" ]]; then
-  TELEGRAM_API_ID_VAL="$PRESERVE_TELEGRAM_API_ID"
-fi
-if [[ -z "$TELEGRAM_API_HASH_VAL" && -n "$PRESERVE_TELEGRAM_API_HASH" ]]; then
-  TELEGRAM_API_HASH_VAL="$PRESERVE_TELEGRAM_API_HASH"
+if [[ -z "$TELEGRAM_API_ID_VAL" || -z "$TELEGRAM_API_HASH_VAL" ]]; then
+  TELEGRAM_API_ID_VAL=""
+  TELEGRAM_API_HASH_VAL=""
+  TELEGRAM_USER_API_SOURCE="none"
+  if [[ -n "$PRESERVE_TELEGRAM_API_ID" && -n "$PRESERVE_TELEGRAM_API_HASH" ]]; then
+    TELEGRAM_API_ID_VAL="$PRESERVE_TELEGRAM_API_ID"
+    TELEGRAM_API_HASH_VAL="$PRESERVE_TELEGRAM_API_HASH"
+    TELEGRAM_USER_API_SOURCE="preserved"
+  fi
 fi
 if [[ -z "$TELEGRAM_SESSION_PATH_VAL" && -n "$PRESERVE_TELEGRAM_SESSION_PATH" ]]; then
   TELEGRAM_SESSION_PATH_VAL="$PRESERVE_TELEGRAM_SESSION_PATH"
-fi
-if [[ ("$TELEGRAM_USER_API_SOURCE" == "none") && -n "$TELEGRAM_API_ID_VAL" && -n "$TELEGRAM_API_HASH_VAL" ]]; then
-  TELEGRAM_USER_API_SOURCE="preserved"
 fi
 if [[ -f "$ROOT_DIR/.env.aws" ]]; then
   if [[ -z "$BRIEF_API_KEY_VAL" ]]; then
@@ -509,20 +515,22 @@ if [[ -f "$ROOT_DIR/.env.aws" ]]; then
     _v="$(_read_env_aws_key BRIEF_ICS_URLS)"
     [[ -n "$_v" ]] && BRIEF_ICS_URLS_VAL="$_v"
   fi
-  if [[ -z "$TELEGRAM_API_ID_VAL" ]]; then
-    _v="$(_read_env_aws_key TELEGRAM_API_ID)"
-    [[ -n "$_v" ]] && TELEGRAM_API_ID_VAL="$_v"
-  fi
-  if [[ -z "$TELEGRAM_API_HASH_VAL" ]]; then
-    _v="$(_read_env_aws_key TELEGRAM_API_HASH)"
-    [[ -n "$_v" ]] && TELEGRAM_API_HASH_VAL="$_v"
+  if [[ -z "$TELEGRAM_API_ID_VAL" || -z "$TELEGRAM_API_HASH_VAL" ]]; then
+    _env_tg_id="$(_read_env_aws_key TELEGRAM_API_ID)"
+    _env_tg_hash="$(_read_env_aws_key TELEGRAM_API_HASH)"
+    if [[ -n "$_env_tg_id" && -n "$_env_tg_hash" ]]; then
+      TELEGRAM_API_ID_VAL="$_env_tg_id"
+      TELEGRAM_API_HASH_VAL="$_env_tg_hash"
+      TELEGRAM_USER_API_SOURCE="env.aws"
+    else
+      TELEGRAM_API_ID_VAL=""
+      TELEGRAM_API_HASH_VAL=""
+      TELEGRAM_USER_API_SOURCE="none"
+    fi
   fi
   if [[ -z "$TELEGRAM_SESSION_PATH_VAL" ]]; then
     _v="$(_read_env_aws_key TELEGRAM_SESSION_PATH)"
     [[ -n "$_v" ]] && TELEGRAM_SESSION_PATH_VAL="$_v"
-  fi
-  if [[ ("$TELEGRAM_USER_API_SOURCE" == "none") && -n "$TELEGRAM_API_ID_VAL" && -n "$TELEGRAM_API_HASH_VAL" ]]; then
-    TELEGRAM_USER_API_SOURCE="env.aws"
   fi
 fi
 [[ -z "$BRIEF_MAILBOXES_PATH_VAL" ]] && BRIEF_MAILBOXES_PATH_VAL="$BRIEF_MAILBOXES_PATH_DEFAULT"
@@ -543,8 +551,11 @@ done
 printf "BRIEF_MAILBOXES_PATH=%s\n" "$BRIEF_MAILBOXES_PATH_VAL" >> "$RUNTIME_ENV"
 printf "BRIEF_RATE_LIMIT_PER_MINUTE=%s\n" "$BRIEF_RATE_LIMIT_VAL" >> "$RUNTIME_ENV"
 [[ -n "$BRIEF_ICS_URLS_VAL" ]] && printf "BRIEF_ICS_URLS=%s\n" "$BRIEF_ICS_URLS_VAL" >> "$RUNTIME_ENV"
-[[ -n "$TELEGRAM_API_ID_VAL" ]] && printf "TELEGRAM_API_ID=%s\n" "$TELEGRAM_API_ID_VAL" >> "$RUNTIME_ENV"
-[[ -n "$TELEGRAM_API_HASH_VAL" ]] && printf "TELEGRAM_API_HASH=%s\n" "$TELEGRAM_API_HASH_VAL" >> "$RUNTIME_ENV"
+# Write Telethon pair together only (never one without the other).
+if [[ -n "$TELEGRAM_API_ID_VAL" && -n "$TELEGRAM_API_HASH_VAL" ]]; then
+  printf "TELEGRAM_API_ID=%s\n" "$TELEGRAM_API_ID_VAL" >> "$RUNTIME_ENV"
+  printf "TELEGRAM_API_HASH=%s\n" "$TELEGRAM_API_HASH_VAL" >> "$RUNTIME_ENV"
+fi
 printf "TELEGRAM_SESSION_PATH=%s\n" "$TELEGRAM_SESSION_PATH_VAL" >> "$RUNTIME_ENV"
 
 echo "Rendered (source=$SOURCE)"
