@@ -177,7 +177,7 @@ def should_notify_executed_fill(
     """Gate for executed-fill Telegram notifications. Prevents history-sync spam.
     Returns (allowed, reason).
     A) requested_by_admin -> allow (unless already notified, then dedup).
-    B) Order created by this system (signal / parent / protection role / intent) -> allow.
+    B) Order created by this system (signal / parent / protection role / OrderIntent) -> allow.
     C) Else allow only if fill is recent (within RECENT_FILL_WINDOW_SECONDS).
     D) If we already sent notification for this order -> block.
     """
@@ -193,6 +193,12 @@ def should_notify_executed_fill(
         or getattr(order, "parent_order_id", None) is not None
         or is_protection
     )
+    if not is_system_order:
+        # Bot entry fills often have OrderIntent before trade_signal_id is linked
+        # (ALGO_USD 2026-08-06: after 1h window, gate treated intent fills as historical).
+        order_id = str(getattr(order, "exchange_order_id", "") or "")
+        if order_id and _order_has_order_intent(db, order_id):
+            is_system_order = True
     if is_system_order:
         return (True, "system order")
     filled_at = getattr(order, "exchange_update_time", None) or getattr(order, "exchange_create_time", None)
@@ -204,6 +210,52 @@ def should_notify_executed_fill(
     if age_seconds > RECENT_FILL_WINDOW_SECONDS:
         return (False, "historical fill: outside window")
     return (True, "recent fill")
+
+
+def _order_has_order_intent(db: Session, order_id: str) -> bool:
+    """True when ATP wrote an OrderIntent for this exchange order id."""
+    try:
+        from app.models.order_intent import OrderIntent
+
+        intent = (
+            db.query(OrderIntent)
+            .filter(OrderIntent.order_id == str(order_id))
+            .order_by(OrderIntent.id.desc())
+            .first()
+        )
+        return intent is not None
+    except Exception:
+        return False
+
+
+def _persist_execution_notified_at(order_id: str, notified_at: datetime) -> None:
+    """Commit execution_notified_at on its own session so outer sync rollbacks cannot
+    erase the marker after Telegram was already sent (causes infinite ORDER EXECUTED retries).
+    """
+    if SessionLocal is None:
+        return
+    marker_db = SessionLocal()
+    try:
+        marker_db.execute(
+            text(
+                "UPDATE exchange_orders SET execution_notified_at = :ts "
+                "WHERE exchange_order_id = :oid AND execution_notified_at IS NULL"
+            ),
+            {"ts": notified_at, "oid": str(order_id)},
+        )
+        marker_db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Failed to persist execution_notified_at for %s: %s",
+            order_id,
+            exc,
+        )
+        try:
+            marker_db.rollback()
+        except Exception:
+            pass
+    finally:
+        marker_db.close()
 
 
 def _count_open_entry_buy_orders(db: Session, symbol: str) -> int:
@@ -1467,7 +1519,8 @@ class ExchangeSyncService:
                 system_attributed=system_attributed,
             )
             if result:
-                order.execution_notified_at = datetime.now(timezone.utc)
+                notified_at = datetime.now(timezone.utc)
+                order.execution_notified_at = notified_at
                 try:
                     db.flush()
                 except Exception as flush_err:
@@ -1476,6 +1529,8 @@ class ExchangeSyncService:
                         order.exchange_order_id,
                         flush_err,
                     )
+                # Durable marker independent of outer sync transaction rollback.
+                _persist_execution_notified_at(str(order.exchange_order_id), notified_at)
                 fill_dedup.record_fill(
                     order_id=str(order.exchange_order_id),
                     filled_qty=fill_qty,
@@ -5377,7 +5432,11 @@ class ExchangeSyncService:
                         try:
                             from app.services.telegram_notifier import telegram_notifier
                             
-                            total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
+                            total_usd = (
+                                float(order_price_float) * float(executed_qty)
+                                if order_price_float and executed_qty
+                                else 0.0
+                            )
                             # Prefer exchange type for the payload, but labeling uses role + DB type.
                             order_type = order_data.get('order_type', existing.order_type or 'LIMIT')
 
@@ -5403,6 +5462,13 @@ class ExchangeSyncService:
                             trade_signal_id, system_attributed, attr_source = (
                                 ensure_system_order_attribution(db, existing)
                             )
+
+                            notify_price = float(
+                                order_price_float
+                                if order_price_float is not None
+                                else (existing.price or 0) or 0
+                            )
+                            notify_qty = float(current_filled_qty or 0)
                             
                             # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
                             audit_log = make_json_safe({
@@ -5411,9 +5477,9 @@ class ExchangeSyncService:
                                 "side": side or (existing.side.value if existing.side else 'BUY'),
                                 "order_id": order_id,
                                 "status": current_status_str,
-                                "cumulative_quantity": current_filled_qty,
+                                "cumulative_quantity": notify_qty,
                                 "delta_quantity": float(delta_qty),
-                                "price": order_price_float or (existing.price or 0),
+                                "price": notify_price,
                                 "avg_price": existing.avg_price,
                                 "order_type": order_type,
                                 "order_role": inferred_order_role,
@@ -5430,12 +5496,12 @@ class ExchangeSyncService:
                             result = telegram_notifier.send_executed_order(
                                 symbol=order_symbol,
                                 side=side or (existing.side.value if existing.side else 'BUY'),
-                                price=order_price_float or (existing.price or 0),
-                                quantity=current_filled_qty,
-                                total_usd=total_usd,
+                                price=notify_price,
+                                quantity=notify_qty,
+                                total_usd=float(total_usd),
                                 order_id=order_id,
                                 order_type=order_type,
-                                entry_price=entry_price,  # Add entry_price for profit/loss calculation
+                                entry_price=float(entry_price) if entry_price is not None else None,
                                 open_orders_count=open_orders_count,  # Add open orders count for monitoring
                                 order_role=inferred_order_role,  # Use inferred role if order_role is not set
                                 trade_signal_id=trade_signal_id,
@@ -5443,7 +5509,8 @@ class ExchangeSyncService:
                                 system_attributed=system_attributed,
                             )
                             if result:
-                                existing.execution_notified_at = datetime.now(timezone.utc)
+                                notified_at = datetime.now(timezone.utc)
+                                existing.execution_notified_at = notified_at
                                 try:
                                     db.flush()
                                 except Exception as flush_err:
@@ -5452,10 +5519,11 @@ class ExchangeSyncService:
                                         order_id,
                                         flush_err,
                                     )
+                                _persist_execution_notified_at(str(order_id), notified_at)
                                 # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
                                 fill_dedup.record_fill(
                                     order_id=order_id,
-                                    filled_qty=current_filled_qty,
+                                    filled_qty=notify_qty,
                                     status=current_status_str,
                                     notification_sent=True
                                 )
@@ -5784,8 +5852,11 @@ class ExchangeSyncService:
                     try:
                         from app.services.telegram_notifier import telegram_notifier
                         
-                        # Use the proper method for executed orders
-                        total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
+                        total_usd = (
+                            float(order_price_float) * float(executed_qty)
+                            if order_price_float and executed_qty
+                            else 0.0
+                        )
                         order_type = order_data.get('order_type', 'LIMIT')
                         
                         # Count open entry BUY orders for this symbol (SL/TP excluded, see helper)
@@ -5803,6 +5874,9 @@ class ExchangeSyncService:
                         entry_price = None
                         if order_role:
                             entry_price = self._lookup_entry_price_for_protection(db, new_order)
+
+                        notify_price = float(order_price_float or 0)
+                        notify_qty = float(current_filled_qty or 0)
                         
                         # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
                         audit_log = make_json_safe({
@@ -5811,9 +5885,9 @@ class ExchangeSyncService:
                             "side": side,
                             "order_id": order_id,
                             "status": current_status_str,
-                            "cumulative_quantity": current_filled_qty,
+                            "cumulative_quantity": notify_qty,
                             "delta_quantity": float(delta_qty),
-                            "price": order_price_float or 0,
+                            "price": notify_price,
                             "avg_price": order_data.get('avg_price'),
                             "order_type": order_type,
                             "order_role": order_role,
@@ -5830,12 +5904,12 @@ class ExchangeSyncService:
                         result = telegram_notifier.send_executed_order(
                             symbol=symbol,
                             side=side,
-                            price=order_price_float or 0,
-                            quantity=current_filled_qty,
-                            total_usd=total_usd,
+                            price=notify_price,
+                            quantity=notify_qty,
+                            total_usd=float(total_usd),
                             order_id=order_id,
                             order_type=order_type,
-                            entry_price=entry_price,  # Add entry_price for profit/loss calculation
+                            entry_price=float(entry_price) if entry_price is not None else None,
                             open_orders_count=open_orders_count,  # Add open orders count for monitoring
                             order_role=order_role,  # Use inferred role if order_role is not set
                             trade_signal_id=trade_signal_id,
@@ -5843,7 +5917,8 @@ class ExchangeSyncService:
                             system_attributed=system_attributed,
                         )
                         if result:
-                            new_order.execution_notified_at = datetime.now(timezone.utc)
+                            notified_at = datetime.now(timezone.utc)
+                            new_order.execution_notified_at = notified_at
                             try:
                                 db.flush()
                             except Exception as flush_err:
@@ -5852,10 +5927,11 @@ class ExchangeSyncService:
                                     order_id,
                                     flush_err,
                                 )
+                            _persist_execution_notified_at(str(order_id), notified_at)
                             # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
                             fill_dedup.record_fill(
                                 order_id=order_id,
-                                filled_qty=current_filled_qty,
+                                filled_qty=notify_qty,
                                 status=current_status_str,
                                 notification_sent=True
                             )
