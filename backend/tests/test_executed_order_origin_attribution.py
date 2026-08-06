@@ -59,3 +59,23 @@ def test_origin_unlinked_does_not_claim_manual():
     msg = _capture_origin()
     assert "Sin señal vinculada" in msg
     assert "Manual" not in msg
+
+
+def test_type_label_stop_loss_when_role_set_even_if_market():
+    msg = _capture_origin(order_role="STOP_LOSS")
+    assert "📋 Type: Stop Loss" in msg
+    assert "Type: MARKET" not in msg
+    assert "Stop Loss" in msg
+
+
+def test_type_label_take_profit_when_role_set_even_if_market():
+    msg = _capture_origin(order_role="TAKE_PROFIT")
+    assert "📋 Type: Take Profit" in msg
+    assert "Type: MARKET" not in msg
+
+
+def test_type_label_keeps_market_for_orphan_manual_close():
+    msg = _capture_origin()
+    assert "📋 Type: MARKET" in msg
+    assert "Type: Stop Loss" not in msg
+    assert "Type: Take Profit" not in msg
