@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 from app.utils.http_client import http_get, http_post
@@ -71,18 +71,8 @@ def _iso_z(dt: datetime) -> str:
 
 
 def _preview_from_graph_item(item: dict[str, Any]) -> str:
-    body = item.get("body") or {}
-    content = str(body.get("content") or "")
     preview = str(item.get("bodyPreview") or "").strip()
-    if preview:
-        text = preview
-    elif (body.get("contentType") or "").lower() == "html":
-        from app.brief.mail import html_to_text
-
-        text = html_to_text(content)
-    else:
-        text = content
-    text = " ".join(text.split()).strip()
+    text = " ".join(preview.split()).strip()
     return text[:_PREVIEW_CHARS]
 
 
@@ -97,16 +87,14 @@ def fetch_graph_mailbox(
     if not user:
         raise ValueError("incomplete_mailbox_config")
     token = _access_token()
-    # Graph $filter on receivedDateTime; pad slightly handled by caller window.
     since_s = _iso_z(since)
-    # Prefer $orderby + $top; filter by receivedDateTime ge since.
-    # Escape single quotes in filter value.
     filt = f"receivedDateTime ge {since_s}"
     params = {
         "$top": str(max(1, min(int(limit), 50))),
         "$orderby": "receivedDateTime desc",
         "$filter": filt,
-        "$select": "id,subject,from,receivedDateTime,isRead,bodyPreview,body",
+        # bodyPreview only — avoid pulling full HTML bodies over the wire
+        "$select": "id,subject,from,receivedDateTime,isRead,bodyPreview",
     }
     url = _MESSAGES_URL.format(user=quote(user, safe="@."))
     resp = http_get(

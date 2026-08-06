@@ -33,7 +33,6 @@ def test_fetch_graph_mailbox_maps_messages(monkeypatch):
                 "receivedDateTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "isRead": False,
                 "bodyPreview": "preview text",
-                "body": {"contentType": "text", "content": "preview text"},
                 "from": {"emailAddress": {"name": "Alice", "address": "alice@example.com"}},
             }
         ]

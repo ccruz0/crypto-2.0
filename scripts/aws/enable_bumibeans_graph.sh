@@ -50,9 +50,12 @@ else:
 if changed:
     p.write_text(json.dumps(items, indent=2) + "\n", encoding="utf-8")
 PY
+# Keep mailbox JSON readable by backend appuser (uid 10001), same as other secrets.
+sudo chown root:10001 "$MB" 2>/dev/null || true
+sudo chmod 640 "$MB" 2>/dev/null || true
 
 # Ensure Graph env is present via render (SSM triad)
-bash scripts/aws/render_runtime_env.sh
+sudo bash scripts/aws/render_runtime_env.sh || bash scripts/aws/render_runtime_env.sh
 echo "BRIEF_GRAPH_present=$(sudo grep -c '^BRIEF_GRAPH_' secrets/runtime.env || true)"
 
 # Recreate backend to pick up new env
