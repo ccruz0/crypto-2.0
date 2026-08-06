@@ -177,7 +177,7 @@ def should_notify_executed_fill(
     """Gate for executed-fill Telegram notifications. Prevents history-sync spam.
     Returns (allowed, reason).
     A) requested_by_admin -> allow (unless already notified, then dedup).
-    B) Order created by this system (signal / parent / protection role / intent) -> allow.
+    B) Order created by this system (signal / parent / protection role / OrderIntent) -> allow.
     C) Else allow only if fill is recent (within RECENT_FILL_WINDOW_SECONDS).
     D) If we already sent notification for this order -> block.
     """
@@ -193,6 +193,12 @@ def should_notify_executed_fill(
         or getattr(order, "parent_order_id", None) is not None
         or is_protection
     )
+    if not is_system_order:
+        # Bot entry fills often have OrderIntent before trade_signal_id is linked
+        # (ALGO_USD 2026-08-06: after 1h window, gate treated intent fills as historical).
+        order_id = str(getattr(order, "exchange_order_id", "") or "")
+        if order_id and _order_has_order_intent(db, order_id):
+            is_system_order = True
     if is_system_order:
         return (True, "system order")
     filled_at = getattr(order, "exchange_update_time", None) or getattr(order, "exchange_create_time", None)
@@ -204,6 +210,22 @@ def should_notify_executed_fill(
     if age_seconds > RECENT_FILL_WINDOW_SECONDS:
         return (False, "historical fill: outside window")
     return (True, "recent fill")
+
+
+def _order_has_order_intent(db: Session, order_id: str) -> bool:
+    """True when ATP wrote an OrderIntent for this exchange order id."""
+    try:
+        from app.models.order_intent import OrderIntent
+
+        intent = (
+            db.query(OrderIntent)
+            .filter(OrderIntent.order_id == str(order_id))
+            .order_by(OrderIntent.id.desc())
+            .first()
+        )
+        return intent is not None
+    except Exception:
+        return False
 
 
 def _persist_execution_notified_at(order_id: str, notified_at: datetime) -> None:
