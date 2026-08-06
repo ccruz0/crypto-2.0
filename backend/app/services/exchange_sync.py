@@ -4046,11 +4046,12 @@ class ExchangeSyncService:
             )
             _heal_oco_group(existing_tp)
         else:
-            # Dual full-qty triggers cannot coexist on margin (and spot without OCO):
+            # Dual full-qty triggers cannot coexist on spot without native OCO:
             # SL reserves closing qty → TP gets INSUFFICIENT_ACC_BALANCE.
-            # Proactively cancel-SL-first when a live SL already holds qty, then
-            # place TP before recreating SL (same pattern as recover_missing_tps).
-            if active_sl:
+            # Margin allows resting SL+TP together (prod-verified APT/DOGE/ALGO).
+            # On spot: cancel-SL-first when a live SL already holds qty, then
+            # place TP before recreating SL.
+            if active_sl and not is_margin:
                 logger.info(
                     "[SLTP_BALANCE_RECOVERY] parent=%s symbol=%s margin=%s "
                     "cancel-SL-first before TP (avoid dual-trigger lock) sl=%s",
@@ -4071,6 +4072,14 @@ class ExchangeSyncService:
                     )
                     skip_tp_creation = True
                     skip_tp_reason = "sl_qty_locked_cancel_failed"
+            elif active_sl and is_margin:
+                logger.info(
+                    "[SLTP_MARGIN_DUAL] parent=%s symbol=%s placing TP alongside "
+                    "live SL %s (margin allows dual resting triggers)",
+                    order_id,
+                    symbol,
+                    active_sl.exchange_order_id,
+                )
             if not skip_tp_creation:
                 logger.info(
                     "[SLTP_DUAL_ORDER] parent=%s symbol=%s placing TP before SL (avoid balance lock)",
