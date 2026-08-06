@@ -2,6 +2,8 @@ name: Ops — enable Bumi Beans Graph mail
 
 # Flips secrets/brief_mailboxes.json bumibeans to provider=graph + enabled,
 # re-renders runtime.env (Graph triad from SSM), recreates backend-aws, probes /api/brief/mail.
+#
+# AWS-RunShellScript uses /bin/sh — pass a single bash -lc script (no bare set -o pipefail).
 on:
   workflow_dispatch:
 
@@ -24,11 +26,24 @@ jobs:
           INSTANCE_ID: i-087953603011543c5
         run: |
           set -euo pipefail
+          # AWS-RunShellScript uses /bin/sh. Wrap remote body in bash -lc.
+          REMOTE=$(cat <<'EOF'
+          set -euo pipefail
+          cd /home/ubuntu/crypto-2.0
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+          chmod +x scripts/aws/enable_bumibeans_graph.sh
+          bash scripts/aws/enable_bumibeans_graph.sh
+          EOF
+          )
+          PARAMS=$(jq -n --arg cmd "bash -lc $(printf '%q' "$REMOTE")" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
+            --comment "enable Bumi Beans Graph mail" \
+            --parameters "$PARAMS" \
             --timeout-seconds 300 \
-            --parameters 'commands=["set -euo pipefail","cd /home/ubuntu/crypto-2.0","git fetch origin main","git checkout main","git pull --ff-only origin main","chmod +x scripts/aws/enable_bumibeans_graph.sh","bash scripts/aws/enable_bumibeans_graph.sh"]' \
             --region ap-southeast-1 \
             --query Command.CommandId --output text)
           echo "COMMAND_ID=$COMMAND_ID"
@@ -44,20 +59,17 @@ jobs:
             esac
             sleep 5
           done
+          echo "===== STDOUT ====="
           aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID" \
             --region ap-southeast-1 \
-            --query StandardOutputContent --output text
+            --query StandardOutputContent --output text || true
+          echo "===== STDERR ====="
           ERR=$(aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID" \
             --region ap-southeast-1 \
             --query StandardErrorContent --output text || true)
-          echo "STDERR:$ERR"
-          FINAL=$(aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --region ap-southeast-1 \
-            --query Status --output text)
-          test "$FINAL" = "Success"
+          echo "$ERR"
+          test "$STATUS" = "Success"
