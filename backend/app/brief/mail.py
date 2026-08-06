@@ -44,9 +44,16 @@ class MailboxConfig:
     folder: str
     priority: str
     enabled: bool = True
+    provider: str = "imap"  # "imap" | "graph"
 
     def is_ready(self) -> bool:
-        return self.enabled and bool(self.host and self.user and self.password)
+        if not self.enabled:
+            return False
+        provider = (self.provider or "imap").strip().lower()
+        if provider == "graph":
+            # Graph uses app credentials from env; mailbox needs UPN in ``user``.
+            return bool(self.user)
+        return bool(self.host and self.user and self.password)
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -134,12 +141,17 @@ def load_mailboxes() -> list[MailboxConfig]:
                 folder=str(item.get("folder") or "INBOX").strip() or "INBOX",
                 priority=str(item.get("priority") or "").strip(),
                 enabled=enabled,
+                provider=str(item.get("provider") or "imap").strip().lower() or "imap",
             )
         )
     return out
 
 
 def _classify_imap_error(exc: BaseException) -> str:
+    from app.brief.graph_mail import GraphAuthError, GraphConfigMissing, classify_graph_error
+
+    if isinstance(exc, (GraphAuthError, GraphConfigMissing)):
+        return classify_graph_error(exc)
     if isinstance(exc, concurrent.futures.TimeoutError):
         return "timeout"
     if isinstance(exc, socket.gaierror):
@@ -252,6 +264,12 @@ def _fetch_one_account(
     since: datetime,
     limit: int,
 ) -> dict[str, Any]:
+    provider = (cfg.provider or "imap").strip().lower()
+    if provider == "graph":
+        from app.brief.graph_mail import fetch_graph_mailbox
+
+        return fetch_graph_mailbox(user=cfg.user, since=since, limit=limit)
+
     if not cfg.host or not cfg.user:
         raise ValueError("incomplete_mailbox_config")
 

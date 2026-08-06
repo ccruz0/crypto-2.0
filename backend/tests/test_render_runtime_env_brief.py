@@ -68,6 +68,7 @@ def _render_in_fixture(tmp_path: Path, runtime_env_body: str) -> tuple[subproces
 def test_render_script_declares_brief_ssm_and_preserve():
     script_text = RENDER_SCRIPT.read_text(encoding="utf-8")
     assert 'SSM_BRIEF_API_KEY="/automated-trading-platform/prod/brief/api_key"' in script_text
+    assert 'SSM_BRIEF_GRAPH_CLIENT_ID="/automated-trading-platform/prod/brief/graph_client_id"' in script_text
     assert 'SSM_TELEGRAM_API_ID="/automated-trading-platform/prod/telegram/api_id"' in script_text
     assert 'SSM_TELEGRAM_API_HASH="/automated-trading-platform/prod/telegram/api_hash"' in script_text
     for key in (
@@ -75,10 +76,14 @@ def test_render_script_declares_brief_ssm_and_preserve():
         "PRESERVE_BRIEF_MAILBOXES_PATH",
         "PRESERVE_BRIEF_RATE_LIMIT_PER_MINUTE",
         "PRESERVE_BRIEF_ICS_URLS",
+        "PRESERVE_BRIEF_GRAPH_TENANT_ID",
+        "PRESERVE_BRIEF_GRAPH_CLIENT_ID",
+        "PRESERVE_BRIEF_GRAPH_CLIENT_SECRET",
         "PRESERVE_TELEGRAM_API_ID",
         "PRESERVE_TELEGRAM_API_HASH",
         "PRESERVE_TELEGRAM_SESSION_PATH",
         "BRIEF_SOURCE",
+        "BRIEF_GRAPH_SOURCE",
         "TELEGRAM_USER_API_SOURCE",
     ):
         assert key in script_text
