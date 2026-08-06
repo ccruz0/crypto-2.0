@@ -49,7 +49,7 @@ def _access_token() -> str:
         url,
         data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=20,
+        timeout=15,
         calling_module="brief.graph_mail.token",
     )
     if resp.status_code >= 400:
@@ -101,7 +101,7 @@ def fetch_graph_mailbox(
         url,
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         params=params,
-        timeout=20,
+        timeout=15,
         calling_module="brief.graph_mail.messages",
     )
     if resp.status_code >= 400:
