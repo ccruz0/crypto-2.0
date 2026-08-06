@@ -3249,7 +3249,8 @@ class ExchangeSyncService:
         skip_gate: bool = False,
     ):
         """Create SL and TP orders automatically when a LIMIT or MARKET order is filled.
-        When skip_gate=True, do not call assert_exchange_mutation_allowed (caller must gate).
+        When skip_gate=True, skip lock/idempotency gates (caller already gated) but still
+        emit send_sl_tp_orders Telegram when legs are newly created.
         Returns dict with sl_result, tp_result for all code paths."""
         from app.models.watchlist import WatchlistItem
         from app.api.routes_signals import calculate_stop_loss_and_take_profit
@@ -3360,126 +3361,12 @@ class ExchangeSyncService:
                     f"(tp_price={tp_price_override_f}, filled_price={filled_price_f})."
                 )
         
-        # When skip_gate=True, caller (ProtectionOrderService) has already gated and checked idempotency. Do creation only.
-        if skip_gate:
-            return self._create_sl_tp_impl(
-                db=db,
-                symbol=symbol,
-                side_upper=side_upper,
-                filled_price_f=filled_price_f,
-                filled_qty=filled_qty,
-                order_id=order_id,
-                source=source,
-                strict_percentages=strict_percentages,
-                sl_price_override_f=sl_price_override_f,
-                tp_price_override_f=tp_price_override_f,
-            )
-        
-        # If any protection order has already been FILLED, do not recreate protection orders.
-        existing_sl_tp_filled = db.query(ExchangeOrder).filter(
-            ExchangeOrder.parent_order_id == order_id,
-            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
-            ExchangeOrder.status == OrderStatusEnum.FILLED,
-        ).count()
-        if existing_sl_tp_filled > 0:
-            logger.info(
-                f"⚠️ SL/TP already FILLED for order {order_id} ({symbol}): found {existing_sl_tp_filled} filled protection order(s). "
-                f"Skipping SL/TP creation."
-            )
-            return default_result
-
-        if should_skip_rejected_tp_backfill(db, order_id):
-            logger.info(
-                "Skipping SL/TP create for order %s (%s): active SL with REJECTED TP "
-                "(terminal — no further auto backfill)",
-                order_id,
-                symbol,
-            )
-            return {
-                **default_result,
-                "status": "tp_rejected_terminal",
-                "symbol": symbol,
-                "order_id": order_id,
-                "source": source,
-            }
-
-        # Cross-process lock: in-memory locks do not work across backend-aws / canary workers.
-        lock_acquired = try_acquire_sl_tp_creation_lock(db, order_id)
-        if not lock_acquired:
-            existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
-            existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
-            if existing_sl and existing_tp:
-                logger.info(
-                    "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
-                    "Reusing existing protection (SL=%s, TP=%s).",
-                    order_id,
-                    symbol,
-                    existing_sl.exchange_order_id,
-                    existing_tp.exchange_order_id,
-                )
-                return {
-                    "symbol": symbol,
-                    "order_id": order_id,
-                    "source": source,
-                    "status": "already_protected",
-                    "sl_result": {
-                        "order_id": existing_sl.exchange_order_id,
-                        "error": None,
-                    },
-                    "tp_result": {
-                        "order_id": existing_tp.exchange_order_id,
-                        "error": None,
-                    },
-                    "sl_price": _protection_order_price(existing_sl),
-                    "tp_price": _protection_order_price(existing_tp),
-                }
-            if existing_sl or existing_tp:
-                logger.warning(
-                    "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s) with "
-                    "PARTIAL protection (SL=%s, TP=%s). Not treating as complete — caller should retry.",
-                    order_id,
-                    symbol,
-                    existing_sl.exchange_order_id if existing_sl else None,
-                    existing_tp.exchange_order_id if existing_tp else None,
-                )
-                return {
-                    "symbol": symbol,
-                    "order_id": order_id,
-                    "source": source,
-                    "status": "creation_in_progress_partial",
-                    "sl_result": {
-                        "order_id": existing_sl.exchange_order_id if existing_sl else None,
-                        "error": None if existing_sl else "creation_in_progress",
-                    },
-                    "tp_result": {
-                        "order_id": existing_tp.exchange_order_id if existing_tp else None,
-                        "error": None if existing_tp else "creation_in_progress",
-                    },
-                    "sl_price": _protection_order_price(existing_sl) if existing_sl else None,
-                    "tp_price": _protection_order_price(existing_tp) if existing_tp else None,
-                }
-            logger.warning(
-                "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
-                "Skipping to prevent duplicate creation.",
-                order_id,
-                symbol,
-            )
-            return default_result
-
-        # Sync open orders so the single-path service sees latest state before idempotency check
-        try:
-            logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
-            self.sync_open_orders(db)
-            logger.info(f"✅ Open orders synced successfully")
-        except Exception as sync_err:
-            logger.warning(f"⚠️ Failed to sync open orders before creating SL/TP: {sync_err}. Continuing with database check only.")
-        db.expire_all()
-
-        logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
-
         from app.services.live_trading_gate import get_live_trading  # pyright: ignore[reportMissingImports]
 
-        try:
+        # skip_gate=True: caller already gated/idempotency-checked (fill-time signal_monitor).
+        # Still run Telegram below — returning early here was why ALGO fill 5755600492696996146
+        # created live SL+TP with zero send_sl_tp_orders (2026-08-06).
+        if skip_gate:
             impl_result = self._create_sl_tp_impl(
                 db=db,
                 symbol=symbol,
@@ -3492,8 +3379,124 @@ class ExchangeSyncService:
                 sl_price_override_f=sl_price_override_f,
                 tp_price_override_f=tp_price_override_f,
             )
-        finally:
-            release_sl_tp_creation_lock(db, order_id)
+        else:
+            # If any protection order has already been FILLED, do not recreate protection orders.
+            existing_sl_tp_filled = db.query(ExchangeOrder).filter(
+                ExchangeOrder.parent_order_id == order_id,
+                ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                ExchangeOrder.status == OrderStatusEnum.FILLED,
+            ).count()
+            if existing_sl_tp_filled > 0:
+                logger.info(
+                    f"⚠️ SL/TP already FILLED for order {order_id} ({symbol}): found {existing_sl_tp_filled} filled protection order(s). "
+                    f"Skipping SL/TP creation."
+                )
+                return default_result
+
+            if should_skip_rejected_tp_backfill(db, order_id):
+                logger.info(
+                    "Skipping SL/TP create for order %s (%s): active SL with REJECTED TP "
+                    "(terminal — no further auto backfill)",
+                    order_id,
+                    symbol,
+                )
+                return {
+                    **default_result,
+                    "status": "tp_rejected_terminal",
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "source": source,
+                }
+
+            # Cross-process lock: in-memory locks do not work across backend-aws / canary workers.
+            lock_acquired = try_acquire_sl_tp_creation_lock(db, order_id)
+            if not lock_acquired:
+                existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
+                existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
+                if existing_sl and existing_tp:
+                    logger.info(
+                        "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
+                        "Reusing existing protection (SL=%s, TP=%s).",
+                        order_id,
+                        symbol,
+                        existing_sl.exchange_order_id,
+                        existing_tp.exchange_order_id,
+                    )
+                    return {
+                        "symbol": symbol,
+                        "order_id": order_id,
+                        "source": source,
+                        "status": "already_protected",
+                        "sl_result": {
+                            "order_id": existing_sl.exchange_order_id,
+                            "error": None,
+                        },
+                        "tp_result": {
+                            "order_id": existing_tp.exchange_order_id,
+                            "error": None,
+                        },
+                        "sl_price": _protection_order_price(existing_sl),
+                        "tp_price": _protection_order_price(existing_tp),
+                    }
+                if existing_sl or existing_tp:
+                    logger.warning(
+                        "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s) with "
+                        "PARTIAL protection (SL=%s, TP=%s). Not treating as complete — caller should retry.",
+                        order_id,
+                        symbol,
+                        existing_sl.exchange_order_id if existing_sl else None,
+                        existing_tp.exchange_order_id if existing_tp else None,
+                    )
+                    return {
+                        "symbol": symbol,
+                        "order_id": order_id,
+                        "source": source,
+                        "status": "creation_in_progress_partial",
+                        "sl_result": {
+                            "order_id": existing_sl.exchange_order_id if existing_sl else None,
+                            "error": None if existing_sl else "creation_in_progress",
+                        },
+                        "tp_result": {
+                            "order_id": existing_tp.exchange_order_id if existing_tp else None,
+                            "error": None if existing_tp else "creation_in_progress",
+                        },
+                        "sl_price": _protection_order_price(existing_sl) if existing_sl else None,
+                        "tp_price": _protection_order_price(existing_tp) if existing_tp else None,
+                    }
+                logger.warning(
+                    "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
+                    "Skipping to prevent duplicate creation.",
+                    order_id,
+                    symbol,
+                )
+                return default_result
+
+            # Sync open orders so the single-path service sees latest state before idempotency check
+            try:
+                logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
+                self.sync_open_orders(db)
+                logger.info(f"✅ Open orders synced successfully")
+            except Exception as sync_err:
+                logger.warning(f"⚠️ Failed to sync open orders before creating SL/TP: {sync_err}. Continuing with database check only.")
+            db.expire_all()
+
+            logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
+
+            try:
+                impl_result = self._create_sl_tp_impl(
+                    db=db,
+                    symbol=symbol,
+                    side_upper=side_upper,
+                    filled_price_f=filled_price_f,
+                    filled_qty=filled_qty,
+                    order_id=order_id,
+                    source=source,
+                    strict_percentages=strict_percentages,
+                    sl_price_override_f=sl_price_override_f,
+                    tp_price_override_f=tp_price_override_f,
+                )
+            finally:
+                release_sl_tp_creation_lock(db, order_id)
 
         sl_result = impl_result.get("sl_result")
         tp_result = impl_result.get("tp_result")
