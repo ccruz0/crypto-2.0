@@ -91,3 +91,31 @@ def test_fetch_mail_routes_graph_provider(tmp_path, monkeypatch):
     assert [a["id"] for a in out["accounts"]] == ["bumibeans"]
     assert out["accounts"][0]["count"] == 1
     assert out["errors"] == []
+
+
+def test_classify_graph_error_preserves_http_detail():
+    from app.brief.graph_mail import GraphAuthError, GraphConfigMissing, classify_graph_error
+
+    assert classify_graph_error(GraphConfigMissing("x")) == "graph_config_missing"
+    assert (
+        classify_graph_error(GraphAuthError("graph_messages_http_403:Authorization_RequestDenied"))
+        == "graph_messages_http_403:Authorization_RequestDenied"
+    )
+    assert classify_graph_error(GraphAuthError("other")) == "auth_failed"
+
+
+def test_graph_http_error_parses_aad_and_graph_codes():
+    from app.brief.graph_mail import _graph_http_error
+
+    aad = MagicMock()
+    aad.status_code = 401
+    aad.json.return_value = {"error": "invalid_client", "error_description": "secret expired"}
+    assert _graph_http_error("graph_token", aad) == "graph_token_http_401:invalid_client"
+
+    graph = MagicMock()
+    graph.status_code = 403
+    graph.json.return_value = {"error": {"code": "Authorization_RequestDenied", "message": "x"}}
+    assert (
+        _graph_http_error("graph_messages", graph)
+        == "graph_messages_http_403:Authorization_RequestDenied"
+    )

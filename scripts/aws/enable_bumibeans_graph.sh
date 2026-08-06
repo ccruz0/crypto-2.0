@@ -109,6 +109,8 @@ if 'bumibeans' in ids:
     print('bumibeans_count=', acct.get('count'))
 if errs:
     print('ERROR: bumibeans present in errors (Graph auth/consent?)', file=sys.stderr)
+    for e in errs:
+        print(f"  detail={e}", file=sys.stderr)
     sys.exit(1)
 if 'bumibeans' not in ids:
     print('ERROR: bumibeans missing from accounts', file=sys.stderr)

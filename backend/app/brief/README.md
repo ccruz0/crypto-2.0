@@ -64,6 +64,25 @@ Incomplete rows (empty host/user/password) and `"enabled": false` are skipped (n
 - **peluqueria**: correct Hostinger mailbox password
 - **hotmail-fw**: Outlook.com blocks basic IMAP auth — forward into an IMAP inbox instead
 - **bumibeans**: Microsoft 365 via Graph (`"provider": "graph"`) + `BRIEF_GRAPH_*` env from SSM
+
+### Bumi Beans Graph (Entra app-only)
+
+Mailbox `carlos.cruz@bumibeans.com` uses client-credentials against Microsoft Graph.
+
+1. Entra app registration in the **Bumi Beans** tenant (same tenant as the mailbox UPN).
+2. Application permission **`Mail.Read`** (Microsoft Graph) — not delegated.
+3. **Admin consent** granted for that permission.
+4. Client secret valid; values in SSM:
+   - `/automated-trading-platform/prod/brief/graph_tenant_id`
+   - `/automated-trading-platform/prod/brief/graph_client_id`
+   - `/automated-trading-platform/prod/brief/graph_client_secret`
+5. Ops enable: Actions → **Ops — enable Bumi Beans Graph mail**.
+
+Probe errors (examples):
+- `graph_token_http_401:invalid_client` → wrong client id/secret
+- `graph_token_http_400:unauthorized_client` / `invalid_grant` → app/tenant mismatch
+- `graph_messages_http_403:Authorization_RequestDenied` → missing **Mail.Read** admin consent
+- `graph_messages_http_404` → wrong UPN / user not in tenant
 - **brickeny**: fill host/user/password when ready
 
 ### Agent runner
