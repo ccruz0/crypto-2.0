@@ -425,3 +425,13 @@ fi
 
 echo "Rendered (source=$SOURCE)"
 echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ "$HAS_GITHUB_PAT" == "YES" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL GITHUB_AUTH_MODE=$GITHUB_AUTH_MODE ALLOW_LEGACY_GITHUB_PAT=$([[ "$GITHUB_AUTH_MODE" == "legacy_transition" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM=$([[ -n "$EXCHANGE_API_KEY_VAL" && -n "$EXCHANGE_API_SECRET_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM_SOURCE=$EXCHANGE_CREDS_SOURCE JARVIS_4B_PROPOSALS_ENABLED=$JARVIS_4B_PROPOSALS_ENABLED JARVIS_4B_SOURCE=$JARVIS_4B_SOURCE JARVIS_PHASE5_SOURCE=$JARVIS_PHASE5_SOURCE JARVIS_PATCH_APPLY_ENABLED=$JARVIS_PATCH_APPLY_ENABLED JARVIS_PR_CREATION_ENABLED=$JARVIS_PR_CREATION_ENABLED JARVIS_GITHUB_WRITE_ENABLED=$JARVIS_GITHUB_WRITE_ENABLED JARVIS_REQUIRE_DOUBLE_APPROVAL=$JARVIS_REQUIRE_DOUBLE_APPROVAL"
+
+# umask 077 writes 600 ubuntu:ubuntu; backend appuser (uid 10001) cannot read the
+# bind-mounted file, so pydantic Settings()/Telegram refresh raises PermissionError.
+# Match entrypoint: root:appuser 640 when docker is available; else chmod 640 for host.
+chmod 640 "$RUNTIME_ENV" 2>/dev/null || true
+if command -v docker >/dev/null 2>&1; then
+  docker exec -u root automated-trading-platform-backend-aws-1 \
+    sh -c 'chown root:appuser /app/secrets/runtime.env && chmod 640 /app/secrets/runtime.env' \
+    >/dev/null 2>&1 || true
+fi

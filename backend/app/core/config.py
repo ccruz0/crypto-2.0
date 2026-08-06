@@ -1,6 +1,34 @@
+import logging
 import os
+from typing import Optional, Tuple
+
 from pydantic_settings import BaseSettings
-from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_ENV_FILES = (".env", "backend/.env", "secrets/runtime.env")
+
+
+def readable_env_files(
+    candidates: Tuple[str, ...] = _DEFAULT_ENV_FILES,
+) -> Tuple[str, ...]:
+    """Return env files the process can open.
+
+    ``secrets/runtime.env`` is often host-owned ``600`` after render (umask 077).
+    Container workers run as ``appuser`` and cannot read it; pydantic-settings then
+    raises ``PermissionError`` on every ``Settings()`` (breaks Telegram refresh and
+    signal_monitor). Entrypoint/compose already inject values into ``os.environ``,
+    so skipping unreadable files is safe.
+    """
+    readable: list[str] = []
+    for path in candidates:
+        try:
+            if os.path.isfile(path) and os.access(path, os.R_OK):
+                readable.append(path)
+        except OSError:
+            continue
+    return tuple(readable)
+
 
 # Resolve TELEGRAM_BOT_TOKEN from env or by decrypting TELEGRAM_BOT_TOKEN_ENCRYPTED
 # (secrets/runtime.env). Must run before Settings() so token is in os.environ.
@@ -85,12 +113,27 @@ class Settings(BaseSettings):
     TELEGRAM_CLAW_CHAT_ID: Optional[str] = None
 
     class Config:
-        env_file = (".env", "backend/.env", "secrets/runtime.env")
+        # Do not bake env_file paths here — permissions change after render.
+        # Callers use load_settings() / Settings(_env_file=readable_env_files()).
+        env_file = None
         extra = "ignore"  # Ignore extra environment variables
 
 
+def load_settings() -> Settings:
+    """Build Settings from process env plus currently-readable env files only."""
+    env_files = readable_env_files()
+    return Settings(_env_file=env_files or None)
+
+
 _inject_telegram_token_from_encrypted()
-settings = Settings()
+_env_files = readable_env_files()
+if len(_env_files) < len(_DEFAULT_ENV_FILES):
+    skipped = [p for p in _DEFAULT_ENV_FILES if p not in _env_files]
+    logger.warning(
+        "Settings skipping unreadable env file(s) %s (using process env / readable files only)",
+        skipped,
+    )
+settings = load_settings()
 
 # Validate SECRET_KEY is set (critical for security)
 # For local/test: auto-generate if missing so scripts run without warnings
