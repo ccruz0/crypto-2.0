@@ -1265,17 +1265,50 @@ class ExchangeSyncService:
                 )
         return repaired
     
-    def _infer_protection_order_role(self, order: ExchangeOrder) -> Optional[str]:
-        """Return TAKE_PROFIT / STOP_LOSS when role or order_type indicates protection."""
-        role = (getattr(order, "order_role", None) or "").upper()
-        if role in ("TAKE_PROFIT", "STOP_LOSS"):
-            return role
-        order_type = (getattr(order, "order_type", None) or "").upper()
-        if order_type in ("TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT_MARKET"):
-            return "TAKE_PROFIT"
-        if order_type in ("STOP_LOSS", "STOP_LIMIT", "STOP_MARKET", "STOP_LOSS_LIMIT"):
-            return "STOP_LOSS"
-        return None
+    def _infer_protection_order_role(
+        self,
+        order: ExchangeOrder,
+        order_data: Optional[Dict[str, Any]] = None,
+        db: Optional[Session] = None,
+    ) -> Optional[str]:
+        """Return TAKE_PROFIT / STOP_LOSS when role, type, contingency, or parent says so.
+
+        Exchange history often reports the fill as MARKET while DB still has
+        STOP_LIMIT / TAKE_PROFIT_LIMIT and/or order_role. Spot children of advanced
+        triggers may only link via parent_order_id to the contingency parent.
+        """
+        from app.utils.execution_origin import infer_protection_role
+
+        contingency = None
+        if isinstance(order_data, dict):
+            contingency = (
+                order_data.get("contingency_type")
+                or order_data.get("contingencyType")
+            )
+            from_payload = protection_role_from_order_data(order_data)
+            if from_payload:
+                return from_payload
+
+        parent_role = None
+        parent_type = None
+        parent_id = getattr(order, "parent_order_id", None)
+        if parent_id and db is not None:
+            parent = (
+                db.query(ExchangeOrder)
+                .filter(ExchangeOrder.exchange_order_id == str(parent_id))
+                .first()
+            )
+            if parent is not None:
+                parent_role = getattr(parent, "order_role", None)
+                parent_type = getattr(parent, "order_type", None)
+
+        return infer_protection_role(
+            order_role=getattr(order, "order_role", None),
+            order_type=getattr(order, "order_type", None),
+            contingency_type=contingency,
+            parent_order_role=parent_role,
+            parent_order_type=parent_type,
+        )
 
     def _lookup_entry_price_for_protection(
         self, db: Session, order: ExchangeOrder
@@ -1388,7 +1421,7 @@ class ExchangeSyncService:
                 db, order
             )
 
-            inferred_role = self._infer_protection_order_role(order)
+            inferred_role = self._infer_protection_order_role(order, db=db)
             entry_price = None
             if inferred_role:
                 entry_price = self._lookup_entry_price_for_protection(db, order)
@@ -5336,72 +5369,17 @@ class ExchangeSyncService:
                             from app.services.telegram_notifier import telegram_notifier
                             
                             total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
+                            # Prefer exchange type for the payload, but labeling uses role + DB type.
                             order_type = order_data.get('order_type', existing.order_type or 'LIMIT')
-                            order_type_upper = order_type.upper()
-                            
-                            # If this is a SL or TP order, find the original entry order to calculate profit/loss
+
+                            # Infer SL/TP from DB role/type, contingency, or trigger parent —
+                            # not only from exchange MARKET (common for advanced trigger fills).
+                            inferred_order_role = self._infer_protection_order_role(
+                                existing, order_data=order_data, db=db
+                            )
                             entry_price = None
-                            if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
-                                current_side = side or (existing.side.value if existing.side else 'BUY')
-                                
-                                # First try to find by parent_order_id (most reliable)
-                                if existing.parent_order_id:
-                                    parent_order = db.query(ExchangeOrder).filter(
-                                        ExchangeOrder.exchange_order_id == existing.parent_order_id
-                                    ).first()
-                                    if parent_order:
-                                        entry_price = parent_order.avg_price if parent_order.avg_price else parent_order.price
-                                        logger.info(f"Found entry price via parent_order_id for SL/TP order {order_id}: {entry_price} from parent {existing.parent_order_id}")
-                                
-                                # If parent_order_id not found, search for most recent BUY order
-                                if not entry_price and current_side == "SELL":
-                                    # This is selling (TP/SL after BUY), so find the original BUY order
-                                    # Look for BUY orders created before this TP/SL order
-                                    if existing.exchange_create_time:
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "BUY",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id,  # Not the current order
-                                            ExchangeOrder.exchange_create_time <= existing.exchange_create_time  # Created before TP/SL
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    else:
-                                        # Fallback without time constraint
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "BUY",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    
-                                    if original_order:
-                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
-                                        logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from BUY order {original_order.exchange_order_id}")
-                                elif not entry_price and current_side == "BUY":
-                                    # This is buying (SL/TP after SELL for short positions), find original SELL order
-                                    if existing.exchange_create_time:
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "SELL",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id,
-                                            ExchangeOrder.exchange_create_time <= existing.exchange_create_time
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    else:
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "SELL",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    
-                                    if original_order:
-                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
-                                        logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from SELL order {original_order.exchange_order_id}")
+                            if inferred_order_role:
+                                entry_price = self._lookup_entry_price_for_protection(db, existing)
                             
                             # Count open entry BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED).
                             # Exclude protective SL/TP orders: for SHORT positions they are BUY-side
@@ -5409,17 +5387,6 @@ class ExchangeSyncService:
                             # ORDER EXECUTED warning ("Open Orders: 22").
                             order_symbol = symbol or existing.symbol
                             open_orders_count = _count_open_entry_buy_orders(db, order_symbol)
-                            
-                            # Infer order_role from order_type if order_role is not set
-                            # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
-                            # Do NOT mislabel BUY orders as Stop Loss
-                            inferred_order_role = existing.order_role
-                            if not inferred_order_role and order_type_upper:
-                                if order_type_upper == 'STOP_LIMIT':
-                                    inferred_order_role = 'STOP_LOSS'
-                                elif order_type_upper == 'TAKE_PROFIT_LIMIT':
-                                    inferred_order_role = 'TAKE_PROFIT'
-                                # For other order types, leave as None (don't mislabel)
 
                             # Attribute bot orders before Telegram (TradeSignal and/or OrderIntent).
                             # Without OrderIntent fallback, bot sells were labeled "Manual"
@@ -5811,39 +5778,6 @@ class ExchangeSyncService:
                         # Use the proper method for executed orders
                         total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
                         order_type = order_data.get('order_type', 'LIMIT')
-                        order_type_upper = order_type.upper()
-                        
-                        # If this is a SL or TP order, find the original entry order to calculate profit/loss
-                        entry_price = None
-                        if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
-                            # Find the most recent BUY or SELL order (depending on side) for this symbol
-                            # For SL/TP after BUY: find last BUY order
-                            # For SL/TP after SELL: find last SELL order
-                            # SL/TP after BUY means we're selling (SELL), so find last BUY
-                            # SL/TP after SELL means we're buying (BUY), so find last SELL
-                            if side == "SELL":
-                                # This is selling, so find the original BUY order
-                                original_order = db.query(ExchangeOrder).filter(
-                                    ExchangeOrder.symbol == symbol,
-                                    ExchangeOrder.side == "BUY",
-                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                    ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                    ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                                ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                            else:  # side == "BUY"
-                                # This is buying, so find the original SELL order (for short positions)
-                                original_order = db.query(ExchangeOrder).filter(
-                                    ExchangeOrder.symbol == symbol,
-                                    ExchangeOrder.side == "SELL",
-                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                    ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                    ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                                ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                            
-                            if original_order:
-                                # Use avg_price if available (more accurate for MARKET orders), otherwise price
-                                entry_price = float(original_order.avg_price) if original_order.avg_price else float(original_order.price) if original_order.price else None
-                                logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from order {original_order.exchange_order_id}")
                         
                         # Count open entry BUY orders for this symbol (SL/TP excluded, see helper)
                         open_orders_count = _count_open_entry_buy_orders(db, symbol)
@@ -5852,19 +5786,14 @@ class ExchangeSyncService:
                         trade_signal_id, system_attributed, attr_source = (
                             ensure_system_order_attribution(db, new_order)
                         )
-                        order_role = new_order.order_role
                         parent_order_id = new_order.parent_order_id
-                        
-                        # Infer order_role from order_type if order_role is not set
-                        # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
-                        # Do NOT mislabel BUY orders as Stop Loss
-                        if not order_role and order_type:
-                            order_type_upper = order_type.upper()
-                            if order_type_upper == 'STOP_LIMIT':
-                                order_role = 'STOP_LOSS'
-                            elif order_type_upper == 'TAKE_PROFIT_LIMIT':
-                                order_role = 'TAKE_PROFIT'
-                            # For other order types, leave as None (don't mislabel)
+                        # Prefer stored role / contingency / DB trigger type over raw MARKET.
+                        order_role = self._infer_protection_order_role(
+                            new_order, order_data=order_data, db=db
+                        )
+                        entry_price = None
+                        if order_role:
+                            entry_price = self._lookup_entry_price_for_protection(db, new_order)
                         
                         # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
                         audit_log = make_json_safe({

@@ -1082,13 +1082,16 @@ class TelegramNotifier:
             # Truly unlinked. Do not assert "Manual" — sync can also miss bot links.
             origin_text = "\n🎯 Origen: ❔ Sin señal vinculada"
         
-        # Build order type text - include role (TP/SL) if available
-        if order_role:
-            role_emoji = "🚀" if order_role == "TAKE_PROFIT" else "🛑" if order_role == "STOP_LOSS" else ""
-            role_text = "Take Profit" if order_role == "TAKE_PROFIT" else "Stop Loss" if order_role == "STOP_LOSS" else order_role
-            order_type_text = f"\n📋 Type: {order_type or 'LIMIT'} ({role_emoji} {role_text})"
-        else:
-            order_type_text = f"\n📋 Type: {order_type}" if order_type else "\n📋 Type: LIMIT"
+        # Type line: prefer Stop Loss / Take Profit over exchange MARKET/LIMIT.
+        # Crypto.com often reports protection fills as MARKET (spot child / trigger
+        # conversion); order_role or trigger order_type is the truth for labeling.
+        from app.utils.execution_origin import format_executed_fill_type_label
+
+        type_label = format_executed_fill_type_label(
+            order_type=order_type,
+            order_role=order_role,
+        )
+        order_type_text = f"\n📋 Type: {type_label}"
         
         # Add open orders count information (entry BUY orders only; SL/TP excluded by caller)
         open_orders_text = ""
