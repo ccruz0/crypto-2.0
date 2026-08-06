@@ -13,11 +13,6 @@ on:
         options:
           - "false"
           - "true"
-  push:
-    branches:
-      - main
-    paths:
-      - '.ops-run-pull-compose-frontend'
 
 permissions:
   contents: read
