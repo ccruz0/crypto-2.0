@@ -579,6 +579,14 @@ class TestMaybeNotifyExecutedFillTelegram:
             "app.services.exchange_sync.link_system_trade_signal_to_order",
             return_value=False,
         ), patch(
+            "app.services.exchange_sync.ensure_system_order_attribution",
+            return_value=(None, True, "parent_order_id"),
+        ), patch(
+            "app.services.exchange_sync._claim_order_executed_telegram",
+            return_value=True,
+        ), patch(
+            "app.services.exchange_sync._persist_execution_notified_at",
+        ), patch(
             "app.services.telegram_notifier.telegram_notifier",
             notifier,
         ), patch.object(
@@ -650,6 +658,8 @@ class TestProtectionFillGate:
     def test_old_manual_entry_blocked(self):
         from datetime import timedelta
 
+        from tests.test_exchange_sync_executed_fill_gate import _db_without_intent
+
         now = datetime.now(timezone.utc)
         filled_at = now - timedelta(seconds=RECENT_FILL_WINDOW_SECONDS + 60)
         order = MagicMock()
@@ -658,10 +668,11 @@ class TestProtectionFillGate:
         order.parent_order_id = None
         order.order_role = None
         order.order_type = "LIMIT"
+        order.exchange_order_id = "manual-old"
         order.exchange_update_time = filled_at
         order.exchange_create_time = filled_at
         allowed, reason = should_notify_executed_fill(
-            db=MagicMock(),
+            db=_db_without_intent(),
             order=order,
             now_utc=now,
             source="sync_order_history",

@@ -228,14 +228,72 @@ def _order_has_order_intent(db: Session, order_id: str) -> bool:
         return False
 
 
+def _claim_order_executed_telegram(
+    order_id: str,
+    *,
+    symbol: Optional[str] = None,
+) -> bool:
+    """Claim once-per-order right to send ORDER EXECUTED Telegram.
+
+    Uses a dedicated SessionLocal so the claim commits independently of the outer
+    sync transaction (which may later roll back or sit idle-in-transaction).
+    """
+    oid = str(order_id or "").strip()
+    if not oid:
+        return True
+    if SessionLocal is None:
+        from app.services.telegram_event_dedup import claim_telegram_event
+
+        return claim_telegram_event(
+            None,
+            f"tg:order_executed:{oid}",
+            symbol=symbol,
+            ttl_minutes=24 * 60,
+            action="order_executed",
+        )
+    claim_db = SessionLocal()
+    try:
+        from app.services.telegram_event_dedup import claim_telegram_event
+
+        return claim_telegram_event(
+            claim_db,
+            f"tg:order_executed:{oid}",
+            symbol=symbol,
+            ttl_minutes=24 * 60,
+            action="order_executed",
+        )
+    except Exception as exc:
+        logger.warning(
+            "order_executed telegram claim failed for %s: %s; allowing send",
+            oid,
+            exc,
+        )
+        try:
+            claim_db.rollback()
+        except Exception:
+            pass
+        return True
+    finally:
+        claim_db.close()
+
+
 def _persist_execution_notified_at(order_id: str, notified_at: datetime) -> None:
     """Commit execution_notified_at on its own session so outer sync rollbacks cannot
     erase the marker after Telegram was already sent (causes infinite ORDER EXECUTED retries).
+
+    Must NOT be preceded by db.flush() on the outer sync session for the same row:
+    that holds a row lock and deadlocks this UPDATE (HBAR SL 73817490102060532,
+    2026-08-06: Telegram sent, then idle-in-transaction blocked durable mark → 5× spam).
     """
     if SessionLocal is None:
         return
     marker_db = SessionLocal()
     try:
+        # Fail fast instead of hanging behind an idle outer transaction.
+        try:
+            marker_db.execute(text("SET LOCAL lock_timeout = '3s'"))
+        except Exception:
+            pass
         marker_db.execute(
             text(
                 "UPDATE exchange_orders SET execution_notified_at = :ts "
@@ -256,6 +314,26 @@ def _persist_execution_notified_at(order_id: str, notified_at: datetime) -> None
             pass
     finally:
         marker_db.close()
+
+
+def _mark_execution_notified_after_send(
+    order: ExchangeOrder,
+    *,
+    fill_dedup: Any,
+    fill_qty: float,
+    fill_status: str,
+) -> None:
+    """After a successful ORDER EXECUTED Telegram: durable mark + fill_dedup, no outer flush."""
+    notified_at = datetime.now(timezone.utc)
+    order.execution_notified_at = notified_at
+    # Intentionally skip db.flush() — see _persist_execution_notified_at docstring.
+    _persist_execution_notified_at(str(order.exchange_order_id), notified_at)
+    fill_dedup.record_fill(
+        order_id=str(order.exchange_order_id),
+        filled_qty=fill_qty,
+        status=fill_status,
+        notification_sent=True,
+    )
 
 
 def _count_open_entry_buy_orders(db: Session, symbol: str) -> int:
@@ -1503,6 +1581,21 @@ class ExchangeSyncService:
             )
             logger.info("[FILL_NOTIFICATION] %s", json.dumps(audit_log))
 
+            if not _claim_order_executed_telegram(
+                str(order.exchange_order_id), symbol=order.symbol
+            ):
+                logger.info(
+                    "Skipping fill Telegram for %s: order_executed claim denied",
+                    order.exchange_order_id,
+                )
+                fill_dedup.record_fill(
+                    order_id=str(order.exchange_order_id),
+                    filled_qty=fill_qty,
+                    status=fill_status,
+                    notification_sent=False,
+                )
+                return False
+
             result = telegram_notifier.send_executed_order(
                 symbol=order.symbol,
                 side=side,
@@ -1519,23 +1612,11 @@ class ExchangeSyncService:
                 system_attributed=system_attributed,
             )
             if result:
-                notified_at = datetime.now(timezone.utc)
-                order.execution_notified_at = notified_at
-                try:
-                    db.flush()
-                except Exception as flush_err:
-                    logger.warning(
-                        "Failed to flush execution_notified_at for %s: %s",
-                        order.exchange_order_id,
-                        flush_err,
-                    )
-                # Durable marker independent of outer sync transaction rollback.
-                _persist_execution_notified_at(str(order.exchange_order_id), notified_at)
-                fill_dedup.record_fill(
-                    order_id=str(order.exchange_order_id),
-                    filled_qty=fill_qty,
-                    status=fill_status,
-                    notification_sent=True,
+                _mark_execution_notified_after_send(
+                    order,
+                    fill_dedup=fill_dedup,
+                    fill_qty=fill_qty,
+                    fill_status=fill_status,
                 )
                 logger.info(
                     "Sent Telegram notification for executed order: %s %s - %s (source=%s reason=%s)",
@@ -5496,71 +5577,85 @@ class ExchangeSyncService:
                             })
                             logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
 
-                            result = telegram_notifier.send_executed_order(
-                                symbol=order_symbol,
-                                side=side or (existing.side.value if existing.side else 'BUY'),
-                                price=notify_price,
-                                quantity=notify_qty,
-                                total_usd=float(total_usd),
-                                order_id=order_id,
-                                order_type=order_type,
-                                entry_price=float(entry_price) if entry_price is not None else None,
-                                open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                                order_role=inferred_order_role,  # Use inferred role if order_role is not set
-                                trade_signal_id=trade_signal_id,
-                                parent_order_id=existing.parent_order_id,
-                                system_attributed=system_attributed,
-                            )
-                            if result:
-                                notified_at = datetime.now(timezone.utc)
-                                existing.execution_notified_at = notified_at
-                                try:
-                                    db.flush()
-                                except Exception as flush_err:
-                                    logger.warning(
-                                        "Failed to flush execution_notified_at for %s: %s",
-                                        order_id,
-                                        flush_err,
-                                    )
-                                _persist_execution_notified_at(str(order_id), notified_at)
-                                # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
+                            if not _claim_order_executed_telegram(
+                                str(order_id), symbol=order_symbol
+                            ):
+                                logger.info(
+                                    "Skipping fill Telegram for %s: order_executed claim denied",
+                                    order_id,
+                                )
                                 fill_dedup.record_fill(
                                     order_id=order_id,
                                     filled_qty=notify_qty,
                                     status=current_status_str,
-                                    notification_sent=True
+                                    notification_sent=False,
                                 )
-                                logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id} (reason: {notify_reason})")
-                                
-                                # Emit ORDER_EXECUTED event
-                                try:
-                                    from app.services.signal_monitor import _emit_lifecycle_event
-                                    from app.services.strategy_profiles import resolve_strategy_profile
-                                    from app.models.watchlist import WatchlistItem
-                                    
-                                    # Resolve strategy for event emission
-                                    watchlist_item = db.query(WatchlistItem).filter(
-                                        WatchlistItem.symbol == (symbol or existing.symbol)
-                                    ).first()
-                                    strategy_type, risk_approach = resolve_strategy_profile(
-                                        symbol or existing.symbol, db, watchlist_item
-                                    )
-                                    strategy_key = build_strategy_key(strategy_type, risk_approach)
-                                    
-                                    _emit_lifecycle_event(
-                                        db=db,
-                                        symbol=symbol or existing.symbol,
-                                        strategy_key=strategy_key,
-                                        side=side or (existing.side.value if existing.side else 'BUY'),
-                                        price=order_price_float or (existing.avg_price if existing.avg_price else existing.price) or 0,
-                                        event_type="ORDER_EXECUTED",
-                                        event_reason=f"order_id={order_id}, filled_qty={current_filled_qty}, status={current_status_str}",
-                                        order_id=order_id,
-                                    )
-                                except Exception as emit_err:
-                                    logger.warning(f"Failed to emit ORDER_EXECUTED event for {order_id}: {emit_err}", exc_info=True)
                             else:
-                                logger.warning(f"Failed to send Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
+                                result = telegram_notifier.send_executed_order(
+                                    symbol=order_symbol,
+                                    side=side or (existing.side.value if existing.side else 'BUY'),
+                                    price=notify_price,
+                                    quantity=notify_qty,
+                                    total_usd=float(total_usd),
+                                    order_id=order_id,
+                                    order_type=order_type,
+                                    entry_price=float(entry_price) if entry_price is not None else None,
+                                    open_orders_count=open_orders_count,
+                                    order_role=inferred_order_role,
+                                    trade_signal_id=trade_signal_id,
+                                    parent_order_id=existing.parent_order_id,
+                                    system_attributed=system_attributed,
+                                )
+                                if result:
+                                    _mark_execution_notified_after_send(
+                                        existing,
+                                        fill_dedup=fill_dedup,
+                                        fill_qty=notify_qty,
+                                        fill_status=current_status_str,
+                                    )
+                                    logger.info(
+                                        f"Sent Telegram notification for executed order: "
+                                        f"{symbol or existing.symbol} "
+                                        f"{side or (existing.side.value if existing.side else 'BUY')} "
+                                        f"- {order_id} (reason: {notify_reason})"
+                                    )
+
+                                    # Emit ORDER_EXECUTED event
+                                    try:
+                                        from app.services.signal_monitor import _emit_lifecycle_event
+                                        from app.services.strategy_profiles import resolve_strategy_profile
+                                        from app.models.watchlist import WatchlistItem
+
+                                        watchlist_item = db.query(WatchlistItem).filter(
+                                            WatchlistItem.symbol == (symbol or existing.symbol)
+                                        ).first()
+                                        strategy_type, risk_approach = resolve_strategy_profile(
+                                            symbol or existing.symbol, db, watchlist_item
+                                        )
+                                        strategy_key = build_strategy_key(strategy_type, risk_approach)
+
+                                        _emit_lifecycle_event(
+                                            db=db,
+                                            symbol=symbol or existing.symbol,
+                                            strategy_key=strategy_key,
+                                            side=side or (existing.side.value if existing.side else 'BUY'),
+                                            price=order_price_float or (existing.avg_price if existing.avg_price else existing.price) or 0,
+                                            event_type="ORDER_EXECUTED",
+                                            event_reason=f"order_id={order_id}, filled_qty={current_filled_qty}, status={current_status_str}",
+                                            order_id=order_id,
+                                        )
+                                    except Exception as emit_err:
+                                        logger.warning(
+                                            f"Failed to emit ORDER_EXECUTED event for {order_id}: {emit_err}",
+                                            exc_info=True,
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"Failed to send Telegram notification for executed order: "
+                                        f"{symbol or existing.symbol} "
+                                        f"{side or (existing.side.value if existing.side else 'BUY')} "
+                                        f"- {order_id}"
+                                    )
                         except Exception as telegram_err:
                             logger.warning(f"Failed to send Telegram notification: {telegram_err}")
                     else:
@@ -5903,44 +5998,50 @@ class ExchangeSyncService:
                             "handler": "exchange_sync.new_order"
                         })
                         logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
-                        
-                        result = telegram_notifier.send_executed_order(
-                            symbol=symbol,
-                            side=side,
-                            price=notify_price,
-                            quantity=notify_qty,
-                            total_usd=float(total_usd),
-                            order_id=order_id,
-                            order_type=order_type,
-                            entry_price=float(entry_price) if entry_price is not None else None,
-                            open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                            order_role=order_role,  # Use inferred role if order_role is not set
-                            trade_signal_id=trade_signal_id,
-                            parent_order_id=parent_order_id,
-                            system_attributed=system_attributed,
-                        )
-                        if result:
-                            notified_at = datetime.now(timezone.utc)
-                            new_order.execution_notified_at = notified_at
-                            try:
-                                db.flush()
-                            except Exception as flush_err:
-                                logger.warning(
-                                    "Failed to flush execution_notified_at for %s: %s",
-                                    order_id,
-                                    flush_err,
-                                )
-                            _persist_execution_notified_at(str(order_id), notified_at)
-                            # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
+
+                        if not _claim_order_executed_telegram(str(order_id), symbol=symbol):
+                            logger.info(
+                                "Skipping fill Telegram for %s: order_executed claim denied",
+                                order_id,
+                            )
                             fill_dedup.record_fill(
                                 order_id=order_id,
                                 filled_qty=notify_qty,
                                 status=current_status_str,
-                                notification_sent=True
+                                notification_sent=False,
                             )
-                            logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id} (reason: {notify_reason})")
                         else:
-                            logger.warning(f"Failed to send Telegram notification for executed order: {symbol} {side} - {order_id}")
+                            result = telegram_notifier.send_executed_order(
+                                symbol=symbol,
+                                side=side,
+                                price=notify_price,
+                                quantity=notify_qty,
+                                total_usd=float(total_usd),
+                                order_id=order_id,
+                                order_type=order_type,
+                                entry_price=float(entry_price) if entry_price is not None else None,
+                                open_orders_count=open_orders_count,
+                                order_role=order_role,
+                                trade_signal_id=trade_signal_id,
+                                parent_order_id=parent_order_id,
+                                system_attributed=system_attributed,
+                            )
+                            if result:
+                                _mark_execution_notified_after_send(
+                                    new_order,
+                                    fill_dedup=fill_dedup,
+                                    fill_qty=notify_qty,
+                                    fill_status=current_status_str,
+                                )
+                                logger.info(
+                                    f"Sent Telegram notification for executed order: "
+                                    f"{symbol} {side} - {order_id} (reason: {notify_reason})"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to send Telegram notification for executed order: "
+                                    f"{symbol} {side} - {order_id}"
+                                )
                     except Exception as telegram_err:
                         logger.warning(f"Failed to send Telegram notification: {telegram_err}")
                 else:
