@@ -983,7 +983,10 @@ def create_protection_smart(
     from app.services.sl_tp_price_adjust import compute_strategy_sl_tp_prices, resolve_watchlist_percentages
     from app.services.sl_tp_protection import get_active_protection_order
     from app.utils.live_trading import get_live_trading_status
-    from app.utils.sl_trigger_guard import fetch_last_price
+    from app.utils.sl_trigger_guard import (
+        fetch_ticker_prices,
+        reference_price_for_trigger,
+    )
 
     prev_live = False
     live_toggled = False
@@ -1056,10 +1059,14 @@ def create_protection_smart(
                     break
         sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
 
-        # Use exchange v1 get-tickers (same as sl_trigger_guard). Legacy v2 get-ticker 404s.
+        # Live last for strategy clamp; create_take_profit_order also applies a
+        # conservative min(last,bid) guard before place.
         current_price = None
         try:
-            current_price = fetch_last_price(symbol)
+            ticker = fetch_ticker_prices(symbol)
+            current_price = (ticker or {}).get("last") or reference_price_for_trigger(
+                side, is_tp=True, ticker=ticker
+            )
         except Exception as ticker_err:
             logger.warning("create_protection_smart ticker failed: %s", ticker_err)
 

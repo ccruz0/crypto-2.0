@@ -316,7 +316,8 @@ def create_oco_protection_orders(
         from app.utils.sl_trigger_guard import (
             ensure_valid_sl_trigger,
             ensure_valid_tp_trigger,
-            fetch_last_price,
+            fetch_ticker_prices,
+            reference_price_for_trigger,
         )
 
         tp_percentage = None
@@ -337,20 +338,27 @@ def create_oco_protection_orders(
                 wl_err,
             )
 
-        last_price = fetch_last_price(symbol)
+        ticker = fetch_ticker_prices(symbol)
+        market_ref = reference_price_for_trigger(
+            entry_side, is_tp=True, ticker=ticker
+        )
         tp_price, tp_adjust = ensure_valid_tp_trigger(
             entry_side=entry_side,
             tp_price=float(tp_price),
-            last_price=last_price,
+            last_price=market_ref,
             tp_percentage=tp_percentage,
             entry_price=float(entry_price) if entry_price else None,
+            ticker=ticker,
         )
         sl_price, sl_adjust = ensure_valid_sl_trigger(
             entry_side=entry_side,
             sl_price=float(sl_price),
-            last_price=last_price,
+            last_price=reference_price_for_trigger(
+                entry_side, is_tp=False, ticker=ticker, last_price=market_ref
+            ),
             sl_percentage=sl_percentage,
             entry_price=float(entry_price) if entry_price else None,
+            ticker=ticker,
         )
         if tp_adjust:
             logger.warning(
@@ -586,20 +594,54 @@ def create_take_profit_order(
 
     if not dry_run:
         from app.utils.sl_trigger_guard import (
+            ensure_tp_clear_of_market_after_tick,
             ensure_valid_tp_trigger,
-            fetch_last_price,
+            fetch_ticker_prices,
+            reference_price_for_trigger,
         )
 
-        last_price = fetch_last_price(symbol)
+        ticker = fetch_ticker_prices(symbol)
+        market_ref = reference_price_for_trigger(
+            entry_side, is_tp=True, ticker=ticker
+        )
         tp_price, tp_adjust = ensure_valid_tp_trigger(
             entry_side=entry_side,
             tp_price=float(tp_price),
-            last_price=last_price,
+            last_price=market_ref,
             tp_percentage=tp_percentage,
             entry_price=float(entry_price) if entry_price else None,
+            ticker=ticker,
         )
         if tp_adjust:
             logger.warning("[%s_TP] Adjusted TP for %s: %s", source.upper(), symbol, tp_adjust)
+
+        # Side-aware tick rounding can push a barely-valid short TP back above
+        # market (ROUND_UP legacy). Nudge away from market using tick size.
+        try:
+            tick_raw = (trade_client._get_instrument_metadata(symbol) or {}).get(
+                "price_tick_size"
+            )
+            tick_f = float(tick_raw) if tick_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            tick_f = None
+        if market_ref and market_ref > 0:
+            cleared = ensure_tp_clear_of_market_after_tick(
+                entry_side=entry_side,
+                tp_price=float(tp_price),
+                market_price=float(market_ref),
+                tick_size=tick_f,
+            )
+            if cleared != float(tp_price):
+                logger.warning(
+                    "[%s_TP] Post-tick TP clear for %s: %s -> %s (market_ref=%s tick=%s)",
+                    source.upper(),
+                    symbol,
+                    tp_price,
+                    cleared,
+                    market_ref,
+                    tick_f,
+                )
+                tp_price = cleared
 
     # Place TP at the (possibly repaired) watchlist/calculated price.
     
@@ -856,7 +898,8 @@ def create_stop_loss_order(
         derive_sl_percentage,
         ensure_valid_sl_trigger,
         error_is_invalid_trigger_price,
-        fetch_last_price,
+        fetch_ticker_prices,
+        reference_price_for_trigger,
     )
     
     # IMPORTANT: trigger_price must be equal to sl_price for STOP_LIMIT orders
@@ -879,13 +922,17 @@ def create_stop_loss_order(
             logger.debug("Could not read watchlist sl_percentage for %s: %s", symbol, wl_err)
 
     # Reject stale absolute SL on the wrong side of market (INVALID_TRIGGER_PRICE)
-    last_price = None if dry_run else fetch_last_price(symbol)
+    ticker = None if dry_run else fetch_ticker_prices(symbol)
+    last_price = reference_price_for_trigger(
+        entry_side, is_tp=False, ticker=ticker
+    )
     sl_price, adjust_reason = ensure_valid_sl_trigger(
         entry_side=entry_side,
         sl_price=float(sl_price),
         last_price=last_price,
         sl_percentage=sl_percentage,
         entry_price=float(entry_price) if entry_price else None,
+        ticker=ticker,
     )
     if adjust_reason:
         logger.warning("[%s_SL] Adjusted SL for %s: %s", source.upper(), symbol, adjust_reason)
