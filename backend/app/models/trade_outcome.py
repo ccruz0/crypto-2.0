@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Integer, String, Text, DateTime, Numeric, Index, UniqueConstraint
+from sqlalchemy import Integer, String, Text, DateTime, Numeric, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -53,9 +53,10 @@ class TradeOutcome(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
+    # Do NOT redeclare Index("ix_trade_outcomes_symbol") — symbol already has
+    # index=True, and a duplicate name aborts Base.metadata.create_all on a fresh DB.
     __table_args__ = (
         UniqueConstraint("entry_exchange_order_id", name="uq_trade_outcomes_entry_exchange_order_id"),
-        Index("ix_trade_outcomes_symbol", "symbol"),
     )
 
     def __repr__(self) -> str:
