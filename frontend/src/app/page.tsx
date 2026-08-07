@@ -1136,7 +1136,7 @@ const VERSION_HISTORY = [
 • Re-opened to \`main\` — original #387 merged only into the #386 feature branch and never landed
 
 📦 **PRs**
-• (pending)
+• #388
 
 ---
 `
