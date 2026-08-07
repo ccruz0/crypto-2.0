@@ -1,0 +1,18 @@
+---
+description: Require VERSION_HISTORY bump for shippable dashboard/backend changes
+alwaysApply: true
+---
+
+# Dashboard version history (required)
+
+For any PR that changes running product behavior (frontend UI, backend API,
+market updater, trading/Telegram paths that ship to AWS), append a new entry to
+`VERSION_HISTORY` in `frontend/src/app/page.tsx` before opening/updating the PR:
+
+- Bump version (e.g. `0.47` → `0.48`)
+- Include date, short `change` summary, and `details` with what/why + PR numbers
+- Header badge `v{version}` and Version History tab (newest first) are the
+  operator-facing changelog
+
+Skip only for pure docs/chore PRs that never affect the running dashboard.
+See `AGENTS.md` → "Dashboard version history".
