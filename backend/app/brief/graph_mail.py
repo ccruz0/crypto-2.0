@@ -53,7 +53,7 @@ def _access_token() -> str:
         calling_module="brief.graph_mail.token",
     )
     if resp.status_code >= 400:
-        raise GraphAuthError(f"graph_token_http_{resp.status_code}")
+        raise GraphAuthError(_graph_http_error("graph_token", resp))
     try:
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001
@@ -62,6 +62,28 @@ def _access_token() -> str:
     if not token:
         raise GraphAuthError("graph_token_missing")
     return token
+
+
+def _graph_http_error(prefix: str, resp: Any) -> str:
+    """Stable error token for API/ops (no secrets/bodies)."""
+    code = f"{prefix}_http_{getattr(resp, 'status_code', 'na')}"
+    try:
+        payload = resp.json()
+    except Exception:  # noqa: BLE001
+        return code
+    if not isinstance(payload, dict):
+        return code
+    # AAD token errors use error=; Graph uses error.code=
+    err = payload.get("error")
+    if isinstance(err, dict):
+        gcode = str(err.get("code") or "").strip()
+        if gcode and len(gcode) <= 80 and all(c.isalnum() or c in "._-" for c in gcode):
+            return f"{code}:{gcode}"
+    elif isinstance(err, str):
+        gcode = err.strip()
+        if gcode and len(gcode) <= 80 and all(c.isalnum() or c in "._-" for c in gcode):
+            return f"{code}:{gcode}"
+    return code
 
 
 def _iso_z(dt: datetime) -> str:
@@ -105,10 +127,11 @@ def fetch_graph_mailbox(
         calling_module="brief.graph_mail.messages",
     )
     if resp.status_code >= 400:
+        detail = _graph_http_error("graph_messages", resp)
         # Map common Graph auth/permission failures
         if resp.status_code in (401, 403):
-            raise GraphAuthError(f"graph_messages_http_{resp.status_code}")
-        raise RuntimeError(f"graph_messages_http_{resp.status_code}")
+            raise GraphAuthError(detail)
+        raise RuntimeError(detail)
     try:
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001
@@ -150,6 +173,10 @@ def classify_graph_error(exc: BaseException) -> str:
     if isinstance(exc, GraphConfigMissing):
         return "graph_config_missing"
     if isinstance(exc, GraphAuthError):
+        detail = str(exc).strip()
+        # Prefer concrete Graph/AAD codes so ops can tell token vs Mail.Read consent.
+        if detail.startswith("graph_"):
+            return detail
         return "auth_failed"
     if isinstance(exc, ValueError):
         return "config_invalid"
