@@ -71,3 +71,17 @@ gitignored `.env` files are all captured in the VM snapshot.
 - Frontend build: `cd frontend && npm run build`.
 - Pre-commit hooks (`.pre-commit-config.yaml`) use black/ruff/prettier/eslint and
   `scripts/pre_commit_checks.sh`.
+
+### Dashboard version history (mandatory on shippable PRs)
+Every user-visible / production-bound change **must** append a new entry to
+`VERSION_HISTORY` in `frontend/src/app/page.tsx` before the PR is considered
+complete:
+
+1. Bump the patch/minor version (e.g. `0.47` → `0.48`).
+2. Set `date` (UTC/ISO day), a one-line `change`, and `details` covering:
+   what shipped, why, PR numbers, and any operator-facing notes.
+3. The header shows `v{latest}` and links to the Version History tab
+   (newest-first). That tab is the in-dashboard changelog.
+
+Do **not** ship a fix/feature PR without this entry. Pure docs/chore-only PRs
+that never reach the running dashboard may skip it.

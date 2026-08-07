@@ -989,6 +989,30 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.47',
+    date: '2026-08-07',
+    change: 'Local-dev reliability + Watchlist/indicator fixes (PRs #374–#377)',
+    details: `🚀 VERSIÓN 0.47 — DEV STABILITY & DASHBOARD INDICATORS
+
+📋 **What shipped**
+• Watchlist no longer crashes with "Cannot read properties of null (reading 'toFixed')" when RSI/volume/MAs are null (PR #375)
+• Market updater requests Crypto.com candle count (up to 300) so MA50/EMA10/RSI compute without Binance (PR #376)
+• Fresh-DB create_all no longer aborts on duplicate index names; RUN_TELEGRAM=false skips interactive Telegram token prompt (PR #374)
+• Local-dev docs/scripts aligned on frontend port 3000 (PR #377)
+
+🔧 **Technical notes**
+• Frontend: formatFixed / isFiniteNumber helpers for null-safe tooltip formatting
+• market_updater.fetch_ohlcv_data: pass count=min(limit, 300) on Exchange v1 get-candlestick
+• Models: remove redundant Index() on order_intents.signal_id and trade_outcomes.symbol
+• telegram_token_loader: skip getpass when RUN_TELEGRAM is explicitly false
+
+📦 **PRs**
+• #374, #375, #376, #377 (merged 2026-08-07)
+
+---
+`
   }
 ];
 
@@ -4839,7 +4863,17 @@ function resolveDecisionIndexColor(value: number): string {
       <div className="container mx-auto p-4">
         {/* Header */}
         <div className="mb-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Crypto Trading Dashboard</h1>
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Crypto Trading Dashboard</h1>
+            <button
+              type="button"
+              onClick={() => setActiveTab('version-history')}
+              className="text-sm font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+              title="Open Version History"
+            >
+              v{getCurrentVersion()}
+            </button>
+          </div>
           <div className="flex gap-2">
             <button
               onClick={() => setShowGlobalSettings(true)}
@@ -5376,11 +5410,14 @@ function resolveDecisionIndexColor(value: number): string {
           {activeTab === 'version-history' && (
             <div>
               <h2 className="text-xl font-semibold mb-4">Version History</h2>
+              <p className="text-sm text-gray-500 mb-4">
+                Newest first. Current dashboard build: <span className="font-semibold text-blue-600">v{getCurrentVersion()}</span>
+              </p>
               <div className="space-y-4">
-                {VERSION_HISTORY.map((version, index) => (
-                  <div key={index} className="border-b border-gray-200 dark:border-gray-700 pb-4">
+                {[...VERSION_HISTORY].reverse().map((version, index) => (
+                  <div key={`${version.version}-${index}`} className="border-b border-gray-200 dark:border-gray-700 pb-4">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="font-semibold text-lg">{version.version}</span>
+                      <span className="font-semibold text-lg">v{version.version}</span>
                       <span className="text-sm text-gray-500">{version.date}</span>
                     </div>
                     <p className="font-medium mb-1">{version.change}</p>
