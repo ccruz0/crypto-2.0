@@ -47,6 +47,17 @@ def test_classify_expected_skip_wallet_mismatch():
     )
 
 
+def test_classify_expected_skip_flatten_close():
+    """Emergency flatten BUY/SELL must not page as hourly SL/TP failure."""
+    result = {"status": "flatten_close"}
+    assert (
+        _classify_hourly_sl_tp_create_result(
+            result, sl_count=0, tp_count=0, symbol="SUI_USD", ensured_symbols=set()
+        )
+        == "expected_skip"
+    )
+
+
 def test_classify_covered_by_ensure_same_symbol():
     """Ensure healed the open balance; parent-link check can still look empty."""
     assert (

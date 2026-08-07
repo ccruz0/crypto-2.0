@@ -66,9 +66,14 @@ fi
 export ENVIRONMENT=local
 export NODE_ENV=development
 
-# Start services
-print_status "Starting local services with profile 'local'..."
-docker compose --profile local up -d --build
+# Start services — explicit list only.
+# Both `backend` and `backend-dev` are on the `local` profile and bind :8002;
+# a bare `docker compose --profile local up` starts both and conflicts on the port.
+# Prefer hot-reload backend-dev for day-to-day local work (see DEV.md).
+LOCAL_SERVICES=(db backend-dev frontend)
+print_status "Starting local stack: ${LOCAL_SERVICES[*]} (profile local)..."
+print_warning "Do not run bare 'docker compose --profile local up' — backend + backend-dev both claim :8002."
+docker compose --profile local up -d --build "${LOCAL_SERVICES[@]}"
 
 echo ""
 print_status "Waiting for services to be healthy..."
@@ -84,14 +89,14 @@ echo "✅ Local Development Environment Ready!"
 echo "========================================="
 echo ""
 echo "📍 Services:"
-echo "   Backend:  http://localhost:8002"
+echo "   Backend:  http://localhost:8002  (backend-dev, hot reload)"
 echo "   Frontend: http://localhost:3000"
-echo "   Database: localhost:5432"
+echo "   Database: Docker service db (no host port by default)"
 echo ""
 echo "🔧 Useful Commands:"
-echo "   View logs:        docker compose --profile local logs -f"
+echo "   View logs:        docker compose --profile local logs -f backend-dev frontend"
 echo "   Stop services:    docker compose --profile local down"
-echo "   Restart backend:  docker compose --profile local restart backend"
+echo "   Restart backend:  docker compose --profile local restart backend-dev"
 echo "   Restart frontend: docker compose --profile local restart frontend"
 echo ""
 echo "📦 To deploy to AWS after testing:"

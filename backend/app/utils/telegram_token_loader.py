@@ -188,7 +188,8 @@ def get_telegram_token() -> Optional[str]:
     3. TELEGRAM_BOT_TOKEN_DEV (non-AWS)
     4. TELEGRAM_ATP_CONTROL_BOT_TOKEN (non-AWS: when TELEGRAM_BOT_TOKEN not set)
     5. TELEGRAM_CLAW_BOT_TOKEN (non-AWS fallback)
-    6. Interactive popup (tkinter → prompt_toolkit → terminal)
+    6. If RUN_TELEGRAM is explicitly false → return None (no interactive prompt)
+    7. Interactive popup (tkinter → prompt_toolkit → terminal)
 
     On AWS, ATP Control is preferred over TELEGRAM_BOT_TOKEN so /task updates reach backend-aws
     instead of only the trading bot. Trading alerts still use TELEGRAM_BOT_TOKEN via telegram_notifier.
@@ -268,6 +269,16 @@ def get_telegram_token() -> Optional[str]:
     if token:
         logger.info("[TG] Using TELEGRAM_CLAW_BOT_TOKEN for polling (TELEGRAM_BOT_TOKEN not set)")
         return token
+
+    # Local/dev: RUN_TELEGRAM=false must never block startup on a controlling TTY
+    # (getpass/prompt_toolkit hang forever when stdin is a real terminal).
+    run_telegram = (os.getenv("RUN_TELEGRAM") or "").strip().lower()
+    if run_telegram in ("0", "false", "no", "off"):
+        logger.info(
+            "[TG] No token in env and RUN_TELEGRAM=%s - skipping interactive prompt",
+            run_telegram,
+        )
+        return None
 
     logger.info("[TG] No token in env - prompting operator for Telegram Bot Token")
     token = _get_token_interactive()

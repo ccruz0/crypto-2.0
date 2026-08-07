@@ -1,11 +1,13 @@
 'use client';
 
 import '@/lib/polyfill';
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { getDashboard, getOpenOrders, getOrderHistory, getTopCoins, saveCoinSettings, getTradingSignals, getDataSourcesStatus, getTradingConfig, saveTradingConfig, updateCoinConfig, addCustomTopCoin, removeCustomTopCoin, getDashboardState, getDashboardSnapshot, quickOrder, updateWatchlistAlert, updateBuyAlert, updateSellAlert, simulateAlert, deleteDashboardItemBySymbol, toggleLiveTrading, getTPSLOrderValues, getOpenOrdersSummary, dashboardBalancesToPortfolioAssets, getExpectedTakeProfitSummary, getExpectedTakeProfitDetails, getTelegramMessages, fixBackendHealth, DashboardState, DashboardBalance, WatchlistItem, OpenOrder, PortfolioAsset, TradingSignals, TopCoin, DataSourceStatus, TradingConfig, CoinSettings, TPSLOrderValues, UnifiedOpenOrder, OpenPosition, ExpectedTPSummary, ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPMatchedLot, SimulateAlertResponse, TelegramMessage, StrategyDecision } from '@/app/api';
 import { getApiUrl } from '@/lib/environment';
 import { MonitoringNotificationsProvider, useMonitoringNotifications } from '@/app/context/MonitoringNotificationsContext';
 import { PriceStreamProvider } from '@/app/context/PriceStreamContext';
+import { parseDashboardTabParam } from '@/utils/dashboardTabs';
 import MonitoringPanel from '@/app/components/MonitoringPanel';
 import ErrorBoundary from '@/app/components/ErrorBoundary';
 import StrategyConfigModal from '@/app/components/StrategyConfigModal';
@@ -213,7 +215,9 @@ export default function DashboardPage() {
   return (
     <MonitoringNotificationsProvider>
       <PriceStreamProvider>
-        <DashboardPageContent />
+        <Suspense fallback={<div className="min-h-screen bg-gray-50 dark:bg-slate-900 p-4 text-gray-600 dark:text-gray-300">Loading dashboard…</div>}>
+          <DashboardPageContent />
+        </Suspense>
       </PriceStreamProvider>
     </MonitoringNotificationsProvider>
   );
@@ -989,6 +993,69 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.47',
+    date: '2026-08-07',
+    change: 'Local-dev reliability + Watchlist/indicator fixes (PRs #374–#377)',
+    details: `🚀 VERSIÓN 0.47 — DEV STABILITY & DASHBOARD INDICATORS
+
+📋 **What shipped**
+• Watchlist no longer crashes with "Cannot read properties of null (reading 'toFixed')" when RSI/volume/MAs are null (PR #375)
+• Market updater requests Crypto.com candle count (up to 300) so MA50/EMA10/RSI compute without Binance (PR #376)
+• Fresh-DB create_all no longer aborts on duplicate index names; RUN_TELEGRAM=false skips interactive Telegram token prompt (PR #374)
+• Local-dev docs/scripts aligned on frontend port 3000 (PR #377)
+
+🔧 **Technical notes**
+• Frontend: formatFixed / isFiniteNumber helpers for null-safe tooltip formatting
+• market_updater.fetch_ohlcv_data: pass count=min(limit, 300) on Exchange v1 get-candlestick
+• Models: remove redundant Index() on order_intents.signal_id and trade_outcomes.symbol
+• telegram_token_loader: skip getpass when RUN_TELEGRAM is explicitly false
+
+📦 **PRs**
+• #374, #375, #376, #377 (merged 2026-08-07)
+
+---
+`
+  },
+  {
+    version: '0.48',
+    date: '2026-08-07',
+    change: 'Dashboard tab deep-links via ?tab= (URL sync)',
+    details: `🚀 VERSIÓN 0.48 — TAB URL ROUTING
+
+📋 **What shipped**
+• Active dashboard tab syncs with \`?tab=\` (e.g. \`/?tab=watchlist\`, \`/?tab=monitoring\`)
+• Tab clicks / Version History badge update the URL via push (back/forward works)
+• Tab buttons expose \`data-tab\` / \`data-testid\` for reliable automation
+• Invalid or missing \`tab\` falls back to Portfolio
+
+🔧 **Technical notes**
+• parseDashboardTabParam in frontend/src/utils/dashboardTabs.ts
+• useSearchParams wrapped in Suspense on the dashboard page
+
+---
+`
+  },
+  {
+    version: '0.49',
+    date: '2026-08-07',
+    change: 'Hourly SL/TP ensure covers short wallets + side-aware close copy',
+    details: `🚀 VERSIÓN 0.49 — SHORT WALLET SL/TP ENSURE
+
+📋 **What shipped**
+• Position SL/TP ensure prefers signed \`quantity\` then \`balance\` (shorts are negative)
+• Failed-ensure Telegram reminder uses BUY cover for SHORT / SELL for LONG
+• Tests: short missing-TP flagged; fully protected short not flagged
+
+🔧 **Notes**
+• Flat-wallet skip (\`abs(balance) ≈ 0\`) already on main; this completes quantity source + reminder side
+
+📦 **PRs**
+• #327
+
+---
+`
   }
 ];
 
@@ -999,7 +1066,33 @@ function getCurrentVersion(): string {
 
 function DashboardPageContent() {
   const { unreadCount: unreadMonitoringCount, handleNewMessages, markAllAsRead } = useMonitoringNotifications();
-  const [activeTab, setActiveTab] = useState<Tab>('portfolio');
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tabFromUrl = parseDashboardTabParam(searchParams.get('tab'));
+  const [activeTab, setActiveTabState] = useState<Tab>(() => tabFromUrl ?? 'portfolio');
+
+  // Keep React state aligned with URL (deep links, browser back/forward).
+  useEffect(() => {
+    const next = tabFromUrl ?? 'portfolio';
+    setActiveTabState((prev) => (prev === next ? prev : next));
+  }, [tabFromUrl]);
+
+  const setActiveTab = useCallback(
+    (tab: Tab) => {
+      setActiveTabState(tab);
+      const params = new URLSearchParams(searchParams.toString());
+      if (tab === 'portfolio') {
+        params.delete('tab');
+      } else {
+        params.set('tab', tab);
+      }
+      const qs = params.toString();
+      // push (not replace) so browser back/forward moves between tabs
+      router.push(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname, searchParams]
+  );
   const [loading, setLoading] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [portfolio, setPortfolio] = useState<{ assets: PortfolioAsset[], total_value_usd: number; total_assets_usd?: number; total_collateral_usd?: number; total_borrowed_usd?: number; portfolio_value_source?: string } | null>(null);
@@ -3101,7 +3194,9 @@ function resolveDecisionIndexColor(value: number): string {
         if (coin.volume_24h !== undefined) signalData.volume_24h = coin.volume_24h;
         if (coin.current_volume !== undefined) signalData.current_volume = coin.current_volume;
         if (coin.avg_volume !== undefined) signalData.avg_volume = coin.avg_volume;
-        if (coin.volume_ratio !== undefined) signalData.volume_ratio = coin.volume_ratio;
+        // Mirror RSI/MA null checks — assigning null makes tooltip `.toFixed` crash
+        // (`null !== undefined` is true in WatchlistTab guards).
+        if (coin.volume_ratio !== undefined && coin.volume_ratio !== null) signalData.volume_ratio = coin.volume_ratio;
         
         // Extract resistance levels from coin data (newly added from backend)
         if (coin.res_up !== undefined) signalData.res_up = coin.res_up;
@@ -4837,7 +4932,17 @@ function resolveDecisionIndexColor(value: number): string {
       <div className="container mx-auto p-4">
         {/* Header */}
         <div className="mb-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Crypto Trading Dashboard</h1>
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Crypto Trading Dashboard</h1>
+            <button
+              type="button"
+              onClick={() => setActiveTab('version-history')}
+              className="text-sm font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+              title="Open Version History"
+            >
+              v{getCurrentVersion()}
+            </button>
+          </div>
           <div className="flex gap-2">
             <button
               onClick={() => setShowGlobalSettings(true)}
@@ -5374,11 +5479,14 @@ function resolveDecisionIndexColor(value: number): string {
           {activeTab === 'version-history' && (
             <div>
               <h2 className="text-xl font-semibold mb-4">Version History</h2>
+              <p className="text-sm text-gray-500 mb-4">
+                Newest first. Current dashboard build: <span className="font-semibold text-blue-600">v{getCurrentVersion()}</span>
+              </p>
               <div className="space-y-4">
-                {VERSION_HISTORY.map((version, index) => (
-                  <div key={index} className="border-b border-gray-200 dark:border-gray-700 pb-4">
+                {[...VERSION_HISTORY].reverse().map((version, index) => (
+                  <div key={`${version.version}-${index}`} className="border-b border-gray-200 dark:border-gray-700 pb-4">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="font-semibold text-lg">{version.version}</span>
+                      <span className="font-semibold text-lg">v{version.version}</span>
                       <span className="text-sm text-gray-500">{version.date}</span>
                     </div>
                     <p className="font-medium mb-1">{version.change}</p>

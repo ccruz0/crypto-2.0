@@ -535,6 +535,7 @@ services:
       - .env
       - .env.local
       - .env.aws
+      - ./secrets/runtime.env
     environment:
       - NODE_ENV=production
       - BACKEND_URL=http://backend-aws:8002
@@ -555,6 +556,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - ./secrets/runtime.env:/run/secrets/runtime.env:ro
     restart: always
     healthcheck:
       test: ["CMD", "sh", "-c", "exit 0"]

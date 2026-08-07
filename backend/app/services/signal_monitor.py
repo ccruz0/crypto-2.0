@@ -357,6 +357,13 @@ FAILSAFE_ON_SLTP_ERROR = os.getenv("FAILSAFE_ON_SLTP_ERROR", "true").lower() in 
 # Order fill confirmation polling configuration
 ORDER_FILL_POLL_MAX_ATTEMPTS = int(os.getenv("ORDER_FILL_POLL_MAX_ATTEMPTS", "10"))  # Max attempts to poll for fill
 ORDER_FILL_POLL_INTERVAL_SECONDS = float(os.getenv("ORDER_FILL_POLL_INTERVAL_SECONDS", "1.0"))  # Seconds between polls
+# Extended fill-time retries when initial poll or SL/TP create fails (healing stays OFF).
+ORDER_FILL_POLL_EXTENDED_ATTEMPTS = int(os.getenv("ORDER_FILL_POLL_EXTENDED_ATTEMPTS", "15"))
+ORDER_FILL_POLL_EXTENDED_INTERVAL_SECONDS = float(
+    os.getenv("ORDER_FILL_POLL_EXTENDED_INTERVAL_SECONDS", "2.0")
+)
+SLTP_CREATE_MAX_ATTEMPTS = int(os.getenv("SLTP_CREATE_MAX_ATTEMPTS", "3"))
+SLTP_CREATE_RETRY_DELAY_SECONDS = float(os.getenv("SLTP_CREATE_RETRY_DELAY_SECONDS", "1.5"))
 
 # Debug logging flag for trading flow
 DEBUG_TRADING = os.getenv("DEBUG_TRADING", "0") == "1"  # Enable detailed trading flow logging
@@ -5177,27 +5184,46 @@ class SignalMonitorService:
                     )
                 blocked_by_limits = True
 
-            # ORDERS: Trade execution is independent of alert sending
-            # Trade should NOT be blocked by alert throttle/cooldown
-            # Only block by order limits and cooldown (MAX_OPEN_ORDERS, RECENT_ORDERS_COOLDOWN)
+            # ORDERS: alert → orchestrator is the canonical path when alert fires.
+            # Legacy _create_buy_order runs only when alert-independent mode is enabled.
+            from app.services.signal_order_policy import resolve_legacy_buy_order_gate
+
             guard_reason = None
-            if blocked_by_limits:
-                should_create_order = False
-                guard_reason = "MAX_OPEN_ORDERS" if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL else "RECENT_ORDERS_COOLDOWN"
+            should_create_order, order_gate_reason = resolve_legacy_buy_order_gate(
+                blocked_by_limits=blocked_by_limits,
+                buy_alert_sent_successfully=buy_alert_sent_successfully,
+            )
+            if not should_create_order:
+                guard_reason = order_gate_reason
+                if order_gate_reason == "blocked_by_limits":
+                    guard_reason = (
+                        "MAX_OPEN_ORDERS"
+                        if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL
+                        else "RECENT_ORDERS_COOLDOWN"
+                    )
                 self._log_pipeline_stage(
-                    stage="BUY_BLOCKED",
+                    stage="BUY_BLOCKED" if blocked_by_limits else "BUY_ELIGIBLE_CHECK",
                     symbol=normalized_symbol,
                     strategy_key=strategy_key,
                     decision="BUY",
                     last_price=current_price,
                     timestamp=now_utc.isoformat(),
                     correlation_id=evaluation_id,
-                    reason=guard_reason,
+                    reason=guard_reason or "OK",
                 )
+                if order_gate_reason == "orchestrator_handled":
+                    logger.info(
+                        f"🟢 {symbol}: BUY alert sent — order handled by orchestrator; "
+                        f"skipping legacy _create_buy_order"
+                    )
+                elif order_gate_reason == "alert_required_not_sent":
+                    logger.info(
+                        f"ℹ️ {symbol}: BUY alert not sent — skipping order "
+                        f"(SIGNAL_ORDER_REQUIRES_ALERT=true)"
+                    )
+                elif blocked_by_limits:
+                    pass  # guard_reason already set above
             else:
-                # Trade execution is independent - proceed if signal exists and trade_enabled
-                # Alert sending is informational only, not a gate for trade execution
-                should_create_order = True
                 self._log_pipeline_stage(
                     stage="BUY_ELIGIBLE_CHECK",
                     symbol=normalized_symbol,
@@ -5208,16 +5234,10 @@ class SignalMonitorService:
                     correlation_id=evaluation_id,
                     reason="OK",
                 )
-                if buy_alert_sent_successfully:
-                    logger.info(
-                        f"🟢 BUY alert was sent successfully for {symbol}. "
-                        f"Proceeding to order creation (trade_enabled, limits, cooldown)."
-                    )
-                else:
-                    logger.info(
-                        f"ℹ️ {symbol}: BUY alert not sent (may be throttled/disabled), "
-                        f"but proceeding with trade execution (trade is independent of alert)."
-                    )
+                logger.info(
+                    f"ℹ️ {symbol}: proceeding with legacy BUY order path "
+                    f"(SIGNAL_ORDER_REQUIRES_ALERT=false)"
+                )
             
             # DIAG_MODE: Print TRADE decision trace for diagnostic symbol (BUY)
             if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
@@ -6910,153 +6930,26 @@ class SignalMonitorService:
                             except Exception as state_err:
                                 logger.warning(f"Failed to persist SELL throttle state for {symbol}: {state_err}")
                         
-                        # ========================================================================
-                        # CREAR ORDEN SELL AUTOMÁTICA: Si trade_enabled=True y trade_amount_usd > 0
-                        # ========================================================================
-                        # CRITICAL: Refresh trade_enabled and trade_amount_usd from database before checking
-                        # This ensures we use the latest values even if they were just changed in the dashboard
-                        db.expire_all()  # Force refresh from database
-                        try:
-                            fresh_trade_check = db.query(WatchlistItem).filter(
-                                WatchlistItem.symbol == symbol
-                            ).first()
-                            if fresh_trade_check:
-                                trade_enabled = getattr(fresh_trade_check, 'trade_enabled', False)
-                                trade_amount_usd = getattr(fresh_trade_check, 'trade_amount_usd', None)
-                                logger.debug(f"🔄 Última verificación de trade_enabled para {symbol}: trade_enabled={trade_enabled}, trade_amount_usd={trade_amount_usd}")
-                                # Update watchlist_item with fresh values
-                                watchlist_item.trade_enabled = trade_enabled
-                                watchlist_item.trade_amount_usd = trade_amount_usd
-                        except Exception as e:
-                            logger.warning(f"Error en última verificación de trade_enabled para {symbol}: {e}")
-                            # Use existing values if refresh fails
-                            trade_enabled = getattr(watchlist_item, 'trade_enabled', False)
-                            trade_amount_usd = getattr(watchlist_item, 'trade_amount_usd', None)
-                        
-                        # DIAGNOSTIC: Log order creation check for TRX_USDT
-                        if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                            logger.info(
-                                f"🔍 [DIAGNOSTIC] {symbol} SELL order creation check: "
-                                f"trade_enabled={watchlist_item.trade_enabled}, "
-                                f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
-                                f"balance_check_warning={balance_check_warning is not None}, "
-                                f"will_create_order={'YES' if (watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 and not balance_check_warning) else 'NO'}"
-                            )
-                        
+                        # Order placement when alert is sent is handled by the orchestrator above.
+                        # Legacy _create_sell_order duplicate removed to prevent double orders.
                         if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
-                            # Skip order creation if early balance check already detected insufficient balance
-                            # We already warned in the alert, so don't try to create order and send duplicate message
-                            if balance_check_warning:
-                                logger.info(
-                                    f"🚫 Trade enabled for {symbol} but skipping SELL order creation - "
-                                    f"insufficient balance already detected and warned in alert"
-                                )
-                            else:
-                                logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
-                                
-                                # DIAGNOSTIC: Log before calling _create_sell_order for TRX_USDT
-                                if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                                    logger.info(
-                                        f"🔍 [DIAGNOSTIC] {symbol} Calling _create_sell_order: "
-                                        f"current_price={current_price}, "
-                                        f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
-                                        f"trade_on_margin={getattr(watchlist_item, 'trade_on_margin', False)}"
-                                    )
-                                
-                                try:
-                                    # CRITICAL: Validate trade_enabled from DB one final time before creating order (PR #129)
-                                    if not self._validate_trade_enabled_from_db(db, symbol):
-                                        logger.warning(
-                                            f"🚫 [SELL_ORDER_BLOCKED] {symbol} - trade_enabled=False in DB. "
-                                            f"Order creation cancelled."
-                                        )
-                                        telegram_notifier.notify_telegram(
-                                            f"🚫 SELL order blocked for {symbol}: trade_enabled=False in database"
-                                        )
-                                        # Set error result to be handled by existing error handling code
-                                        order_result = {
-                                            "error_type": "trade_disabled",
-                                            "message": "trade_enabled=False in database",
-                                            "error": "trade_enabled validation failed"
-                                        }
-                                    else:
-                                        # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
-                                        order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
-                                    
-                                    # DIAGNOSTIC: Log result for TRX_USDT
-                                    if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                                        logger.info(
-                                            f"🔍 [DIAGNOSTIC] {symbol} _create_sell_order result: "
-                                            f"result_type={type(order_result).__name__}, "
-                                            f"has_error={'error' in order_result if isinstance(order_result, dict) else 'N/A'}, "
-                                            f"result={order_result}"
-                                        )
-                                    # Check for errors first (error dicts are truthy but have "error" key)
-                                    if order_result and isinstance(order_result, dict) and "error" in order_result:
-                                        # Handle error cases
-                                        error_type = order_result.get("error_type")
-                                        error_msg = order_result.get("message")
-                                        if error_type == "balance":
-                                            logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
-                                        elif error_type == "trade_disabled":
-                                            logger.warning(f"🚫 SELL order creation blocked for {symbol}: Trade is disabled - {error_msg}")
-                                        elif error_type == "authentication":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
-                                        elif error_type == "order_placement":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Order placement error - {error_msg}")
-                                        elif error_type == "no_order_id":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: No order ID returned - {error_msg}")
-                                        elif error_type == "exception":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Exception - {error_msg}")
-                                        else:
-                                            logger.warning(f"⚠️ SELL order creation failed for {symbol} (error_type: {error_type}, reason: {error_msg or 'unknown'})")
-                                    elif order_result:
-                                        # Success case - order was created
-                                        filled_price = order_result.get("filled_price")
-                                        if filled_price:
-                                            logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
-                                        persist_price = filled_price or current_price
-                                        if not sell_state_recorded:
-                                            try:
-                                                record_signal_event(
-                                                    db,
-                                                    symbol=symbol,
-                                                    strategy_key=strategy_key,
-                                                    side="SELL",
-                                                    price=persist_price,
-                                                    source="order",
-                                                    emit_reason="Order created",
-                                                )
-                                                sell_state_recorded = True
-                                            except Exception as state_err:
-                                                logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
-                                    else:
-                                        # order_result is None or falsy
-                                        logger.warning(f"⚠️ SELL order creation returned None for {symbol} (unknown reason)")
-                                except Exception as order_err:
-                                    logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
-                                    # Don't raise - alert was sent, order creation is secondary
+                            logger.debug(
+                                "%s SELL alert sent — order handled by orchestrator; "
+                                "legacy _create_sell_order skipped",
+                                symbol,
+                            )
                         else:
-                            # Log specific reason why order wasn't created
                             reasons = []
                             if not watchlist_item.trade_enabled:
                                 reasons.append("trade_enabled=False")
                             if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
-                                reasons.append(f"trade_amount_usd={'not configured' if not watchlist_item.trade_amount_usd else f'{watchlist_item.trade_amount_usd} (invalid)'}")
-                            
-                            # DIAGNOSTIC: Enhanced logging for TRX_USDT
-                            if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                                logger.warning(
-                                    f"🔍 [DIAGNOSTIC] {symbol} SELL order NOT created - "
-                                    f"trade_enabled={watchlist_item.trade_enabled}, "
-                                    f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
-                                    f"reasons: {', '.join(reasons)}"
+                                reasons.append(
+                                    f"trade_amount_usd={'not configured' if not watchlist_item.trade_amount_usd else f'{watchlist_item.trade_amount_usd} (invalid)'}"
                                 )
-                            
                             logger.warning(
-                                f"🚫 SELL alert sent for {symbol} but order NOT created - "
+                                f"🚫 SELL alert sent for {symbol} but orchestrator may skip order — "
                                 f"Reasons: {', '.join(reasons)}. "
-                                f"To enable automatic SELL orders, set trade_enabled=True and trade_amount_usd > 0 in watchlist configuration."
+                                f"Set trade_enabled=True and trade_amount_usd > 0 to enable trading."
                             )
                     except Exception as e:
                         logger.warning(f"Failed to send Telegram SELL alert for {symbol}: {e}")
@@ -8862,16 +8755,20 @@ class SignalMonitorService:
 
                     # Protection BEFORE Telegram: tight TP% (e.g. +1%) races the market.
                     # Also pass the already-confirmed fill so we do not re-poll (~10s).
+                    # Partial (SL-only / TP-only) must still enter the choke point to create the missing leg.
                     existing_sl_tp = db.query(ExchangeOrder).filter(
                         ExchangeOrder.parent_order_id == str(order_id),
                         ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
                         ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
                     ).all()
-                    
-                    if existing_sl_tp:
+                    existing_roles = {
+                        (getattr(o, "order_role", None) or "").upper() for o in (existing_sl_tp or [])
+                    }
+
+                    if "STOP_LOSS" in existing_roles and "TAKE_PROFIT" in existing_roles:
                         existing_order_ids = [str(o.exchange_order_id) for o in existing_sl_tp]
                         logger.info(
-                            f"⚠️ [SL/TP] Idempotency guard: SL/TP orders already exist for BUY order {order_id} ({symbol}): {existing_order_ids}. "
+                            f"⚠️ [SL/TP] Idempotency guard: complete SL+TP already exist for BUY order {order_id} ({symbol}): {existing_order_ids}. "
                             f"Skipping duplicate creation."
                         )
                         filled_quantity = normalized_qty
@@ -9113,87 +9010,30 @@ class SignalMonitorService:
                                 f"{symbol} on ORDER_CREATED: {update_err}"
                             )
         else:
-            # Order not confirmed FILLED after polling - try to create SL/TP with estimated values
-            # For MARKET orders, they typically fill immediately, so we should create SL/TP even if status is uncertain
+            # Order not confirmed FILLED after initial path — fill-time choke point has extended
+            # polls. Do NOT rely on exchange_sync healing (SLTP_HEALING_ENABLED defaults OFF).
             logger.warning(
-                f"⚠️ [SL/TP] BUY order {order_id} not confirmed FILLED after polling. "
-                f"Attempting to create SL/TP with estimated values (MARKET orders usually fill immediately)."
+                f"⚠️ [SL/TP] BUY order {order_id} not confirmed FILLED in primary path. "
+                f"Delegating to fill-time protection choke point (extended polls + create retries)."
             )
-            
-            # Use estimated values for SL/TP creation
-            # For MARKET orders, estimate quantity from amount_usd and current price
-            estimated_price = filled_price or current_price
-            estimated_qty = filled_quantity  # This might already be estimated from line 7074
-            
-            # If we don't have a quantity estimate, calculate it
-            if (not estimated_qty or estimated_qty <= 0) and estimated_price > 0:
-                estimated_qty = amount_usd / estimated_price
-                logger.info(
-                    f"🔄 [SL/TP] Calculated estimated quantity for BUY order {order_id}: "
-                    f"amount_usd={amount_usd}, estimated_price={estimated_price}, estimated_qty={estimated_qty}"
+            try:
+                self._create_protection_after_entry_fill(
+                    db=db,
+                    symbol=symbol,
+                    entry_side="BUY",
+                    order_id=str(order_id),
+                    placement_result=result if isinstance(result, dict) else {},
+                    estimated_price=filled_price or current_price,
+                    source="signal_monitor_unconfirmed",
+                    is_margin=use_margin,
+                    leverage=leverage_value if use_margin else None,
+                    filled_confirmation=None,
                 )
-            
-            # Only attempt SL/TP creation if we have valid estimates
-            if estimated_qty and estimated_qty > 0 and estimated_price > 0:
-                try:
-                    # Normalize quantity
-                    normalized_qty_str = trade_client.normalize_quantity(symbol, estimated_qty)
-                    if not normalized_qty_str:
-                        logger.warning(
-                            f"⚠️ [SL/TP] Failed to normalize estimated quantity {estimated_qty} for {symbol}. "
-                            f"Exchange sync will handle SL/TP when order becomes FILLED."
-                        )
-                    else:
-                        normalized_qty = float(normalized_qty_str)
-                        logger.info(
-                            f"🔒 [SL/TP] Creating protection orders for BUY {symbol} order {order_id} with ESTIMATED values: "
-                            f"estimated_price={estimated_price}, estimated_qty={normalized_qty} "
-                            f"(normalized from {estimated_qty})"
-                        )
-                        
-                        # Emit SLTP_ATTEMPT event
-                        _emit_lifecycle_event(
-                            db=db,
-                            symbol=symbol,
-                            strategy_key=strategy_key,
-                            side="BUY",
-                            price=estimated_price,
-                            event_type="SLTP_ATTEMPT",
-                            event_reason=f"primary_order_id={order_id}, estimated_price={estimated_price}, qty={normalized_qty} (estimated - status not confirmed)",
-                            order_id=str(order_id),
-                        )
-                        
-                        # Unconfirmed fill: publish ProtectionRequested only (observability); no handler creates protection
-                        try:
-                            from app.services.event_bus import get_event_bus, is_event_bus_enabled
-                            from app.services.events import ProtectionRequested
-                            if is_event_bus_enabled():
-                                get_event_bus().publish(
-                                    ProtectionRequested(
-                                        symbol=symbol,
-                                        exchange_order_id=str(order_id),
-                                        source="signal_monitor_unconfirmed",
-                                        correlation_id=None,
-                                    )
-                                )
-                            logger.info(
-                                "[EVENT_BUS] protection requested (unconfirmed) symbol=%s order_id=%s - exchange_sync will create when FILLED",
-                                symbol, order_id,
-                            )
-                        except Exception as ev_err:
-                            logger.warning(f"Error publishing ProtectionRequested for BUY {symbol} order {order_id}: {ev_err}")
-                except Exception as sl_tp_err:
-                    error_details = str(sl_tp_err)
-                    logger.warning(
-                        f"⚠️ [SL/TP] Estimated path for BUY {symbol} order {order_id}: {error_details}. "
-                        f"Exchange sync will handle SL/TP when order becomes FILLED.",
-                        exc_info=True
-                    )
-            else:
-                logger.warning(
-                    f"⚠️ [SL/TP] Cannot create SL/TP with estimated values for BUY order {order_id}: "
-                    f"invalid estimates (qty={estimated_qty}, price={estimated_price}). "
-                    f"Exchange sync will handle SL/TP when order becomes FILLED."
+            except Exception as sl_tp_err:
+                logger.error(
+                    f"❌ [SLTP_FAILED] Unconfirmed-fill protection path failed for BUY {symbol} "
+                    f"order {order_id}: {sl_tp_err}",
+                    exc_info=True,
                 )
         
         return {
@@ -9607,10 +9447,73 @@ class SignalMonitorService:
         )
         
         order_seen_in_any_source = False  # Track if we've ever seen this order
+
+        def _filled_from_order_dict(order: Dict[str, Any], source_label: str) -> Optional[Dict[str, Any]]:
+            nonlocal order_seen_in_any_source
+            if not isinstance(order, dict):
+                return None
+            order_seen_in_any_source = True
+            status = (order.get("status") or "NEW").upper()
+            if status not in ["FILLED", "CANCELED", "CANCELLED"]:
+                logger.debug(
+                    f"🔄 [FILL_CONFIRMATION] Order {order_id} via {source_label} status={status} "
+                    f"(not FILLED yet, attempt {attempt}/{max_attempts})"
+                )
+                return None
+            cumulative_qty_raw = (
+                order.get("cumulative_quantity")
+                or order.get("cumulative_qty")
+                or order.get("quantity")
+                or 0
+            )
+            try:
+                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw))
+                avg_price_raw = order.get("avg_price") or order.get("avgPrice") or order.get("price")
+                avg_price_decimal = Decimal(str(avg_price_raw)) if avg_price_raw else None
+            except (ValueError, TypeError, InvalidOperation) as e:
+                logger.warning(
+                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} via {source_label} status={status} "
+                    f"but failed to parse quantities: {e} (attempt {attempt}/{max_attempts})"
+                )
+                return None
+            if cumulative_qty_decimal <= 0:
+                logger.warning(
+                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} via {source_label} status={status} "
+                    f"but cumulative_quantity <= 0 (value: {cumulative_qty_decimal}, "
+                    f"attempt {attempt}/{max_attempts})"
+                )
+                return None
+            logger.info(
+                f"✅ [FILL_CONFIRMATION] Order {order_id} confirmed FILLED via {source_label} "
+                f"on attempt {attempt}: status={status}, qty={cumulative_qty_decimal}, "
+                f"avg_price={avg_price_decimal}"
+            )
+            return {
+                "status": "FILLED",
+                "cumulative_quantity": cumulative_qty_decimal,
+                "avg_price": float(avg_price_decimal) if avg_price_decimal else None,
+                "filled_price": float(avg_price_decimal) if avg_price_decimal else None,
+            }
         
         for attempt in range(1, max_attempts + 1):
             try:
-                # Check open orders first (order might still be open/pending)
+                # Prefer get-order-detail by id — open/history lists paginate and can miss fills.
+                try:
+                    detail_raw = trade_client.get_order_detail(str(order_id))
+                    detail = None
+                    if isinstance(detail_raw, dict):
+                        detail = detail_raw.get("result") if "result" in detail_raw else detail_raw
+                        if isinstance(detail, dict) and isinstance(detail.get("order_info"), dict):
+                            detail = detail.get("order_info")
+                    filled = _filled_from_order_dict(detail or {}, "get-order-detail")
+                    if filled:
+                        return filled
+                except Exception as detail_err:
+                    logger.debug(
+                        f"[FILL_CONFIRMATION] get-order-detail failed for {order_id}: {detail_err}"
+                    )
+
+                # Check open orders (order might still be open/pending)
                 open_orders_result = trade_client.get_open_orders(page=0, page_size=200)
                 open_orders_data = open_orders_result.get("data", [])
                 
@@ -9618,45 +9521,10 @@ class SignalMonitorService:
                 order_found_in_open = False
                 for order in open_orders_data:
                     if str(order.get("order_id") or order.get("client_order_id") or "") == str(order_id):
-                        order_seen_in_any_source = True
                         order_found_in_open = True
-                        status = (order.get("status") or "NEW").upper()
-                        
-                        if status in ["FILLED", "CANCELED", "CANCELLED"]:
-                            # Order is filled, get details - use Decimal for precision
-                            cumulative_qty_raw = order.get("cumulative_quantity", 0) or 0
-                            try:
-                                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw))
-                                avg_price_raw = order.get("avg_price")
-                                avg_price_decimal = Decimal(str(avg_price_raw)) if avg_price_raw else None
-                            except (ValueError, TypeError, InvalidOperation) as e:
-                                logger.warning(
-                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} status={status} but failed to parse quantities: {e} "
-                                    f"(attempt {attempt}/{max_attempts})"
-                                )
-                                break
-                            
-                            # STRICT VALIDATION: Must have cumulative_quantity > 0
-                            if cumulative_qty_decimal > 0:
-                                logger.info(
-                                    f"✅ [FILL_CONFIRMATION] Order {order_id} confirmed FILLED on attempt {attempt}: "
-                                    f"status={status}, qty={cumulative_qty_decimal}, avg_price={avg_price_decimal}"
-                                )
-                                return {
-                                    "status": "FILLED",
-                                    "cumulative_quantity": cumulative_qty_decimal,  # Return as Decimal
-                                    "avg_price": float(avg_price_decimal) if avg_price_decimal else None,
-                                    "filled_price": float(avg_price_decimal) if avg_price_decimal else None
-                                }
-                            else:
-                                logger.warning(
-                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} status={status} but cumulative_quantity <= 0 "
-                                    f"(value: {cumulative_qty_decimal}, attempt {attempt}/{max_attempts})"
-                                )
-                        else:
-                            logger.debug(
-                                f"🔄 [FILL_CONFIRMATION] Order {order_id} status={status} (not FILLED yet, attempt {attempt}/{max_attempts})"
-                            )
+                        filled = _filled_from_order_dict(order, "open-orders")
+                        if filled:
+                            return filled
                         break
                 
                 # If order not in open orders, check order history (it might have been filled and closed)
@@ -9674,37 +9542,11 @@ class SignalMonitorService:
                     )
                     history_data = history_result.get("data", [])
                     
-                    order_found_in_history = False
                     for order in history_data:
                         if str(order.get("order_id") or order.get("client_order_id") or "") == str(order_id):
-                            order_seen_in_any_source = True
-                            order_found_in_history = True
-                            status = (order.get("status") or "NEW").upper()
-                            cumulative_qty_raw = order.get("cumulative_quantity", 0) or 0
-                            
-                            try:
-                                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw))
-                                avg_price_raw = order.get("avg_price")
-                                avg_price_decimal = Decimal(str(avg_price_raw)) if avg_price_raw else None
-                            except (ValueError, TypeError, InvalidOperation) as e:
-                                logger.warning(
-                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} found in history with status={status} "
-                                    f"but failed to parse quantities: {e} (attempt {attempt}/{max_attempts})"
-                                )
-                                break
-                            
-                            # STRICT VALIDATION: Must be FILLED AND cumulative_quantity > 0
-                            if status in ["FILLED", "CANCELED", "CANCELLED"] and cumulative_qty_decimal > 0:
-                                logger.info(
-                                    f"✅ [FILL_CONFIRMATION] Order {order_id} found FILLED in history (attempt {attempt}): "
-                                    f"status={status}, qty={cumulative_qty_decimal}, avg_price={avg_price_decimal}"
-                                )
-                                return {
-                                    "status": "FILLED",
-                                    "cumulative_quantity": cumulative_qty_decimal,  # Return as Decimal
-                                    "avg_price": float(avg_price_decimal) if avg_price_decimal else None,
-                                    "filled_price": float(avg_price_decimal) if avg_price_decimal else None
-                                }
+                            filled = _filled_from_order_dict(order, "order-history")
+                            if filled:
+                                return filled
                             break
                 
                 # If we haven't found the order filled yet, wait before next attempt
@@ -9723,13 +9565,14 @@ class SignalMonitorService:
         # Order not filled after max attempts - provide detailed error message
         if not order_seen_in_any_source:
             logger.error(
-                f"❌ [FILL_CONFIRMATION] Order {order_id} ({symbol}) NOT FOUND in open orders or history after {max_attempts} attempts. "
-                f"Order may have been cancelled, or order_id is incorrect. SL/TP creation will be skipped."
+                f"❌ [FILL_CONFIRMATION] Order {order_id} ({symbol}) NOT FOUND via get-order-detail / "
+                f"open orders / history after {max_attempts} attempts. "
+                f"Order may have been cancelled, or order_id is incorrect."
             )
         else:
             logger.error(
                 f"❌ [FILL_CONFIRMATION] Order {order_id} ({symbol}) NOT confirmed FILLED after {max_attempts} attempts. "
-                f"Order was seen but status is not FILLED or cumulative_quantity is invalid. SL/TP creation will be skipped."
+                f"Order was seen but status is not FILLED or cumulative_quantity is invalid."
             )
         return None
     
@@ -9756,6 +9599,9 @@ class SignalMonitorService:
         Re-polling from the raw placement ``result`` (often still NEW / no qty) was
         adding up to ~10s before TP on the hot path — enough for a tight +1% target
         to be behind the market (prod AAVE_USD).
+
+        Business rule (Carlos): on alert-originated entry fill, attempt BOTH legs
+        immediately. Healing is OFF by design — this fill-time path must be complete.
         """
         from decimal import Decimal
         from app.services.exchange_sync import exchange_sync_service
@@ -9809,24 +9655,50 @@ class SignalMonitorService:
                     max_attempts=ORDER_FILL_POLL_MAX_ATTEMPTS,
                     poll_interval=ORDER_FILL_POLL_INTERVAL_SECONDS,
                 )
+                # Fill-time-only: healing cannot catch this later — extend poll.
+                if (
+                    not confirmed or confirmed.get("status") != "FILLED"
+                ) and ORDER_FILL_POLL_EXTENDED_ATTEMPTS > 0:
+                    logger.warning(
+                        f"⚠️ [SL/TP] {entry_side_upper} order {order_id} ({symbol}) unconfirmed after "
+                        f"{ORDER_FILL_POLL_MAX_ATTEMPTS} polls — extended fill-time retry "
+                        f"({ORDER_FILL_POLL_EXTENDED_ATTEMPTS}x{ORDER_FILL_POLL_EXTENDED_INTERVAL_SECONDS}s)"
+                    )
+                    confirmed = self._poll_order_fill_confirmation(
+                        symbol=symbol,
+                        order_id=str(order_id),
+                        max_attempts=ORDER_FILL_POLL_EXTENDED_ATTEMPTS,
+                        poll_interval=ORDER_FILL_POLL_EXTENDED_INTERVAL_SECONDS,
+                    )
 
         filled_confirmation = confirmed
 
         if not filled_confirmation or filled_confirmation.get("status") != "FILLED":
-            logger.warning(
-                f"⚠️ [SL/TP] {entry_side_upper} order {order_id} ({symbol}) not confirmed FILLED; "
-                f"skipping protection creation"
+            logger.error(
+                f"❌ [SLTP_FAILED] {entry_side_upper} order {order_id} ({symbol}) not confirmed FILLED "
+                f"after fill-time polls — cannot create protection (healing_disabled; no sync backup)"
             )
-            return None
+            return {
+                "status": "fill_unconfirmed",
+                "order_id": order_id,
+                "sl_result": {"order_id": None, "error": "fill_unconfirmed"},
+                "tp_result": {"order_id": None, "error": "fill_unconfirmed"},
+            }
 
         executed_qty_raw_decimal = filled_confirmation.get("cumulative_quantity")
         executed_avg_price = filled_confirmation.get("filled_price") or estimated_price
         if not executed_qty_raw_decimal or not isinstance(executed_qty_raw_decimal, Decimal) or executed_qty_raw_decimal <= 0:
-            logger.error(
-                f"❌ [SL/TP] {entry_side_upper} order {order_id} has invalid executed quantity: "
-                f"{executed_qty_raw_decimal}"
-            )
-            return None
+            # Coerce string/float qty from alternate confirmation sources.
+            try:
+                executed_qty_raw_decimal = Decimal(str(executed_qty_raw_decimal))
+            except Exception:
+                executed_qty_raw_decimal = None
+            if not executed_qty_raw_decimal or executed_qty_raw_decimal <= 0:
+                logger.error(
+                    f"❌ [SL/TP] {entry_side_upper} order {order_id} has invalid executed quantity: "
+                    f"{executed_qty_raw_decimal}"
+                )
+                return None
 
         executed_qty_raw_float = float(executed_qty_raw_decimal)
         normalized_qty_str, _ = trade_client.normalize_quantity_safe_with_fallback(
@@ -9853,6 +9725,7 @@ class SignalMonitorService:
             return None
 
         normalized_qty = float(normalized_qty_str)
+        # Only skip when BOTH legs are already active — partial SL-only/TP-only is under-cover.
         existing_sl_tp = db.query(ExchangeOrder).filter(
             ExchangeOrder.parent_order_id == str(order_id),
             ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
@@ -9862,37 +9735,104 @@ class SignalMonitorService:
                 OrderStatusEnum.PARTIALLY_FILLED,
             ]),
         ).all()
-        if existing_sl_tp:
+        existing_roles = {
+            (getattr(o, "order_role", None) or "").upper() for o in (existing_sl_tp or [])
+        }
+        if "STOP_LOSS" in existing_roles and "TAKE_PROFIT" in existing_roles:
             existing_order_ids = [str(o.exchange_order_id) for o in existing_sl_tp]
             logger.info(
-                f"⚠️ [SL/TP] Idempotency guard: SL/TP already exist for {entry_side_upper} order "
+                f"⚠️ [SL/TP] Idempotency guard: complete SL+TP already exist for {entry_side_upper} order "
                 f"{order_id} ({symbol}): {existing_order_ids}"
             )
             return {"status": "already_protected", "order_id": order_id}
+        if existing_roles:
+            logger.warning(
+                f"⚠️ [SL/TP] Partial protection for {entry_side_upper} order {order_id} ({symbol}): "
+                f"roles={sorted(existing_roles)} — continuing fill-time create for missing leg(s)"
+            )
 
         logger.info(
-            f"🔒 [SL/TP] Creating protection for {entry_side_upper} {symbol} order {order_id}: "
+            f"🔒 [SLTP_ATTEMPT] Creating protection for {entry_side_upper} {symbol} order {order_id}: "
             f"filled_price={executed_avg_price}, qty={normalized_qty}"
         )
         creation_result: Optional[Dict[str, Any]] = None
         creation_error: Optional[Exception] = None
-        try:
-            creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
-                db=db,
-                symbol=symbol,
-                side=entry_side_upper,
-                filled_price=float(executed_avg_price),
-                filled_qty=normalized_qty,
-                order_id=str(order_id),
-                source=source,
-                skip_gate=True,
+        max_create_attempts = max(1, SLTP_CREATE_MAX_ATTEMPTS)
+
+        for create_attempt in range(1, max_create_attempts + 1):
+            creation_error = None
+            try:
+                logger.info(
+                    "[SLTP_ATTEMPT] parent=%s symbol=%s side=%s attempt=%s/%s",
+                    order_id,
+                    symbol,
+                    entry_side_upper,
+                    create_attempt,
+                    max_create_attempts,
+                )
+                creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
+                    db=db,
+                    symbol=symbol,
+                    side=entry_side_upper,
+                    filled_price=float(executed_avg_price),
+                    filled_qty=normalized_qty,
+                    order_id=str(order_id),
+                    source=source,
+                    skip_gate=True,
+                )
+            except Exception as create_err:
+                creation_error = create_err
+                creation_result = None
+                logger.error(
+                    "❌ [SLTP_FAILED] Protection creation raised for %s %s order %s "
+                    "(attempt %s/%s): %s",
+                    entry_side_upper,
+                    symbol,
+                    order_id,
+                    create_attempt,
+                    max_create_attempts,
+                    create_err,
+                    exc_info=True,
+                )
+
+            if creation_error is None and self._protection_confirms_complete(creation_result):
+                logger.info(
+                    "✅ [SLTP_OK] Complete SL+TP for %s %s order %s on attempt %s",
+                    entry_side_upper,
+                    symbol,
+                    order_id,
+                    create_attempt,
+                )
+                break
+
+            sl_ok = self._protection_confirms_stop_loss(creation_result)
+            tp_ok = self._protection_confirms_take_profit(creation_result)
+            logger.warning(
+                "⚠️ [SLTP_INCOMPLETE] parent=%s symbol=%s attempt=%s/%s sl_ok=%s tp_ok=%s "
+                "error=%s result_status=%s",
+                order_id,
+                symbol,
+                create_attempt,
+                max_create_attempts,
+                sl_ok,
+                tp_ok,
+                creation_error,
+                (creation_result or {}).get("status") if isinstance(creation_result, dict) else None,
             )
-        except Exception as create_err:
-            creation_error = create_err
-            logger.error(
-                "❌ [SL/TP] Protection creation raised for %s %s order %s: %s",
-                entry_side_upper, symbol, order_id, create_err, exc_info=True,
-            )
+            # Permanent account-level disable: do not burn retries.
+            if self._protection_leg_conditional_disabled(
+                (creation_result or {}).get("sl_result") if isinstance(creation_result, dict) else None
+            ) or self._protection_leg_conditional_disabled(
+                (creation_result or {}).get("tp_result") if isinstance(creation_result, dict) else None
+            ):
+                logger.error(
+                    "❌ [SLTP_FAILED] Conditional orders disabled (140001) for %s %s — aborting retries",
+                    symbol,
+                    order_id,
+                )
+                break
+            if create_attempt < max_create_attempts:
+                time.sleep(SLTP_CREATE_RETRY_DELAY_SECONDS)
 
         # HARD INVARIANT — a freshly-opened entry must NEVER be left without a stop-loss.
         # Crypto.com 140001 (EXCHANGE_API_DISABLED) is RETURNED as an error in the result
@@ -9912,6 +9852,36 @@ class SignalMonitorService:
                 is_margin=is_margin,
                 leverage=leverage,
             )
+            return creation_result
+
+        if not self._protection_confirms_take_profit(creation_result):
+            # SL is live — do not flatten — but log critically; healing will NOT backfill.
+            logger.error(
+                "❌ [SLTP_FAILED] TP missing after fill-time retries for %s %s order %s "
+                "(SL present; position under-covered TP; healing_disabled). result=%s",
+                entry_side_upper,
+                symbol,
+                order_id,
+                {
+                    "sl": (creation_result or {}).get("sl_result") if isinstance(creation_result, dict) else None,
+                    "tp": (creation_result or {}).get("tp_result") if isinstance(creation_result, dict) else None,
+                    "skip_tp": (creation_result or {}).get("skip_tp_creation") if isinstance(creation_result, dict) else None,
+                    "skip_tp_reason": (creation_result or {}).get("skip_tp_reason") if isinstance(creation_result, dict) else None,
+                },
+            )
+            try:
+                if FAILSAFE_ON_SLTP_ERROR and self._telegram_send_enabled():
+                    telegram_notifier.send_message(
+                        f"🚨 <b>CRITICAL: TP CREATION FAILED (fill-time)</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"📋 Entry: {entry_side_upper} {order_id}\n"
+                        f"💵 Filled: ${float(executed_avg_price or 0):.8f} qty={normalized_qty}\n"
+                        f"⚠️ SL is live but TP is missing. Healing is OFF — cover TP manually "
+                        f"or re-run create protection for this parent."
+                    )
+            except Exception as alert_err:
+                logger.warning("Failed to send TP-missing Telegram for %s: %s", order_id, alert_err)
+
         return creation_result
 
     @staticmethod
@@ -9927,11 +9897,39 @@ class SignalMonitorService:
             return False
         status = str(creation_result.get("status") or "").strip().lower()
         if status == "already_protected":
+            # already_protected must include a real SL id if provided; otherwise require legs.
+            sl = creation_result.get("sl_result")
+            if isinstance(sl, dict):
+                return bool(sl.get("order_id")) and not sl.get("error")
+            # Legacy choke-point short-circuit without leg details.
             return True
         sl = creation_result.get("sl_result")
         if not isinstance(sl, dict):
             return False
         return bool(sl.get("order_id")) and not sl.get("error")
+
+    @staticmethod
+    def _protection_confirms_take_profit(creation_result: Optional[Dict[str, Any]]) -> bool:
+        """True only if a take-profit order was actually created (or already exists)."""
+        if not isinstance(creation_result, dict):
+            return False
+        status = str(creation_result.get("status") or "").strip().lower()
+        if status == "already_protected":
+            tp = creation_result.get("tp_result")
+            if isinstance(tp, dict):
+                return bool(tp.get("order_id")) and not tp.get("error")
+            return True
+        tp = creation_result.get("tp_result")
+        if not isinstance(tp, dict):
+            return False
+        return bool(tp.get("order_id")) and not tp.get("error")
+
+    @classmethod
+    def _protection_confirms_complete(cls, creation_result: Optional[Dict[str, Any]]) -> bool:
+        """True when both SL and TP legs are confirmed live."""
+        return cls._protection_confirms_stop_loss(
+            creation_result
+        ) and cls._protection_confirms_take_profit(creation_result)
 
     @staticmethod
     def _protection_leg_conditional_disabled(leg: Any) -> bool:
@@ -10057,6 +10055,26 @@ class SignalMonitorService:
                 "✅ [AUTO_CLOSE] %s %s order %s: flatten market order created: %s (qty=%s).",
                 symbol, entry_side_upper, order_id, close_order_id, filled_qty,
             )
+            # Tag the close fill so hourly SL/TP backfill never treats it as a new entry
+            # (Telegram noise: HOURLY SL/TP CHECK failed on SUI flatten BUY 2026-08-02).
+            try:
+                from app.services.sl_tp_protection import mark_flatten_close_order
+
+                mark_flatten_close_order(
+                    db,
+                    close_order_id=str(close_order_id),
+                    entry_order_id=str(order_id),
+                    symbol=symbol,
+                    close_side=close_side,
+                    quantity=float(filled_qty),
+                )
+            except Exception as tag_err:
+                logger.warning(
+                    "Failed to tag flatten close %s for %s: %s",
+                    close_order_id,
+                    symbol,
+                    tag_err,
+                )
             try:
                 if self._telegram_send_enabled():
                     telegram_notifier.send_message(
@@ -11130,19 +11148,21 @@ class SignalMonitorService:
                             f"(symbol={symbol})"
                         )
                         
-                        # IDEMPOTENCY GUARD: Check if SL/TP already exist for this order before creating
-                        # This prevents duplicate creation if this function is called multiple times
-                        # ExchangeOrder is already imported at module level (line 16) - no local import needed
+                        # IDEMPOTENCY GUARD: only skip when BOTH legs exist. Partial protection
+                        # must reach the choke point so the missing leg is created at fill time.
                         existing_sl_tp = db.query(ExchangeOrder).filter(
                             ExchangeOrder.parent_order_id == str(order_id),
                             ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
                             ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
                         ).all()
-                        
-                        if existing_sl_tp:
+                        existing_roles = {
+                            (getattr(o, "order_role", None) or "").upper() for o in (existing_sl_tp or [])
+                        }
+
+                        if "STOP_LOSS" in existing_roles and "TAKE_PROFIT" in existing_roles:
                             existing_order_ids = [str(o.exchange_order_id) for o in existing_sl_tp]
                             logger.info(
-                                f"⚠️ [SL/TP] Idempotency guard: SL/TP orders already exist for SELL order {order_id} ({symbol}): {existing_order_ids}. "
+                                f"⚠️ [SL/TP] Idempotency guard: complete SL+TP already exist for SELL order {order_id} ({symbol}): {existing_order_ids}. "
                                 f"Skipping duplicate creation."
                             )
                             # SL/TP already exist, use normalized quantity for return value
@@ -11334,28 +11354,56 @@ class SignalMonitorService:
                                 # Use normalized quantity for return value
                                 filled_quantity = normalized_qty
             else:
-                # Order not confirmed FILLED after polling - do NOT create SL/TP
-                error_msg = (
-                    f"Order {order_id} not confirmed FILLED after polling. "
-                    f"SL/TP creation skipped to prevent using incorrect quantity. "
-                    f"Exchange sync will handle SL/TP when order becomes FILLED."
+                # Order not confirmed FILLED after polling — never promise sync healing
+                # (SLTP_HEALING_ENABLED defaults OFF). Retry via fill-time choke point for shorts.
+                logger.warning(
+                    f"⚠️ [SL/TP] SELL order {order_id} not confirmed FILLED after polling. "
+                    f"Attempting fill-time protection (extended polls); healing is not a backup."
                 )
-                logger.warning(f"⚠️ [SL/TP] {error_msg}")
-                
-                # Send alert that order is pending and SL/TP will be created later
                 try:
-                    telegram_notifier.send_message(
-                        f"⏳ <b>SL/TP PENDING</b>\n\n"
-                        f"📊 Symbol: <b>{symbol}</b>\n"
-                        f"📋 Order ID: {order_id}\n"
-                        f"🔴 Side: SELL\n"
-                        f"ℹ️ Order fill confirmation pending. SL/TP will be created automatically when order is filled.\n\n"
-                        f"The exchange sync service will create protection orders when the order status becomes FILLED."
+                    is_short_entry = False
+                    try:
+                        from app.services.exchange_sync import (
+                            _base_wallet_balance_from_accounts,
+                        )
+                        summary = trade_client.get_account_summary()
+                        wallet_balance = _base_wallet_balance_from_accounts(
+                            summary.get("accounts") or [],
+                            symbol,
+                        )
+                        if wallet_balance is not None:
+                            is_short_entry = float(wallet_balance) < 0
+                    except Exception:
+                        is_short_entry = bool(use_margin)
+                        try:
+                            from app.services.risk_guard import shorting_enabled
+                            is_short_entry = is_short_entry and shorting_enabled()
+                        except Exception:
+                            pass
+                    if is_short_entry:
+                        self._create_protection_after_entry_fill(
+                            db=db,
+                            symbol=symbol,
+                            entry_side="SELL",
+                            order_id=str(order_id),
+                            placement_result=result if isinstance(result, dict) else {},
+                            estimated_price=filled_price or current_price,
+                            source="signal_monitor_unconfirmed",
+                            is_margin=use_margin,
+                            leverage=leverage_value if use_margin else None,
+                            filled_confirmation=None,
+                        )
+                    else:
+                        logger.info(
+                            f"[SL/TP] Unconfirmed SELL {symbol} order {order_id} treated as "
+                            f"long-close candidate — no fill-time SL/TP."
+                        )
+                except Exception as sl_tp_err:
+                    logger.error(
+                        f"❌ [SLTP_FAILED] Unconfirmed-fill protection path failed for SELL "
+                        f"{symbol} order {order_id}: {sl_tp_err}",
+                        exc_info=True,
                     )
-                except Exception as alert_err:
-                    logger.warning(f"Failed to send pending alert: {alert_err}")
-                
-                # Use requested quantity for return value (order not filled yet)
                 filled_quantity = qty
             
             return {

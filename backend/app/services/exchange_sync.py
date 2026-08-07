@@ -22,6 +22,7 @@ from app.services.sl_tp_protection import (
     GHOST_CANCEL_GRACE_SECONDS,
     get_active_protection_order,
     has_complete_sl_tp_protection,
+    is_flatten_close_order,
     release_sl_tp_creation_lock,
     should_mark_unresolved_order_cancelled,
     should_send_protection_rejected_alert,
@@ -177,7 +178,7 @@ def should_notify_executed_fill(
     """Gate for executed-fill Telegram notifications. Prevents history-sync spam.
     Returns (allowed, reason).
     A) requested_by_admin -> allow (unless already notified, then dedup).
-    B) Order created by this system (signal / parent / protection role / intent) -> allow.
+    B) Order created by this system (signal / parent / protection role / OrderIntent) -> allow.
     C) Else allow only if fill is recent (within RECENT_FILL_WINDOW_SECONDS).
     D) If we already sent notification for this order -> block.
     """
@@ -193,6 +194,12 @@ def should_notify_executed_fill(
         or getattr(order, "parent_order_id", None) is not None
         or is_protection
     )
+    if not is_system_order:
+        # Bot entry fills often have OrderIntent before trade_signal_id is linked
+        # (ALGO_USD 2026-08-06: after 1h window, gate treated intent fills as historical).
+        order_id = str(getattr(order, "exchange_order_id", "") or "")
+        if order_id and _order_has_order_intent(db, order_id):
+            is_system_order = True
     if is_system_order:
         return (True, "system order")
     filled_at = getattr(order, "exchange_update_time", None) or getattr(order, "exchange_create_time", None)
@@ -204,6 +211,130 @@ def should_notify_executed_fill(
     if age_seconds > RECENT_FILL_WINDOW_SECONDS:
         return (False, "historical fill: outside window")
     return (True, "recent fill")
+
+
+def _order_has_order_intent(db: Session, order_id: str) -> bool:
+    """True when ATP wrote an OrderIntent for this exchange order id."""
+    try:
+        from app.models.order_intent import OrderIntent
+
+        intent = (
+            db.query(OrderIntent)
+            .filter(OrderIntent.order_id == str(order_id))
+            .order_by(OrderIntent.id.desc())
+            .first()
+        )
+        return intent is not None
+    except Exception:
+        return False
+
+
+def _claim_order_executed_telegram(
+    order_id: str,
+    *,
+    symbol: Optional[str] = None,
+) -> bool:
+    """Claim once-per-order right to send ORDER EXECUTED Telegram.
+
+    Uses a dedicated SessionLocal so the claim commits independently of the outer
+    sync transaction (which may later roll back or sit idle-in-transaction).
+    """
+    oid = str(order_id or "").strip()
+    if not oid:
+        return True
+    if SessionLocal is None:
+        from app.services.telegram_event_dedup import claim_telegram_event
+
+        return claim_telegram_event(
+            None,
+            f"tg:order_executed:{oid}",
+            symbol=symbol,
+            ttl_minutes=24 * 60,
+            action="order_executed",
+        )
+    claim_db = SessionLocal()
+    try:
+        from app.services.telegram_event_dedup import claim_telegram_event
+
+        return claim_telegram_event(
+            claim_db,
+            f"tg:order_executed:{oid}",
+            symbol=symbol,
+            ttl_minutes=24 * 60,
+            action="order_executed",
+        )
+    except Exception as exc:
+        logger.warning(
+            "order_executed telegram claim failed for %s: %s; allowing send",
+            oid,
+            exc,
+        )
+        try:
+            claim_db.rollback()
+        except Exception:
+            pass
+        return True
+    finally:
+        claim_db.close()
+
+
+def _persist_execution_notified_at(order_id: str, notified_at: datetime) -> None:
+    """Commit execution_notified_at on its own session so outer sync rollbacks cannot
+    erase the marker after Telegram was already sent (causes infinite ORDER EXECUTED retries).
+
+    Must NOT be preceded by db.flush() on the outer sync session for the same row:
+    that holds a row lock and deadlocks this UPDATE (HBAR SL 73817490102060532,
+    2026-08-06: Telegram sent, then idle-in-transaction blocked durable mark → 5× spam).
+    """
+    if SessionLocal is None:
+        return
+    marker_db = SessionLocal()
+    try:
+        # Fail fast instead of hanging behind an idle outer transaction.
+        try:
+            marker_db.execute(text("SET LOCAL lock_timeout = '3s'"))
+        except Exception:
+            pass
+        marker_db.execute(
+            text(
+                "UPDATE exchange_orders SET execution_notified_at = :ts "
+                "WHERE exchange_order_id = :oid AND execution_notified_at IS NULL"
+            ),
+            {"ts": notified_at, "oid": str(order_id)},
+        )
+        marker_db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Failed to persist execution_notified_at for %s: %s",
+            order_id,
+            exc,
+        )
+        try:
+            marker_db.rollback()
+        except Exception:
+            pass
+    finally:
+        marker_db.close()
+
+
+def _mark_execution_notified_after_send(
+    order: ExchangeOrder,
+    *,
+    fill_dedup: Any,
+    fill_qty: float,
+    fill_status: str,
+) -> None:
+    """After a successful ORDER EXECUTED Telegram: durable mark + fill_dedup, no outer flush."""
+    notified_at = datetime.now(timezone.utc)
+    order.execution_notified_at = notified_at
+    # Intentionally skip db.flush() — see _persist_execution_notified_at docstring.
+    _persist_execution_notified_at(str(order.exchange_order_id), notified_at)
+    fill_dedup.record_fill(
+        order_id=str(order.exchange_order_id),
+        filled_qty=fill_qty,
+        status=fill_status,
+        notification_sent=True,
+    )
 
 
 def _count_open_entry_buy_orders(db: Session, symbol: str) -> int:
@@ -233,7 +364,7 @@ def _count_open_entry_buy_orders(db: Session, symbol: str) -> int:
             ),
             or_(
                 ExchangeOrder.order_role.is_(None),
-                ~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                ~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT", "FLATTEN"]),
             ),
         )
         .count()
@@ -368,9 +499,17 @@ def should_auto_create_sl_tp_on_sync(
     entry_side: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Gate SL/TP backfill during exchange_sync history processing."""
+    from app.services.sl_tp_protection import is_sltp_healing_enabled
+
+    if not is_sltp_healing_enabled():
+        return False, "healing_disabled"
+
     linked = link_system_trade_signal_to_order(db, order)
 
     parent_id = str(order.exchange_order_id)
+    if is_flatten_close_order(order):
+        return False, "flatten_close"
+
     if has_complete_sl_tp_protection(db, parent_id):
         return False, "already_protected"
 
@@ -1260,17 +1399,50 @@ class ExchangeSyncService:
                 )
         return repaired
     
-    def _infer_protection_order_role(self, order: ExchangeOrder) -> Optional[str]:
-        """Return TAKE_PROFIT / STOP_LOSS when role or order_type indicates protection."""
-        role = (getattr(order, "order_role", None) or "").upper()
-        if role in ("TAKE_PROFIT", "STOP_LOSS"):
-            return role
-        order_type = (getattr(order, "order_type", None) or "").upper()
-        if order_type in ("TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT_MARKET"):
-            return "TAKE_PROFIT"
-        if order_type in ("STOP_LOSS", "STOP_LIMIT", "STOP_MARKET", "STOP_LOSS_LIMIT"):
-            return "STOP_LOSS"
-        return None
+    def _infer_protection_order_role(
+        self,
+        order: ExchangeOrder,
+        order_data: Optional[Dict[str, Any]] = None,
+        db: Optional[Session] = None,
+    ) -> Optional[str]:
+        """Return TAKE_PROFIT / STOP_LOSS when role, type, contingency, or parent says so.
+
+        Exchange history often reports the fill as MARKET while DB still has
+        STOP_LIMIT / TAKE_PROFIT_LIMIT and/or order_role. Spot children of advanced
+        triggers may only link via parent_order_id to the contingency parent.
+        """
+        from app.utils.execution_origin import infer_protection_role
+
+        contingency = None
+        if isinstance(order_data, dict):
+            contingency = (
+                order_data.get("contingency_type")
+                or order_data.get("contingencyType")
+            )
+            from_payload = protection_role_from_order_data(order_data)
+            if from_payload:
+                return from_payload
+
+        parent_role = None
+        parent_type = None
+        parent_id = getattr(order, "parent_order_id", None)
+        if parent_id and db is not None:
+            parent = (
+                db.query(ExchangeOrder)
+                .filter(ExchangeOrder.exchange_order_id == str(parent_id))
+                .first()
+            )
+            if parent is not None:
+                parent_role = getattr(parent, "order_role", None)
+                parent_type = getattr(parent, "order_type", None)
+
+        return infer_protection_role(
+            order_role=getattr(order, "order_role", None),
+            order_type=getattr(order, "order_type", None),
+            contingency_type=contingency,
+            parent_order_role=parent_role,
+            parent_order_type=parent_type,
+        )
 
     def _lookup_entry_price_for_protection(
         self, db: Session, order: ExchangeOrder
@@ -1383,7 +1555,7 @@ class ExchangeSyncService:
                 db, order
             )
 
-            inferred_role = self._infer_protection_order_role(order)
+            inferred_role = self._infer_protection_order_role(order, db=db)
             entry_price = None
             if inferred_role:
                 entry_price = self._lookup_entry_price_for_protection(db, order)
@@ -1413,6 +1585,21 @@ class ExchangeSyncService:
             )
             logger.info("[FILL_NOTIFICATION] %s", json.dumps(audit_log))
 
+            if not _claim_order_executed_telegram(
+                str(order.exchange_order_id), symbol=order.symbol
+            ):
+                logger.info(
+                    "Skipping fill Telegram for %s: order_executed claim denied",
+                    order.exchange_order_id,
+                )
+                fill_dedup.record_fill(
+                    order_id=str(order.exchange_order_id),
+                    filled_qty=fill_qty,
+                    status=fill_status,
+                    notification_sent=False,
+                )
+                return False
+
             result = telegram_notifier.send_executed_order(
                 symbol=order.symbol,
                 side=side,
@@ -1429,20 +1616,11 @@ class ExchangeSyncService:
                 system_attributed=system_attributed,
             )
             if result:
-                order.execution_notified_at = datetime.now(timezone.utc)
-                try:
-                    db.flush()
-                except Exception as flush_err:
-                    logger.warning(
-                        "Failed to flush execution_notified_at for %s: %s",
-                        order.exchange_order_id,
-                        flush_err,
-                    )
-                fill_dedup.record_fill(
-                    order_id=str(order.exchange_order_id),
-                    filled_qty=fill_qty,
-                    status=fill_status,
-                    notification_sent=True,
+                _mark_execution_notified_after_send(
+                    order,
+                    fill_dedup=fill_dedup,
+                    fill_qty=fill_qty,
+                    fill_status=fill_status,
                 )
                 logger.info(
                     "Sent Telegram notification for executed order: %s %s - %s (source=%s reason=%s)",
@@ -1903,6 +2081,18 @@ class ExchangeSyncService:
                                             )
                                     except Exception as alert_err:
                                         logger.warning("Failed protection reject alert: %s", alert_err)
+                                    try:
+                                        self._retry_protection_after_reject(
+                                            db,
+                                            protection_order=order,
+                                            reject_reason=reject_reason,
+                                        )
+                                    except Exception as retry_err:
+                                        logger.warning(
+                                            "Protection reject retry failed for %s: %s",
+                                            order.exchange_order_id,
+                                            retry_err,
+                                        )
                                 
                                 # Emit ORDER_CANCELED event if status actually changed
                                 if old_status != OrderStatusEnum(resolved_status):
@@ -3047,6 +3237,86 @@ class ExchangeSyncService:
                 exc_info=True,
             )
             return None
+
+    def _retry_protection_after_reject(
+        self,
+        db: Session,
+        *,
+        protection_order: ExchangeOrder,
+        reject_reason: str,
+    ) -> None:
+        """One-shot OCO retry when exchange async-rejects a protection leg (fill-time only).
+
+        Not background healing: runs once per parent when sync confirms REJECTED.
+        """
+        from app.services.tp_sl_order_creator import is_insufficient_acc_balance_error
+
+        parent_id = protection_order.parent_order_id
+        if not parent_id:
+            return
+        if not is_insufficient_acc_balance_error(reject_reason):
+            return
+        if has_complete_sl_tp_protection(db, str(parent_id)):
+            return
+
+        parent = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == str(parent_id))
+            .first()
+        )
+        if not parent or parent.status != OrderStatusEnum.FILLED:
+            return
+        filled_at = parent.exchange_update_time or parent.created_at
+        if not filled_at:
+            return
+        if filled_at.tzinfo is None:
+            filled_at = filled_at.replace(tzinfo=timezone.utc)
+        age_min = (datetime.now(timezone.utc) - filled_at).total_seconds() / 60.0
+        if age_min > 30:
+            return
+
+        try:
+            from app.services.telegram_event_dedup import claim_telegram_event
+
+            if not claim_telegram_event(
+                db,
+                f"sltp_reject_retry:{parent_id}",
+                symbol=protection_order.symbol,
+                ttl_minutes=60,
+                action="sltp_reject_retry",
+            ):
+                return
+        except Exception:
+            pass
+
+        filled_price = float(parent.avg_price or parent.price or 0)
+        filled_qty = float(
+            parent.cumulative_quantity or parent.quantity or protection_order.quantity or 0
+        )
+        entry_side = (
+            parent.side.value if hasattr(parent.side, "value") else str(parent.side or "BUY")
+        )
+        if filled_price <= 0 or filled_qty <= 0:
+            return
+
+        logger.warning(
+            "[SLTP_REJECT_RETRY] parent=%s symbol=%s role=%s reason=%s — one-shot OCO retry",
+            parent_id,
+            protection_order.symbol,
+            protection_order.order_role,
+            reject_reason,
+        )
+        self._create_sl_tp_for_filled_order(
+            db=db,
+            symbol=protection_order.symbol,
+            side=str(entry_side).upper(),
+            filled_price=filled_price,
+            filled_qty=filled_qty,
+            order_id=str(parent_id),
+            force=True,
+            source="reject_retry",
+            skip_gate=True,
+        )
     
     def _create_sl_tp_for_filled_order(
         self,
@@ -3064,7 +3334,8 @@ class ExchangeSyncService:
         skip_gate: bool = False,
     ):
         """Create SL and TP orders automatically when a LIMIT or MARKET order is filled.
-        When skip_gate=True, do not call assert_exchange_mutation_allowed (caller must gate).
+        When skip_gate=True, skip lock/idempotency gates (caller already gated) but still
+        emit send_sl_tp_orders Telegram when legs are newly created.
         Returns dict with sl_result, tp_result for all code paths."""
         from app.models.watchlist import WatchlistItem
         from app.api.routes_signals import calculate_stop_loss_and_take_profit
@@ -3076,7 +3347,47 @@ class ExchangeSyncService:
             return default_result
 
         side_upper = (side or "").upper()
+
+        # Emergency flatten closes are exits — never invent SL/TP for them.
+        try:
+            existing_fill = (
+                db.query(ExchangeOrder)
+                .filter(ExchangeOrder.exchange_order_id == str(order_id))
+                .first()
+            )
+        except Exception:
+            existing_fill = None
+        if is_flatten_close_order(existing_fill):
+            logger.info(
+                "Skipping SL/TP for flatten close order %s (%s) source=%s",
+                order_id,
+                symbol,
+                source,
+            )
+            return {
+                **default_result,
+                "status": "flatten_close",
+                "symbol": symbol,
+                "order_id": order_id,
+                "source": source,
+            }
+
         # Never invent short protection on a long wallet (or vice versa).
+        # Skip for margin (spot wallet does not reflect margin inventory) and for
+        # confirmed system fills (wallet snapshot can lag or show 0 when qty is locked).
+        from app.services.tp_sl_order_creator import resolve_sltp_margin_context
+
+        is_margin, _margin_lev = resolve_sltp_margin_context(db, symbol)
+        parent_row = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == str(order_id))
+            .first()
+        )
+        confirmed_system_fill = (
+            parent_row is not None
+            and parent_row.status == OrderStatusEnum.FILLED
+            and filled_qty > 0
+        )
         try:
             summary = trade_client.get_account_summary()
             wallet_balance = _base_wallet_balance_from_accounts(
@@ -3091,7 +3402,12 @@ class ExchangeSyncService:
                 bal_err,
             )
             wallet_balance = None
-        if wallet_balance is not None and side_upper in ("BUY", "SELL"):
+        if (
+            not is_margin
+            and not confirmed_system_fill
+            and wallet_balance is not None
+            and side_upper in ("BUY", "SELL")
+        ):
             if not wallet_balance_matches_entry_side(side_upper, wallet_balance):
                 logger.info(
                     "Skipping SL/TP for order %s (%s): wallet_side_mismatch "
@@ -3155,101 +3471,12 @@ class ExchangeSyncService:
                     f"(tp_price={tp_price_override_f}, filled_price={filled_price_f})."
                 )
         
-        # When skip_gate=True, caller (ProtectionOrderService) has already gated and checked idempotency. Do creation only.
-        if skip_gate:
-            return self._create_sl_tp_impl(
-                db=db,
-                symbol=symbol,
-                side_upper=side_upper,
-                filled_price_f=filled_price_f,
-                filled_qty=filled_qty,
-                order_id=order_id,
-                source=source,
-                strict_percentages=strict_percentages,
-                sl_price_override_f=sl_price_override_f,
-                tp_price_override_f=tp_price_override_f,
-            )
-        
-        # If any protection order has already been FILLED, do not recreate protection orders.
-        existing_sl_tp_filled = db.query(ExchangeOrder).filter(
-            ExchangeOrder.parent_order_id == order_id,
-            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
-            ExchangeOrder.status == OrderStatusEnum.FILLED,
-        ).count()
-        if existing_sl_tp_filled > 0:
-            logger.info(
-                f"⚠️ SL/TP already FILLED for order {order_id} ({symbol}): found {existing_sl_tp_filled} filled protection order(s). "
-                f"Skipping SL/TP creation."
-            )
-            return default_result
-
-        if should_skip_rejected_tp_backfill(db, order_id):
-            logger.info(
-                "Skipping SL/TP create for order %s (%s): active SL with REJECTED TP "
-                "(terminal — no further auto backfill)",
-                order_id,
-                symbol,
-            )
-            return {
-                **default_result,
-                "status": "tp_rejected_terminal",
-                "symbol": symbol,
-                "order_id": order_id,
-                "source": source,
-            }
-
-        # Cross-process lock: in-memory locks do not work across backend-aws / canary workers.
-        lock_acquired = try_acquire_sl_tp_creation_lock(db, order_id)
-        if not lock_acquired:
-            existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
-            existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
-            if existing_sl or existing_tp:
-                logger.info(
-                    "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
-                    "Reusing existing protection (SL=%s, TP=%s).",
-                    order_id,
-                    symbol,
-                    existing_sl.exchange_order_id if existing_sl else None,
-                    existing_tp.exchange_order_id if existing_tp else None,
-                )
-                return {
-                    "symbol": symbol,
-                    "order_id": order_id,
-                    "source": source,
-                    "status": "already_protected",
-                    "sl_result": {
-                        "order_id": existing_sl.exchange_order_id if existing_sl else None,
-                        "error": None,
-                    },
-                    "tp_result": {
-                        "order_id": existing_tp.exchange_order_id if existing_tp else None,
-                        "error": None,
-                    },
-                    "sl_price": _protection_order_price(existing_sl) if existing_sl else None,
-                    "tp_price": _protection_order_price(existing_tp) if existing_tp else None,
-                }
-            logger.warning(
-                "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
-                "Skipping to prevent duplicate creation.",
-                order_id,
-                symbol,
-            )
-            return default_result
-
-        # Sync open orders so the single-path service sees latest state before idempotency check
-        try:
-            logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
-            self.sync_open_orders(db)
-            logger.info(f"✅ Open orders synced successfully")
-        except Exception as sync_err:
-            logger.warning(f"⚠️ Failed to sync open orders before creating SL/TP: {sync_err}. Continuing with database check only.")
-        db.expire_all()
-
-        logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
-
         from app.services.live_trading_gate import get_live_trading  # pyright: ignore[reportMissingImports]
 
-        try:
+        # skip_gate=True: caller already gated/idempotency-checked (fill-time signal_monitor).
+        # Still run Telegram below — returning early here was why ALGO fill 5755600492696996146
+        # created live SL+TP with zero send_sl_tp_orders (2026-08-06).
+        if skip_gate:
             impl_result = self._create_sl_tp_impl(
                 db=db,
                 symbol=symbol,
@@ -3262,8 +3489,124 @@ class ExchangeSyncService:
                 sl_price_override_f=sl_price_override_f,
                 tp_price_override_f=tp_price_override_f,
             )
-        finally:
-            release_sl_tp_creation_lock(db, order_id)
+        else:
+            # If any protection order has already been FILLED, do not recreate protection orders.
+            existing_sl_tp_filled = db.query(ExchangeOrder).filter(
+                ExchangeOrder.parent_order_id == order_id,
+                ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                ExchangeOrder.status == OrderStatusEnum.FILLED,
+            ).count()
+            if existing_sl_tp_filled > 0:
+                logger.info(
+                    f"⚠️ SL/TP already FILLED for order {order_id} ({symbol}): found {existing_sl_tp_filled} filled protection order(s). "
+                    f"Skipping SL/TP creation."
+                )
+                return default_result
+
+            if should_skip_rejected_tp_backfill(db, order_id):
+                logger.info(
+                    "Skipping SL/TP create for order %s (%s): active SL with REJECTED TP "
+                    "(terminal — no further auto backfill)",
+                    order_id,
+                    symbol,
+                )
+                return {
+                    **default_result,
+                    "status": "tp_rejected_terminal",
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "source": source,
+                }
+
+            # Cross-process lock: in-memory locks do not work across backend-aws / canary workers.
+            lock_acquired = try_acquire_sl_tp_creation_lock(db, order_id)
+            if not lock_acquired:
+                existing_sl = get_active_protection_order(db, order_id, "STOP_LOSS")
+                existing_tp = get_active_protection_order(db, order_id, "TAKE_PROFIT")
+                if existing_sl and existing_tp:
+                    logger.info(
+                        "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
+                        "Reusing existing protection (SL=%s, TP=%s).",
+                        order_id,
+                        symbol,
+                        existing_sl.exchange_order_id,
+                        existing_tp.exchange_order_id,
+                    )
+                    return {
+                        "symbol": symbol,
+                        "order_id": order_id,
+                        "source": source,
+                        "status": "already_protected",
+                        "sl_result": {
+                            "order_id": existing_sl.exchange_order_id,
+                            "error": None,
+                        },
+                        "tp_result": {
+                            "order_id": existing_tp.exchange_order_id,
+                            "error": None,
+                        },
+                        "sl_price": _protection_order_price(existing_sl),
+                        "tp_price": _protection_order_price(existing_tp),
+                    }
+                if existing_sl or existing_tp:
+                    logger.warning(
+                        "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s) with "
+                        "PARTIAL protection (SL=%s, TP=%s). Not treating as complete — caller should retry.",
+                        order_id,
+                        symbol,
+                        existing_sl.exchange_order_id if existing_sl else None,
+                        existing_tp.exchange_order_id if existing_tp else None,
+                    )
+                    return {
+                        "symbol": symbol,
+                        "order_id": order_id,
+                        "source": source,
+                        "status": "creation_in_progress_partial",
+                        "sl_result": {
+                            "order_id": existing_sl.exchange_order_id if existing_sl else None,
+                            "error": None if existing_sl else "creation_in_progress",
+                        },
+                        "tp_result": {
+                            "order_id": existing_tp.exchange_order_id if existing_tp else None,
+                            "error": None if existing_tp else "creation_in_progress",
+                        },
+                        "sl_price": _protection_order_price(existing_sl) if existing_sl else None,
+                        "tp_price": _protection_order_price(existing_tp) if existing_tp else None,
+                    }
+                logger.warning(
+                    "🚫 BLOCKED: SL/TP creation already in progress for order %s (%s). "
+                    "Skipping to prevent duplicate creation.",
+                    order_id,
+                    symbol,
+                )
+                return default_result
+
+            # Sync open orders so the single-path service sees latest state before idempotency check
+            try:
+                logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
+                self.sync_open_orders(db)
+                logger.info(f"✅ Open orders synced successfully")
+            except Exception as sync_err:
+                logger.warning(f"⚠️ Failed to sync open orders before creating SL/TP: {sync_err}. Continuing with database check only.")
+            db.expire_all()
+
+            logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
+
+            try:
+                impl_result = self._create_sl_tp_impl(
+                    db=db,
+                    symbol=symbol,
+                    side_upper=side_upper,
+                    filled_price_f=filled_price_f,
+                    filled_qty=filled_qty,
+                    order_id=order_id,
+                    source=source,
+                    strict_percentages=strict_percentages,
+                    sl_price_override_f=sl_price_override_f,
+                    tp_price_override_f=tp_price_override_f,
+                )
+            finally:
+                release_sl_tp_creation_lock(db, order_id)
 
         sl_result = impl_result.get("sl_result")
         tp_result = impl_result.get("tp_result")
@@ -3718,13 +4061,34 @@ class ExchangeSyncService:
                     "tp_newly_created": False,
                     "error": err,
                 }
-            logger.warning(
-                "[SLTP_NATIVE_OCO] failed for parent=%s symbol=%s err=%s — "
-                "falling back to dual create-order (both legs missing)",
+            err = oco_res.get("error") or "native_oco_failed"
+            logger.error(
+                "[SLTP_NATIVE_OCO] spot OCO failed parent=%s symbol=%s err=%s "
+                "— refusing dual create-order (both legs missing)",
                 order_id,
                 symbol,
-                oco_res.get("error"),
+                err,
             )
+            sl_res = oco_res.get("sl_result") or {}
+            tp_res = oco_res.get("tp_result") or {}
+            return {
+                "sl_result": {
+                    "order_id": sl_res.get("order_id"),
+                    "error": sl_res.get("error") or err,
+                },
+                "tp_result": {
+                    "order_id": tp_res.get("order_id"),
+                    "error": tp_res.get("error") or err,
+                },
+                "oco_group_id": oco_res.get("oco_group_id"),
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+                "skip_tp_creation": False,
+                "skip_tp_reason": None,
+                "sl_newly_created": False,
+                "tp_newly_created": False,
+                "error": err,
+            }
 
         # When backfilling a missing leg, reuse the surviving leg's OCO group so Jarvis
         # and OCO checks do not treat the new TP/SL as an incomplete orphan group.
@@ -3850,11 +4214,12 @@ class ExchangeSyncService:
             )
             _heal_oco_group(existing_tp)
         else:
-            # Dual full-qty triggers cannot coexist on margin (and spot without OCO):
+            # Dual full-qty triggers cannot coexist on spot without native OCO:
             # SL reserves closing qty → TP gets INSUFFICIENT_ACC_BALANCE.
-            # Proactively cancel-SL-first when a live SL already holds qty, then
-            # place TP before recreating SL (same pattern as recover_missing_tps).
-            if active_sl:
+            # Margin allows resting SL+TP together (prod-verified APT/DOGE/ALGO).
+            # On spot: cancel-SL-first when a live SL already holds qty, then
+            # place TP before recreating SL.
+            if active_sl and not is_margin:
                 logger.info(
                     "[SLTP_BALANCE_RECOVERY] parent=%s symbol=%s margin=%s "
                     "cancel-SL-first before TP (avoid dual-trigger lock) sl=%s",
@@ -3875,6 +4240,14 @@ class ExchangeSyncService:
                     )
                     skip_tp_creation = True
                     skip_tp_reason = "sl_qty_locked_cancel_failed"
+            elif active_sl and is_margin:
+                logger.info(
+                    "[SLTP_MARGIN_DUAL] parent=%s symbol=%s placing TP alongside "
+                    "live SL %s (margin allows dual resting triggers)",
+                    order_id,
+                    symbol,
+                    active_sl.exchange_order_id,
+                )
             if not skip_tp_creation:
                 logger.info(
                     "[SLTP_DUAL_ORDER] parent=%s symbol=%s placing TP before SL (avoid balance lock)",
@@ -5172,73 +5545,22 @@ class ExchangeSyncService:
                         try:
                             from app.services.telegram_notifier import telegram_notifier
                             
-                            total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
+                            total_usd = (
+                                float(order_price_float) * float(executed_qty)
+                                if order_price_float and executed_qty
+                                else 0.0
+                            )
+                            # Prefer exchange type for the payload, but labeling uses role + DB type.
                             order_type = order_data.get('order_type', existing.order_type or 'LIMIT')
-                            order_type_upper = order_type.upper()
-                            
-                            # If this is a SL or TP order, find the original entry order to calculate profit/loss
+
+                            # Infer SL/TP from DB role/type, contingency, or trigger parent —
+                            # not only from exchange MARKET (common for advanced trigger fills).
+                            inferred_order_role = self._infer_protection_order_role(
+                                existing, order_data=order_data, db=db
+                            )
                             entry_price = None
-                            if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
-                                current_side = side or (existing.side.value if existing.side else 'BUY')
-                                
-                                # First try to find by parent_order_id (most reliable)
-                                if existing.parent_order_id:
-                                    parent_order = db.query(ExchangeOrder).filter(
-                                        ExchangeOrder.exchange_order_id == existing.parent_order_id
-                                    ).first()
-                                    if parent_order:
-                                        entry_price = parent_order.avg_price if parent_order.avg_price else parent_order.price
-                                        logger.info(f"Found entry price via parent_order_id for SL/TP order {order_id}: {entry_price} from parent {existing.parent_order_id}")
-                                
-                                # If parent_order_id not found, search for most recent BUY order
-                                if not entry_price and current_side == "SELL":
-                                    # This is selling (TP/SL after BUY), so find the original BUY order
-                                    # Look for BUY orders created before this TP/SL order
-                                    if existing.exchange_create_time:
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "BUY",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id,  # Not the current order
-                                            ExchangeOrder.exchange_create_time <= existing.exchange_create_time  # Created before TP/SL
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    else:
-                                        # Fallback without time constraint
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "BUY",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    
-                                    if original_order:
-                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
-                                        logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from BUY order {original_order.exchange_order_id}")
-                                elif not entry_price and current_side == "BUY":
-                                    # This is buying (SL/TP after SELL for short positions), find original SELL order
-                                    if existing.exchange_create_time:
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "SELL",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id,
-                                            ExchangeOrder.exchange_create_time <= existing.exchange_create_time
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    else:
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "SELL",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    
-                                    if original_order:
-                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
-                                        logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from SELL order {original_order.exchange_order_id}")
+                            if inferred_order_role:
+                                entry_price = self._lookup_entry_price_for_protection(db, existing)
                             
                             # Count open entry BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED).
                             # Exclude protective SL/TP orders: for SHORT positions they are BUY-side
@@ -5246,17 +5568,6 @@ class ExchangeSyncService:
                             # ORDER EXECUTED warning ("Open Orders: 22").
                             order_symbol = symbol or existing.symbol
                             open_orders_count = _count_open_entry_buy_orders(db, order_symbol)
-                            
-                            # Infer order_role from order_type if order_role is not set
-                            # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
-                            # Do NOT mislabel BUY orders as Stop Loss
-                            inferred_order_role = existing.order_role
-                            if not inferred_order_role and order_type_upper:
-                                if order_type_upper == 'STOP_LIMIT':
-                                    inferred_order_role = 'STOP_LOSS'
-                                elif order_type_upper == 'TAKE_PROFIT_LIMIT':
-                                    inferred_order_role = 'TAKE_PROFIT'
-                                # For other order types, leave as None (don't mislabel)
 
                             # Attribute bot orders before Telegram (TradeSignal and/or OrderIntent).
                             # Without OrderIntent fallback, bot sells were labeled "Manual"
@@ -5264,6 +5575,13 @@ class ExchangeSyncService:
                             trade_signal_id, system_attributed, attr_source = (
                                 ensure_system_order_attribution(db, existing)
                             )
+
+                            notify_price = float(
+                                order_price_float
+                                if order_price_float is not None
+                                else (existing.price or 0) or 0
+                            )
+                            notify_qty = float(current_filled_qty or 0)
                             
                             # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
                             audit_log = make_json_safe({
@@ -5272,9 +5590,9 @@ class ExchangeSyncService:
                                 "side": side or (existing.side.value if existing.side else 'BUY'),
                                 "order_id": order_id,
                                 "status": current_status_str,
-                                "cumulative_quantity": current_filled_qty,
+                                "cumulative_quantity": notify_qty,
                                 "delta_quantity": float(delta_qty),
-                                "price": order_price_float or (existing.price or 0),
+                                "price": notify_price,
                                 "avg_price": existing.avg_price,
                                 "order_type": order_type,
                                 "order_role": inferred_order_role,
@@ -5288,69 +5606,85 @@ class ExchangeSyncService:
                             })
                             logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
 
-                            result = telegram_notifier.send_executed_order(
-                                symbol=order_symbol,
-                                side=side or (existing.side.value if existing.side else 'BUY'),
-                                price=order_price_float or (existing.price or 0),
-                                quantity=current_filled_qty,
-                                total_usd=total_usd,
-                                order_id=order_id,
-                                order_type=order_type,
-                                entry_price=entry_price,  # Add entry_price for profit/loss calculation
-                                open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                                order_role=inferred_order_role,  # Use inferred role if order_role is not set
-                                trade_signal_id=trade_signal_id,
-                                parent_order_id=existing.parent_order_id,
-                                system_attributed=system_attributed,
-                            )
-                            if result:
-                                existing.execution_notified_at = datetime.now(timezone.utc)
-                                try:
-                                    db.flush()
-                                except Exception as flush_err:
-                                    logger.warning(
-                                        "Failed to flush execution_notified_at for %s: %s",
-                                        order_id,
-                                        flush_err,
-                                    )
-                                # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
+                            if not _claim_order_executed_telegram(
+                                str(order_id), symbol=order_symbol
+                            ):
+                                logger.info(
+                                    "Skipping fill Telegram for %s: order_executed claim denied",
+                                    order_id,
+                                )
                                 fill_dedup.record_fill(
                                     order_id=order_id,
-                                    filled_qty=current_filled_qty,
+                                    filled_qty=notify_qty,
                                     status=current_status_str,
-                                    notification_sent=True
+                                    notification_sent=False,
                                 )
-                                logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id} (reason: {notify_reason})")
-                                
-                                # Emit ORDER_EXECUTED event
-                                try:
-                                    from app.services.signal_monitor import _emit_lifecycle_event
-                                    from app.services.strategy_profiles import resolve_strategy_profile
-                                    from app.models.watchlist import WatchlistItem
-                                    
-                                    # Resolve strategy for event emission
-                                    watchlist_item = db.query(WatchlistItem).filter(
-                                        WatchlistItem.symbol == (symbol or existing.symbol)
-                                    ).first()
-                                    strategy_type, risk_approach = resolve_strategy_profile(
-                                        symbol or existing.symbol, db, watchlist_item
-                                    )
-                                    strategy_key = build_strategy_key(strategy_type, risk_approach)
-                                    
-                                    _emit_lifecycle_event(
-                                        db=db,
-                                        symbol=symbol or existing.symbol,
-                                        strategy_key=strategy_key,
-                                        side=side or (existing.side.value if existing.side else 'BUY'),
-                                        price=order_price_float or (existing.avg_price if existing.avg_price else existing.price) or 0,
-                                        event_type="ORDER_EXECUTED",
-                                        event_reason=f"order_id={order_id}, filled_qty={current_filled_qty}, status={current_status_str}",
-                                        order_id=order_id,
-                                    )
-                                except Exception as emit_err:
-                                    logger.warning(f"Failed to emit ORDER_EXECUTED event for {order_id}: {emit_err}", exc_info=True)
                             else:
-                                logger.warning(f"Failed to send Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
+                                result = telegram_notifier.send_executed_order(
+                                    symbol=order_symbol,
+                                    side=side or (existing.side.value if existing.side else 'BUY'),
+                                    price=notify_price,
+                                    quantity=notify_qty,
+                                    total_usd=float(total_usd),
+                                    order_id=order_id,
+                                    order_type=order_type,
+                                    entry_price=float(entry_price) if entry_price is not None else None,
+                                    open_orders_count=open_orders_count,
+                                    order_role=inferred_order_role,
+                                    trade_signal_id=trade_signal_id,
+                                    parent_order_id=existing.parent_order_id,
+                                    system_attributed=system_attributed,
+                                )
+                                if result:
+                                    _mark_execution_notified_after_send(
+                                        existing,
+                                        fill_dedup=fill_dedup,
+                                        fill_qty=notify_qty,
+                                        fill_status=current_status_str,
+                                    )
+                                    logger.info(
+                                        f"Sent Telegram notification for executed order: "
+                                        f"{symbol or existing.symbol} "
+                                        f"{side or (existing.side.value if existing.side else 'BUY')} "
+                                        f"- {order_id} (reason: {notify_reason})"
+                                    )
+
+                                    # Emit ORDER_EXECUTED event
+                                    try:
+                                        from app.services.signal_monitor import _emit_lifecycle_event
+                                        from app.services.strategy_profiles import resolve_strategy_profile
+                                        from app.models.watchlist import WatchlistItem
+
+                                        watchlist_item = db.query(WatchlistItem).filter(
+                                            WatchlistItem.symbol == (symbol or existing.symbol)
+                                        ).first()
+                                        strategy_type, risk_approach = resolve_strategy_profile(
+                                            symbol or existing.symbol, db, watchlist_item
+                                        )
+                                        strategy_key = build_strategy_key(strategy_type, risk_approach)
+
+                                        _emit_lifecycle_event(
+                                            db=db,
+                                            symbol=symbol or existing.symbol,
+                                            strategy_key=strategy_key,
+                                            side=side or (existing.side.value if existing.side else 'BUY'),
+                                            price=order_price_float or (existing.avg_price if existing.avg_price else existing.price) or 0,
+                                            event_type="ORDER_EXECUTED",
+                                            event_reason=f"order_id={order_id}, filled_qty={current_filled_qty}, status={current_status_str}",
+                                            order_id=order_id,
+                                        )
+                                    except Exception as emit_err:
+                                        logger.warning(
+                                            f"Failed to emit ORDER_EXECUTED event for {order_id}: {emit_err}",
+                                            exc_info=True,
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"Failed to send Telegram notification for executed order: "
+                                        f"{symbol or existing.symbol} "
+                                        f"{side or (existing.side.value if existing.side else 'BUY')} "
+                                        f"- {order_id}"
+                                    )
                         except Exception as telegram_err:
                             logger.warning(f"Failed to send Telegram notification: {telegram_err}")
                     else:
@@ -5645,42 +5979,12 @@ class ExchangeSyncService:
                     try:
                         from app.services.telegram_notifier import telegram_notifier
                         
-                        # Use the proper method for executed orders
-                        total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
+                        total_usd = (
+                            float(order_price_float) * float(executed_qty)
+                            if order_price_float and executed_qty
+                            else 0.0
+                        )
                         order_type = order_data.get('order_type', 'LIMIT')
-                        order_type_upper = order_type.upper()
-                        
-                        # If this is a SL or TP order, find the original entry order to calculate profit/loss
-                        entry_price = None
-                        if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
-                            # Find the most recent BUY or SELL order (depending on side) for this symbol
-                            # For SL/TP after BUY: find last BUY order
-                            # For SL/TP after SELL: find last SELL order
-                            # SL/TP after BUY means we're selling (SELL), so find last BUY
-                            # SL/TP after SELL means we're buying (BUY), so find last SELL
-                            if side == "SELL":
-                                # This is selling, so find the original BUY order
-                                original_order = db.query(ExchangeOrder).filter(
-                                    ExchangeOrder.symbol == symbol,
-                                    ExchangeOrder.side == "BUY",
-                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                    ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                    ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                                ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                            else:  # side == "BUY"
-                                # This is buying, so find the original SELL order (for short positions)
-                                original_order = db.query(ExchangeOrder).filter(
-                                    ExchangeOrder.symbol == symbol,
-                                    ExchangeOrder.side == "SELL",
-                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                    ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                    ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                                ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                            
-                            if original_order:
-                                # Use avg_price if available (more accurate for MARKET orders), otherwise price
-                                entry_price = float(original_order.avg_price) if original_order.avg_price else float(original_order.price) if original_order.price else None
-                                logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from order {original_order.exchange_order_id}")
                         
                         # Count open entry BUY orders for this symbol (SL/TP excluded, see helper)
                         open_orders_count = _count_open_entry_buy_orders(db, symbol)
@@ -5689,19 +5993,17 @@ class ExchangeSyncService:
                         trade_signal_id, system_attributed, attr_source = (
                             ensure_system_order_attribution(db, new_order)
                         )
-                        order_role = new_order.order_role
                         parent_order_id = new_order.parent_order_id
-                        
-                        # Infer order_role from order_type if order_role is not set
-                        # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
-                        # Do NOT mislabel BUY orders as Stop Loss
-                        if not order_role and order_type:
-                            order_type_upper = order_type.upper()
-                            if order_type_upper == 'STOP_LIMIT':
-                                order_role = 'STOP_LOSS'
-                            elif order_type_upper == 'TAKE_PROFIT_LIMIT':
-                                order_role = 'TAKE_PROFIT'
-                            # For other order types, leave as None (don't mislabel)
+                        # Prefer stored role / contingency / DB trigger type over raw MARKET.
+                        order_role = self._infer_protection_order_role(
+                            new_order, order_data=order_data, db=db
+                        )
+                        entry_price = None
+                        if order_role:
+                            entry_price = self._lookup_entry_price_for_protection(db, new_order)
+
+                        notify_price = float(order_price_float or 0)
+                        notify_qty = float(current_filled_qty or 0)
                         
                         # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
                         audit_log = make_json_safe({
@@ -5710,9 +6012,9 @@ class ExchangeSyncService:
                             "side": side,
                             "order_id": order_id,
                             "status": current_status_str,
-                            "cumulative_quantity": current_filled_qty,
+                            "cumulative_quantity": notify_qty,
                             "delta_quantity": float(delta_qty),
-                            "price": order_price_float or 0,
+                            "price": notify_price,
                             "avg_price": order_data.get('avg_price'),
                             "order_type": order_type,
                             "order_role": order_role,
@@ -5725,42 +6027,50 @@ class ExchangeSyncService:
                             "handler": "exchange_sync.new_order"
                         })
                         logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
-                        
-                        result = telegram_notifier.send_executed_order(
-                            symbol=symbol,
-                            side=side,
-                            price=order_price_float or 0,
-                            quantity=current_filled_qty,
-                            total_usd=total_usd,
-                            order_id=order_id,
-                            order_type=order_type,
-                            entry_price=entry_price,  # Add entry_price for profit/loss calculation
-                            open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                            order_role=order_role,  # Use inferred role if order_role is not set
-                            trade_signal_id=trade_signal_id,
-                            parent_order_id=parent_order_id,
-                            system_attributed=system_attributed,
-                        )
-                        if result:
-                            new_order.execution_notified_at = datetime.now(timezone.utc)
-                            try:
-                                db.flush()
-                            except Exception as flush_err:
-                                logger.warning(
-                                    "Failed to flush execution_notified_at for %s: %s",
-                                    order_id,
-                                    flush_err,
-                                )
-                            # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
+
+                        if not _claim_order_executed_telegram(str(order_id), symbol=symbol):
+                            logger.info(
+                                "Skipping fill Telegram for %s: order_executed claim denied",
+                                order_id,
+                            )
                             fill_dedup.record_fill(
                                 order_id=order_id,
-                                filled_qty=current_filled_qty,
+                                filled_qty=notify_qty,
                                 status=current_status_str,
-                                notification_sent=True
+                                notification_sent=False,
                             )
-                            logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id} (reason: {notify_reason})")
                         else:
-                            logger.warning(f"Failed to send Telegram notification for executed order: {symbol} {side} - {order_id}")
+                            result = telegram_notifier.send_executed_order(
+                                symbol=symbol,
+                                side=side,
+                                price=notify_price,
+                                quantity=notify_qty,
+                                total_usd=float(total_usd),
+                                order_id=order_id,
+                                order_type=order_type,
+                                entry_price=float(entry_price) if entry_price is not None else None,
+                                open_orders_count=open_orders_count,
+                                order_role=order_role,
+                                trade_signal_id=trade_signal_id,
+                                parent_order_id=parent_order_id,
+                                system_attributed=system_attributed,
+                            )
+                            if result:
+                                _mark_execution_notified_after_send(
+                                    new_order,
+                                    fill_dedup=fill_dedup,
+                                    fill_qty=notify_qty,
+                                    fill_status=current_status_str,
+                                )
+                                logger.info(
+                                    f"Sent Telegram notification for executed order: "
+                                    f"{symbol} {side} - {order_id} (reason: {notify_reason})"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to send Telegram notification for executed order: "
+                                    f"{symbol} {side} - {order_id}"
+                                )
                     except Exception as telegram_err:
                         logger.warning(f"Failed to send Telegram notification: {telegram_err}")
                 else:

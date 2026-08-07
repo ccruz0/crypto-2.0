@@ -854,6 +854,110 @@ class CreateProtectionSmartRequest(BaseModel):
     quantity: Optional[float] = None
 
 
+def _existing_protection_covers_request(
+    existing_qty: float, requested_qty: float, *, tolerance: float = 0.02
+) -> bool:
+    """True when an active parent leg is large enough for the requested create size.
+
+    Presence-only checks miss multi-lot wallets: a dust TP on the linked entry still
+    leaves uncovered_qty on the SL/TP Check report. Align with tp_sl_order_creator
+    gap-fill (existing >= requested * 0.98).
+    """
+    try:
+        existing = float(existing_qty or 0.0)
+        requested = float(requested_qty or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if existing <= 0:
+        return False
+    if requested <= 0:
+        return True
+    return existing + 1e-9 >= requested * (1.0 - tolerance)
+
+
+def _notify_create_protection_smart_telegram(
+    db: Session,
+    *,
+    symbol: str,
+    order_id: str,
+    entry_side: str,
+    entry_price: float,
+    quantity: float,
+    sl_price: float,
+    tp_price: float,
+    sl_pct: Optional[float],
+    tp_pct: Optional[float],
+    mode: str,
+    created: list,
+    existing_sl_id: Optional[str] = None,
+    existing_tp_id: Optional[str] = None,
+) -> None:
+    """Send SL/TP created Telegram after dashboard Create SL/TP (deduped)."""
+    if not created:
+        return
+    try:
+        from app.services.telegram_event_dedup import claim_telegram_event
+        from app.services.telegram_notifier import telegram_notifier
+
+        sl_newly = any(c.get("role") == "STOP_LOSS" for c in created)
+        tp_newly = any(c.get("role") == "TAKE_PROFIT" for c in created)
+        sl_order_id = next(
+            (str(c["order_id"]) for c in created if c.get("role") == "STOP_LOSS" and c.get("order_id")),
+            existing_sl_id,
+        )
+        tp_order_id = next(
+            (str(c["order_id"]) for c in created if c.get("role") == "TAKE_PROFIT" and c.get("order_id")),
+            existing_tp_id,
+        )
+        if tp_newly and not sl_newly:
+            claim_key = f"sl_tp_created:{order_id}:tp_ok"
+        elif sl_newly and not tp_newly:
+            claim_key = f"sl_tp_created:{order_id}:sl_ok"
+        else:
+            claim_key = f"sl_tp_created:{order_id}"
+        if not claim_telegram_event(
+            db,
+            claim_key,
+            symbol=symbol,
+            ttl_minutes=7 * 24 * 60,
+            action="sl_tp_created",
+        ):
+            logger.info(
+                "Skipping create-protection-smart Telegram for %s: already claimed %s",
+                order_id,
+                claim_key,
+            )
+            return
+
+        side_u = (entry_side or "").upper()
+        exit_side = "SELL" if side_u == "BUY" else "BUY"
+        telegram_notifier.send_sl_tp_orders(
+            symbol=symbol,
+            sl_price=float(sl_price or 0),
+            tp_price=float(tp_price or 0),
+            quantity=float(quantity),
+            mode=mode or "conservative",
+            sl_order_id=str(sl_order_id) if sl_order_id else None,
+            tp_order_id=str(tp_order_id) if tp_order_id else None,
+            original_order_id=str(order_id),
+            entry_price=float(entry_price) if entry_price else None,
+            sl_percentage=sl_pct,
+            tp_percentage=tp_pct,
+            original_order_side=side_u or None,
+            sl_side=exit_side if sl_order_id else None,
+            tp_side=exit_side if tp_order_id else None,
+            sl_newly_created=sl_newly,
+            tp_newly_created=tp_newly,
+        )
+    except Exception as notify_err:
+        logger.warning(
+            "create-protection-smart Telegram notify failed for %s: %s",
+            order_id,
+            notify_err,
+            exc_info=True,
+        )
+
+
 @router.post("/orders/create-protection-smart")
 def create_protection_smart(
     request: CreateProtectionSmartRequest,
@@ -879,7 +983,10 @@ def create_protection_smart(
     from app.services.sl_tp_price_adjust import compute_strategy_sl_tp_prices, resolve_watchlist_percentages
     from app.services.sl_tp_protection import get_active_protection_order
     from app.utils.live_trading import get_live_trading_status
-    from app.utils.sl_trigger_guard import fetch_last_price
+    from app.utils.sl_trigger_guard import (
+        fetch_ticker_prices,
+        reference_price_for_trigger,
+    )
 
     prev_live = False
     live_toggled = False
@@ -913,10 +1020,27 @@ def create_protection_smart(
                 [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
             ),
         ).all()
+        sl_qty = sum(
+            float(o.quantity or 0)
+            for o in open_prot
+            if o.order_role == "STOP_LOSS"
+        )
+        tp_qty = sum(
+            float(o.quantity or 0)
+            for o in open_prot
+            if o.order_role == "TAKE_PROFIT"
+        )
         has_sl = any(o.order_role == "STOP_LOSS" for o in open_prot)
         has_tp = any(o.order_role == "TAKE_PROFIT" for o in open_prot)
-        want_sl = bool(request.create_sl) and not has_sl
-        want_tp = bool(request.create_tp) and not has_tp
+        # Presence alone is not enough — dust legs on this parent still leave the
+        # wallet uncovered for the scanner (qty coverage). Request qty is the
+        # explicit uncovered gap from the report when provided.
+        want_sl = bool(request.create_sl) and not (
+            has_sl and _existing_protection_covers_request(sl_qty, qty)
+        )
+        want_tp = bool(request.create_tp) and not (
+            has_tp and _existing_protection_covers_request(tp_qty, qty)
+        )
         if not want_sl and not want_tp:
             return {
                 "ok": True,
@@ -935,10 +1059,14 @@ def create_protection_smart(
                     break
         sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
 
-        # Use exchange v1 get-tickers (same as sl_trigger_guard). Legacy v2 get-ticker 404s.
+        # Live last for strategy clamp; create_take_profit_order also applies a
+        # conservative min(last,bid) guard before place.
         current_price = None
         try:
-            current_price = fetch_last_price(symbol)
+            ticker = fetch_ticker_prices(symbol)
+            current_price = (ticker or {}).get("last") or reference_price_for_trigger(
+                side, is_tp=True, ticker=ticker
+            )
         except Exception as ticker_err:
             logger.warning("create_protection_smart ticker failed: %s", ticker_err)
 
@@ -1004,6 +1132,30 @@ def create_protection_smart(
                     created.append({"role": "TAKE_PROFIT", "order_id": tp_id, "price": tp_price})
                 if sl_id and (want_sl or oco_res.get("replaced_standalone")):
                     created.append({"role": "STOP_LOSS", "order_id": sl_id, "price": sl_price})
+                _notify_create_protection_smart_telegram(
+                    db,
+                    symbol=symbol,
+                    order_id=order_id,
+                    entry_side=side,
+                    entry_price=entry_price,
+                    quantity=qty,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    sl_pct=sl_pct,
+                    tp_pct=tp_pct,
+                    mode=mode,
+                    created=created,
+                    existing_sl_id=(
+                        str(existing_sl.exchange_order_id)
+                        if existing_sl and getattr(existing_sl, "exchange_order_id", None)
+                        else None
+                    ),
+                    existing_tp_id=(
+                        str(existing_tp.exchange_order_id)
+                        if existing_tp and getattr(existing_tp, "exchange_order_id", None)
+                        else None
+                    ),
+                )
                 return {
                     "ok": True,
                     "order_id": order_id,
@@ -1076,6 +1228,30 @@ def create_protection_smart(
             else:
                 errors.append({"role": "STOP_LOSS", "error": sl_res.get("error") or sl_res})
 
+        _notify_create_protection_smart_telegram(
+            db,
+            symbol=symbol,
+            order_id=order_id,
+            entry_side=side,
+            entry_price=entry_price,
+            quantity=qty,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            sl_pct=sl_pct,
+            tp_pct=tp_pct,
+            mode=mode,
+            created=created,
+            existing_sl_id=(
+                str(existing_sl.exchange_order_id)
+                if existing_sl and getattr(existing_sl, "exchange_order_id", None)
+                else None
+            ),
+            existing_tp_id=(
+                str(existing_tp.exchange_order_id)
+                if existing_tp and getattr(existing_tp, "exchange_order_id", None)
+                else None
+            ),
+        )
         return {
             "ok": len(created) > 0 and not errors,
             "order_id": order_id,

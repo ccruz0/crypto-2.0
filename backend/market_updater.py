@@ -184,12 +184,15 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
             logger.debug(f"Normalized symbol {symbol} to {normalized_symbol} for Crypto.com API")
         
         # Use Crypto.com Exchange API v1 (not v2)
+        # Exchange v1 accepts `count` (max 300). Without it the API defaults to ~25
+        # candles, which is below the MA50 gate and forces a Binance fallback (often
+        # HTTP 451 / geo-blocked from some environments).
         url = "https://api.crypto.com/exchange/v1/public/get-candlestick"
         params = {
             "instrument_name": normalized_symbol,
-            "timeframe": interval
+            "timeframe": interval,
+            "count": min(max(int(limit or 200), 1), 300),
         }
-        # Note: v1 API doesn't use "count" parameter, it returns default amount
         
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
@@ -215,8 +218,8 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
                         "c": float(candle.get("c", 0)),  # close
                         "v": float(candle.get("v", 0))   # volume
                     })
-                # CRITICAL: Crypto.com API v1 only returns ~25 candles by default
-                # If we need more than 50 candles (for RSI/MA calculations), use Binance fallback
+                # If still short of what callers need (e.g. pair has little history),
+                # keep CDC candles and try Binance for a longer series.
                 if len(ohlcv_data) < 50 and limit >= 50:
                     logger.debug(f"⚠️ Crypto.com only returned {len(ohlcv_data)} candles for {symbol} (need {limit}), trying Binance fallback for more data")
                     cdc_partial = ohlcv_data

@@ -1,0 +1,402 @@
+{
+  "note": "refined after-entry buckets for missing_exit_fill=37",
+  "MISSING_N": 37,
+  "BUCKETS": {
+    "still_open": 10,
+    "no_children": 1,
+    "protection_cancelled_no_orphan": 14,
+    "orphan_rejected_by_guards": 12
+  },
+  "GUARD_SUB": {
+    "qty": 1,
+    "parented_other": 3,
+    "claimed": 7,
+    "should_be_linked_child": 1
+  },
+  "RECOVER_SMALL_PR": [],
+  "RECOVER_RISKY": [
+    {
+      "intent_id": 5546,
+      "why": "parented_other_entry",
+      "rel": 0.023,
+      "parent": "5755600492025646"
+    },
+    {
+      "intent_id": 5545,
+      "why": "claimed_chain",
+      "rel": 0.05,
+      "days": 1.8,
+      "exit_oid": "5755600492241270"
+    },
+    {
+      "intent_id": 5473,
+      "why": "claimed_chain",
+      "rel": 0.055,
+      "days": 8.6,
+      "exit_oid": "5755600492111379"
+    },
+    {
+      "intent_id": 5472,
+      "why": "parented_other_entry",
+      "rel": 0.0,
+      "parent": "5755600492155811"
+    },
+    {
+      "intent_id": 5471,
+      "why": "parented_other_entry",
+      "rel": 0.0,
+      "parent": "5755600492155811"
+    },
+    {
+      "intent_id": 5470,
+      "why": "claimed_chain",
+      "rel": 0.071,
+      "days": 8.8,
+      "exit_oid": "5755600492111379"
+    },
+    {
+      "intent_id": 5467,
+      "why": "claimed_chain",
+      "rel": 0.037,
+      "days": 10.1,
+      "exit_oid": "5755600492111379"
+    },
+    {
+      "intent_id": 5429,
+      "why": "claimed_chain",
+      "rel": 0.103,
+      "days": 20.2,
+      "exit_oid": "5755600492111379"
+    },
+    {
+      "intent_id": 5426,
+      "why": "claimed_chain",
+      "rel": 0.103,
+      "days": 20.5,
+      "exit_oid": "5755600492111379"
+    },
+    {
+      "intent_id": 5425,
+      "why": "claimed_chain",
+      "rel": 0.103,
+      "days": 20.5,
+      "exit_oid": "5755600492111379"
+    }
+  ],
+  "WAIT_CLOSE_N": "WAIT_CLOSE_N 10 ids [5626, 5615, 5610, 5609, 5600, 5599, 5590, 5480, 5475, 5436]",
+  "WAIT_SYNC_OR_DEAD_N": 17,
+  "SAMPLES": {
+    "still_open": [
+      {
+        "intent_id": 5626,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "age_days": 1.3,
+        "qty": 109.0,
+        "statuses": {
+          "ACTIVE": 2
+        },
+        "roles": {
+          "TAKE_PROFIT": 1,
+          "STOP_LOSS": 1
+        }
+      },
+      {
+        "intent_id": 5615,
+        "symbol": "DOT_USD",
+        "side": "SELL",
+        "age_days": 1.8,
+        "qty": 12.2,
+        "statuses": {
+          "ACTIVE": 2
+        },
+        "roles": {
+          "STOP_LOSS": 1,
+          "TAKE_PROFIT": 1
+        }
+      },
+      {
+        "intent_id": 5610,
+        "symbol": "ETH_USDT",
+        "side": "SELL",
+        "age_days": 2.5,
+        "qty": 0.0052,
+        "statuses": {
+          "REJECTED": 1,
+          "ACTIVE": 1
+        },
+        "roles": {
+          "TAKE_PROFIT": 1,
+          "STOP_LOSS": 1
+        }
+      },
+      {
+        "intent_id": 5609,
+        "symbol": "DOGE_USD",
+        "side": "SELL",
+        "age_days": 2.5,
+        "qty": 140.0,
+        "statuses": {
+          "REJECTED": 3,
+          "ACTIVE": 1
+        },
+        "roles": {
+          "TAKE_PROFIT": 3,
+          "STOP_LOSS": 1
+        }
+      }
+    ],
+    "no_children": [
+      {
+        "intent_id": 5617,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "age_days": 1.8,
+        "qty": 112.0,
+        "n_children": 0,
+        "statuses": {},
+        "best": null,
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 0
+      }
+    ],
+    "protection_cancelled_no_orphan": [
+      {
+        "intent_id": 5613,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "age_days": 2.3,
+        "qty": 117.0,
+        "n_children": 2,
+        "statuses": {
+          "CANCELLED": 2
+        },
+        "best": null,
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 0
+      },
+      {
+        "intent_id": 5602,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "age_days": 2.9,
+        "qty": 123.0,
+        "n_children": 2,
+        "statuses": {
+          "CANCELLED": 1,
+          "REJECTED": 1
+        },
+        "best": null,
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 0
+      },
+      {
+        "intent_id": 5598,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "age_days": 3.1,
+        "qty": 125.0,
+        "n_children": 2,
+        "statuses": {
+          "REJECTED": 2
+        },
+        "best": null,
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 0
+      },
+      {
+        "intent_id": 5591,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "age_days": 5.4,
+        "qty": 124.0,
+        "n_children": 4,
+        "statuses": {
+          "REJECTED": 3,
+          "CANCELLED": 1
+        },
+        "best": null,
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 0
+      },
+      {
+        "intent_id": 5589,
+        "symbol": "DOGE_USD",
+        "side": "SELL",
+        "age_days": 5.6,
+        "qty": 141.0,
+        "n_children": 4,
+        "statuses": {
+          "REJECTED": 2,
+          "CANCELLED": 2
+        },
+        "best": null,
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 0
+      }
+    ],
+    "orphan_rejected_by_guards": [
+      {
+        "intent_id": 5567,
+        "symbol": "ETH_USD",
+        "side": "SELL",
+        "age_days": 9.5,
+        "qty": 0.0051,
+        "n_children": 5,
+        "statuses": {
+          "REJECTED": 3,
+          "CANCELLED": 2
+        },
+        "best": {
+          "oid": "5755600492576167586",
+          "rel": 0.902,
+          "days": 7.68,
+          "ot": "MARKET",
+          "role": null,
+          "parented": false,
+          "parent_is_self": false,
+          "claimed": false,
+          "parent": null
+        },
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 1
+      },
+      {
+        "intent_id": 5546,
+        "symbol": "DOT_USD",
+        "side": "SELL",
+        "age_days": 11.3,
+        "qty": 12.37,
+        "n_children": 3,
+        "statuses": {
+          "REJECTED": 2,
+          "CANCELLED": 1
+        },
+        "best": {
+          "oid": "STUB-CLOSED-STOP_LOSS-5755600492025646351",
+          "rel": 0.023,
+          "days": 0.221,
+          "ot": "STOP_LIMIT",
+          "role": "STOP_LOSS",
+          "parented": true,
+          "parent_is_self": false,
+          "claimed": false,
+          "parent": "5755600492025646351"
+        },
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 6
+      },
+      {
+        "intent_id": 5545,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "age_days": 11.4,
+        "qty": 113.0,
+        "n_children": 3,
+        "statuses": {
+          "REJECTED": 2,
+          "CANCELLED": 1
+        },
+        "best": {
+          "oid": "5755600492241270823",
+          "rel": 0.05,
+          "days": 1.754,
+          "ot": "MARKET",
+          "role": null,
+          "parented": false,
+          "parent_is_self": false,
+          "claimed": true,
+          "parent": null
+        },
+        "stock_orphan": false,
+        "loose_orphan": true,
+        "n_after_opposite": 3
+      },
+      {
+        "intent_id": 5539,
+        "symbol": "BTC_USD",
+        "side": "SELL",
+        "age_days": 12.1,
+        "qty": 0.00015,
+        "n_children": 5,
+        "statuses": {
+          "CANCELLED": 2,
+          "FILLED": 2,
+          "REJECTED": 1
+        },
+        "best": {
+          "oid": "STUB-CLOSED-STOP_LOSS-5755600492155811564",
+          "rel": 0.0,
+          "days": 1.258,
+          "ot": "STOP_LIMIT",
+          "role": "STOP_LOSS",
+          "parented": true,
+          "parent_is_self": true,
+          "claimed": false,
+          "parent": "5755600492155811564"
+        },
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 7
+      },
+      {
+        "intent_id": 5473,
+        "symbol": "ETH_USDT",
+        "side": "SELL",
+        "age_days": 21.9,
+        "qty": 0.0055,
+        "n_children": 4,
+        "statuses": {
+          "CANCELLED": 4
+        },
+        "best": {
+          "oid": "5755600492111379836",
+          "rel": 0.055,
+          "days": 8.619,
+          "ot": "MARKET",
+          "role": null,
+          "parented": false,
+          "parent_is_self": false,
+          "claimed": true,
+          "parent": null
+        },
+        "stock_orphan": false,
+        "loose_orphan": false,
+        "n_after_opposite": 2
+      }
+    ]
+  },
+  "NON_OPEN_AGES": {
+    "n": 27,
+    "lte7": 9,
+    "7to14": 6,
+    "gt14": 12,
+    "gt30": 3
+  },
+  "SYMBOL_MISSING": {
+    "ALGO_USD": 9,
+    "DOT_USD": 3,
+    "ETH_USDT": 11,
+    "DOGE_USD": 6,
+    "SUI_USD": 1,
+    "APT_USD": 1,
+    "ETH_USD": 3,
+    "BTC_USD": 3
+  },
+  "SYMBOL_NON_OPEN": {
+    "ALGO_USD": 7,
+    "DOGE_USD": 5,
+    "ETH_USDT": 9,
+    "DOT_USD": 2,
+    "ETH_USD": 1,
+    "BTC_USD": 3
+  }
+}

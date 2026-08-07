@@ -45,7 +45,11 @@ def _classify_hourly_sl_tp_create_result(
     if sl_tp_creation_result_ok(create_result):
         return "created"
     status = str((create_result or {}).get("status") or "").strip().lower()
-    if "wallet_side_mismatch" in status or status == "tp_rejected_terminal":
+    if (
+        "wallet_side_mismatch" in status
+        or status == "tp_rejected_terminal"
+        or status == "flatten_close"
+    ):
         return "expected_skip"
     sl_err = str(((create_result or {}).get("sl_result") or {}).get("error") or "").lower()
     tp_err = str(((create_result or {}).get("tp_result") or {}).get("error") or "").lower()
@@ -148,17 +152,38 @@ class TradingScheduler:
         try:
             db = SessionLocal()
             try:
-                sl_tp_checker_service.send_sl_tp_reminder(db)
+                # Capture report before reminder so the dashboard shows unprotected legs
+                check_result = sl_tp_checker_service.check_positions_for_sl_tp(db)
+                reminder_sent = bool(sl_tp_checker_service.send_sl_tp_reminder(db))
+                from app.api.routes_monitoring import (
+                    record_workflow_execution,
+                    store_sl_tp_check_report_from_result,
+                )
+                report_path = store_sl_tp_check_report_from_result(
+                    check_result,
+                    reminder_sent=reminder_sent,
+                    db=db,
+                )
                 logger.info("SL/TP check completed")
-                # Record successful execution (no report file for SL/TP check)
-                from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("sl_tp_check", "success", None)
+                record_workflow_execution("sl_tp_check", "success", report_path)
             finally:
                 db.close()
         except Exception as e:
             logger.error(f"Error checking SL/TP positions: {e}", exc_info=True)
-            from app.api.routes_monitoring import record_workflow_execution
-            record_workflow_execution("sl_tp_check", "error", None, str(e))
+            from app.api.routes_monitoring import (
+                record_workflow_execution,
+                store_sl_tp_check_report_from_result,
+                SL_TP_CHECK_REPORT_PATH,
+            )
+            try:
+                store_sl_tp_check_report_from_result(
+                    {"positions_missing_sl_tp": [], "total_positions": 0},
+                    reminder_sent=False,
+                    error=str(e),
+                )
+                record_workflow_execution("sl_tp_check", "error", SL_TP_CHECK_REPORT_PATH, str(e))
+            except Exception:
+                record_workflow_execution("sl_tp_check", "error", None, str(e))
     
     async def check_sl_tp_positions(self):
         """Check if it's time to check positions for SL/TP - async wrapper"""
@@ -358,11 +383,18 @@ class TradingScheduler:
         await asyncio.to_thread(self.check_telegram_commands_sync)
     
     def check_hourly_sl_tp_missed_sync(self):
-        """Hourly: ensure every open position has SL/TP (no fill-age gate).
+        """Hourly SL/TP audit.
 
-        Also attempts SL/TP for recent FILLED entries missing protection.
+        When ``SLTP_HEALING_ENABLED`` is false (default): read-only scan + alert.
+        When enabled: legacy ensure/backfill (position heal + 3h fill backfill).
         """
-        logger.info("Checking for open positions / FILLED orders missing SL/TP (hourly)...")
+        from app.services.sl_tp_protection import is_sltp_healing_enabled
+
+        healing = is_sltp_healing_enabled()
+        logger.info(
+            "Checking for open positions / FILLED orders missing SL/TP (hourly, healing=%s)...",
+            healing,
+        )
         
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
@@ -373,7 +405,48 @@ class TradingScheduler:
             
             db = SessionLocal()
             try:
-                # Primary path: open balances must always have both legs
+                if not healing:
+                    audit = sl_tp_checker_service.check_positions_for_sl_tp(db)
+                    positions_missing = audit.get("positions_missing_sl_tp") or []
+                    if positions_missing:
+                        logger.warning(
+                            "Hourly SL/TP read-only audit: %s unprotected position(s): %s",
+                            len(positions_missing),
+                            [p.get("symbol") for p in positions_missing[:10]],
+                        )
+                        try:
+                            lines = [
+                                "🔍 <b>HOURLY SL/TP AUDIT (read-only)</b>\n\n",
+                                f"⚠️ {len(positions_missing)} open position(s) missing SL and/or TP.\n",
+                                "Background healing is disabled — no orders were created or cancelled.\n\n",
+                            ]
+                            for pos in positions_missing[:5]:
+                                missing = []
+                                if not pos.get("has_sl"):
+                                    missing.append("SL")
+                                if not pos.get("has_tp"):
+                                    missing.append("TP")
+                                lines.append(
+                                    f"• {pos.get('symbol')}: missing {'+'.join(missing) or '?'}\n"
+                                )
+                            if len(positions_missing) > 5:
+                                lines.append(f"  ... and {len(positions_missing) - 5} more\n")
+                            telegram_notifier.send_message("".join(lines))
+                        except Exception as notify_err:
+                            logger.warning(
+                                "Failed to send hourly SL/TP audit notification: %s",
+                                notify_err,
+                                exc_info=True,
+                            )
+                    else:
+                        logger.info(
+                            "✅ Hourly SL/TP read-only audit: all open positions protected"
+                        )
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("hourly_sl_tp_check", "success", None)
+                    return
+
+                # Legacy healing path (SLTP_HEALING_ENABLED=true)
                 ensure_result = sl_tp_checker_service.ensure_missing_protection(db)
                 positions_created = len(ensure_result.get("created") or [])
                 positions_failed = len(ensure_result.get("failed") or [])
@@ -390,12 +463,20 @@ class TradingScheduler:
                 # Check orders filled in last 3 hours
                 three_hours_ago = now_utc - timedelta(hours=3)
                 
-                # Find FILLED orders from last 3 hours that don't have SL/TP
+                # Find FILLED entry orders from last 3 hours that don't have SL/TP.
+                # Exclude protection legs and emergency flatten closes (exits, not entries).
+                from sqlalchemy import or_
+                from app.utils.filled_entry_order import FLATTEN_CLOSE_ROLE, NON_ENTRY_ROLES
+
                 filled_orders = db.query(ExchangeOrder).filter(
                     ExchangeOrder.status == OrderStatusEnum.FILLED,
                     ExchangeOrder.exchange_update_time >= three_hours_ago,
                     # Exclude SL/TP orders themselves
-                    ~ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT'])
+                    ~ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT']),
+                    or_(
+                        ExchangeOrder.order_role.is_(None),
+                        ~ExchangeOrder.order_role.in_(list(NON_ENTRY_ROLES)),
+                    ),
                 ).all()
                 
                 ensured_symbols = {
@@ -409,6 +490,10 @@ class TradingScheduler:
                 orders_created = 0
                 
                 for order in filled_orders:
+                    # Defense in depth: never backfill flatten/close fills.
+                    if (order.order_role or "").upper() == FLATTEN_CLOSE_ROLE:
+                        continue
+
                     # Check if SL/TP exist
                     sl_count = db.query(ExchangeOrder).filter(
                         ExchangeOrder.parent_order_id == order.exchange_order_id,

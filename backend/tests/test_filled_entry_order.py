@@ -20,6 +20,8 @@ from app.utils.filled_entry_order import is_filled_entry_order, is_filled_entry_
         ("FILLED", "SELL", None, "MARKET", True),
         ("FILLED", "BUY", "STOP_LOSS", "STOP_LIMIT", False),
         ("FILLED", "SELL", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT", False),
+        ("FILLED", "BUY", "FLATTEN", "MARKET", False),
+        ("FILLED", "SELL", "FLATTEN", "MARKET", False),
         ("FILLED", "BUY", None, "STOP_LOSS", False),
         ("FILLED", "SELL", None, "TAKE_PROFIT", False),
         ("ACTIVE", "BUY", None, "LIMIT", False),

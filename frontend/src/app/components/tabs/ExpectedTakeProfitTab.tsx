@@ -153,21 +153,30 @@ export default function ExpectedTakeProfitTab({
         create_tp: opts.create_tp,
         quantity: entry.qty,
       });
-      const created = (result.created || []).map((c) => c.role).join(', ') || 'none';
+      const created = (result.created || []).map((c) => c.role).join(', ');
       const errText = (result.errors || [])
         .map((e) => `${e.role}: ${JSON.stringify(e.error)}`)
         .join('; ');
-      setCreateMessage(
-        result.ok
-          ? `Created: ${created}`
-          : `Partial/failed — created: ${created}${errText ? ` | ${errText}` : ''}`,
-      );
+      if (result.ok && (result.created || []).length > 0) {
+        setCreateMessage(`Created: ${created}`);
+      } else if (result.ok && (result.message || !created)) {
+        setCreateMessage(result.message || 'Protection already exists — no new orders placed.');
+      } else {
+        setCreateMessage(
+          `Failed — ${result.message || 'no orders created'}${errText ? ` | ${errText}` : ''}`,
+        );
+      }
       if (expectedTPDetailsSymbol) {
         await onFetchExpectedTakeProfitDetails(expectedTPDetailsSymbol);
       }
       await onFetchExpectedTakeProfitSummary();
     } catch (err) {
-      setCreateMessage(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setCreateMessage(
+        msg.includes('Invalid API key') || msg.includes('401')
+          ? `Auth failed (${msg}). If this persists after deploy, contact ops.`
+          : msg,
+      );
     } finally {
       setCreatingKey(null);
     }
@@ -635,7 +644,18 @@ export default function ExpectedTakeProfitTab({
               </button>
             </div>
             {createMessage && (
-              <div className="mb-3 text-sm rounded px-3 py-2 bg-slate-100 dark:bg-slate-700 text-gray-800 dark:text-gray-100">
+              <div
+                className={`mb-3 text-sm rounded px-3 py-2 ${
+                  createMessage.startsWith('Created:')
+                    ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-100'
+                    : createMessage.startsWith('Failed') ||
+                        createMessage.includes('Auth failed') ||
+                        createMessage.includes('Invalid API key')
+                      ? 'bg-red-100 dark:bg-red-900/40 text-red-900 dark:text-red-100'
+                      : 'bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-100'
+                }`}
+                role="status"
+              >
                 {createMessage}
               </div>
             )}

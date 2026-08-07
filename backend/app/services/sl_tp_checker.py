@@ -291,10 +291,28 @@ def _classify_open_protection_leg(order: dict) -> Optional[str]:
         return "SL"
     if contingency in ("TAKE_PROFIT", "OCO_TAKE_PROFIT"):
         return "TP"
-    # Legacy Crypto.com pattern: LIMIT + trigger SELL on a long = stop loss
-    if order_type == "LIMIT" and trigger_price and side == "SELL":
+    # Legacy Crypto.com pattern: LIMIT + trigger closes inventory (SELL long / BUY short)
+    if order_type == "LIMIT" and trigger_price and side in ("SELL", "BUY"):
         return "SL"
     return None
+
+
+def _protection_orders_match_wallet(
+    orders: List[dict], position_balance: float
+) -> List[dict]:
+    """Keep protection legs whose closing side matches the wallet (drop wrong-side ghosts)."""
+    from app.services.sl_tp_protection import protection_closing_side_matches_wallet
+
+    matched: List[dict] = []
+    for order in orders:
+        side = order.get("side") or ""
+        if not str(side).strip():
+            # Legacy open-order payloads sometimes omit side — keep and size-match.
+            matched.append(order)
+            continue
+        if protection_closing_side_matches_wallet(side, position_balance):
+            matched.append(order)
+    return matched
 
 
 def _order_matches_symbol_variants(order: dict, symbol_variants: List[str]) -> bool:
@@ -1002,9 +1020,11 @@ class SLTPCheckerService:
                     logger.warning(f"Invalid balance format for {currency}: {balance_raw}")
                     continue
                 
-                # Skip flat wallets only. Negative = short position (must ensure).
+                # Skip flat wallets only. Negative = short (must ensure SL/TP).
+                # Expected TP already includes shorts; skipping under-reports and left
+                # APT/DOGE SHORT as REVISIÓN-only noise (2026-08-02/03 Telegram).
                 if abs(balance) <= 1e-12:
-                    logger.debug(f"Skipping {currency} - balance is {balance}")
+                    logger.debug(f"Skipping {currency} - flat balance {balance}")
                     continue
                 
                 # Handle currency format - could be "ETH" or "ETH_USDT"
@@ -1026,12 +1046,14 @@ class SLTPCheckerService:
                             symbol = preferred
                             break
                     # Prefer the pair that actually has a recent filled entry
+                    entry_side = "BUY" if balance > 0 else "SELL"
                     for preferred in (f"{currency}_USD", f"{currency}_USDT"):
-                        if _find_recent_entry_order(db, preferred):
+                        if _find_recent_entry_order(db, preferred, side=entry_side):
                             symbol = preferred
                             break
                 
                 # Skip stablecoins (USDT, USD, USDC, etc.) and fiat (EUR, GBP, JPY, etc.)
+                # Negative stablecoin rows are margin debt, not short crypto inventory.
                 stablecoins = ['USDT', 'USD', 'USDC', 'BUSD', 'DAI', 'TUSD']
                 fiat = ['EUR', 'GBP', 'JPY', 'CNY', 'AUD', 'CAD', 'CHF', 'NZD', 'SGD', 'HKD', 'KRW']
                 if base_currency in stablecoins or base_currency in fiat:
@@ -1040,6 +1062,7 @@ class SLTPCheckerService:
 
                 # Skip dust leftovers (AKT/ATOM/CRO/LINK residual balances) — cannot protect
                 # meaningfully and entry fills are usually gone after the position was closed.
+                mark = None
                 if _MIN_ENSURE_POSITION_USD > 0:
                     mark = _fetch_mark_price(symbol)
                     if mark and mark > 0:
@@ -1059,7 +1082,9 @@ class SLTPCheckerService:
                 open_positions.append({
                     'currency': base_currency,
                     'symbol': symbol,
-                    'balance': balance
+                    'balance': balance,
+                    'mark_price': mark,
+                    'side': 'BUY' if balance > 0 else 'SELL',
                 })
                 
                 logger.info(f"Found open position: {symbol} ({base_currency}) = {balance}")
@@ -1132,6 +1157,8 @@ class SLTPCheckerService:
                 # This is more reliable than checking database status
                 has_sl = False
                 has_tp = False
+                sl_covered_qty = 0.0
+                tp_covered_qty = 0.0
                 
                 try:
                     open_orders_data = [
@@ -1169,12 +1196,23 @@ class SLTPCheckerService:
                     )
                     
                     position_balance = position.get('balance', 0)
-                    active_sl_orders = [
-                        o for o in sl_orders_open if _is_active_open_order_status(o)
-                    ]
-                    active_tp_orders = [
-                        o for o in tp_orders_open if _is_active_open_order_status(o)
-                    ]
+                    # Drop wrong-side ghosts (e.g. residual SELL legs on a short wallet).
+                    active_sl_orders = _protection_orders_match_wallet(
+                        [
+                            o
+                            for o in sl_orders_open
+                            if _is_active_open_order_status(o)
+                        ],
+                        position_balance,
+                    )
+                    active_tp_orders = _protection_orders_match_wallet(
+                        [
+                            o
+                            for o in tp_orders_open
+                            if _is_active_open_order_status(o)
+                        ],
+                        position_balance,
+                    )
                     sl_covered_qty = sum(_order_protection_qty(o) for o in active_sl_orders)
                     tp_covered_qty = sum(_order_protection_qty(o) for o in active_tp_orders)
                     has_sl = _protection_quantities_cover_position(
@@ -1215,30 +1253,112 @@ class SLTPCheckerService:
                     # Fallback to database check
                     try:
                         from sqlalchemy import or_
+                        from app.services.sl_tp_protection import (
+                            protection_closing_side_matches_wallet,
+                        )
+
+                        position_balance = position.get("balance", 0)
+
+                        def _db_order_matches_wallet(order: ExchangeOrder) -> bool:
+                            side = getattr(order, "side", None)
+                            if side is None:
+                                return True
+                            return protection_closing_side_matches_wallet(
+                                side, position_balance
+                            )
+
                         # Check database for active orders (status NEW or ACTIVE, not FILLED)
-                        sl_orders_db = db.query(ExchangeOrder).filter(
-                            or_(*[ExchangeOrder.symbol == variant for variant in symbol_variants]),
-                            ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS']),
-                            ExchangeOrder.status.in_([
-                                OrderStatusEnum.NEW,
-                                OrderStatusEnum.ACTIVE,
-                                OrderStatusEnum.PENDING
-                            ])
-                        ).all()
-                        
-                        tp_orders_db = db.query(ExchangeOrder).filter(
-                            or_(*[ExchangeOrder.symbol == variant for variant in symbol_variants]),
-                            ExchangeOrder.order_type.in_(['TAKE_PROFIT_LIMIT', 'TAKE_PROFIT']),
-                            ExchangeOrder.status.in_([
-                                OrderStatusEnum.NEW,
-                                OrderStatusEnum.ACTIVE,
-                                OrderStatusEnum.PENDING
-                            ])
-                        ).all()
-                        
-                        has_sl = len(sl_orders_db) > 0
-                        has_tp = len(tp_orders_db) > 0
-                        logger.info(f"Position {symbol}: Found {len(sl_orders_db)} SL and {len(tp_orders_db)} TP orders from database")
+                        sl_orders_db = [
+                            o
+                            for o in db.query(ExchangeOrder)
+                            .filter(
+                                or_(
+                                    *[
+                                        ExchangeOrder.symbol == variant
+                                        for variant in symbol_variants
+                                    ]
+                                ),
+                                ExchangeOrder.order_type.in_(
+                                    ["STOP_LIMIT", "STOP_LOSS"]
+                                ),
+                                ExchangeOrder.status.in_(
+                                    [
+                                        OrderStatusEnum.NEW,
+                                        OrderStatusEnum.ACTIVE,
+                                        OrderStatusEnum.PARTIALLY_FILLED,
+                                    ]
+                                ),
+                            )
+                            .all()
+                            if _db_order_matches_wallet(o)
+                        ]
+
+                        tp_orders_db = [
+                            o
+                            for o in db.query(ExchangeOrder)
+                            .filter(
+                                or_(
+                                    *[
+                                        ExchangeOrder.symbol == variant
+                                        for variant in symbol_variants
+                                    ]
+                                ),
+                                ExchangeOrder.order_type.in_(
+                                    ["TAKE_PROFIT_LIMIT", "TAKE_PROFIT"]
+                                ),
+                                ExchangeOrder.status.in_(
+                                    [
+                                        OrderStatusEnum.NEW,
+                                        OrderStatusEnum.ACTIVE,
+                                        OrderStatusEnum.PARTIALLY_FILLED,
+                                    ]
+                                ),
+                            )
+                            .all()
+                            if _db_order_matches_wallet(o)
+                        ]
+
+                        # Match primary path: qty coverage, not mere presence.
+                        def _db_rows_as_open_dicts(
+                            orders: List[ExchangeOrder],
+                        ) -> List[dict]:
+                            rows: List[dict] = []
+                            for o in orders:
+                                status = getattr(o, "status", None)
+                                status_s = (
+                                    str(getattr(status, "value", status) or "ACTIVE")
+                                    .upper()
+                                )
+                                rows.append(
+                                    {
+                                        "quantity": float(o.quantity or 0),
+                                        "order_status": status_s,
+                                        "status": status_s,
+                                        "order_id": getattr(o, "order_id", None),
+                                    }
+                                )
+                            return rows
+
+                        sl_open_dicts = _db_rows_as_open_dicts(sl_orders_db)
+                        tp_open_dicts = _db_rows_as_open_dicts(tp_orders_db)
+                        sl_covered_qty = sum(
+                            _order_protection_qty(o) for o in sl_open_dicts
+                        )
+                        tp_covered_qty = sum(
+                            _order_protection_qty(o) for o in tp_open_dicts
+                        )
+                        has_sl = _protection_quantities_cover_position(
+                            sl_open_dicts, position_balance
+                        )
+                        has_tp = _protection_quantities_cover_position(
+                            tp_open_dicts, position_balance
+                        )
+                        logger.info(
+                            f"Position {symbol}: Found {len(sl_orders_db)} SL and "
+                            f"{len(tp_orders_db)} TP orders from database "
+                            f"(wallet-side+qty filtered, balance={position_balance}, "
+                            f"sl_covered={sl_covered_qty}, tp_covered={tp_covered_qty})"
+                        )
                     except Exception as db_err:
                         logger.error(f"Error querying orders from database for {symbol}: {db_err}", exc_info=True)
                         has_sl = False
@@ -1258,7 +1378,13 @@ class SLTPCheckerService:
                     # Get SL/TP prices from watchlist if available
                     sl_price = watchlist_item.sl_price if watchlist_item else None
                     tp_price = watchlist_item.tp_price if watchlist_item else None
-                    
+                    wallet_abs = abs(float(position.get("balance") or 0.0))
+                    sl_gap = 0.0 if has_sl else max(0.0, wallet_abs - float(sl_covered_qty or 0.0))
+                    tp_gap = 0.0 if has_tp else max(0.0, wallet_abs - float(tp_covered_qty or 0.0))
+                    current_price = position.get("mark_price")
+                    if current_price is None:
+                        current_price = _fetch_mark_price(symbol)
+
                     positions_missing_sl_tp.append({
                         'symbol': symbol,
                         'currency': currency,
@@ -1268,7 +1394,14 @@ class SLTPCheckerService:
                         'sl_price': sl_price,
                         'tp_price': tp_price,
                         'skip_reminder': skip_reminder,
-                        'watchlist_item': watchlist_item
+                        'watchlist_item': watchlist_item,
+                        'side': position.get('side') or (
+                            'BUY' if float(position.get('balance') or 0) >= 0 else 'SELL'
+                        ),
+                        'current_price': current_price,
+                        'uncovered_qty': max(sl_gap, tp_gap),
+                        'sl_covered_qty': sl_covered_qty,
+                        'tp_covered_qty': tp_covered_qty,
                     })
             
             logger.info(f"Found {len(positions_missing_sl_tp)} positions missing SL/TP")
@@ -1330,12 +1463,33 @@ class SLTPCheckerService:
 
     def ensure_missing_protection(self, db: Session) -> Dict:
         """
-        Always create missing SL and/or TP for open positions.
+        Create missing SL and/or TP for open positions when healing is enabled.
 
-        Age of the entry fill does not matter — open balance without both
-        legs is unprotected and must be healed.
+        When ``SLTP_HEALING_ENABLED`` is false (default), this is read-only: it
+        reports unprotected positions but does not mutate orders on the exchange.
         """
+        from app.services.sl_tp_protection import is_sltp_healing_enabled
+
         result = self.check_positions_for_sl_tp(db)
+        if not is_sltp_healing_enabled():
+            positions_missing = result.get("positions_missing_sl_tp", [])
+            logger.info(
+                "SL/TP healing disabled — read-only scan: %s unprotected position(s)",
+                len(positions_missing),
+            )
+            return {
+                "checked_at": result.get("checked_at"),
+                "total_positions": result.get("total_positions", 0),
+                "oco_issues": result.get("oco_issues", {}),
+                "created": [],
+                "failed": [],
+                "skipped": [],
+                "still_missing": positions_missing,
+                "positions_missing_sl_tp": positions_missing,
+                "healed_parents": [],
+                "healing_disabled": True,
+            }
+
         positions_missing = result.get("positions_missing_sl_tp", [])
         created: List[Dict] = []
         failed: List[Dict] = []
@@ -1470,8 +1624,11 @@ class SLTPCheckerService:
 
     def send_sl_tp_reminder(self, db: Session) -> bool:
         """
-        Ensure every open position has SL/TP, then remind only if still missing.
-        Also sends OCO issues alerts
+        Scan open positions for missing SL/TP and send reminders.
+
+        When ``SLTP_HEALING_ENABLED`` is true, auto-creates missing legs first.
+        When false (default), read-only scan + operator reminder with manual actions.
+        Also sends OCO issues alerts.
         
         Returns:
             bool: True if reminder was sent, False otherwise
@@ -1536,11 +1693,21 @@ class SLTPCheckerService:
                 close_verb = "comprar" if side == "SHORT" else "vender"
                 close_side = "BUY" if side == "SHORT" else "SELL"
                 message = f"⚠️ <b>POSICIÓN SIN PROTECCIÓN: {symbol}</b>\n\n"
-                message += (
-                    "⚠️ <b>Problema:</b> auto-creación falló; la posición sigue "
-                    f"<b>sin {' y '.join(missing_items)}</b>.\n"
-                    "Sin esa protección la posición queda expuesta.\n\n"
-                )
+                from app.services.sl_tp_protection import is_sltp_healing_enabled
+
+                if is_sltp_healing_enabled():
+                    message += (
+                        "⚠️ <b>Problema:</b> auto-creación falló; la posición sigue "
+                        f"<b>sin {' y '.join(missing_items)}</b>.\n"
+                        "Sin esa protección la posición queda expuesta.\n\n"
+                    )
+                else:
+                    message += (
+                        "⚠️ <b>Problema:</b> la posición no tiene "
+                        f"<b>{' y '.join(missing_items)}</b> activos.\n"
+                        "La auto-creación en segundo plano está desactivada; "
+                        "crea protección manualmente o cierra la posición.\n\n"
+                    )
                 message += f"📊 Símbolo: <b>{symbol}</b>\n"
                 message += f"🔄 Lado: <b>{side}</b>\n"
                 message += f"💰 Balance: {balance:.6f} {currency}\n\n"

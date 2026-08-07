@@ -25,9 +25,9 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-# Check port 3001 (frontend)
-echo -n "Checking frontend port 3001... "
-if lsof -i :3001 >/dev/null 2>&1; then
+# Check port 3000 (frontend)
+echo -n "Checking frontend port 3000... "
+if lsof -i :3000 >/dev/null 2>&1; then
     echo -e "${GREEN}✓ Listening${NC}"
 else
     echo -e "${RED}✗ Not listening${NC}"
@@ -49,8 +49,8 @@ else
 fi
 
 # Test frontend
-echo -n "Testing frontend http://localhost:3001... "
-FRONTEND_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001 || echo "000")
+echo -n "Testing frontend http://localhost:3000... "
+FRONTEND_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 || echo "000")
 if [ "$FRONTEND_RESPONSE" = "200" ]; then
     echo -e "${GREEN}✓ OK (200)${NC}"
 else
@@ -66,7 +66,7 @@ if [ $ERRORS -eq 0 ]; then
     echo -e "${GREEN}✅ All checks passed!${NC}"
     echo ""
     echo "Access the application:"
-    echo "  Frontend: http://localhost:3001"
+    echo "  Frontend: http://localhost:3000"
     echo "  Backend API: http://localhost:8002"
     echo "  API Docs: http://localhost:8002/docs"
     exit 0
@@ -76,7 +76,7 @@ else
     echo "Common fixes:"
     echo "  1. Backend not running: docker compose --profile local up -d backend-dev"
     echo "  2. Frontend not running: cd frontend && npm run dev"
-    echo "  3. Port conflicts: Check what's using ports 3001 or 8002 with 'lsof -i :3001' or 'lsof -i :8002'"
+    echo "  3. Port conflicts: Check what's using ports 3000 or 8002 with 'lsof -i :3000' or 'lsof -i :8002'"
     exit 1
 fi
 

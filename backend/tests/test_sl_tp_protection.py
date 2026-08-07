@@ -7,6 +7,9 @@ from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.services.sl_tp_protection import (
     get_active_protection_order,
     has_complete_sl_tp_protection,
+    is_flatten_close_order,
+    is_flatten_close_role,
+    mark_flatten_close_order,
     should_skip_rejected_tp_backfill,
     wallet_balance_matches_entry_side,
 )
@@ -55,6 +58,43 @@ class TestSlTpProtectionHelpers(unittest.TestCase):
         self.assertTrue(wallet_balance_matches_entry_side("SELL", -0.2))
         self.assertFalse(wallet_balance_matches_entry_side("SELL", 1.89))
         self.assertFalse(wallet_balance_matches_entry_side("SELL", 0.0))
+
+    def test_flatten_close_role_helpers(self):
+        self.assertTrue(is_flatten_close_role("FLATTEN"))
+        self.assertTrue(is_flatten_close_role("flatten"))
+        self.assertFalse(is_flatten_close_role("STOP_LOSS"))
+        self.assertFalse(is_flatten_close_role(None))
+        tagged = ExchangeOrder(
+            exchange_order_id="close-1",
+            order_role="FLATTEN",
+            status=OrderStatusEnum.FILLED,
+        )
+        self.assertTrue(is_flatten_close_order(tagged))
+        self.assertFalse(is_flatten_close_order(None))
+        self.assertFalse(
+            is_flatten_close_order(
+                ExchangeOrder(exchange_order_id="e1", order_role=None, status=OrderStatusEnum.FILLED)
+            )
+        )
+
+    def test_mark_flatten_close_order_updates_existing(self):
+        db = MagicMock()
+        existing = MagicMock()
+        existing.parent_order_id = None
+        db.query.return_value.filter.return_value.first.return_value = existing
+
+        mark_flatten_close_order(
+            db,
+            close_order_id="5755600492527623825",
+            entry_order_id="5755600492527622305",
+            symbol="SUI_USD",
+            close_side="BUY",
+            quantity=72.3,
+        )
+
+        self.assertEqual(existing.order_role, "FLATTEN")
+        self.assertEqual(existing.parent_order_id, "5755600492527622305")
+        db.commit.assert_called_once()
 
     def test_protection_closing_side_matches_wallet(self):
         from app.services.sl_tp_protection import protection_closing_side_matches_wallet

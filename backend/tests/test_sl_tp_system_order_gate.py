@@ -88,6 +88,9 @@ def test_should_create_for_system_order_without_timestamp():
     db = MagicMock()
     order = _order(trade_signal_id=7)
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(
@@ -106,6 +109,9 @@ def test_should_skip_wallet_side_mismatch_for_system_order():
     order = _order(trade_signal_id=7)
     order.side = "SELL"
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(
@@ -124,10 +130,29 @@ def test_should_skip_wallet_side_mismatch_for_system_order():
     assert reason.startswith("wallet_side_mismatch")
 
 
+def test_should_skip_flatten_close():
+    """Emergency flatten fills must never get SL/TP backfill (hourly false-fail)."""
+    db = MagicMock()
+    order = _order(trade_signal_id=7, exchange_order_id="5755600492527623825", symbol="SUI_USD")
+    order.order_role = "FLATTEN"
+    order.side = "BUY"
+    allowed, reason = should_auto_create_sl_tp_on_sync(
+        db,
+        order,
+        order_filled_time=datetime.now(timezone.utc),
+        now_utc=datetime.now(timezone.utc),
+    )
+    assert allowed is False
+    assert reason == "flatten_close"
+
+
 def test_should_skip_rejected_tp_terminal():
     db = MagicMock()
     order = _order(trade_signal_id=7)
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(
@@ -149,6 +174,9 @@ def test_should_skip_external_old_fill():
     now = datetime.now(timezone.utc)
     filled = now - timedelta(hours=5)
     with patch(
+        "app.services.sl_tp_protection.is_sltp_healing_enabled",
+        return_value=True,
+    ), patch(
         "app.services.exchange_sync.has_complete_sl_tp_protection",
         return_value=False,
     ), patch(

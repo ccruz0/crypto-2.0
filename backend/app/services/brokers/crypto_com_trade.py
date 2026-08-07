@@ -5111,11 +5111,17 @@ class CryptoComTradeClient:
             }
         try:
             from app.core.exchange_formatting_week6 import format_price_for_exchange, format_qty_for_exchange
+            from app.utils.sl_trigger_guard import tp_round_up_for_closing_side
         except ImportError:
             return {"error": "Formatting module unavailable", "status": "FAILED", "reason": "config"}
 
-        tp_price_str = format_price_for_exchange(inst_meta, tp_price, round_up=True)
-        sl_price_str = format_price_for_exchange(inst_meta, sl_price, round_up=False)
+        tp_price_str = format_price_for_exchange(
+            inst_meta, tp_price, round_up=tp_round_up_for_closing_side(side_upper)
+        )
+        # SL: round away from market — BUY stop (short) ROUND_UP, SELL stop (long) ROUND_DOWN
+        sl_price_str = format_price_for_exchange(
+            inst_meta, sl_price, round_up=(side_upper == "BUY")
+        )
         qty_str = format_qty_for_exchange(inst_meta, qty)
         min_qty_str = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "0"
         if Decimal(str(qty_str)) < Decimal(str(min_qty_str)):
@@ -6052,7 +6058,8 @@ class CryptoComTradeClient:
         is_margin: bool = False,
         leverage: Optional[float] = None,
         dry_run: bool = True,
-        source: str = "unknown"  # "auto" or "manual" to track the source
+        source: str = "unknown",  # "auto" or "manual" to track the source
+        _allow_market_clamp_retry: bool = True,
     ) -> dict:
         """Place take profit order (TAKE_PROFIT_LIMIT)"""
         self._refresh_runtime_flags()
@@ -6086,7 +6093,13 @@ class CryptoComTradeClient:
             from app.core.exchange_formatting_week6 import format_price_for_exchange, format_qty_for_exchange
         except ImportError:
             return {"error": "Formatting module unavailable", "status": "FAILED", "reason": "config"}
-        price_str = format_price_for_exchange(inst_meta, price, round_up=True)
+        # Round TP *away* from market so tick quantization cannot flip CDC validity.
+        # Long close (SELL): ROUND_UP. Short close (BUY): ROUND_DOWN.
+        from app.utils.sl_trigger_guard import tp_round_up_for_closing_side
+
+        side_for_round = (side or "SELL").upper()
+        tp_round_up = tp_round_up_for_closing_side(side_for_round)
+        price_str = format_price_for_exchange(inst_meta, price, round_up=tp_round_up)
         trigger_str = price_str
         ref_price_str = trigger_str
         qty_str = format_qty_for_exchange(inst_meta, qty)
@@ -6515,6 +6528,20 @@ class CryptoComTradeClient:
                                     logger.warning(f"⚠️ Variation {variation_name_full} failed with error 308 (Invalid price format): price='{price_fmt}', trigger='{price_fmt}'. Trying next variation...")
                                     continue  # Try next params variation
                                 
+                                # 50007 INVALID_TRIGGER_PRICE: may be wrong trigger_condition op
+                                # OR wrong side of market. Keep trying other TC/format variants;
+                                # clamp-retry runs after all variations fail (see end of method).
+                                if error_code == 50007 or "INVALID_TRIGGER_PRICE" in str(error_msg).upper():
+                                    last_error = f"Error {error_code}: {error_msg}"
+                                    logger.warning(
+                                        "⚠️ Variation %s failed with INVALID_TRIGGER_PRICE "
+                                        "(side=%s trigger=%s). Trying next variation...",
+                                        variation_name_full,
+                                        side_fmt,
+                                        price_fmt,
+                                    )
+                                    continue
+
                                 # If error 40004 (Missing or invalid argument), try next variation
                                 if error_code == 40004:
                                     logger.warning(f"⚠️ Variation {variation_name_full} failed with error 40004 (Missing or invalid argument): {error_msg}. Trying next variation...")
@@ -6624,9 +6651,74 @@ class CryptoComTradeClient:
                             continue
                     
         
-        # All variations failed
-        logger.error(f"❌ All TAKE_PROFIT_LIMIT price/trigger format variations failed. Last error: {last_error}")
-        return {"error": f"All format variations failed. Last error: {last_error}"}
+        # All variations failed — if INVALID_TRIGGER_PRICE, clamp once from live market.
+        from app.utils.sl_trigger_guard import (
+            compute_market_relative_tp,
+            ensure_tp_clear_of_market_after_tick,
+            error_is_invalid_trigger_price,
+            fetch_ticker_prices,
+            reference_price_for_trigger,
+            summarize_format_variation_failure,
+        )
+
+        market_ref = None
+        if _allow_market_clamp_retry and error_is_invalid_trigger_price(last_error):
+            try:
+                entry_side_guess = "SELL" if (side or "").upper() == "BUY" else "BUY"
+                ticker = fetch_ticker_prices(symbol)
+                market_ref = reference_price_for_trigger(
+                    entry_side_guess, is_tp=True, ticker=ticker
+                )
+                if market_ref and market_ref > 0:
+                    clamped = compute_market_relative_tp(
+                        entry_side_guess, float(market_ref), 1.0
+                    )
+                    tick_raw = inst_meta.get("price_tick_size")
+                    try:
+                        tick_f = float(tick_raw) if tick_raw not in (None, "") else None
+                    except (TypeError, ValueError):
+                        tick_f = None
+                    clamped = ensure_tp_clear_of_market_after_tick(
+                        entry_side=entry_side_guess,
+                        tp_price=float(clamped),
+                        market_price=float(market_ref),
+                        tick_size=tick_f,
+                    )
+                    if abs(float(clamped) - float(price)) > 1e-12:
+                        logger.warning(
+                            "Retrying TP for %s after all variations hit INVALID_TRIGGER_PRICE: "
+                            "%s -> %s (market_ref=%s)",
+                            symbol,
+                            price,
+                            clamped,
+                            market_ref,
+                        )
+                        return self.place_take_profit_order(
+                            symbol=symbol,
+                            side=side,
+                            price=float(clamped),
+                            qty=qty,
+                            trigger_price=float(clamped),
+                            entry_price=entry_price,
+                            is_margin=is_margin,
+                            leverage=leverage,
+                            dry_run=dry_run,
+                            source=source,
+                            _allow_market_clamp_retry=False,
+                        )
+            except Exception as clamp_err:
+                logger.warning("TP 50007 post-variation clamp retry failed for %s: %s", symbol, clamp_err)
+
+        attempts = max(1, len(unique_price_formats) * 3)
+        err = summarize_format_variation_failure(
+            order_kind="TAKE_PROFIT_LIMIT",
+            last_error=last_error,
+            attempts=attempts,
+            trigger_price=price_str,
+            market_ref=market_ref,
+        )
+        logger.error("❌ %s", err)
+        return {"error": err}
     
     @staticmethod
     def _instrument_symbol_candidates(symbol: str) -> List[str]:
@@ -6973,8 +7065,10 @@ class CryptoComTradeClient:
             # STOP LOSS triggers: ROUND_DOWN (conservative)
             rounding = decimal.ROUND_DOWN
         elif order_type == "TAKE_PROFIT":
-            # TAKE PROFIT: ROUND_UP (ensure profit target is met)
-            rounding = decimal.ROUND_UP
+            # Round away from market: long SELL-TP up, short BUY-TP down.
+            rounding = (
+                decimal.ROUND_DOWN if side.upper() == "BUY" else decimal.ROUND_UP
+            )
         elif side.upper() == "BUY":
             # BUY LIMIT: ROUND_DOWN (never exceed intended buy price)
             rounding = decimal.ROUND_DOWN
@@ -7117,19 +7211,20 @@ class CryptoComTradeClient:
             )
             return qty_str_aggressive, diagnostics
         
-        # Strategy 3: Use min_quantity as absolute last resort (only for SL/TP)
-        if for_sl_tp:
-            diagnostics["strategies_tried"].append("min_quantity_fallback")
-            min_qty_str = format(min_qty_decimal, f'.{quantity_decimals}f')
-            diagnostics["final_result"] = min_qty_str
-            diagnostics["final_reason"] = "min_quantity_fallback_warning_larger_than_executed"
-            logger.warning(
-                f"⚠️ [NORMALIZE_SAFE] {symbol}: Using min_quantity as fallback. "
-                f"raw={raw_quantity} -> minQty={min_qty_str}. "
-                f"WARNING: This is LARGER than executed quantity - protection may over-close position."
+        # Strategy 3: Never inflate qty above executed fill — that causes
+        # INSUFFICIENT_ACC_BALANCE on Crypto.com (prod ALGO_USD incident).
+        if for_sl_tp and min_qty_decimal > qty_decimal:
+            diagnostics["strategies_tried"].append("min_quantity_skipped_exceeds_fill")
+            diagnostics["final_reason"] = "below_minqty_cannot_inflate"
+            logger.error(
+                "❌ [NORMALIZE_SAFE] %s: Executed qty %s below minQty %s — "
+                "refusing to inflate protection qty (would cause INSUFFICIENT_ACC_BALANCE).",
+                symbol,
+                raw_quantity,
+                min_quantity_str,
             )
-            return min_qty_str, diagnostics
-        
+            return None, diagnostics
+
         # All strategies failed
         diagnostics["final_reason"] = "all_strategies_failed"
         logger.error(

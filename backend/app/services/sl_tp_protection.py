@@ -2,15 +2,64 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional, Tuple, Union  # noqa: F401 — Union used by helpers below
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-from app.utils.filled_entry_order import PROTECTION_ROLES, TRIGGER_ORDER_TYPES
+from app.utils.filled_entry_order import (
+    FLATTEN_CLOSE_ROLE,
+    PROTECTION_ROLES,
+    TRIGGER_ORDER_TYPES,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def is_sltp_healing_enabled() -> bool:
+    """Background SL/TP heal/backfill (hourly ensure, sync backfill, OCO cancel-recreate).
+
+    Business rule: alert → fill → SL+TP once at fill time only. Healing is OFF by default.
+    Set ``SLTP_HEALING_ENABLED=true`` to restore legacy reconciliation loops (rollback).
+    """
+    return os.getenv("SLTP_HEALING_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def cap_protection_quantity_to_wallet(
+    symbol: str,
+    entry_side: str,
+    requested_qty: float,
+    wallet_balance: Optional[float],
+) -> Tuple[float, Optional[str]]:
+    """Cap SL/TP qty to signed wallet balance so OCO never exceeds available coins.
+
+    Long (BUY entry): use min(requested, max(0, wallet_balance)).
+    Returns (capped_qty, skip_reason).
+    """
+    if wallet_balance is None:
+        return requested_qty, None
+    side = (entry_side or "").upper()
+    if side == "BUY":
+        available = max(0.0, float(wallet_balance))
+        if available <= 0:
+            return requested_qty, "wallet_empty_long"
+        if requested_qty > available + 1e-12:
+            logger.warning(
+                "[SLTP_QTY_CAP] %s long protection qty %s > wallet %s — capping",
+                symbol,
+                requested_qty,
+                available,
+            )
+            return available, "capped_to_wallet_balance"
+    return requested_qty, None
+
 
 ACTIVE_PROTECTION_STATUSES = [
     OrderStatusEnum.NEW,
@@ -22,6 +71,95 @@ ACTIVE_PROTECTION_STATUSES = [
 GHOST_CANCEL_GRACE_SECONDS = 120.0
 
 _SL_TP_LOCK_NAMESPACE = 876543210
+
+
+def is_flatten_close_role(order_role: Optional[str]) -> bool:
+    """True when order_role marks an emergency flatten/close fill (not an entry)."""
+    return (order_role or "").upper().strip() == FLATTEN_CLOSE_ROLE
+
+
+def is_flatten_close_order(order: Optional[ExchangeOrder]) -> bool:
+    """True for ExchangeOrder rows tagged as emergency flatten closes."""
+    if order is None:
+        return False
+    return is_flatten_close_role(getattr(order, "order_role", None))
+
+
+def mark_flatten_close_order(
+    db: Session,
+    *,
+    close_order_id: str,
+    entry_order_id: str,
+    symbol: str,
+    close_side: str,
+    quantity: float,
+) -> None:
+    """Persist FLATTEN role so hourly/sync backfill never treats the close as an entry.
+
+    Exchange sync preserves existing order_role / parent_order_id, so tagging here
+    survives subsequent history sync. Best-effort: failures are logged, never raised.
+    """
+    from decimal import Decimal
+
+    from app.models.exchange_order import OrderSideEnum
+
+    close_id = str(close_order_id or "").strip()
+    if not close_id:
+        return
+    entry_id = str(entry_order_id or "").strip() or None
+    side_u = (close_side or "").strip().upper()
+    try:
+        side_enum = OrderSideEnum.BUY if side_u == "BUY" else OrderSideEnum.SELL
+        qty = Decimal(str(abs(float(quantity or 0))))
+        existing = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == close_id)
+            .first()
+        )
+        if existing:
+            existing.order_role = FLATTEN_CLOSE_ROLE
+            if entry_id and not existing.parent_order_id:
+                existing.parent_order_id = entry_id
+            db.commit()
+            logger.info(
+                "Tagged flatten close order %s (%s) role=FLATTEN parent=%s",
+                close_id,
+                symbol,
+                entry_id,
+            )
+            return
+
+        row = ExchangeOrder(
+            exchange_order_id=close_id,
+            symbol=symbol,
+            side=side_enum,
+            order_type="MARKET",
+            status=OrderStatusEnum.FILLED,
+            quantity=qty if qty > 0 else Decimal("0"),
+            cumulative_quantity=qty if qty > 0 else Decimal("0"),
+            order_role=FLATTEN_CLOSE_ROLE,
+            parent_order_id=entry_id,
+        )
+        db.add(row)
+        db.commit()
+        logger.info(
+            "Inserted flatten close stub %s (%s) role=FLATTEN parent=%s",
+            close_id,
+            symbol,
+            entry_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to tag flatten close order %s (%s): %s",
+            close_id,
+            symbol,
+            exc,
+            exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def is_protection_order(

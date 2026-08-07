@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Cross-platform wrapper to start Next.js dev server with configurable port.
- * Reads FRONTEND_PORT from .env.local or environment (defaults to 3001).
+ * Reads FRONTEND_PORT from .env.local or environment (defaults to 3000 —
+ * same as docker-compose frontend publish/healthcheck).
  */
 
 import { spawn } from 'child_process';
@@ -34,9 +35,9 @@ function loadEnvLocal() {
   return env;
 }
 
-// Read port from .env.local, then environment, then default to 3001
+// Read port from .env.local, then environment, then default to 3000
 const envLocal = loadEnvLocal();
-const port = process.env.FRONTEND_PORT || envLocal.FRONTEND_PORT || '3001';
+const port = process.env.FRONTEND_PORT || envLocal.FRONTEND_PORT || '3000';
 
 console.log(`Starting Next.js dev server on port ${port}...`);
 

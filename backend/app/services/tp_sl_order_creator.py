@@ -21,6 +21,66 @@ logger = logging.getLogger(__name__)
 _rules_missing_alert_times: Dict[str, float] = {}
 _RULES_MISSING_ALERT_COOLDOWN_SECONDS = 6 * 3600  # 6 hours
 
+_TP_LIVE_STATUSES = frozenset(
+    {"NEW", "ACTIVE", "PENDING", "UNTRIGGERED", "OPEN", "PARTIALLY_FILLED"}
+)
+_TP_DEAD_STATUSES = frozenset(
+    {"REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED"}
+)
+
+
+def _normalize_exchange_status(raw: Optional[str]) -> str:
+    return str(raw or "").strip().upper()
+
+
+def poll_protection_order_status(
+    order_id: str,
+    *,
+    attempts: int = 3,
+    delay_seconds: float = 0.35,
+) -> Optional[str]:
+    """Poll advanced/spot order detail until a terminal-ish status is known."""
+    if not order_id:
+        return None
+    last: Optional[str] = None
+    for attempt in range(max(1, attempts)):
+        detail = None
+        try:
+            detail = trade_client.get_advanced_order_detail(str(order_id))
+        except Exception as adv_err:
+            logger.debug(
+                "advanced get-order-detail failed for %s (attempt %s): %s",
+                order_id,
+                attempt + 1,
+                adv_err,
+            )
+        if not detail:
+            try:
+                detail = trade_client.get_order_detail(str(order_id))
+            except Exception as spot_err:
+                logger.debug(
+                    "spot get-order-detail failed for %s (attempt %s): %s",
+                    order_id,
+                    attempt + 1,
+                    spot_err,
+                )
+        result = None
+        if isinstance(detail, dict):
+            result = detail.get("result") if isinstance(detail.get("result"), dict) else detail
+        if isinstance(result, dict):
+            status = _normalize_exchange_status(
+                result.get("status")
+                or result.get("order_status")
+                or result.get("orderStatus")
+            )
+            if status:
+                last = status
+                if status in _TP_DEAD_STATUSES or status in _TP_LIVE_STATUSES:
+                    return status
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    return last
+
 
 def resolve_sltp_margin_context(db: Session, symbol: str) -> Tuple[bool, Optional[float]]:
     """Return (is_margin, leverage) from watchlist for SL/TP placement."""
@@ -316,7 +376,8 @@ def create_oco_protection_orders(
         from app.utils.sl_trigger_guard import (
             ensure_valid_sl_trigger,
             ensure_valid_tp_trigger,
-            fetch_last_price,
+            fetch_ticker_prices,
+            reference_price_for_trigger,
         )
 
         tp_percentage = None
@@ -337,20 +398,27 @@ def create_oco_protection_orders(
                 wl_err,
             )
 
-        last_price = fetch_last_price(symbol)
+        ticker = fetch_ticker_prices(symbol)
+        market_ref = reference_price_for_trigger(
+            entry_side, is_tp=True, ticker=ticker
+        )
         tp_price, tp_adjust = ensure_valid_tp_trigger(
             entry_side=entry_side,
             tp_price=float(tp_price),
-            last_price=last_price,
+            last_price=market_ref,
             tp_percentage=tp_percentage,
             entry_price=float(entry_price) if entry_price else None,
+            ticker=ticker,
         )
         sl_price, sl_adjust = ensure_valid_sl_trigger(
             entry_side=entry_side,
             sl_price=float(sl_price),
-            last_price=last_price,
+            last_price=reference_price_for_trigger(
+                entry_side, is_tp=False, ticker=ticker, last_price=market_ref
+            ),
             sl_percentage=sl_percentage,
             entry_price=float(entry_price) if entry_price else None,
+            ticker=ticker,
         )
         if tp_adjust:
             logger.warning(
@@ -359,6 +427,35 @@ def create_oco_protection_orders(
         if sl_adjust:
             logger.warning(
                 "[%s_OCO] Adjusted SL for %s: %s", source.upper(), symbol, sl_adjust
+            )
+
+    if not dry_run:
+        try:
+            from app.services.exchange_sync import _base_wallet_balance_from_accounts
+            from app.services.sl_tp_protection import cap_protection_quantity_to_wallet
+            from app.services.brokers.crypto_com_trade import trade_client
+
+            summary = trade_client.get_account_summary()
+            accounts = summary.get("accounts") or []
+            wallet_bal = _base_wallet_balance_from_accounts(accounts, symbol)
+            quantity, cap_reason = cap_protection_quantity_to_wallet(
+                symbol, entry_side, float(quantity), wallet_bal
+            )
+            if cap_reason == "wallet_empty_long":
+                err = f"wallet_empty_long: no {symbol} balance for protection"
+                logger.error("[%s_OCO] %s", source.upper(), err)
+                return {
+                    "sl_result": {"order_id": None, "error": err},
+                    "tp_result": {"order_id": None, "error": err},
+                    "oco_group_id": None,
+                    "error": err,
+                }
+        except Exception as bal_err:
+            logger.warning(
+                "[%s_OCO] wallet balance lookup failed for %s: %s",
+                source.upper(),
+                symbol,
+                bal_err,
             )
 
     logger.info(
@@ -481,7 +578,8 @@ def create_take_profit_order(
     is_margin: bool = False,
     leverage: Optional[float] = None,
     dry_run: bool = False,
-    source: str = "auto"  # "auto" or "manual" to track the source
+    source: str = "auto",  # "auto" or "manual" to track the source
+    _allow_reject_retry: bool = True,
 ) -> Dict:
     """
     Create a Take Profit order using the same logic as automatic TP creation.
@@ -516,13 +614,33 @@ def create_take_profit_order(
 
         existing_tp = get_active_protection_order(db, parent_order_id, "TAKE_PROFIT")
         if existing_tp:
+            existing_qty = float(getattr(existing_tp, "quantity", 0) or 0)
+            requested_qty = float(quantity or 0)
+            # Mirror SL gap-fill: reuse only when existing covers requested size.
+            # Dashboard SL/TP Check passes uncovered_qty — a dust TP on the parent
+            # must not block placing the remaining wallet gap.
+            covers_request = (
+                existing_qty <= 0
+                or requested_qty <= 0
+                or existing_qty + 1e-9 >= requested_qty * 0.98
+            )
+            if covers_request:
+                logger.info(
+                    "[%s_TP] Reusing active TP %s for parent %s (qty=%s requested=%s)",
+                    source.upper(),
+                    existing_tp.exchange_order_id,
+                    parent_order_id,
+                    existing_qty,
+                    requested_qty,
+                )
+                return {"order_id": existing_tp.exchange_order_id, "error": None}
             logger.info(
-                "[%s_TP] Reusing active TP %s for parent %s",
+                "[%s_TP] Active TP %s qty=%s < requested=%s; placing additional TP",
                 source.upper(),
                 existing_tp.exchange_order_id,
-                parent_order_id,
+                existing_qty,
+                requested_qty,
             )
-            return {"order_id": existing_tp.exchange_order_id, "error": None}
 
     # Repair stale TP vs live market (short TP above last → INVALID_TRIGGER_PRICE).
     tp_percentage = None
@@ -537,20 +655,54 @@ def create_take_profit_order(
 
     if not dry_run:
         from app.utils.sl_trigger_guard import (
+            ensure_tp_clear_of_market_after_tick,
             ensure_valid_tp_trigger,
-            fetch_last_price,
+            fetch_ticker_prices,
+            reference_price_for_trigger,
         )
 
-        last_price = fetch_last_price(symbol)
+        ticker = fetch_ticker_prices(symbol)
+        market_ref = reference_price_for_trigger(
+            entry_side, is_tp=True, ticker=ticker
+        )
         tp_price, tp_adjust = ensure_valid_tp_trigger(
             entry_side=entry_side,
             tp_price=float(tp_price),
-            last_price=last_price,
+            last_price=market_ref,
             tp_percentage=tp_percentage,
             entry_price=float(entry_price) if entry_price else None,
+            ticker=ticker,
         )
         if tp_adjust:
             logger.warning("[%s_TP] Adjusted TP for %s: %s", source.upper(), symbol, tp_adjust)
+
+        # Side-aware tick rounding can push a barely-valid short TP back above
+        # market (ROUND_UP legacy). Nudge away from market using tick size.
+        try:
+            tick_raw = (trade_client._get_instrument_metadata(symbol) or {}).get(
+                "price_tick_size"
+            )
+            tick_f = float(tick_raw) if tick_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            tick_f = None
+        if market_ref and market_ref > 0:
+            cleared = ensure_tp_clear_of_market_after_tick(
+                entry_side=entry_side,
+                tp_price=float(tp_price),
+                market_price=float(market_ref),
+                tick_size=tick_f,
+            )
+            if cleared != float(tp_price):
+                logger.warning(
+                    "[%s_TP] Post-tick TP clear for %s: %s -> %s (market_ref=%s tick=%s)",
+                    source.upper(),
+                    symbol,
+                    tp_price,
+                    cleared,
+                    market_ref,
+                    tick_f,
+                )
+                tp_price = cleared
 
     # Place TP at the (possibly repaired) watchlist/calculated price.
     
@@ -721,6 +873,105 @@ def create_take_profit_order(
         
         if "error" not in tp_order:
             tp_order_id = tp_order.get("order_id") or tp_order.get("client_order_id")
+            place_status = _normalize_exchange_status(tp_order.get("status"))
+            # Crypto.com can return an order_id for a TP that is immediately REJECTED
+            # (prod APT_USD 2026-08-06: SL live, TP REJECTED, healing OFF → naked TP).
+            if not dry_run and tp_order_id and place_status not in _TP_DEAD_STATUSES:
+                polled = poll_protection_order_status(str(tp_order_id))
+                if polled:
+                    place_status = polled
+            if place_status in _TP_DEAD_STATUSES:
+                logger.error(
+                    "❌ TP order %s for %s placed then %s @ %s — treating as failure",
+                    tp_order_id,
+                    symbol,
+                    place_status,
+                    tp_execution_price,
+                )
+                if tp_order_id and parent_order_id:
+                    try:
+                        tp_db_order = ExchangeOrder(
+                            exchange_order_id=str(tp_order_id),
+                            symbol=symbol,
+                            side=OrderSideEnum.SELL if entry_side == "BUY" else OrderSideEnum.BUY,
+                            order_type="TAKE_PROFIT_LIMIT",
+                            status=OrderStatusEnum.REJECTED,
+                            price=tp_price,
+                            quantity=quantity,
+                            parent_order_id=parent_order_id,
+                            oco_group_id=oco_group_id,
+                            order_role="TAKE_PROFIT",
+                            exchange_create_time=datetime.utcnow(),
+                        )
+                        db.add(tp_db_order)
+                        db.commit()
+                    except Exception as db_err:
+                        logger.warning("Failed to save REJECTED TP to database: %s", db_err)
+                        db.rollback()
+                if _allow_reject_retry and not dry_run:
+                    try:
+                        from app.utils.sl_trigger_guard import (
+                            compute_market_relative_tp,
+                            ensure_tp_clear_of_market_after_tick,
+                            fetch_ticker_prices,
+                            reference_price_for_trigger,
+                        )
+
+                        ticker = fetch_ticker_prices(symbol)
+                        market_ref = reference_price_for_trigger(
+                            entry_side, is_tp=True, ticker=ticker
+                        )
+                        pct = float(tp_percentage) if tp_percentage and float(tp_percentage) > 0 else 1.0
+                        if market_ref and market_ref > 0:
+                            clamped = compute_market_relative_tp(
+                                entry_side, float(market_ref), pct
+                            )
+                            inst_meta = trade_client._get_instrument_metadata(symbol) or {}
+                            try:
+                                tick_f = float(inst_meta.get("price_tick_size") or 0) or None
+                            except (TypeError, ValueError):
+                                tick_f = None
+                            clamped = ensure_tp_clear_of_market_after_tick(
+                                entry_side=entry_side,
+                                tp_price=float(clamped),
+                                market_price=float(market_ref),
+                                tick_size=tick_f,
+                            )
+                            if abs(float(clamped) - float(tp_execution_price)) > 1e-12:
+                                logger.warning(
+                                    "[%s_TP] Retrying TP for %s after %s: %s -> %s (market_ref=%s)",
+                                    source.upper(),
+                                    symbol,
+                                    place_status,
+                                    tp_execution_price,
+                                    clamped,
+                                    market_ref,
+                                )
+                                return create_take_profit_order(
+                                    db=db,
+                                    symbol=symbol,
+                                    side=side,
+                                    tp_price=float(clamped),
+                                    quantity=quantity,
+                                    entry_price=entry_price,
+                                    parent_order_id=parent_order_id,
+                                    oco_group_id=oco_group_id,
+                                    is_margin=is_margin,
+                                    leverage=leverage,
+                                    dry_run=dry_run,
+                                    source=source,
+                                    _allow_reject_retry=False,
+                                )
+                    except Exception as retry_err:
+                        logger.warning(
+                            "TP reject retry failed for %s: %s", symbol, retry_err
+                        )
+                return {
+                    "order_id": None,
+                    "error": f"TP {place_status} after place @ {tp_execution_price}",
+                    "rejected_order_id": str(tp_order_id) if tp_order_id else None,
+                }
+
             logger.info(
                 f"✅ Created TP order (TAKE_PROFIT_LIMIT) for {symbol} @ {tp_price} "
                 f"(trigger={tp_trigger}, price={tp_execution_price})"
@@ -807,7 +1058,8 @@ def create_stop_loss_order(
         derive_sl_percentage,
         ensure_valid_sl_trigger,
         error_is_invalid_trigger_price,
-        fetch_last_price,
+        fetch_ticker_prices,
+        reference_price_for_trigger,
     )
     
     # IMPORTANT: trigger_price must be equal to sl_price for STOP_LIMIT orders
@@ -830,13 +1082,17 @@ def create_stop_loss_order(
             logger.debug("Could not read watchlist sl_percentage for %s: %s", symbol, wl_err)
 
     # Reject stale absolute SL on the wrong side of market (INVALID_TRIGGER_PRICE)
-    last_price = None if dry_run else fetch_last_price(symbol)
+    ticker = None if dry_run else fetch_ticker_prices(symbol)
+    last_price = reference_price_for_trigger(
+        entry_side, is_tp=False, ticker=ticker
+    )
     sl_price, adjust_reason = ensure_valid_sl_trigger(
         entry_side=entry_side,
         sl_price=float(sl_price),
         last_price=last_price,
         sl_percentage=sl_percentage,
         entry_price=float(entry_price) if entry_price else None,
+        ticker=ticker,
     )
     if adjust_reason:
         logger.warning("[%s_SL] Adjusted SL for %s: %s", source.upper(), symbol, adjust_reason)

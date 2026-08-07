@@ -173,6 +173,35 @@ class TestFlattenOnProtectionFailure:
         assert float(kwargs["notional"]) == pytest.approx(100.0)
         mock_tc._mark_conditional_orders_unavailable.assert_called_once()
 
+    def test_flatten_tags_close_order_role(self):
+        """Close fill must be tagged FLATTEN so hourly SL/TP backfill skips it."""
+        svc = SignalMonitorService()
+        db = _make_db()
+        with patch("app.services.signal_monitor.trade_client") as mock_tc, \
+             patch("app.services.signal_monitor.telegram_notifier"), \
+             patch("app.services.exchange_sync.exchange_sync_service") as mock_sync, \
+             patch("app.services.sl_tp_protection.mark_flatten_close_order") as mock_mark:
+            mock_tc.normalize_quantity_safe_with_fallback.return_value = ("0.05", {})
+            mock_tc.place_market_order.return_value = {"order_id": "close-1", "error": None}
+            mock_sync._create_sl_tp_for_filled_order.return_value = _sltp_140001()
+            svc._create_protection_after_entry_fill(
+                db=db,
+                symbol="SUI_USD",
+                entry_side="SELL",
+                order_id="entry-sui-1",
+                placement_result=_filled_placement("entry-sui-1"),
+                estimated_price=0.69,
+                source="orchestrator",
+                is_margin=True,
+                leverage=5,
+            )
+            mock_mark.assert_called_once()
+            tag_kwargs = mock_mark.call_args.kwargs
+            assert tag_kwargs["close_order_id"] == "close-1"
+            assert tag_kwargs["entry_order_id"] == "entry-sui-1"
+            assert tag_kwargs["symbol"] == "SUI_USD"
+            assert tag_kwargs["close_side"] == "BUY"
+
     def test_margin_short_covered_with_margin_buy_carries_leverage(self):
         # Regression companion to test_margin_long_flattened_with_margin_sell: a margin
         # SHORT must be covered with a margin BUY that carries the entry leverage. A margin

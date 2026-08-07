@@ -27,7 +27,11 @@ Logging / metrics never include message bodies, email addresses, passwords, ICS 
 | `BRIEF_API_KEY` | yes | Shared secret for `X-Brief-Key` |
 | `BRIEF_MAILBOXES_PATH` | no | Absolute path to mailboxes JSON (default `/app/secrets/brief_mailboxes.json`) |
 | `BRIEF_ICS_URLS` | for calendar | Comma-separated secret ICS URLs |
+| `BRIEF_GRAPH_TENANT_ID` | for Graph mail | Entra tenant id (M365 app-only) |
+| `BRIEF_GRAPH_CLIENT_ID` | for Graph mail | App (client) id |
+| `BRIEF_GRAPH_CLIENT_SECRET` | for Graph mail | App client secret |
 | Mailbox `enabled` | no | Set `false` in `brief_mailboxes.json` to skip a stub/broken account silently |
+| Mailbox `provider` | no | `imap` (default) or `graph` (Microsoft Graph / M365) |
 | `BRIEF_RATE_LIMIT_PER_MINUTE` | no | Default `30` |
 | `TELEGRAM_BOT_TOKEN` | for send | Existing alert bot (fallback `TELEGRAM_BOT_TOKEN_AWS`) |
 | `BRIEF_TELEGRAM_CHAT_ID` | for send | Preferred destination (e.g. **Hilo vivo** channel) |
@@ -59,7 +63,8 @@ Incomplete rows (empty host/user/password) and `"enabled": false` are skipped (n
 - **cruzgmail**: Gmail → App Password (IMAP)
 - **peluqueria**: correct Hostinger mailbox password
 - **hotmail-fw**: Outlook.com blocks basic IMAP auth — forward into an IMAP inbox instead
-- **brickeny / bumibeans**: fill host/user/password when ready
+- **bumibeans**: Microsoft 365 via Graph (`"provider": "graph"`) + `BRIEF_GRAPH_*` env from SSM
+- **brickeny**: fill host/user/password when ready
 
 ### Agent runner
 

@@ -34,6 +34,16 @@ def _order(
     return o
 
 
+def _db_without_intent():
+    """MagicMock db where OrderIntent / TradeSignal lookups return None."""
+    db = MagicMock()
+    empty = MagicMock()
+    empty.first.return_value = None
+    empty.order_by.return_value.first.return_value = None
+    db.query.return_value.filter.return_value = empty
+    return db
+
+
 def test_historical_fill_not_system_not_admin_no_notify():
     """Historical fill (older than 1h), not system order, not admin -> no notify."""
     now = datetime.now(timezone.utc)
@@ -46,7 +56,7 @@ def test_historical_fill_not_system_not_admin_no_notify():
         execution_notified_at=None,
     )
     allowed, reason = should_notify_executed_fill(
-        db=MagicMock(),
+        db=_db_without_intent(),
         order=order,
         now_utc=now,
         source="sync_order_history",
@@ -68,7 +78,7 @@ def test_recent_fill_not_system_notify_once_then_block():
         execution_notified_at=None,
     )
     allowed1, reason1 = should_notify_executed_fill(
-        db=MagicMock(),
+        db=_db_without_intent(),
         order=order,
         now_utc=now,
         source="sync_order_history",
@@ -79,7 +89,7 @@ def test_recent_fill_not_system_notify_once_then_block():
 
     order.execution_notified_at = now
     allowed2, reason2 = should_notify_executed_fill(
-        db=MagicMock(),
+        db=_db_without_intent(),
         order=order,
         now_utc=now,
         source="sync_order_history",
@@ -87,6 +97,37 @@ def test_recent_fill_not_system_notify_once_then_block():
     )
     assert allowed2 is False
     assert "already notified" in reason2.lower()
+
+
+def test_order_intent_allows_even_outside_recent_window():
+    """OrderIntent (bot entry) must notify after the 1h window (ALGO 2026-08-06)."""
+    now = datetime.now(timezone.utc)
+    filled_at = now - timedelta(seconds=RECENT_FILL_WINDOW_SECONDS + 600)
+    order = _order(
+        trade_signal_id=None,
+        parent_order_id=None,
+        exchange_update_time=filled_at,
+        exchange_create_time=filled_at,
+        execution_notified_at=None,
+        exchange_order_id="5755600492696996146",
+        order_type="MARKET",
+    )
+    db = MagicMock()
+    intent_row = MagicMock()
+    chain = MagicMock()
+    chain.first.return_value = intent_row
+    chain.order_by.return_value.first.return_value = intent_row
+    db.query.return_value.filter.return_value = chain
+
+    allowed, reason = should_notify_executed_fill(
+        db=db,
+        order=order,
+        now_utc=now,
+        source="sync_order_history",
+        requested_by_admin=False,
+    )
+    assert allowed is True
+    assert "system order" in reason.lower()
 
 
 def test_system_order_trade_signal_id_allows_even_old():
@@ -186,7 +227,7 @@ def test_no_timestamp_blocks():
         execution_notified_at=None,
     )
     allowed, reason = should_notify_executed_fill(
-        db=MagicMock(),
+        db=_db_without_intent(),
         order=order,
         now_utc=datetime.now(timezone.utc),
         source="sync_order_history",

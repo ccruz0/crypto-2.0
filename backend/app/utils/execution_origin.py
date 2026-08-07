@@ -12,12 +12,78 @@ EXECUTION_ORIGIN_ALERT = "ALERT"
 EXECUTION_ORIGIN_MANUAL = "MANUAL"
 EXECUTION_ORIGIN_EXCHANGE = "EXCHANGE"
 
-_STOP_LOSS_TYPES = frozenset({"STOP_LIMIT", "STOP_LOSS", "STOP_LOSS_LIMIT"})
-_TAKE_PROFIT_TYPES = frozenset({"TAKE_PROFIT", "TAKE_PROFIT_LIMIT"})
+_STOP_LOSS_TYPES = frozenset({
+    "STOP_LIMIT",
+    "STOP_LOSS",
+    "STOP_LOSS_LIMIT",
+    "STOP_MARKET",
+})
+_TAKE_PROFIT_TYPES = frozenset({
+    "TAKE_PROFIT",
+    "TAKE_PROFIT_LIMIT",
+    "TAKE_PROFIT_MARKET",
+})
 
 
 def _normalize(value: Optional[str]) -> str:
     return (value or "").upper().strip()
+
+
+def infer_protection_role(
+    *,
+    order_role: Optional[str] = None,
+    order_type: Optional[str] = None,
+    contingency_type: Optional[str] = None,
+    parent_order_role: Optional[str] = None,
+    parent_order_type: Optional[str] = None,
+) -> Optional[str]:
+    """Return STOP_LOSS / TAKE_PROFIT when role, trigger type, or linked parent says so.
+
+    Used when the exchange reports the fill as MARKET/LIMIT but the order is a
+    protection exit (native trigger, contingency, or spot child of a trigger).
+    """
+    role = _normalize(order_role)
+    if role in PROTECTION_ROLES:
+        return role
+
+    contingency = _normalize(contingency_type)
+    if contingency in PROTECTION_ROLES:
+        return contingency
+
+    order_type_upper = _normalize(order_type)
+    if order_type_upper in _STOP_LOSS_TYPES:
+        return EXECUTION_ORIGIN_STOP_LOSS
+    if order_type_upper in _TAKE_PROFIT_TYPES:
+        return EXECUTION_ORIGIN_TAKE_PROFIT
+
+    parent_role = _normalize(parent_order_role)
+    if parent_role in PROTECTION_ROLES:
+        return parent_role
+
+    parent_type = _normalize(parent_order_type)
+    if parent_type in _STOP_LOSS_TYPES:
+        return EXECUTION_ORIGIN_STOP_LOSS
+    if parent_type in _TAKE_PROFIT_TYPES:
+        return EXECUTION_ORIGIN_TAKE_PROFIT
+
+    return None
+
+
+def format_executed_fill_type_label(
+    *,
+    order_type: Optional[str],
+    order_role: Optional[str] = None,
+) -> str:
+    """Telegram/UI type line for fills: prefer Stop Loss / Take Profit over MARKET.
+
+    True orphan MANUAL MARKET closes (no protection role/type) still return MARKET.
+    """
+    role = infer_protection_role(order_role=order_role, order_type=order_type)
+    if role == EXECUTION_ORIGIN_STOP_LOSS:
+        return "Stop Loss"
+    if role == EXECUTION_ORIGIN_TAKE_PROFIT:
+        return "Take Profit"
+    return _normalize(order_type) or "LIMIT"
 
 
 def resolve_execution_origin(
@@ -33,18 +99,13 @@ def resolve_execution_origin(
 
     Priority: SL/TP role or trigger type > parent protection child > alert/intent > manual.
     """
-    role = _normalize(order_role)
-    if role == "STOP_LOSS":
+    inferred = infer_protection_role(order_role=order_role, order_type=order_type)
+    if inferred == EXECUTION_ORIGIN_STOP_LOSS:
         return EXECUTION_ORIGIN_STOP_LOSS
-    if role == "TAKE_PROFIT":
+    if inferred == EXECUTION_ORIGIN_TAKE_PROFIT:
         return EXECUTION_ORIGIN_TAKE_PROFIT
 
     order_type_upper = _normalize(order_type)
-    if order_type_upper in _STOP_LOSS_TYPES:
-        return EXECUTION_ORIGIN_STOP_LOSS
-    if order_type_upper in _TAKE_PROFIT_TYPES:
-        return EXECUTION_ORIGIN_TAKE_PROFIT
-
     if parent_order_id:
         if order_type_upper in _STOP_LOSS_TYPES:
             return EXECUTION_ORIGIN_STOP_LOSS
