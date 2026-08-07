@@ -1095,7 +1095,7 @@ const VERSION_HISTORY = [
 • Does not auto-cancel ghost legs on the exchange (human action)
 
 📦 **PRs**
-• dashboard P0/P1 follow-up
+• #386
 
 ---
 `
