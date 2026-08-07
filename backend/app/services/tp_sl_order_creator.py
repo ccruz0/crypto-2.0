@@ -137,6 +137,45 @@ def is_insufficient_acc_balance_error(error: Optional[object]) -> bool:
     )
 
 
+def cap_protection_qty_from_wallet(
+    symbol: str,
+    entry_side: str,
+    quantity: float,
+    *,
+    dry_run: bool = False,
+    source: str = "auto",
+) -> Tuple[float, Optional[str]]:
+    """Cap protection qty to free wallet balance before standalone SL/TP placement."""
+    if dry_run:
+        return float(quantity), None
+    try:
+        from app.services.exchange_sync import (
+            _base_wallet_available_from_accounts,
+            _base_wallet_balance_from_accounts,
+        )
+        from app.services.sl_tp_protection import cap_protection_quantity_to_wallet
+
+        summary = trade_client.get_account_summary()
+        accounts = summary.get("accounts") or []
+        wallet_bal = _base_wallet_balance_from_accounts(accounts, symbol)
+        wallet_avail = _base_wallet_available_from_accounts(accounts, symbol)
+        return cap_protection_quantity_to_wallet(
+            symbol,
+            entry_side,
+            float(quantity),
+            wallet_bal,
+            wallet_available=wallet_avail,
+        )
+    except Exception as bal_err:
+        logger.warning(
+            "[%s_SLTP] wallet balance lookup failed for %s: %s",
+            source.upper(),
+            symbol,
+            bal_err,
+        )
+        return float(quantity), None
+
+
 def cancel_protection_leg_on_exchange(
     db: Session,
     leg: ExchangeOrder,
@@ -431,15 +470,22 @@ def create_oco_protection_orders(
 
     if not dry_run:
         try:
-            from app.services.exchange_sync import _base_wallet_balance_from_accounts
+            from app.services.exchange_sync import (
+                _base_wallet_available_from_accounts,
+                _base_wallet_balance_from_accounts,
+            )
             from app.services.sl_tp_protection import cap_protection_quantity_to_wallet
-            from app.services.brokers.crypto_com_trade import trade_client
 
             summary = trade_client.get_account_summary()
             accounts = summary.get("accounts") or []
             wallet_bal = _base_wallet_balance_from_accounts(accounts, symbol)
+            wallet_avail = _base_wallet_available_from_accounts(accounts, symbol)
             quantity, cap_reason = cap_protection_quantity_to_wallet(
-                symbol, entry_side, float(quantity), wallet_bal
+                symbol,
+                entry_side,
+                float(quantity),
+                wallet_bal,
+                wallet_available=wallet_avail,
             )
             if cap_reason == "wallet_empty_long":
                 err = f"wallet_empty_long: no {symbol} balance for protection"
@@ -703,6 +749,19 @@ def create_take_profit_order(
                     tick_f,
                 )
                 tp_price = cleared
+
+    # Cap to free/available balance (sibling locks often make total > spendable).
+    quantity, cap_reason = cap_protection_qty_from_wallet(
+        symbol, entry_side, float(quantity), dry_run=dry_run, source=source
+    )
+    if cap_reason == "wallet_empty_long":
+        err = f"wallet_empty_long: no {symbol} balance for protection"
+        logger.error("[%s_TP] %s", source.upper(), err)
+        return {"order_id": None, "error": err}
+    if cap_reason == "wallet_empty_short":
+        err = f"wallet_empty_short: no {symbol} short balance for protection"
+        logger.error("[%s_TP] %s", source.upper(), err)
+        return {"order_id": None, "error": err}
 
     # Place TP at the (possibly repaired) watchlist/calculated price.
     
@@ -1098,6 +1157,18 @@ def create_stop_loss_order(
         logger.warning("[%s_SL] Adjusted SL for %s: %s", source.upper(), symbol, adjust_reason)
 
     sl_trigger = sl_price  # trigger_price equals sl_price
+
+    quantity, cap_reason = cap_protection_qty_from_wallet(
+        symbol, entry_side, float(quantity), dry_run=dry_run, source=source
+    )
+    if cap_reason == "wallet_empty_long":
+        err = f"wallet_empty_long: no {symbol} balance for protection"
+        logger.error("[%s_SL] %s", source.upper(), err)
+        return {"order_id": None, "error": err}
+    if cap_reason == "wallet_empty_short":
+        err = f"wallet_empty_short: no {symbol} short balance for protection"
+        logger.error("[%s_SL] %s", source.upper(), err)
+        return {"order_id": None, "error": err}
 
     if parent_order_id and not dry_run:
         from app.services.sl_tp_protection import get_active_protection_order

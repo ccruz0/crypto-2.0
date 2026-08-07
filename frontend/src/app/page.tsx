@@ -1119,6 +1119,24 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.53',
+    date: '2026-08-07',
+    change: 'Cap SL/TP qty to free balance; heal dual-trigger INSUFFICIENT_ACC_BALANCE',
+    details: `🚀 VERSIÓN 0.53 — DOGE PROTECTION BALANCE LOCK
+
+📋 **What shipped**
+• Protection qty capped to spendable (available/max_withdrawal), not total wallet
+• Spot dual fallback upgrades standalone TP → native OCO instead of doomed full-qty SL
+• Async SL balance-lock reject cancels sibling TP before OCO retry
+• Suppress INSUFFICIENT_ACC_BALANCE Telegram for STOP_LOSS (same as TP)
+
+📦 **PRs**
+• #350
+
+---
+`
   }
 ];
 
