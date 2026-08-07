@@ -1056,6 +1056,27 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.50',
+    date: '2026-08-07',
+    change: 'Expected TP keeps protected BTC_USD lots when sister USDT absorbs wallet',
+    details: `🚀 VERSIÓN 0.50 — EXPECTED TP SAME-SIDE PROTECTED PIN
+
+📋 **What shipped**
+• Wallet-align pins parent-linked SL/TP lots for same-side books (not only MIXED)
+• Executed Orders → Expected TP no longer shows empty BTC_USD when a tiny protected fill sits next to an oversized BTC_USDT lot
+• Regression tests for protected USD dust vs old USDT sister lot
+
+🔧 **Notes**
+• Extends PR #366 pin behavior beyond long+short hedges
+• Reported net_qty still scales to wallet when pinned qty exceeds balance
+
+📦 **PRs**
+• #383
+
+---
+`
   }
 ];
 

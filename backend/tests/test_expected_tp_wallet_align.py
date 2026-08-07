@@ -357,3 +357,161 @@ def test_details_sister_books_share_wallet_not_each_claim_full(db_session):
     assert details_usd["net_qty"] < wallet
     assert details_usdt["net_qty"] < wallet
     assert details_usdt["uncovered_qty"] < 1.0
+
+
+def test_same_side_sister_trim_keeps_protected_btc_usd_details(db_session):
+    """Executed Orders → Expected TP must show BTC_USD SL/TP when wallet is dust.
+
+    Oldest-first same-side trim used to keep a large older BTC_USDT lot and drop
+    the newer protected BTC_USD fill, so details returned empty entry_orders
+    ("No matched lots found") even though USD SL/TP were ACTIVE.
+    """
+    t_usdt = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    t_usd = datetime(2026, 8, 7, 4, 2, tzinfo=timezone.utc)
+
+    buy_usdt = _add_order(
+        db_session,
+        exchange_order_id="btc-usdt-old-1.5",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.BUY,
+        price="65000",
+        quantity="1.5",
+        exchange_create_time=t_usdt,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="btc-usdt-old-tp",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="70000",
+        quantity="1.5",
+        cumulative_quantity="0",
+        parent_order_id=buy_usdt.exchange_order_id,
+        exchange_create_time=t_usdt,
+    )
+
+    buy_usd = _add_order(
+        db_session,
+        exchange_order_id="5755600492731962293",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="64206.97",
+        quantity="0.000150",
+        exchange_create_time=t_usd,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490102062566",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="64849.04",
+        quantity="0.000150",
+        cumulative_quantity="0",
+        parent_order_id=buy_usd.exchange_order_id,
+        exchange_create_time=t_usd,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490102062567",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="STOP_LOSS_LIMIT",
+        order_role="STOP_LOSS",
+        status=OrderStatusEnum.ACTIVE,
+        price="57786.27",
+        quantity="0.000150",
+        cumulative_quantity="0",
+        parent_order_id=buy_usd.exchange_order_id,
+        exchange_create_time=t_usd,
+    )
+
+    wallet = 0.000150
+    details = get_expected_take_profit_details(
+        db_session,
+        "BTC_USD",
+        current_price=64128.85,
+        portfolio_balance=wallet,
+    )
+
+    assert details["entry_orders"], "BTC_USD details must not be empty when fill is protected"
+    by_id = {entry["order_id"]: entry for entry in details["entry_orders"]}
+    assert buy_usd.exchange_order_id in by_id
+    usd_row = by_id[buy_usd.exchange_order_id]
+    assert any(tp["order_id"] == "73817490102062566" for tp in usd_row["take_profits"])
+    assert usd_row["stop_loss"] is not None
+    assert usd_row["stop_loss"]["order_id"] == "73817490102062567"
+    assert details.get("wallet_qty_warning") == "lots_exceed_wallet"
+
+
+def test_same_side_unprotected_usdt_does_not_hide_protected_usd(db_session):
+    """Unprotected oversized USDT lot must yield wallet capacity to protected USD."""
+    t_usdt = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    t_usd = datetime(2026, 8, 7, 4, 42, tzinfo=timezone.utc)
+
+    _add_order(
+        db_session,
+        exchange_order_id="btc-usdt-unprotected",
+        symbol="BTC_USDT",
+        side=OrderSideEnum.BUY,
+        price="64000",
+        quantity="1.5",
+        exchange_create_time=t_usdt,
+    )
+    buy_usd = _add_order(
+        db_session,
+        exchange_order_id="btc-usd-protected-dust",
+        symbol="BTC_USD",
+        side=OrderSideEnum.BUY,
+        price="64200",
+        quantity="0.000150",
+        exchange_create_time=t_usd,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="btc-usd-dust-tp",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="64800",
+        quantity="0.000150",
+        cumulative_quantity="0",
+        parent_order_id=buy_usd.exchange_order_id,
+        exchange_create_time=t_usd,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="btc-usd-dust-sl",
+        symbol="BTC_USD",
+        side=OrderSideEnum.SELL,
+        order_type="STOP_LOSS_LIMIT",
+        order_role="STOP_LOSS",
+        status=OrderStatusEnum.ACTIVE,
+        price="58000",
+        quantity="0.000150",
+        cumulative_quantity="0",
+        parent_order_id=buy_usd.exchange_order_id,
+        exchange_create_time=t_usd,
+    )
+
+    wallet = 0.000150
+    details = get_expected_take_profit_details(
+        db_session,
+        "BTC_USD",
+        current_price=64100.0,
+        portfolio_balance=wallet,
+    )
+    entry_ids = {entry["order_id"] for entry in details["entry_orders"]}
+    assert buy_usd.exchange_order_id in entry_ids
+    # Protected USD should claim the wallet; unprotected USDT is trimmed away.
+    assert details["net_qty"] == pytest.approx(wallet, rel=1e-6)
+    usd_row = next(e for e in details["entry_orders"] if e["order_id"] == buy_usd.exchange_order_id)
+    assert usd_row["stop_loss"] is not None
+    assert usd_row["take_profits"]
