@@ -352,6 +352,48 @@ class TestEnsureMissingProtection(unittest.TestCase):
             any(c.get("source") == "multilot_tp_heal" for c in result["created"])
         )
 
+    @patch.object(SLTPCheckerService, "_ensure_multilot_tp_heal")
+    @patch.object(SLTPCheckerService, "_create_protection_order")
+    @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+    def test_ensure_creates_missing_tp_for_short(
+        self, mock_check, mock_create, mock_multilot
+    ):
+        """SHORT wallet with SL only: ensure must request create_tp (not create_sl)."""
+        svc = SLTPCheckerService()
+        mock_check.return_value = {
+            "positions_missing_sl_tp": [
+                {
+                    "symbol": "DOGE_USD",
+                    "currency": "DOGE",
+                    "balance": -845.19,
+                    "has_sl": True,
+                    "has_tp": False,
+                    "sl_price": None,
+                    "tp_price": None,
+                    "skip_reminder": False,
+                }
+            ],
+            "total_positions": 1,
+            "oco_issues": {},
+            "checked_at": None,
+        }
+        mock_create.return_value = {
+            "success": True,
+            "sl_order_id": None,
+            "tp_order_id": "tp-short-1",
+        }
+
+        result = svc.ensure_missing_protection(MagicMock())
+
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        self.assertFalse(kwargs["create_sl"])
+        self.assertTrue(kwargs["create_tp"])
+        self.assertTrue(kwargs["force"])
+        mock_multilot.assert_called_once()
+        self.assertEqual(len(result["created"]), 1)
+        self.assertEqual(result["still_missing"], [])
+
 
 class TestHalfProtectedMultilotHeal(unittest.TestCase):
     def test_iter_half_protected_keeps_sl_only_parents(self):
