@@ -1081,6 +1081,7 @@ const VERSION_HISTORY = [
   {
     version: '0.51',
     date: '2026-08-07',
+<<<<<<< HEAD
     change: 'Dashboard Positions N/limit = bot exposure; ghost TP + naked short alerts',
     details: `🚀 VERSIÓN 0.51 — DASHBOARD POSITION COUNTS + PROTECTION RISK
 
@@ -1096,6 +1097,21 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #386
+=======
+    change: 'ORDER FAILED maps BELOW_MIN_ORDER_SIZE (415) to a clear reason',
+    details: `🚀 VERSIÓN 0.51 — BELOW_MIN_ORDER_SIZE REASON CODE
+
+📋 **What shipped**
+• Crypto.com BELOW_MIN_ORDER_SIZE / code 415 maps to reason_code BELOW_MIN_ORDER_SIZE (not EXCHANGE_ERROR_UNKNOWN)
+• Telegram Motivo: "Cantidad bajo el mínimo del exchange"
+• Covers DOGE (and other) SELL failures when qty is under exchange minimum
+
+🔧 **Notes**
+• classify_exchange_error in decision_reason.py; Spanish label + daily summary
+
+📦 **PRs**
+• #385
+>>>>>>> origin/main
 
 ---
 `

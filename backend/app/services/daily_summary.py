@@ -40,6 +40,7 @@ _REASON_CODE_LABELS = {
     "INSUFFICIENT_AVAILABLE_BALANCE": "Balance insuficiente",
     "INSUFFICIENT_FUNDS": "Fondos insuficientes",
     "MIN_NOTIONAL_NOT_MET": "Notional mínimo no cumplido",
+    "BELOW_MIN_ORDER_SIZE": "Cantidad bajo el mínimo del exchange",
     "EXCHANGE_REJECTED": "Rechazado por el exchange",
     "AUTHENTICATION_ERROR": "Error de autenticación",
     "EXCHANGE_ERROR_UNKNOWN": "Error del exchange",
