@@ -72,6 +72,13 @@ gitignored `.env` files are all captured in the VM snapshot.
 - Pre-commit hooks (`.pre-commit-config.yaml`) use black/ruff/prettier/eslint and
   `scripts/pre_commit_checks.sh`.
 
+### Dashboard tabs (URL)
+The main dashboard keeps `activeTab` in sync with `?tab=` (e.g. `/?tab=watchlist`,
+`/?tab=monitoring`). Prefer deep-links or `data-testid="dashboard-tab-<id>"` /
+`data-tab="<id>"` over brittle text clicks when automating. Unknown `tab` values
+fall back to Portfolio. Version History is `?tab=version-history` (also the
+header `v{version}` badge).
+
 ### Dashboard version history (mandatory on shippable PRs)
 Every user-visible / production-bound change **must** append a new entry to
 `VERSION_HISTORY` in `frontend/src/app/page.tsx` before the PR is considered
