@@ -760,6 +760,102 @@ class DailySummaryService:
             except Exception as e2:
                 logger.error(f"Failed to send error message: {e2}", exc_info=True)
 
+    @staticmethod
+    def _sell_report_fill_key(order: Any) -> Tuple[str, str, str, str]:
+        """Economic identity for one FILLED SELL row in the sales report."""
+        symbol = str(getattr(order, "symbol", "") or "")
+        role = str(getattr(order, "order_role", None) or "SELL")
+        avg = getattr(order, "avg_price", None)
+        px = getattr(order, "price", None)
+        fill_price = avg if avg not in (None, 0, 0.0) else px
+        qty = getattr(order, "quantity", None)
+        try:
+            price_key = f"{float(fill_price):.8f}" if fill_price is not None else "0"
+        except (TypeError, ValueError):
+            price_key = "0"
+        try:
+            qty_key = f"{float(qty):.8f}" if qty is not None else "0"
+        except (TypeError, ValueError):
+            qty_key = "0"
+        return (symbol, role, qty_key, price_key)
+
+    @staticmethod
+    def _dedupe_filled_sells_for_report(
+        orders: List[Any],
+        *,
+        window_seconds: int = 5,
+    ) -> List[Any]:
+        """Collapse near-duplicate FILLED SELL rows that share one economic fill.
+
+        Crypto.com protection fills can land in ``exchange_orders`` under two IDs
+        (trigger/order id + execution/trade id) with the same symbol/qty/price/role
+        a few seconds apart. The Bali sales report must count that once or P&L
+        doubles (seen 2026-08-06 BTC_USD TP ~$1893 listed twice → ~$3786 total).
+        """
+        if not orders:
+            return []
+
+        def _ts(order: Any) -> Optional[datetime]:
+            raw = getattr(order, "exchange_update_time", None)
+            if raw is None:
+                return None
+            if raw.tzinfo is None:
+                return raw.replace(tzinfo=timezone.utc)
+            return raw
+
+        # Oldest first so we keep the first sighting and drop later clones.
+        indexed = list(enumerate(orders))
+        indexed.sort(
+            key=lambda item: (
+                _ts(item[1]) or datetime.min.replace(tzinfo=timezone.utc),
+                item[0],
+            )
+        )
+
+        kept: List[Any] = []
+        kept_meta: List[Tuple[Tuple[str, str, str, str], Optional[datetime], str]] = []
+        dropped = 0
+
+        for _, order in indexed:
+            key = DailySummaryService._sell_report_fill_key(order)
+            ts = _ts(order)
+            oid = str(getattr(order, "exchange_order_id", "") or "")
+            is_dup = False
+            if ts is not None:
+                for prev_key, prev_ts, prev_oid in kept_meta:
+                    if prev_key != key or prev_ts is None:
+                        continue
+                    if abs((ts - prev_ts).total_seconds()) <= window_seconds:
+                        is_dup = True
+                        dropped += 1
+                        logger.info(
+                            "Sales report deduped duplicate FILLED SELL: "
+                            "keep=%s drop=%s symbol=%s role=%s window=%ss",
+                            prev_oid,
+                            oid,
+                            key[0],
+                            key[1],
+                            window_seconds,
+                        )
+                        break
+            if not is_dup:
+                kept.append(order)
+                kept_meta.append((key, ts, oid))
+
+        # Newest first — matches the SQL order_by used by the report.
+        kept.sort(
+            key=lambda o: _ts(o) or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        if dropped:
+            logger.info(
+                "Sales report fill dedupe: kept=%s dropped=%s window=%ss",
+                len(kept),
+                dropped,
+                window_seconds,
+            )
+        return kept
+
     def send_sell_orders_report(self, db: Session = None):
         """
         Send a report of all executed SELL orders from the last 24 hours
@@ -787,8 +883,15 @@ class DailySummaryService:
                     ExchangeOrder.status == OrderStatusEnum.FILLED,
                     ExchangeOrder.exchange_update_time >= yesterday_utc
                 ).order_by(ExchangeOrder.exchange_update_time.desc()).all()
+
+                raw_count = len(sell_orders)
+                sell_orders = self._dedupe_filled_sells_for_report(sell_orders)
                 
-                logger.info(f"Found {len(sell_orders)} executed SELL orders in last 24 hours")
+                logger.info(
+                    "Found %s executed SELL orders in last 24 hours (%s after fill dedupe)",
+                    raw_count,
+                    len(sell_orders),
+                )
                 
                 if not sell_orders:
                     message = f"📊 **Reporte de Ventas - {now_bali.strftime('%d/%m/%Y %H:%M')} (Bali)**\n\n"

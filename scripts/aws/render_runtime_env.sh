@@ -48,7 +48,21 @@ SSM_ATP_CONTROL_CHAT_ID="/automated-trading-platform/prod/telegram/atp_control_c
 SSM_ATP_CONTROL_BOT_TOKEN="/automated-trading-platform/prod/telegram/atp_control_bot_token"
 SSM_EXCHANGE_API_KEY="/automated-trading-platform/prod/exchange_custom/api_key"
 SSM_EXCHANGE_API_SECRET="/automated-trading-platform/prod/exchange_custom/api_secret"
+# Brief API (/api/brief/*) — must survive Session Manager renders (2026-08-06 wipe).
+SSM_BRIEF_API_KEY="/automated-trading-platform/prod/brief/api_key"
+SSM_BRIEF_MAILBOXES_PATH="/automated-trading-platform/prod/brief/mailboxes_path"
+SSM_BRIEF_RATE_LIMIT="/automated-trading-platform/prod/brief/rate_limit_per_minute"
+SSM_BRIEF_ICS_URLS="/automated-trading-platform/prod/brief/ics_urls"
+SSM_BRIEF_GRAPH_TENANT_ID="/automated-trading-platform/prod/brief/graph_tenant_id"
+SSM_BRIEF_GRAPH_CLIENT_ID="/automated-trading-platform/prod/brief/graph_client_id"
+SSM_BRIEF_GRAPH_CLIENT_SECRET="/automated-trading-platform/prod/brief/graph_client_secret"
+SSM_TELEGRAM_API_ID="/automated-trading-platform/prod/telegram/api_id"
+SSM_TELEGRAM_API_HASH="/automated-trading-platform/prod/telegram/api_hash"
+SSM_TELEGRAM_SESSION_PATH="/automated-trading-platform/prod/telegram/session_path"
 NOTION_TASK_DB_DEFAULT="eb90cfa139f94724a8b476315908510a"
+BRIEF_MAILBOXES_PATH_DEFAULT="/app/secrets/brief_mailboxes.json"
+BRIEF_RATE_LIMIT_DEFAULT="30"
+TELEGRAM_SESSION_PATH_DEFAULT="/data/telegram/hilovivo.session"
 
 SOURCE="none"
 BOT_TOKEN=""
@@ -191,6 +205,17 @@ PRESERVE_JARVIS_TELEGRAM_CHAT_ID="$(read_runtime_env_flag JARVIS_TELEGRAM_CHAT_I
 PRESERVE_TELEGRAM_ALLOWED_CHAT_IDS="$(read_runtime_env_flag TELEGRAM_ALLOWED_CHAT_IDS)"
 PRESERVE_TELEGRAM_ALLOWED_USER_IDS="$(read_runtime_env_flag TELEGRAM_ALLOWED_USER_IDS)"
 PRESERVE_TELEGRAM_AUTH_USER_ID="$(read_runtime_env_flag TELEGRAM_AUTH_USER_ID)"
+# Preserve brief + Telethon user-API keys before overwrite (never print values).
+PRESERVE_BRIEF_API_KEY="$(read_runtime_env_flag BRIEF_API_KEY)"
+PRESERVE_BRIEF_MAILBOXES_PATH="$(read_runtime_env_flag BRIEF_MAILBOXES_PATH)"
+PRESERVE_BRIEF_RATE_LIMIT_PER_MINUTE="$(read_runtime_env_flag BRIEF_RATE_LIMIT_PER_MINUTE)"
+PRESERVE_BRIEF_ICS_URLS="$(read_runtime_env_flag BRIEF_ICS_URLS)"
+PRESERVE_BRIEF_GRAPH_TENANT_ID="$(read_runtime_env_flag BRIEF_GRAPH_TENANT_ID)"
+PRESERVE_BRIEF_GRAPH_CLIENT_ID="$(read_runtime_env_flag BRIEF_GRAPH_CLIENT_ID)"
+PRESERVE_BRIEF_GRAPH_CLIENT_SECRET="$(read_runtime_env_flag BRIEF_GRAPH_CLIENT_SECRET)"
+PRESERVE_TELEGRAM_API_ID="$(read_runtime_env_flag TELEGRAM_API_ID)"
+PRESERVE_TELEGRAM_API_HASH="$(read_runtime_env_flag TELEGRAM_API_HASH)"
+PRESERVE_TELEGRAM_SESSION_PATH="$(read_runtime_env_flag TELEGRAM_SESSION_PATH)"
 EXCHANGE_API_KEY_VAL=""
 EXCHANGE_API_SECRET_VAL=""
 EXCHANGE_CREDS_SOURCE="none"
@@ -423,5 +448,180 @@ if [[ -n "$PRESERVE_JARVIS_PATCH_APPLY_ENABLED" || -n "$PRESERVE_JARVIS_PR_CREAT
   JARVIS_PHASE5_SOURCE=preserved
 fi
 
+# Brief API + Telethon user session: SSM > preserved runtime.env > .env.aws > safe defaults for paths.
+# Without BRIEF_API_KEY the backend returns brief_not_configured (nginx masks as upstream_unavailable).
+# TELEGRAM_API_ID + TELEGRAM_API_HASH are a pair (same rule as EXCHANGE_CUSTOM_*): never mix sources.
+BRIEF_API_KEY_VAL=""
+BRIEF_MAILBOXES_PATH_VAL=""
+BRIEF_RATE_LIMIT_VAL=""
+BRIEF_ICS_URLS_VAL=""
+BRIEF_GRAPH_TENANT_ID_VAL=""
+BRIEF_GRAPH_CLIENT_ID_VAL=""
+BRIEF_GRAPH_CLIENT_SECRET_VAL=""
+TELEGRAM_API_ID_VAL=""
+TELEGRAM_API_HASH_VAL=""
+TELEGRAM_SESSION_PATH_VAL=""
+BRIEF_SOURCE="none"
+BRIEF_GRAPH_SOURCE="none"
+TELEGRAM_USER_API_SOURCE="none"
+if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
+  BRIEF_API_KEY_VAL="$(fetch_ssm "$SSM_BRIEF_API_KEY" || true)"
+  BRIEF_MAILBOXES_PATH_VAL="$(fetch_ssm "$SSM_BRIEF_MAILBOXES_PATH" || true)"
+  BRIEF_RATE_LIMIT_VAL="$(fetch_ssm "$SSM_BRIEF_RATE_LIMIT" || true)"
+  BRIEF_ICS_URLS_VAL="$(fetch_ssm "$SSM_BRIEF_ICS_URLS" || true)"
+  _ssm_graph_tenant="$(fetch_ssm "$SSM_BRIEF_GRAPH_TENANT_ID" || true)"
+  _ssm_graph_client="$(fetch_ssm "$SSM_BRIEF_GRAPH_CLIENT_ID" || true)"
+  _ssm_graph_secret="$(fetch_ssm "$SSM_BRIEF_GRAPH_CLIENT_SECRET" || true)"
+  _ssm_tg_id="$(fetch_ssm "$SSM_TELEGRAM_API_ID" || true)"
+  _ssm_tg_hash="$(fetch_ssm "$SSM_TELEGRAM_API_HASH" || true)"
+  TELEGRAM_SESSION_PATH_VAL="$(fetch_ssm "$SSM_TELEGRAM_SESSION_PATH" || true)"
+  [[ -n "$BRIEF_API_KEY_VAL" ]] && BRIEF_SOURCE="ssm"
+  if [[ -n "$_ssm_graph_tenant" && -n "$_ssm_graph_client" && -n "$_ssm_graph_secret" ]]; then
+    BRIEF_GRAPH_TENANT_ID_VAL="$_ssm_graph_tenant"
+    BRIEF_GRAPH_CLIENT_ID_VAL="$_ssm_graph_client"
+    BRIEF_GRAPH_CLIENT_SECRET_VAL="$_ssm_graph_secret"
+    BRIEF_GRAPH_SOURCE="ssm"
+  fi
+  if [[ -n "$_ssm_tg_id" && -n "$_ssm_tg_hash" ]]; then
+    TELEGRAM_API_ID_VAL="$_ssm_tg_id"
+    TELEGRAM_API_HASH_VAL="$_ssm_tg_hash"
+    TELEGRAM_USER_API_SOURCE="ssm"
+  fi
+fi
+if [[ -z "$BRIEF_API_KEY_VAL" && -n "$PRESERVE_BRIEF_API_KEY" ]]; then
+  BRIEF_API_KEY_VAL="$PRESERVE_BRIEF_API_KEY"
+  BRIEF_SOURCE="preserved"
+fi
+if [[ -z "$BRIEF_MAILBOXES_PATH_VAL" && -n "$PRESERVE_BRIEF_MAILBOXES_PATH" ]]; then
+  BRIEF_MAILBOXES_PATH_VAL="$PRESERVE_BRIEF_MAILBOXES_PATH"
+fi
+if [[ -z "$BRIEF_RATE_LIMIT_VAL" && -n "$PRESERVE_BRIEF_RATE_LIMIT_PER_MINUTE" ]]; then
+  BRIEF_RATE_LIMIT_VAL="$PRESERVE_BRIEF_RATE_LIMIT_PER_MINUTE"
+fi
+if [[ -z "$BRIEF_ICS_URLS_VAL" && -n "$PRESERVE_BRIEF_ICS_URLS" ]]; then
+  BRIEF_ICS_URLS_VAL="$PRESERVE_BRIEF_ICS_URLS"
+fi
+if [[ -z "$BRIEF_GRAPH_TENANT_ID_VAL" || -z "$BRIEF_GRAPH_CLIENT_ID_VAL" || -z "$BRIEF_GRAPH_CLIENT_SECRET_VAL" ]]; then
+  BRIEF_GRAPH_TENANT_ID_VAL=""
+  BRIEF_GRAPH_CLIENT_ID_VAL=""
+  BRIEF_GRAPH_CLIENT_SECRET_VAL=""
+  BRIEF_GRAPH_SOURCE="none"
+  if [[ -n "$PRESERVE_BRIEF_GRAPH_TENANT_ID" && -n "$PRESERVE_BRIEF_GRAPH_CLIENT_ID" && -n "$PRESERVE_BRIEF_GRAPH_CLIENT_SECRET" ]]; then
+    BRIEF_GRAPH_TENANT_ID_VAL="$PRESERVE_BRIEF_GRAPH_TENANT_ID"
+    BRIEF_GRAPH_CLIENT_ID_VAL="$PRESERVE_BRIEF_GRAPH_CLIENT_ID"
+    BRIEF_GRAPH_CLIENT_SECRET_VAL="$PRESERVE_BRIEF_GRAPH_CLIENT_SECRET"
+    BRIEF_GRAPH_SOURCE="preserved"
+  fi
+fi
+if [[ -z "$TELEGRAM_API_ID_VAL" || -z "$TELEGRAM_API_HASH_VAL" ]]; then
+  TELEGRAM_API_ID_VAL=""
+  TELEGRAM_API_HASH_VAL=""
+  TELEGRAM_USER_API_SOURCE="none"
+  if [[ -n "$PRESERVE_TELEGRAM_API_ID" && -n "$PRESERVE_TELEGRAM_API_HASH" ]]; then
+    TELEGRAM_API_ID_VAL="$PRESERVE_TELEGRAM_API_ID"
+    TELEGRAM_API_HASH_VAL="$PRESERVE_TELEGRAM_API_HASH"
+    TELEGRAM_USER_API_SOURCE="preserved"
+  fi
+fi
+if [[ -z "$TELEGRAM_SESSION_PATH_VAL" && -n "$PRESERVE_TELEGRAM_SESSION_PATH" ]]; then
+  TELEGRAM_SESSION_PATH_VAL="$PRESERVE_TELEGRAM_SESSION_PATH"
+fi
+if [[ -f "$ROOT_DIR/.env.aws" ]]; then
+  if [[ -z "$BRIEF_API_KEY_VAL" ]]; then
+    _v="$(_read_env_aws_key BRIEF_API_KEY)"
+    if [[ -n "$_v" ]]; then
+      BRIEF_API_KEY_VAL="$_v"
+      BRIEF_SOURCE="env.aws"
+    fi
+  fi
+  if [[ -z "$BRIEF_MAILBOXES_PATH_VAL" ]]; then
+    _v="$(_read_env_aws_key BRIEF_MAILBOXES_PATH)"
+    [[ -n "$_v" ]] && BRIEF_MAILBOXES_PATH_VAL="$_v"
+  fi
+  if [[ -z "$BRIEF_RATE_LIMIT_VAL" ]]; then
+    _v="$(_read_env_aws_key BRIEF_RATE_LIMIT_PER_MINUTE)"
+    [[ -n "$_v" ]] && BRIEF_RATE_LIMIT_VAL="$_v"
+  fi
+  if [[ -z "$BRIEF_ICS_URLS_VAL" ]]; then
+    _v="$(_read_env_aws_key BRIEF_ICS_URLS)"
+    [[ -n "$_v" ]] && BRIEF_ICS_URLS_VAL="$_v"
+  fi
+  if [[ -z "$BRIEF_GRAPH_TENANT_ID_VAL" || -z "$BRIEF_GRAPH_CLIENT_ID_VAL" || -z "$BRIEF_GRAPH_CLIENT_SECRET_VAL" ]]; then
+    _env_g_tenant="$(_read_env_aws_key BRIEF_GRAPH_TENANT_ID)"
+    _env_g_client="$(_read_env_aws_key BRIEF_GRAPH_CLIENT_ID)"
+    _env_g_secret="$(_read_env_aws_key BRIEF_GRAPH_CLIENT_SECRET)"
+    if [[ -n "$_env_g_tenant" && -n "$_env_g_client" && -n "$_env_g_secret" ]]; then
+      BRIEF_GRAPH_TENANT_ID_VAL="$_env_g_tenant"
+      BRIEF_GRAPH_CLIENT_ID_VAL="$_env_g_client"
+      BRIEF_GRAPH_CLIENT_SECRET_VAL="$_env_g_secret"
+      BRIEF_GRAPH_SOURCE="env.aws"
+    else
+      BRIEF_GRAPH_TENANT_ID_VAL=""
+      BRIEF_GRAPH_CLIENT_ID_VAL=""
+      BRIEF_GRAPH_CLIENT_SECRET_VAL=""
+      BRIEF_GRAPH_SOURCE="none"
+    fi
+  fi
+  if [[ -z "$TELEGRAM_API_ID_VAL" || -z "$TELEGRAM_API_HASH_VAL" ]]; then
+    _env_tg_id="$(_read_env_aws_key TELEGRAM_API_ID)"
+    _env_tg_hash="$(_read_env_aws_key TELEGRAM_API_HASH)"
+    if [[ -n "$_env_tg_id" && -n "$_env_tg_hash" ]]; then
+      TELEGRAM_API_ID_VAL="$_env_tg_id"
+      TELEGRAM_API_HASH_VAL="$_env_tg_hash"
+      TELEGRAM_USER_API_SOURCE="env.aws"
+    else
+      TELEGRAM_API_ID_VAL=""
+      TELEGRAM_API_HASH_VAL=""
+      TELEGRAM_USER_API_SOURCE="none"
+    fi
+  fi
+  if [[ -z "$TELEGRAM_SESSION_PATH_VAL" ]]; then
+    _v="$(_read_env_aws_key TELEGRAM_SESSION_PATH)"
+    [[ -n "$_v" ]] && TELEGRAM_SESSION_PATH_VAL="$_v"
+  fi
+fi
+[[ -z "$BRIEF_MAILBOXES_PATH_VAL" ]] && BRIEF_MAILBOXES_PATH_VAL="$BRIEF_MAILBOXES_PATH_DEFAULT"
+[[ -z "$BRIEF_RATE_LIMIT_VAL" ]] && BRIEF_RATE_LIMIT_VAL="$BRIEF_RATE_LIMIT_DEFAULT"
+[[ -z "$TELEGRAM_SESSION_PATH_VAL" ]] && TELEGRAM_SESSION_PATH_VAL="$TELEGRAM_SESSION_PATH_DEFAULT"
+
+for _brief_key in \
+  BRIEF_API_KEY \
+  BRIEF_MAILBOXES_PATH \
+  BRIEF_RATE_LIMIT_PER_MINUTE \
+  BRIEF_ICS_URLS \
+  BRIEF_GRAPH_TENANT_ID \
+  BRIEF_GRAPH_CLIENT_ID \
+  BRIEF_GRAPH_CLIENT_SECRET \
+  TELEGRAM_API_ID \
+  TELEGRAM_API_HASH \
+  TELEGRAM_SESSION_PATH; do
+  grep -q "^${_brief_key}=" "$RUNTIME_ENV" 2>/dev/null && sed -i "/^${_brief_key}=/d" "$RUNTIME_ENV"
+done
+[[ -n "$BRIEF_API_KEY_VAL" ]] && printf "BRIEF_API_KEY=%s\n" "$BRIEF_API_KEY_VAL" >> "$RUNTIME_ENV"
+printf "BRIEF_MAILBOXES_PATH=%s\n" "$BRIEF_MAILBOXES_PATH_VAL" >> "$RUNTIME_ENV"
+printf "BRIEF_RATE_LIMIT_PER_MINUTE=%s\n" "$BRIEF_RATE_LIMIT_VAL" >> "$RUNTIME_ENV"
+[[ -n "$BRIEF_ICS_URLS_VAL" ]] && printf "BRIEF_ICS_URLS=%s\n" "$BRIEF_ICS_URLS_VAL" >> "$RUNTIME_ENV"
+if [[ -n "$BRIEF_GRAPH_TENANT_ID_VAL" && -n "$BRIEF_GRAPH_CLIENT_ID_VAL" && -n "$BRIEF_GRAPH_CLIENT_SECRET_VAL" ]]; then
+  printf "BRIEF_GRAPH_TENANT_ID=%s\n" "$BRIEF_GRAPH_TENANT_ID_VAL" >> "$RUNTIME_ENV"
+  printf "BRIEF_GRAPH_CLIENT_ID=%s\n" "$BRIEF_GRAPH_CLIENT_ID_VAL" >> "$RUNTIME_ENV"
+  printf "BRIEF_GRAPH_CLIENT_SECRET=%s\n" "$BRIEF_GRAPH_CLIENT_SECRET_VAL" >> "$RUNTIME_ENV"
+fi
+# Write Telethon pair together only (never one without the other).
+if [[ -n "$TELEGRAM_API_ID_VAL" && -n "$TELEGRAM_API_HASH_VAL" ]]; then
+  printf "TELEGRAM_API_ID=%s\n" "$TELEGRAM_API_ID_VAL" >> "$RUNTIME_ENV"
+  printf "TELEGRAM_API_HASH=%s\n" "$TELEGRAM_API_HASH_VAL" >> "$RUNTIME_ENV"
+fi
+printf "TELEGRAM_SESSION_PATH=%s\n" "$TELEGRAM_SESSION_PATH_VAL" >> "$RUNTIME_ENV"
+
 echo "Rendered (source=$SOURCE)"
-echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ "$HAS_GITHUB_PAT" == "YES" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL GITHUB_AUTH_MODE=$GITHUB_AUTH_MODE ALLOW_LEGACY_GITHUB_PAT=$([[ "$GITHUB_AUTH_MODE" == "legacy_transition" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM=$([[ -n "$EXCHANGE_API_KEY_VAL" && -n "$EXCHANGE_API_SECRET_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM_SOURCE=$EXCHANGE_CREDS_SOURCE JARVIS_4B_PROPOSALS_ENABLED=$JARVIS_4B_PROPOSALS_ENABLED JARVIS_4B_SOURCE=$JARVIS_4B_SOURCE JARVIS_PHASE5_SOURCE=$JARVIS_PHASE5_SOURCE JARVIS_PATCH_APPLY_ENABLED=$JARVIS_PATCH_APPLY_ENABLED JARVIS_PR_CREATION_ENABLED=$JARVIS_PR_CREATION_ENABLED JARVIS_GITHUB_WRITE_ENABLED=$JARVIS_GITHUB_WRITE_ENABLED JARVIS_REQUIRE_DOUBLE_APPROVAL=$JARVIS_REQUIRE_DOUBLE_APPROVAL"
+echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ "$HAS_GITHUB_PAT" == "YES" ]] && echo YES || echo NO) GITHUB_APP=$GITHUB_APP_ALL GITHUB_AUTH_MODE=$GITHUB_AUTH_MODE ALLOW_LEGACY_GITHUB_PAT=$([[ "$GITHUB_AUTH_MODE" == "legacy_transition" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM=$([[ -n "$EXCHANGE_API_KEY_VAL" && -n "$EXCHANGE_API_SECRET_VAL" ]] && echo YES || echo NO) EXCHANGE_CUSTOM_SOURCE=$EXCHANGE_CREDS_SOURCE JARVIS_4B_PROPOSALS_ENABLED=$JARVIS_4B_PROPOSALS_ENABLED JARVIS_4B_SOURCE=$JARVIS_4B_SOURCE JARVIS_PHASE5_SOURCE=$JARVIS_PHASE5_SOURCE JARVIS_PATCH_APPLY_ENABLED=$JARVIS_PATCH_APPLY_ENABLED JARVIS_PR_CREATION_ENABLED=$JARVIS_PR_CREATION_ENABLED JARVIS_GITHUB_WRITE_ENABLED=$JARVIS_GITHUB_WRITE_ENABLED JARVIS_REQUIRE_DOUBLE_APPROVAL=$JARVIS_REQUIRE_DOUBLE_APPROVAL BRIEF_API_KEY=$([[ -n "$BRIEF_API_KEY_VAL" ]] && echo YES || echo NO) BRIEF_SOURCE=$BRIEF_SOURCE BRIEF_GRAPH=$([[ -n "$BRIEF_GRAPH_TENANT_ID_VAL" && -n "$BRIEF_GRAPH_CLIENT_ID_VAL" && -n "$BRIEF_GRAPH_CLIENT_SECRET_VAL" ]] && echo YES || echo NO) BRIEF_GRAPH_SOURCE=$BRIEF_GRAPH_SOURCE TELEGRAM_USER_API=$([[ -n "$TELEGRAM_API_ID_VAL" && -n "$TELEGRAM_API_HASH_VAL" ]] && echo YES || echo NO) TELEGRAM_USER_API_SOURCE=$TELEGRAM_USER_API_SOURCE"
+
+# umask 077 writes 600 ubuntu:ubuntu; backend appuser (uid 10001) cannot read the
+# bind-mounted file, so pydantic Settings()/Telegram refresh raises PermissionError.
+# Match entrypoint: root:appuser 640 when docker is available; else chmod 640 for host.
+chmod 640 "$RUNTIME_ENV" 2>/dev/null || true
+if command -v docker >/dev/null 2>&1; then
+  docker exec -u root automated-trading-platform-backend-aws-1 \
+    sh -c 'chown root:appuser /app/secrets/runtime.env && chmod 640 /app/secrets/runtime.env' \
+    >/dev/null 2>&1 || true
+fi

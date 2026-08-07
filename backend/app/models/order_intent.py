@@ -35,10 +35,11 @@ class OrderIntent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
-    # Index for efficient queries
+    # Index for efficient queries.
+    # Do NOT redeclare Index('ix_order_intents_signal_id') — signal_id already has
+    # index=True, and a duplicate name aborts Base.metadata.create_all on a fresh DB.
     __table_args__ = (
         UniqueConstraint('idempotency_key', name='uq_order_intent_idempotency_key'),
-        Index('ix_order_intents_signal_id', 'signal_id'),
         Index('ix_order_intents_symbol_side', 'symbol', 'side'),
     )
     

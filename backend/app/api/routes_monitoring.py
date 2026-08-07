@@ -1794,6 +1794,8 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
     if side is not None:
         side = str(side).upper()
     entry_price = _safe_float(pos.get("entry_price"))
+    current_price = _safe_float(pos.get("current_price") or pos.get("mark_price"))
+    uncovered_qty = _safe_float(pos.get("uncovered_qty"))
     return {
         "symbol": symbol,
         "currency": currency,
@@ -1806,6 +1808,8 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
         "quantity": quantity,
         "side": side,
         "entry_price": entry_price,
+        "current_price": current_price,
+        "uncovered_qty": uncovered_qty,
     }
 
 
@@ -2107,6 +2111,58 @@ async def get_latest_sl_tp_check_report(db: Session = Depends(get_db)):
         },
         headers=_NO_CACHE_HEADERS,
     )
+
+
+@router.post("/monitoring/reports/sl-tp-check/refresh")
+async def refresh_sl_tp_check_report(db: Session = Depends(get_db)):
+    """
+    Re-run the SL/TP scanner and replace the in-memory report (no Telegram reminder).
+
+    Used by the dashboard after Create SL/TP so the missing-protection table reflects
+    live exchange/DB coverage instead of the stale last workflow snapshot.
+    """
+    from app.services.sl_tp_checker import sl_tp_checker_service
+
+    try:
+        check_result = await asyncio.to_thread(
+            sl_tp_checker_service.check_positions_for_sl_tp, db
+        )
+        check_error = (
+            (check_result.get("error") if isinstance(check_result, dict) else None) or None
+        )
+        report_path = store_sl_tp_check_report_from_result(
+            check_result if isinstance(check_result, dict) else {},
+            reminder_sent=False,
+            db=db,
+            error=check_error if isinstance(check_error, str) else None,
+        )
+        record_workflow_execution(
+            "sl_tp_check",
+            "error" if check_error else "success",
+            report_path,
+            str(check_error) if check_error else None,
+        )
+        if not _sl_tp_check_report_cache:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": "Refresh completed but report cache is empty",
+                },
+                status_code=500,
+                headers=_NO_CACHE_HEADERS,
+            )
+        return JSONResponse(
+            {
+                "status": "success",
+                "report": _sl_tp_check_report_cache.get("report"),
+                "stored_at": _sl_tp_check_report_cache.get("stored_at"),
+                "refreshed": True,
+            },
+            headers=_NO_CACHE_HEADERS,
+        )
+    except Exception as e:
+        log.error("SL/TP check report refresh failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"SL/TP check refresh failed: {e}")
 
 
 @router.get("/monitoring/reports/watchlist-consistency/latest")

@@ -57,13 +57,15 @@
   {
     "id": "bumibeans",
     "label": "Bumi Beans",
+    "provider": "graph",
     "host": "",
     "port": 993,
     "ssl": true,
-    "user": "",
+    "user": "carlos.cruz@bumibeans.com",
     "password": "",
     "folder": "INBOX",
-    "priority": "baja"
+    "priority": "alta",
+    "enabled": true
   },
   {
     "id": "hotmail-fw",

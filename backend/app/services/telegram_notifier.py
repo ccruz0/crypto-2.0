@@ -31,7 +31,7 @@ from datetime import datetime
 from enum import Enum
 from os import getpid
 import pytz
-from app.core.config import Settings
+from app.core.config import Settings, load_settings
 from app.core.runtime import is_aws_runtime, get_runtime_origin
 from app.core.environment import getRuntimeEnv
 from app.database import SessionLocal
@@ -98,7 +98,7 @@ def get_app_env() -> AppEnv:
         - Set APP_ENV=aws on AWS deployment (alerts go to channel configured in TELEGRAM_CHAT_ID)
         - Set APP_ENV=local for local development (alerts go to channel configured in TELEGRAM_CHAT_ID)
     """
-    settings = Settings()
+    settings = load_settings()
     env_override = os.getenv("APP_ENV")
     app_env = (env_override or settings.APP_ENV or "").strip().lower()
     if app_env == "aws":
@@ -311,7 +311,8 @@ class TelegramNotifier:
         frequently (per monitoring cycle, per send attempt).
         """
         runtime_env = getRuntimeEnv()  # "local" or "aws"
-        settings = Settings()
+        # load_settings() skips unreadable secrets/runtime.env (umask 077 host render).
+        settings = load_settings()
 
         def _is_truthy(value: Optional[str]) -> bool:
             raw = (value or "").strip().lower()
@@ -1046,6 +1047,23 @@ class TelegramNotifier:
             system_attributed: True when ATP placed the order (OrderIntent / TradeSignal /
                 parent) even if trade_signal_id is not yet linked — do not label "Manual".
         """
+        # Coerce Decimals from SQLAlchemy Numeric columns — float*Decimal raises TypeError
+        # and silently drops ORDER EXECUTED Telegram (seen 2026-08-06 on TP fills).
+        def _as_float(value: Any, default: float = 0.0) -> float:
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        price = _as_float(price)
+        quantity = _as_float(quantity)
+        total_usd = _as_float(total_usd)
+        entry_price = _as_float(entry_price) if entry_price is not None else None
+        if entry_price is not None and entry_price <= 0:
+            entry_price = None
+
         side_emoji = "🟢" if side == "BUY" else "🔴"
         order_id_text = f"\n🆔 Order ID: {order_id}" if order_id else ""
         entry_alert_phrase = self._entry_alert_phrase(side)
@@ -1082,13 +1100,16 @@ class TelegramNotifier:
             # Truly unlinked. Do not assert "Manual" — sync can also miss bot links.
             origin_text = "\n🎯 Origen: ❔ Sin señal vinculada"
         
-        # Build order type text - include role (TP/SL) if available
-        if order_role:
-            role_emoji = "🚀" if order_role == "TAKE_PROFIT" else "🛑" if order_role == "STOP_LOSS" else ""
-            role_text = "Take Profit" if order_role == "TAKE_PROFIT" else "Stop Loss" if order_role == "STOP_LOSS" else order_role
-            order_type_text = f"\n📋 Type: {order_type or 'LIMIT'} ({role_emoji} {role_text})"
-        else:
-            order_type_text = f"\n📋 Type: {order_type}" if order_type else "\n📋 Type: LIMIT"
+        # Type line: prefer Stop Loss / Take Profit over exchange MARKET/LIMIT.
+        # Crypto.com often reports protection fills as MARKET (spot child / trigger
+        # conversion); order_role or trigger order_type is the truth for labeling.
+        from app.utils.execution_origin import format_executed_fill_type_label
+
+        type_label = format_executed_fill_type_label(
+            order_type=order_type,
+            order_role=order_role,
+        )
+        order_type_text = f"\n📋 Type: {type_label}"
         
         # Add open orders count information (entry BUY orders only; SL/TP excluded by caller)
         open_orders_text = ""

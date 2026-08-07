@@ -854,6 +854,27 @@ class CreateProtectionSmartRequest(BaseModel):
     quantity: Optional[float] = None
 
 
+def _existing_protection_covers_request(
+    existing_qty: float, requested_qty: float, *, tolerance: float = 0.02
+) -> bool:
+    """True when an active parent leg is large enough for the requested create size.
+
+    Presence-only checks miss multi-lot wallets: a dust TP on the linked entry still
+    leaves uncovered_qty on the SL/TP Check report. Align with tp_sl_order_creator
+    gap-fill (existing >= requested * 0.98).
+    """
+    try:
+        existing = float(existing_qty or 0.0)
+        requested = float(requested_qty or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if existing <= 0:
+        return False
+    if requested <= 0:
+        return True
+    return existing + 1e-9 >= requested * (1.0 - tolerance)
+
+
 def _notify_create_protection_smart_telegram(
     db: Session,
     *,
@@ -962,7 +983,10 @@ def create_protection_smart(
     from app.services.sl_tp_price_adjust import compute_strategy_sl_tp_prices, resolve_watchlist_percentages
     from app.services.sl_tp_protection import get_active_protection_order
     from app.utils.live_trading import get_live_trading_status
-    from app.utils.sl_trigger_guard import fetch_last_price
+    from app.utils.sl_trigger_guard import (
+        fetch_ticker_prices,
+        reference_price_for_trigger,
+    )
 
     prev_live = False
     live_toggled = False
@@ -996,10 +1020,27 @@ def create_protection_smart(
                 [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
             ),
         ).all()
+        sl_qty = sum(
+            float(o.quantity or 0)
+            for o in open_prot
+            if o.order_role == "STOP_LOSS"
+        )
+        tp_qty = sum(
+            float(o.quantity or 0)
+            for o in open_prot
+            if o.order_role == "TAKE_PROFIT"
+        )
         has_sl = any(o.order_role == "STOP_LOSS" for o in open_prot)
         has_tp = any(o.order_role == "TAKE_PROFIT" for o in open_prot)
-        want_sl = bool(request.create_sl) and not has_sl
-        want_tp = bool(request.create_tp) and not has_tp
+        # Presence alone is not enough — dust legs on this parent still leave the
+        # wallet uncovered for the scanner (qty coverage). Request qty is the
+        # explicit uncovered gap from the report when provided.
+        want_sl = bool(request.create_sl) and not (
+            has_sl and _existing_protection_covers_request(sl_qty, qty)
+        )
+        want_tp = bool(request.create_tp) and not (
+            has_tp and _existing_protection_covers_request(tp_qty, qty)
+        )
         if not want_sl and not want_tp:
             return {
                 "ok": True,
@@ -1018,10 +1059,14 @@ def create_protection_smart(
                     break
         sl_pct, tp_pct, mode = resolve_watchlist_percentages(wl)
 
-        # Use exchange v1 get-tickers (same as sl_trigger_guard). Legacy v2 get-ticker 404s.
+        # Live last for strategy clamp; create_take_profit_order also applies a
+        # conservative min(last,bid) guard before place.
         current_price = None
         try:
-            current_price = fetch_last_price(symbol)
+            ticker = fetch_ticker_prices(symbol)
+            current_price = (ticker or {}).get("last") or reference_price_for_trigger(
+                side, is_tp=True, ticker=ticker
+            )
         except Exception as ticker_err:
             logger.warning("create_protection_smart ticker failed: %s", ticker_err)
 

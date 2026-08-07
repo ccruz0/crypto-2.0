@@ -29,6 +29,9 @@ ALLOWLISTED_DOMAINS: Set[str] = {
     # Our own domains (if any)
     "dashboard.hilovivo.com",
     "hilovivo.com",
+    # Microsoft Graph (brief M365 / Bumi Beans mail)
+    "login.microsoftonline.com",
+    "graph.microsoft.com",
 }
 
 # IP addresses that are explicitly allowed (metadata services, etc.)

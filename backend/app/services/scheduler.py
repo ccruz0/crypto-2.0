@@ -45,7 +45,11 @@ def _classify_hourly_sl_tp_create_result(
     if sl_tp_creation_result_ok(create_result):
         return "created"
     status = str((create_result or {}).get("status") or "").strip().lower()
-    if "wallet_side_mismatch" in status or status == "tp_rejected_terminal":
+    if (
+        "wallet_side_mismatch" in status
+        or status == "tp_rejected_terminal"
+        or status == "flatten_close"
+    ):
         return "expected_skip"
     sl_err = str(((create_result or {}).get("sl_result") or {}).get("error") or "").lower()
     tp_err = str(((create_result or {}).get("tp_result") or {}).get("error") or "").lower()
@@ -459,12 +463,20 @@ class TradingScheduler:
                 # Check orders filled in last 3 hours
                 three_hours_ago = now_utc - timedelta(hours=3)
                 
-                # Find FILLED orders from last 3 hours that don't have SL/TP
+                # Find FILLED entry orders from last 3 hours that don't have SL/TP.
+                # Exclude protection legs and emergency flatten closes (exits, not entries).
+                from sqlalchemy import or_
+                from app.utils.filled_entry_order import FLATTEN_CLOSE_ROLE, NON_ENTRY_ROLES
+
                 filled_orders = db.query(ExchangeOrder).filter(
                     ExchangeOrder.status == OrderStatusEnum.FILLED,
                     ExchangeOrder.exchange_update_time >= three_hours_ago,
                     # Exclude SL/TP orders themselves
-                    ~ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT'])
+                    ~ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT']),
+                    or_(
+                        ExchangeOrder.order_role.is_(None),
+                        ~ExchangeOrder.order_role.in_(list(NON_ENTRY_ROLES)),
+                    ),
                 ).all()
                 
                 ensured_symbols = {
@@ -478,6 +490,10 @@ class TradingScheduler:
                 orders_created = 0
                 
                 for order in filled_orders:
+                    # Defense in depth: never backfill flatten/close fills.
+                    if (order.order_role or "").upper() == FLATTEN_CLOSE_ROLE:
+                        continue
+
                     # Check if SL/TP exist
                     sl_count = db.query(ExchangeOrder).filter(
                         ExchangeOrder.parent_order_id == order.exchange_order_id,

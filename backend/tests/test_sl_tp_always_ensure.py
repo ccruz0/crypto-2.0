@@ -352,6 +352,48 @@ class TestEnsureMissingProtection(unittest.TestCase):
             any(c.get("source") == "multilot_tp_heal" for c in result["created"])
         )
 
+    @patch.object(SLTPCheckerService, "_ensure_multilot_tp_heal")
+    @patch.object(SLTPCheckerService, "_create_protection_order")
+    @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+    def test_ensure_creates_missing_tp_for_short(
+        self, mock_check, mock_create, mock_multilot
+    ):
+        """SHORT wallet with SL only: ensure must request create_tp (not create_sl)."""
+        svc = SLTPCheckerService()
+        mock_check.return_value = {
+            "positions_missing_sl_tp": [
+                {
+                    "symbol": "DOGE_USD",
+                    "currency": "DOGE",
+                    "balance": -845.19,
+                    "has_sl": True,
+                    "has_tp": False,
+                    "sl_price": None,
+                    "tp_price": None,
+                    "skip_reminder": False,
+                }
+            ],
+            "total_positions": 1,
+            "oco_issues": {},
+            "checked_at": None,
+        }
+        mock_create.return_value = {
+            "success": True,
+            "sl_order_id": None,
+            "tp_order_id": "tp-short-1",
+        }
+
+        result = svc.ensure_missing_protection(MagicMock())
+
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        self.assertFalse(kwargs["create_sl"])
+        self.assertTrue(kwargs["create_tp"])
+        self.assertTrue(kwargs["force"])
+        mock_multilot.assert_called_once()
+        self.assertEqual(len(result["created"]), 1)
+        self.assertEqual(result["still_missing"], [])
+
 
 class TestHalfProtectedMultilotHeal(unittest.TestCase):
     def test_iter_half_protected_keeps_sl_only_parents(self):
@@ -582,6 +624,94 @@ class TestCheckPositionsUsesUnifiedOrders(unittest.TestCase):
         self.assertEqual(result["total_positions"], 0)
 
     @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=0.56)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_short_wallet_missing_tp_is_flagged(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        # APT SHORT: negative balance must enter ensure (not skip as "<= 0").
+        # SL covers abs(wallet); TP missing → positions_missing_sl_tp.
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "APT", "balance": "-17.661459559529817"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [
+                {
+                    "instrument_name": "APT_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "17.65",
+                    "order_id": "sl-apt-short-1",
+                    "side": "BUY",
+                }
+            ],
+        }
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        missing = result["positions_missing_sl_tp"]
+        self.assertEqual(result["total_positions"], 1)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("APT", missing[0]["symbol"])
+        self.assertTrue(missing[0]["has_sl"])
+        self.assertFalse(missing[0]["has_tp"])
+        self.assertLess(float(missing[0]["balance"]), 0)
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=0.07)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_short_wallet_fully_protected_not_flagged(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "DOGE", "quantity": "-140"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [
+                {
+                    "instrument_name": "DOGE_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "140",
+                    "order_id": "sl-doge-1",
+                    "side": "BUY",
+                },
+                {
+                    "instrument_name": "DOGE_USD",
+                    "order_type": "TAKE_PROFIT_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "140",
+                    "order_id": "tp-doge-1",
+                    "side": "BUY",
+                },
+            ],
+        }
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        self.assertEqual(result["total_positions"], 1)
+        doge_missing = [
+            m for m in result["positions_missing_sl_tp"] if "DOGE" in str(m.get("symbol", ""))
+        ]
+        self.assertEqual(doge_missing, [])
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
     @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=95.0)
     @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
     @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
@@ -630,6 +760,242 @@ class TestCheckPositionsUsesUnifiedOrders(unittest.TestCase):
         missing = result["positions_missing_sl_tp"]
         aave_missing = [m for m in missing if "AAVE" in str(m.get("symbol", ""))]
         self.assertEqual(aave_missing, [])
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=2000.0)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_includes_short_positions_missing_protection(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        """Negative wallet balances (margin shorts) must appear in the scan."""
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [
+                {"currency": "ETH", "balance": "-0.0558"},
+                {"currency": "BTC", "balance": "0.01"},
+            ]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            # Residual long-side (SELL) ghost legs must NOT cover the short.
+            "all_raw_orders": [
+                {
+                    "instrument_name": "ETH_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "0.0558",
+                    "order_id": "ghost-sl",
+                    "side": "SELL",
+                },
+                {
+                    "instrument_name": "ETH_USD",
+                    "order_type": "TAKE_PROFIT_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "0.0558",
+                    "order_id": "ghost-tp",
+                    "side": "SELL",
+                },
+                {
+                    "instrument_name": "BTC_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "0.01",
+                    "order_id": "btc-sl",
+                    "side": "SELL",
+                },
+                {
+                    "instrument_name": "BTC_USD",
+                    "order_type": "TAKE_PROFIT_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "0.01",
+                    "order_id": "btc-tp",
+                    "side": "SELL",
+                },
+            ],
+        }
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        self.assertGreaterEqual(result["total_positions"], 2)
+        missing = result["positions_missing_sl_tp"]
+        eth_missing = [m for m in missing if str(m.get("symbol", "")).startswith("ETH")]
+        self.assertEqual(len(eth_missing), 1)
+        self.assertEqual(eth_missing[0]["side"], "SELL")
+        self.assertFalse(eth_missing[0]["has_sl"])
+        self.assertFalse(eth_missing[0]["has_tp"])
+        self.assertAlmostEqual(eth_missing[0]["uncovered_qty"], 0.0558, places=6)
+        btc_missing = [m for m in missing if str(m.get("symbol", "")).startswith("BTC")]
+        self.assertEqual(btc_missing, [])
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=2000.0)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_short_with_buy_protection_not_flagged(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "ETH", "balance": "-0.05"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [
+                {
+                    "instrument_name": "ETH_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "0.05",
+                    "order_id": "sl-buy",
+                    "side": "BUY",
+                },
+                {
+                    "instrument_name": "ETH_USD",
+                    "order_type": "TAKE_PROFIT_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "0.05",
+                    "order_id": "tp-buy",
+                    "side": "BUY",
+                },
+            ],
+        }
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        self.assertEqual(result["total_positions"], 1)
+        self.assertEqual(result["positions_missing_sl_tp"], [])
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=2000.0)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch(
+        "app.services.sl_tp_checker._protection_orders_match_wallet",
+        side_effect=RuntimeError("force db fallback"),
+    )
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_db_fallback_ignores_wrong_side_ghosts(
+        self, mock_trade, mock_fetch, _mock_match, _mock_oco, _mock_mark, _mock_entry
+    ):
+        """DB fallback must not treat residual SELL legs as short coverage."""
+        from app.models.watchlist import WatchlistItem
+
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "ETH", "balance": "-0.05"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [],
+        }
+
+        ghost_sl = MagicMock()
+        ghost_sl.side = OrderSideEnum.SELL
+        ghost_sl.quantity = 0.05
+        ghost_tp = MagicMock()
+        ghost_tp.side = OrderSideEnum.SELL
+        ghost_tp.quantity = 0.05
+
+        def _query(model):
+            q = MagicMock()
+            if model is WatchlistItem:
+                q.filter.return_value.first.return_value = None
+                return q
+            if model is ExchangeOrder:
+                q.filter.return_value.all.return_value = [ghost_sl, ghost_tp]
+                return q
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = _query
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        missing = result["positions_missing_sl_tp"]
+        eth_missing = [m for m in missing if str(m.get("symbol", "")).startswith("ETH")]
+        self.assertEqual(len(eth_missing), 1)
+        self.assertEqual(eth_missing[0]["side"], "SELL")
+        self.assertFalse(eth_missing[0]["has_sl"])
+        self.assertFalse(eth_missing[0]["has_tp"])
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=2000.0)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch(
+        "app.services.sl_tp_checker._protection_orders_match_wallet",
+        side_effect=RuntimeError("force db fallback"),
+    )
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_db_fallback_requires_qty_coverage(
+        self, mock_trade, mock_fetch, _mock_match, _mock_oco, _mock_mark, _mock_entry
+    ):
+        """Partial same-side legs must not mark the wallet as fully covered."""
+        from app.models.watchlist import WatchlistItem
+
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "ETH", "balance": "-0.05"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [],
+        }
+
+        partial_sl = MagicMock()
+        partial_sl.side = OrderSideEnum.BUY
+        partial_sl.quantity = 0.01
+        partial_sl.status = OrderStatusEnum.ACTIVE
+        partial_tp = MagicMock()
+        partial_tp.side = OrderSideEnum.BUY
+        partial_tp.quantity = 0.01
+        partial_tp.status = OrderStatusEnum.ACTIVE
+
+        ex_calls = {"n": 0}
+
+        def _query(model):
+            q = MagicMock()
+            if model is WatchlistItem:
+                q.filter.return_value.first.return_value = None
+                return q
+            if model is ExchangeOrder:
+                # Fallback issues STOP_* then TAKE_PROFIT_* queries.
+                ex_calls["n"] += 1
+                q.filter.return_value.all.return_value = (
+                    [partial_sl] if ex_calls["n"] == 1 else [partial_tp]
+                )
+                return q
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = _query
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        eth_missing = [
+            m
+            for m in result["positions_missing_sl_tp"]
+            if str(m.get("symbol", "")).startswith("ETH")
+        ]
+        self.assertEqual(len(eth_missing), 1)
+        self.assertFalse(eth_missing[0]["has_sl"])
+        self.assertFalse(eth_missing[0]["has_tp"])
+        self.assertAlmostEqual(eth_missing[0]["uncovered_qty"], 0.04, places=6)
 
 
 if __name__ == "__main__":

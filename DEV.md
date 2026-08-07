@@ -27,10 +27,9 @@ nano .env.local  # or use your preferred editor
 - Set `RUN_TELEGRAM=false` to prevent accidental Telegram alerts during development
 - Set `LIVE_TRADING=false` to prevent accidental trades
 - The default database password is `traderpass` (change if needed)
-- Frontend port is configured via `FRONTEND_PORT` in `.env.local` (defaults to 3001)
-  - The frontend dev script reads `FRONTEND_PORT` from your environment
-  - If not set, it defaults to 3001
-  - To override: `export FRONTEND_PORT=3001` before running `npm run dev`
+- Frontend port is **3000** (single source of truth: `FRONTEND_PORT` in `.env.local` /
+  `frontend/.env.local`, docker-compose publish `3000:3000`, and `start-next-dev.mjs` default)
+  - Override only if needed: `export FRONTEND_PORT=3000` before `npm run dev`
 - **Optional**: If you need additional secrets (e.g., API keys for testing), create `.env.secrets.local` manually. It's git-ignored and will be auto-loaded by docker-compose if present.
 
 ### 2. Start Services
@@ -38,21 +37,27 @@ nano .env.local  # or use your preferred editor
 ```bash
 cd /Users/carloscruz/automated-trading-platform
 
-# Start all services (database, backend, frontend)
-docker compose --profile local up -d
+# Recommended local stack (db + hot-reload backend-dev + frontend).
+# Do NOT `up` the entire local profile blindly: both `backend` and `backend-dev`
+# publish :8002 and will conflict. Prefer explicit services:
+docker compose --profile local up -d db backend-dev frontend
+
+# Or backend only via Makefile:
+#   cd backend && make dev-up
+# then host frontend: cd frontend && npm run dev
 
 # Or start with logs visible (recommended first time)
-docker compose --profile local up
+docker compose --profile local up db backend-dev frontend
 ```
 
 **What happens:**
-- PostgreSQL database starts on port 5432
-- Backend API starts on port 8002 with **hot reload enabled** (`--reload` flag)
-- Frontend starts on port 3001 with **hot reload enabled** (`npm run dev`)
+- PostgreSQL database starts (Docker network only; no host port publish)
+- Backend API starts on port **8002** with **hot reload** (`backend-dev`)
+- Frontend starts on port **3000** with **hot reload** (`npm run dev`)
 
 ### 3. Access the Application
 
-- **Frontend**: http://localhost:3001
+- **Frontend**: http://localhost:3000
 - **Backend API**: http://localhost:8002
 - **API Docs**: http://localhost:8002/docs
 
@@ -74,7 +79,7 @@ The frontend uses Next.js rewrites to proxy API requests to the backend during d
 
 **Example:**
 ```bash
-# Frontend request: GET http://localhost:3001/health/system
+# Frontend request: GET http://localhost:3000/health/system
 # Proxied to: GET http://localhost:8002/api/health/system
 ```
 
@@ -87,13 +92,13 @@ cd /Users/carloscruz/automated-trading-platform
 docker compose --profile local ps
 
 # Check logs
-docker compose --profile local logs -f
+docker compose --profile local logs -f backend-dev frontend
 
 # Check backend health
 curl http://localhost:8002/api/health
 
 # Check frontend
-curl http://localhost:3001
+curl http://localhost:3000
 
 # Or use the verification script
 ./scripts/dev-check.sh
@@ -198,8 +203,8 @@ docker compose --profile local exec backend python scripts/your_migration.py
 
 1. **Check if ports are already in use:**
    ```bash
-   # Check if port 3001 is in use (frontend)
-   lsof -i :3001
+   # Check if port 3000 is in use (frontend)
+   lsof -i :3000
    
    # Check if port 8002 is in use (backend)
    lsof -i :8002
@@ -208,7 +213,7 @@ docker compose --profile local exec backend python scripts/your_migration.py
    lsof -i :5432
    ```
    
-   **Note:** The frontend runs on port **3001** (not 3000). This is configured in `.env.local` via `FRONTEND_PORT=3001`.
+   **Note:** The frontend runs on port **3000** . This is configured in `.env.local` via `FRONTEND_PORT=3000`.
 
 2. **Check Docker is running:**
    ```bash
@@ -231,7 +236,7 @@ docker compose --profile local exec backend python scripts/your_migration.py
 - Check frontend logs: `docker compose --profile local logs -f frontend`
 - Verify volume mount: `docker compose --profile local exec frontend ls -la /app`
 - Clear browser cache or do hard refresh (Cmd+Shift+R on Mac)
-- **Port confusion:** Ensure you're accessing http://localhost:3001 (not 3000). The frontend port is configured via `FRONTEND_PORT` in `.env.local` (defaults to 3001).
+- **Port confusion:** Ensure you're accessing http://localhost:3000. The frontend port is configured via `FRONTEND_PORT` in `.env.local` (defaults to 3000).
 
 ### Database Connection Errors
 
@@ -280,8 +285,8 @@ If you see connection refused errors:
 
 1. **Frontend not running:**
    ```bash
-   # Check if frontend is running on port 3001
-   lsof -i :3001
+   # Check if frontend is running on port 3000
+   lsof -i :3000
    
    # Start frontend
    cd frontend && npm run dev
@@ -296,7 +301,7 @@ If you see connection refused errors:
    docker compose --profile local up -d backend-dev
    ```
 
-3. **Wrong port:** Ensure you're accessing http://localhost:3001 (not 3000). The frontend port is configured in `.env.local` via `FRONTEND_PORT=3001`.
+3. **Wrong port:** Ensure you're accessing http://localhost:3000. The frontend port is configured in `.env.local` via `FRONTEND_PORT=3000`.
 
 ### CORS Errors
 
@@ -315,7 +320,7 @@ Use the verification script to check everything at once:
 ```
 
 This checks:
-- Ports 3001 and 8002 are listening
+- Ports 3000 and 8002 are listening
 - Backend health endpoint responds
 - Frontend responds
 - Provides actionable error messages
@@ -349,28 +354,28 @@ If you get out of memory errors:
 ```bash
 cd /Users/carloscruz/automated-trading-platform
 
-# Start services
-docker compose --profile local up -d
+# Start services (explicit — do NOT bare-up the whole local profile)
+docker compose --profile local up -d db backend-dev frontend
 
 # View logs
-docker compose --profile local logs -f
+docker compose --profile local logs -f backend-dev frontend
 
 # Stop services
 docker compose --profile local stop
 
 # Restart services
-docker compose --profile local restart
+docker compose --profile local restart backend-dev frontend
 
 # Rebuild and restart (if needed)
-docker compose --profile local build --no-cache
-docker compose --profile local up -d
+docker compose --profile local build --no-cache backend-dev frontend
+docker compose --profile local up -d db backend-dev frontend
 
 # Execute command in container
-docker compose --profile local exec backend python --version
+docker compose --profile local exec backend-dev python --version
 docker compose --profile local exec frontend npm --version
 
 # Access shell in container
-docker compose --profile local exec backend sh
+docker compose --profile local exec backend-dev sh
 docker compose --profile local exec frontend sh
 
 # Clean up everything (⚠️ removes database data)

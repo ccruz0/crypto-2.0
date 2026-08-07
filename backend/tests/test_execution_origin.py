@@ -7,7 +7,9 @@ from app.utils.execution_origin import (
     EXECUTION_ORIGIN_MANUAL,
     EXECUTION_ORIGIN_STOP_LOSS,
     EXECUTION_ORIGIN_TAKE_PROFIT,
+    format_executed_fill_type_label,
     format_type_display,
+    infer_protection_role,
     is_protection_execution,
     resolve_execution_origin,
 )
@@ -58,6 +60,40 @@ def test_format_type_display_manual_limit():
 def test_format_type_display_sl_tp():
     assert format_type_display(order_type="MARKET", execution_origin=EXECUTION_ORIGIN_STOP_LOSS) == "SL ejecutado"
     assert format_type_display(order_type="MARKET", execution_origin=EXECUTION_ORIGIN_TAKE_PROFIT) == "TP ejecutado"
+
+
+def test_format_executed_fill_type_label_prefers_protection_over_market():
+    assert (
+        format_executed_fill_type_label(order_type="MARKET", order_role="STOP_LOSS")
+        == "Stop Loss"
+    )
+    assert (
+        format_executed_fill_type_label(order_type="MARKET", order_role="TAKE_PROFIT")
+        == "Take Profit"
+    )
+    assert format_executed_fill_type_label(order_type="STOP_LIMIT") == "Stop Loss"
+    assert format_executed_fill_type_label(order_type="TAKE_PROFIT_LIMIT") == "Take Profit"
+
+
+def test_format_executed_fill_type_label_keeps_true_manual_market():
+    assert format_executed_fill_type_label(order_type="MARKET", order_role=None) == "MARKET"
+    assert format_executed_fill_type_label(order_type="LIMIT", order_role=None) == "LIMIT"
+
+
+def test_infer_protection_role_from_contingency_and_parent():
+    assert (
+        infer_protection_role(order_type="MARKET", contingency_type="TAKE_PROFIT")
+        == "TAKE_PROFIT"
+    )
+    assert (
+        infer_protection_role(
+            order_type="MARKET",
+            parent_order_role="STOP_LOSS",
+            parent_order_type="STOP_LIMIT",
+        )
+        == "STOP_LOSS"
+    )
+    assert infer_protection_role(order_type="MARKET") is None
 
 
 def test_is_protection_execution():

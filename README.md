@@ -136,10 +136,13 @@ For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AW
 
 2. Update the `.env` file with your actual values.
 
-3. Start the services (local dev only):
+3. Start the services (local dev only) — **name services explicitly**:
    ```bash
-   docker-compose --profile local up -d
+   docker compose --profile local up -d db backend-dev frontend
    ```
+   Do **not** run a bare `docker compose --profile local up`: both `backend` and
+   `backend-dev` publish host port **8002** and will conflict. Prefer `backend-dev`
+   (hot reload). See [DEV.md](DEV.md).
 
 4. Access the applications:
    - Frontend: http://localhost:3000
