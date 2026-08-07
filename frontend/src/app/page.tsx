@@ -1120,7 +1120,24 @@ const VERSION_HISTORY = [
 `
   },
   {
-<<<<<<< HEAD
+    version: '0.53',
+    date: '2026-08-07',
+    change: 'Cap SL/TP qty to free balance; heal dual-trigger INSUFFICIENT_ACC_BALANCE',
+    details: `🚀 VERSIÓN 0.53 — DOGE PROTECTION BALANCE LOCK
+
+📋 **What shipped**
+• Protection qty capped to spendable (available/max_withdrawal), not total wallet
+• Spot dual fallback upgrades standalone TP → native OCO instead of doomed full-qty SL
+• Async SL balance-lock reject cancels sibling TP before OCO retry
+• Suppress INSUFFICIENT_ACC_BALANCE Telegram for STOP_LOSS (same as TP)
+
+📦 **PRs**
+• #350
+
+---
+`
+  },
+  {
     version: '0.54',
     date: '2026-08-07',
     change: 'Dashboard P1 follow-up: reports empty states, sister books, fetch resilience',
@@ -1138,21 +1155,6 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #388
-=======
-    version: '0.53',
-    date: '2026-08-07',
-    change: 'Cap SL/TP qty to free balance; heal dual-trigger INSUFFICIENT_ACC_BALANCE',
-    details: `🚀 VERSIÓN 0.53 — DOGE PROTECTION BALANCE LOCK
-
-📋 **What shipped**
-• Protection qty capped to spendable (available/max_withdrawal), not total wallet
-• Spot dual fallback upgrades standalone TP → native OCO instead of doomed full-qty SL
-• Async SL balance-lock reject cancels sibling TP before OCO retry
-• Suppress INSUFFICIENT_ACC_BALANCE Telegram for STOP_LOSS (same as TP)
-
-📦 **PRs**
-• #350
->>>>>>> origin/main
 
 ---
 `
