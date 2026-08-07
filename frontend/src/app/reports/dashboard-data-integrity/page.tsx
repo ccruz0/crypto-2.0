@@ -43,45 +43,64 @@ export default function DashboardDataIntegrityReportPage() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [emptyMessage, setEmptyMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    const fetchReport = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        const apiUrl = getApiUrl();
-        const response = await fetch(`${apiUrl}/reports/dashboard-data-integrity/latest`);
-        
-        if (!response.ok) {
-          if (response.status === 404) {
-            setError('No report available yet. The workflow may not have run or completed.');
-            return;
-          }
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        if (data.status === 'not_found') {
-          setError(data.message || 'No report available yet. The workflow may not have run or completed.');
+  const fetchReport = async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 20000);
+    try {
+      setLoading(true);
+      setError(null);
+      setEmptyMessage(null);
+      const apiUrl = getApiUrl();
+      const response = await fetch(`${apiUrl}/reports/dashboard-data-integrity/latest`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          setReport(null);
+          setEmptyMessage(
+            'No integrity report yet. The dashboard-data-integrity workflow has not produced a snapshot.'
+          );
           return;
         }
-        
-        if (data.status === 'success' && data.report) {
-          setReport(data.report);
-        } else {
-          setError('Invalid report format received from server.');
-        }
-      } catch (err) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      if (data.status === 'not_found') {
+        setReport(null);
+        setEmptyMessage(
+          data.message ||
+            'No integrity report yet. The dashboard-data-integrity workflow has not produced a snapshot.'
+        );
+        return;
+      }
+
+      if (data.status === 'success' && data.report) {
+        setReport(data.report);
+      } else {
+        setError('Invalid report format received from server.');
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setError('Request timed out after 20s. The API may be overloaded — retry in a moment.');
+      } else {
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
         setError(errorMsg);
-        console.error('Failed to fetch report:', err);
-      } finally {
-        setLoading(false);
       }
-    };
+      console.error('Failed to fetch report:', err);
+    } finally {
+      window.clearTimeout(timeoutId);
+      setLoading(false);
+    }
+  };
 
-    fetchReport();
+  useEffect(() => {
+    void fetchReport();
   }, []);
 
   const copyPromptToClipboard = () => {
@@ -131,22 +150,58 @@ export default function DashboardDataIntegrityReportPage() {
     );
   }
 
-  if (error) {
+  if (emptyMessage && !report) {
     return (
       <div className="min-h-screen bg-gray-50 py-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="bg-white rounded-lg shadow p-6">
             <h1 className="text-2xl font-bold text-gray-900 mb-4">Dashboard Data Integrity Report</h1>
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-              <p className="text-yellow-800">{error}</p>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-slate-800">
+              <p className="font-medium">No report available</p>
+              <p className="mt-1 text-sm text-slate-600">{emptyMessage}</p>
+              <p className="mt-2 text-xs text-slate-500">
+                This page reads an in-memory snapshot from the integrity workflow — empty is normal until that job runs.
+              </p>
             </div>
-            <div className="mt-4">
-              <a
-                href="/"
-                className="text-blue-600 hover:text-blue-800 underline"
-              >
+            <div className="mt-4 flex gap-4 text-sm">
+              <a href="/" className="text-blue-600 hover:text-blue-800 underline">
                 ← Back to Dashboard
               </a>
+              <button
+                type="button"
+                onClick={() => void fetchReport()}
+                className="text-blue-600 hover:text-blue-800 underline"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && !report) {
+    return (
+      <div className="min-h-screen bg-gray-50 py-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="bg-white rounded-lg shadow p-6">
+            <h1 className="text-2xl font-bold text-gray-900 mb-4">Dashboard Data Integrity Report</h1>
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <p className="text-red-800 font-medium">Failed to load report</p>
+              <p className="text-red-700 text-sm mt-1">{error}</p>
+            </div>
+            <div className="mt-4 flex gap-4 text-sm">
+              <a href="/" className="text-blue-600 hover:text-blue-800 underline">
+                ← Back to Dashboard
+              </a>
+              <button
+                type="button"
+                onClick={() => void fetchReport()}
+                className="text-blue-600 hover:text-blue-800 underline"
+              >
+                Retry
+              </button>
             </div>
           </div>
         </div>
@@ -155,7 +210,23 @@ export default function DashboardDataIntegrityReportPage() {
   }
 
   if (!report) {
-    return null;
+    return (
+      <div className="min-h-screen bg-gray-50 py-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="bg-white rounded-lg shadow p-6">
+            <h1 className="text-2xl font-bold text-gray-900 mb-4">Dashboard Data Integrity Report</h1>
+            <p className="text-slate-600">No report loaded.</p>
+            <button
+              type="button"
+              onClick={() => void fetchReport()}
+              className="mt-4 text-blue-600 hover:text-blue-800 underline text-sm"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

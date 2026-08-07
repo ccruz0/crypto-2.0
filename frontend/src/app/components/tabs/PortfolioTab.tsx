@@ -445,7 +445,7 @@ export default function PortfolioTab({
     );
   };
 
-  if (portfolioLoading) {
+  if (portfolioLoading && (!portfolio?.assets || portfolio.assets.length === 0)) {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="text-gray-500 text-lg">Loading portfolio...</div>
@@ -455,12 +455,19 @@ export default function PortfolioTab({
 
   return (
     <div>
+      {portfolioError && (
+        <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+          {portfolio?.assets?.length
+            ? `Showing last known portfolio — refresh failed: ${portfolioError}`
+            : `Portfolio unavailable: ${portfolioError}`}
+        </div>
+      )}
       <div className="mb-4 flex justify-between items-center">
         <div className="flex items-center gap-2">
           {snapshotLastUpdated && (
             <div className="text-sm text-gray-500">
               <span className="mr-2">🕐</span>
-              Última actualización: {formatDateTime(snapshotLastUpdated)}
+              Last update: {formatDateTime(snapshotLastUpdated)}
               {snapshotStaleSeconds !== null && (
                 <span className="ml-2">({snapshotStaleSeconds}s ago)</span>
               )}
@@ -508,7 +515,7 @@ export default function PortfolioTab({
         </button>
       </div>
 
-      {portfolioError ? (
+      {portfolioError && (!portfolio?.assets || portfolio.assets.length === 0) ? (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded text-red-700">
           {portfolioError}
         </div>
@@ -524,20 +531,38 @@ export default function PortfolioTab({
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
               <div className="bg-white dark:bg-gray-800 p-4 rounded shadow">
                 <div className="text-sm text-gray-500">Total Value</div>
-                <div className="text-xs text-gray-400 mb-1">Wallet Balance (after haircut)</div>
+                <div
+                  className="text-xs text-gray-400 mb-1"
+                  title="Net wallet balance after haircut / margin adjustments — may be lower than Gross Assets"
+                >
+                  Net wallet (≠ Gross Assets)
+                </div>
                 <div className="text-2xl font-bold">{formatNumber(portfolio.total_value_usd)}</div>
                 {portfolio.portfolio_value_source && (
-                  <div className="text-xs text-gray-500 mt-1">
-                    Source: {portfolio.portfolio_value_source === "exchange_margin_equity" 
-                      ? "Exchange Wallet Balance" 
-                      : "Derived (fallback)"}
+                  <div
+                    className={`text-xs mt-1 ${
+                      portfolio.portfolio_value_source === 'exchange_margin_equity'
+                        ? 'text-gray-500'
+                        : 'text-amber-700 dark:text-amber-300 font-medium'
+                    }`}
+                    title={
+                      portfolio.portfolio_value_source === 'exchange_margin_equity'
+                        ? 'Taken from Crypto.com exchange margin equity field'
+                        : `Computed locally from balances (${portfolio.portfolio_value_source}). Prefer exchange equity when available.`
+                    }
+                  >
+                    {portfolio.portfolio_value_source === 'exchange_margin_equity'
+                      ? 'Source: Exchange Wallet Balance'
+                      : 'Source: Derived fallback (not live exchange equity)'}
                   </div>
                 )}
               </div>
               {portfolio.total_assets_usd !== undefined && (
                 <div className="bg-white dark:bg-gray-800 p-4 rounded shadow">
                   <div className="text-sm text-gray-500">Gross Assets</div>
-                  <div className="text-xs text-gray-400 mb-1">(raw, before haircut)</div>
+                  <div className="text-xs text-gray-400 mb-1" title="Sum of asset market values before haircut and borrowed">
+                    (raw, before haircut — often higher than Total Value)
+                  </div>
                   <div className="text-2xl font-bold text-blue-600">{formatNumber(portfolio.total_assets_usd)}</div>
                 </div>
               )}
