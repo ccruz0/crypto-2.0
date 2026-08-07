@@ -27,6 +27,7 @@ class ReasonCode(str, Enum):
     STRATEGY_DISALLOWS_BUY = "STRATEGY_DISALLOWS_BUY"
     INSUFFICIENT_AVAILABLE_BALANCE = "INSUFFICIENT_AVAILABLE_BALANCE"
     MIN_NOTIONAL_NOT_MET = "MIN_NOTIONAL_NOT_MET"
+    BELOW_MIN_ORDER_SIZE = "BELOW_MIN_ORDER_SIZE"
     THROTTLED_DUPLICATE_ALERT = "THROTTLED_DUPLICATE_ALERT"
     DATA_MISSING = "DATA_MISSING"
     SAFETY_GUARD = "SAFETY_GUARD"
@@ -177,6 +178,8 @@ _REASON_CODE_ES_LABELS = {
     ReasonCode.SYSTEM_CORE_MAX_TRADE_USD.value: "Tope USD por trade (system_core)",
     ReasonCode.SYSTEM_CORE_DAILY_DRAWDOWN.value: "Drawdown diario (system_core)",
     ReasonCode.GUARDRAIL_BLOCKED.value: "Bloqueado por guardrail",
+    ReasonCode.BELOW_MIN_ORDER_SIZE.value: "Cantidad bajo el mínimo del exchange",
+    ReasonCode.MIN_NOTIONAL_NOT_MET.value: "Notional mínimo no cumplido",
 }
 
 
@@ -295,6 +298,18 @@ def classify_exchange_error(error_msg: str) -> str:
     if any(code in error_upper for code in ["TIMEOUT", "TIMED OUT"]):
         return ReasonCode.TIMEOUT.value
     
+    # Below minimum order size (Crypto.com code 415 / BELOW_MIN_ORDER_SIZE)
+    if any(
+        token in error_upper
+        for token in (
+            "BELOW_MIN_ORDER_SIZE",
+            "MIN_ORDER_SIZE",
+            "QUANTITY_BELOW_MIN",
+            "BELOW MIN_QUANTITY",
+        )
+    ) or re.search(r"(?:code\s*[:=]\s*)415\b", error_msg, flags=re.IGNORECASE):
+        return ReasonCode.BELOW_MIN_ORDER_SIZE.value
+
     # Min notional
     if any(code in error_upper for code in ["MIN_NOTIONAL", "NOTIONAL", "AMOUNT TOO SMALL"]):
         return ReasonCode.MIN_NOTIONAL_NOT_MET.value
