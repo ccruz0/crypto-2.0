@@ -8,15 +8,23 @@ on:
     # frontend-aws and backend-aws are built+deployed independently from ECR images
     # (deploy-frontend.yml / deploy-backend.yml). Those changes must not trigger the
     # heavy, OOM-prone on-host rebuild handled by this workflow.
+    # Also skip docs/tests/scripts-only pushes: they previously raced with deploy-backend
+    # (e.g. backend/tests + scripts/aws) and left brief APIs on 503 during compose churn.
     paths-ignore:
       - 'frontend/**'
       - 'backend/**'
+      - 'backend/tests/**'
+      - 'scripts/**'
+      - 'docs/**'
+      - '**/*.md'
       - '.github/workflows/deploy-backend.yml'
+      - '.github/workflows/deploy-frontend.yml'
   workflow_dispatch:
 
+# Shared with deploy-backend.yml — serialize all host compose deploys (never cancel mid-flight).
 concurrency:
-  group: deploy-main
-  cancel-in-progress: true
+  group: atp-prod-ec2-deploy
+  cancel-in-progress: false
 
 permissions:
   contents: read
