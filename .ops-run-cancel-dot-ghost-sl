@@ -1,4 +1,0 @@
-# One-shot trigger: merge to main to cancel DOT_USD ghost STOP_LIMIT legs
-# (73817490102053590 qty=1.29, 73817490102053328 qty=48.67).
-# Remove this file in a follow-up after the ops run succeeds (see #360 pattern).
-run=1
