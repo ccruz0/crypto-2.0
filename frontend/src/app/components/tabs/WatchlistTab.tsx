@@ -1200,7 +1200,7 @@ export default function WatchlistTab({
                   ? 'bg-green-100 text-green-700' 
                   : 'bg-red-100 text-red-700'
               }`} title={botStatus.reason || undefined}>
-                {botStatus.is_running ? '🟢 Bot Activo' : '🔴 Bot Detenido'}
+                {botStatus.is_running ? '🟢 Bot Active' : '🔴 Bot Stopped'}
               </div>
               {botStatus.kill_switch_on && (
                 <div className="px-3 py-1 rounded-full text-xs font-semibold bg-red-600 text-white" title="Kill Switch is ON - All trading is disabled">
@@ -1245,7 +1245,8 @@ export default function WatchlistTab({
         </div>
       )}
       <div className="mb-3 text-xs text-gray-500 dark:text-gray-400">
-        Per-coin open-order limit: <span className="font-semibold">{perCoinLimit}</span>
+        Per-coin bot-position limit: <span className="font-semibold">{perCoinLimit}</span>
+        <span className="text-gray-500"> (entry exposure; SL/TP legs are not counted)</span>
         {' '}(rows at limit show watermark — that coin will not open new orders).
       </div>
 
@@ -1266,13 +1267,18 @@ export default function WatchlistTab({
                 <SortableHeader field="ema10">EMA10</SortableHeader>
                 <SortableHeader field="ma50">MA50</SortableHeader>
                 <SortableHeader field="ma200">MA200</SortableHeader>
-                <SortableHeader field="volume">Volume</SortableHeader>
+                <SortableHeader
+                  field="volume"
+                  title="Current volume ÷ average volume (not leverage)"
+                >
+                  Vol ratio
+                </SortableHeader>
                 <SortableHeader field="amount_usd">Amount USD</SortableHeader>
                 <SortableHeader
                   field="orders"
-                  title={`Sort by open positions vs per-coin limit (${perCoinLimit})`}
+                  title={`Sort by bot open positions vs per-coin limit (${perCoinLimit}). Does not count SL/TP legs.`}
                 >
-                  Orders
+                  Positions
                 </SortableHeader>
                 <SortableHeader field="sl_percent">SL%</SortableHeader>
                 <SortableHeader field="tp_percent">TP%</SortableHeader>
@@ -1295,9 +1301,9 @@ export default function WatchlistTab({
                 const rowAtOrderLimit =
                   coinOpenCount >= perCoinLimit || globalAtOrderLimit;
                 const limitReason = globalAtOrderLimit
-                  ? `Global limit reached (${openOrdersCount}/${maxOpenOrders}).`
+                  ? `Global bot-position limit reached (${openOrdersCount}/${maxOpenOrders}).`
                   : coinOpenCount >= perCoinLimit
-                    ? `Per-coin limit reached (${coinOpenCount}/${perCoinLimit}).`
+                    ? `Per-coin bot-position limit reached (${coinOpenCount}/${perCoinLimit}).`
                     : undefined;
                 
                 // Determine if buy or sell criteria are met
@@ -1409,8 +1415,17 @@ export default function WatchlistTab({
                     <td className={`px-4 py-2 ${getIndicatorColorClass('ma200', signal, coin)}`}>
                       {signal?.ma200 ? formatNumber(signal.ma200, coin?.instrument_name) : '-'}
                     </td>
-                    <td className="px-4 py-2">
-                      {signal?.volume_ratio ? `${signal.volume_ratio.toFixed(2)}x` : '-'}
+                    <td
+                      className="px-4 py-2"
+                      title={
+                        isFiniteNumber(signal?.volume_ratio)
+                          ? `Volume ratio vs average: ${formatFixed(signal.volume_ratio)}× (not leverage)`
+                          : undefined
+                      }
+                    >
+                      {isFiniteNumber(signal?.volume_ratio)
+                        ? `${Number(signal.volume_ratio).toFixed(2)}×avg`
+                        : '-'}
                     </td>
                     <td className="px-4 py-2">
                       {editingAmount[coin?.instrument_name] !== undefined ? (
@@ -1462,8 +1477,8 @@ export default function WatchlistTab({
                       }`}
                       title={
                         coinOpenCount >= perCoinLimit
-                          ? `Per-coin limit reached (${coinOpenCount}/${perCoinLimit}). New orders blocked for this coin.`
-                          : `Open positions for ${getBaseSymbol(coin?.instrument_name) || coin?.instrument_name}: ${coinOpenCount}/${perCoinLimit}`
+                          ? `Per-coin bot-position limit reached (${coinOpenCount}/${perCoinLimit}). New entries blocked for this coin.`
+                          : `Bot open positions for ${getBaseSymbol(coin?.instrument_name) || coin?.instrument_name}: ${coinOpenCount}/${perCoinLimit} (SL/TP legs not counted)`
                       }
                     >
                       {coinOpenCount}/{perCoinLimit}

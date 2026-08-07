@@ -4,13 +4,19 @@
  */
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPEntryOrder, createProtectionSmart } from '@/app/api';
+import {
+  ExpectedTPSummaryItem,
+  ExpectedTPDetails,
+  ExpectedTPEntryOrder,
+  GhostProtectionAlert,
+  createProtectionSmart,
+} from '@/app/api';
 import { formatDateTime, formatNumber } from '@/utils/formatting';
 import {
   positionBadgeClass,
-  positionDirectionEs,
+  positionDirectionEn,
   sideBadgeClass,
-  sideLabelEs,
+  sideLabelEn,
 } from '@/utils/tradeSideLabels';
 import {
   formatTpFillProximityPct,
@@ -32,7 +38,18 @@ type SortField =
 type SortDirection = 'asc' | 'desc';
 
 const TP_PROXIMITY_TOOLTIP =
-  'Cercanía al fill del TP: progreso del precio desde la entrada hacia el TP. 100% = mark en o más allá del precio del TP (cerca de ejecutarse). No es cobertura de cantidad.';
+  'TP fill proximity: price progress from entry toward the TP. 100% = mark at or beyond the TP price (near fill). Not quantity coverage.';
+
+function isNakedShort(item: ExpectedTPSummaryItem): boolean {
+  const side = (item.position_side || '').toUpperCase();
+  const walletShort =
+    typeof item.wallet_balance === 'number' && item.wallet_balance < -1e-12;
+  const isShort = side === 'SHORT' || walletShort;
+  if (!isShort) return false;
+  const net = Math.abs(Number(item.net_qty) || 0);
+  if (net <= 0) return false;
+  return (Number(item.covered_qty) || 0) <= 0;
+}
 
 interface ExpectedTakeProfitTabProps {
   expectedTPSummary: ExpectedTPSummaryItem[];
@@ -43,6 +60,7 @@ interface ExpectedTakeProfitTabProps {
   expectedTPDetailsSymbol: string | null;
   showExpectedTPDetailsDialog: boolean;
   deepLink?: { symbol: string; orderId: string } | null;
+  ghostProtectionAlerts?: GhostProtectionAlert[];
   onFetchExpectedTakeProfitSummary: () => Promise<void>;
   onFetchExpectedTakeProfitDetails: (symbol: string) => Promise<void>;
   onCloseDetailsDialog: () => void;
@@ -58,6 +76,7 @@ export default function ExpectedTakeProfitTab({
   expectedTPDetailsSymbol,
   showExpectedTPDetailsDialog,
   deepLink,
+  ghostProtectionAlerts = [],
   onFetchExpectedTakeProfitSummary,
   onFetchExpectedTakeProfitDetails,
   onCloseDetailsDialog,
@@ -124,9 +143,9 @@ export default function ExpectedTakeProfitTab({
     return formatNumber(price, symbol);
   };
 
-  const sideLabel = (side: ExpectedTPEntryOrder['side']) => sideLabelEs(side);
+  const sideLabel = (side: ExpectedTPEntryOrder['side']) => sideLabelEn(side);
 
-  const positionLabel = (positionSide?: string | null) => positionDirectionEs(positionSide);
+  const positionLabel = (positionSide?: string | null) => positionDirectionEn(positionSide);
 
   const statusBadgeClass = (status: string) => {
     if (status === 'FILLED' || status === 'ACTIVE') {
@@ -300,6 +319,25 @@ export default function ExpectedTakeProfitTab({
     });
   }, [expectedTPSummary, sortField, sortDirection]);
 
+  const nakedShortSymbols = useMemo(
+    () => (expectedTPSummary || []).filter(isNakedShort).map((item) => item.symbol),
+    [expectedTPSummary]
+  );
+
+  const ghostPreview = useMemo(() => {
+    if (!ghostProtectionAlerts.length) return null;
+    const byBase = new Map<string, number>();
+    for (const alert of ghostProtectionAlerts) {
+      const key = alert.base || alert.symbol || '?';
+      byBase.set(key, (byBase.get(key) || 0) + 1);
+    }
+    const bases = Array.from(byBase.entries())
+      .slice(0, 8)
+      .map(([base, count]) => `${base}×${count}`)
+      .join(', ');
+    return { total: ghostProtectionAlerts.length, bases };
+  }, [ghostProtectionAlerts]);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -334,6 +372,20 @@ export default function ExpectedTakeProfitTab({
         </div>
       </div>
 
+      {ghostPreview && (
+        <div className="mb-4 rounded-md border border-rose-300 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
+          <strong>{ghostPreview.total} ghost/orphan protection leg(s)</strong>
+          {' '}
+          vs wallet ({ghostPreview.bases}). Qty far exceeds |wallet| or wallet is empty — cancel stale SL/TP on the exchange.
+        </div>
+      )}
+      {nakedShortSymbols.length > 0 && (
+        <div className="mb-4 rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-700 px-4 py-3 text-sm text-amber-950 dark:text-amber-100">
+          <strong>Naked short (0 TP coverage):</strong>{' '}
+          {nakedShortSymbols.join(', ')}. Short wallet exposure has no matching take-profit coverage — create TP or close the short.
+        </div>
+      )}
+
       {expectedTPLoading ? (
         <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading expected take profit data...</div>
       ) : sortedSummary.length === 0 ? (
@@ -347,7 +399,7 @@ export default function ExpectedTakeProfitTab({
                   scope="col"
                   className="sticky left-0 z-10 bg-gray-50 dark:bg-slate-800 px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider w-10"
                 >
-                  <span className="sr-only">Expandir</span>
+                  <span className="sr-only">Expand</span>
                 </th>
                 <th
                   scope="col"
@@ -362,13 +414,13 @@ export default function ExpectedTakeProfitTab({
                   scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
                 >
-                  Dirección
+                  Direction
                 </th>
                 <th
                   scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
                   onClick={() => handleSort('net_qty')}
-                  title="Suma de cantidades de lotes abiertos (no inventario neto firmado)"
+                  title="Sum of open lot quantities (not signed net inventory)"
                 >
                   <div className="flex items-center gap-1">
                     Net Qty {sortField === 'net_qty' && (sortDirection === 'asc' ? '↑' : '↓')}
@@ -387,7 +439,7 @@ export default function ExpectedTakeProfitTab({
                   scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
                   onClick={() => handleSort('avg_entry_price')}
-                  title="Precio de entrada promedio (ponderado por cantidad). Ver Detalles para cada orden."
+                  title="Quantity-weighted average entry price. Open Details for each order."
                 >
                   <div className="flex items-center gap-1">
                     Entry / Avg {sortField === 'avg_entry_price' && (sortDirection === 'asc' ? '↑' : '↓')}
@@ -445,7 +497,7 @@ export default function ExpectedTakeProfitTab({
                   title={TP_PROXIMITY_TOOLTIP}
                 >
                   <div className="flex items-center gap-1">
-                    TP cerca %{' '}
+                    TP near %{' '}
                     {sortField === 'max_tp_fill_proximity_pct' && (sortDirection === 'asc' ? '↑' : '↓')}
                   </div>
                 </th>
@@ -476,12 +528,12 @@ export default function ExpectedTakeProfitTab({
                       aria-expanded={isDetailsOpen}
                       aria-label={
                         isDetailsLoading
-                          ? `Cargando detalles de ${item.symbol}`
+                          ? `Loading details for ${item.symbol}`
                           : isDetailsOpen
-                            ? `Cerrar detalles de ${item.symbol}`
-                            : `Expandir detalles de ${item.symbol}`
+                            ? `Close details for ${item.symbol}`
+                            : `Expand details for ${item.symbol}`
                       }
-                      title={isDetailsLoading ? 'Cargando…' : isDetailsOpen ? 'Cerrar' : 'Ver TP/SL'}
+                      title={isDetailsLoading ? 'Loading…' : isDetailsOpen ? 'Close' : 'View TP/SL'}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (isDetailsOpen) {
@@ -501,10 +553,18 @@ export default function ExpectedTakeProfitTab({
                     <div className="flex flex-col gap-1 items-start">
                       <span
                         className={`px-2 py-1 rounded text-xs font-semibold ${positionBadgeClass(item.position_side)}`}
-                        title={positionDirectionEs(item.position_side)}
+                        title={positionDirectionEn(item.position_side)}
                       >
                         {positionLabel(item.position_side)}
                       </span>
+                      {isNakedShort(item) && (
+                        <span
+                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"
+                          title="Short exposure has covered_qty = 0 (no matching take-profit coverage)"
+                        >
+                          naked short (0 TP)
+                        </span>
+                      )}
                       {item.wallet_qty_warning === 'lots_exceed_wallet' && (
                         <span
                           className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
@@ -776,7 +836,7 @@ export default function ExpectedTakeProfitTab({
                     <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
                       Inventario por lote: cada fila es una entrada ejecutada que aún espera su SL/TP.
                       {expectedTPDetails.position_side === 'MIXED' && (
-                        <> Incluye lotes Long (Compra) y Short (Venta) a la vez.</>
+                        <> Includes Long (Buy) and Short (Sell) lots at once.</>
                       )}
                     </p>
                     <div className="overflow-x-auto">
@@ -793,7 +853,7 @@ export default function ExpectedTakeProfitTab({
                               Order ID
                             </th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                              Dirección
+                              Direction
                             </th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Precio
@@ -844,7 +904,7 @@ export default function ExpectedTakeProfitTab({
                                         onClick={() => toggleEntryRow(rowKey)}
                                         className="w-6 h-6 inline-flex items-center justify-center rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-600"
                                         aria-expanded={isExpanded}
-                                        title={isExpanded ? 'Contraer TP/SL' : 'Expandir TP/SL'}
+                                        title={isExpanded ? 'Collapse TP/SL' : 'Expand TP/SL'}
                                       >
                                         {isExpanded ? '▾' : '▸'}
                                       </button>
@@ -947,7 +1007,7 @@ export default function ExpectedTakeProfitTab({
                                       const proximityTitle =
                                         proximity == null
                                           ? TP_PROXIMITY_TOOLTIP
-                                          : `Cercanía TP: ${proximityLabel}. ${TP_PROXIMITY_TOOLTIP}`;
+                                          : `TP proximity: ${proximityLabel}. ${TP_PROXIMITY_TOOLTIP}`;
 
                                       return (
                                       <tr
@@ -984,7 +1044,7 @@ export default function ExpectedTakeProfitTab({
                                                 className={`text-xs ${tpFillProximityToneClass(proximity)}`}
                                                 title={proximityTitle}
                                               >
-                                                Cercanía TP: {proximityLabel}
+                                                TP proximity: {proximityLabel}
                                               </span>
                                             )}
                                           </div>
