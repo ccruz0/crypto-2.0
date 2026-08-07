@@ -354,28 +354,28 @@ If you get out of memory errors:
 ```bash
 cd /Users/carloscruz/automated-trading-platform
 
-# Start services
-docker compose --profile local up -d
+# Start services (explicit — do NOT bare-up the whole local profile)
+docker compose --profile local up -d db backend-dev frontend
 
 # View logs
-docker compose --profile local logs -f
+docker compose --profile local logs -f backend-dev frontend
 
 # Stop services
 docker compose --profile local stop
 
 # Restart services
-docker compose --profile local restart
+docker compose --profile local restart backend-dev frontend
 
 # Rebuild and restart (if needed)
-docker compose --profile local build --no-cache
-docker compose --profile local up -d
+docker compose --profile local build --no-cache backend-dev frontend
+docker compose --profile local up -d db backend-dev frontend
 
 # Execute command in container
-docker compose --profile local exec backend python --version
+docker compose --profile local exec backend-dev python --version
 docker compose --profile local exec frontend npm --version
 
 # Access shell in container
-docker compose --profile local exec backend sh
+docker compose --profile local exec backend-dev sh
 docker compose --profile local exec frontend sh
 
 # Clean up everything (⚠️ removes database data)

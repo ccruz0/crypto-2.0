@@ -65,15 +65,18 @@ DATABASE_URL=postgresql://trader:traderpass@db:5432/atp
 ### Local (en tu Mac)
 
 ```bash
-# Levantar todos los servicios en modo local
-docker compose --profile local up -d
+# Levantar stack local (servicios explícitos — evita choque :8002 entre backend y backend-dev)
+docker compose --profile local up -d db backend-dev frontend
 
 # Ver logs
-docker compose --profile local logs -f
+docker compose --profile local logs -f backend-dev frontend
 
 # Detener servicios
 docker compose --profile local down
 ```
+
+> **Nota:** No uses `docker compose --profile local up -d` sin listar servicios:
+> `backend` y `backend-dev` comparten el perfil `local` y ambos publican `:8002`.
 
 ### AWS (en EC2)
 
@@ -111,7 +114,7 @@ docker compose --profile aws down
 
 Para desarrollo local:
 1. Asegúrate de tener `.env` y `.env.local` configurados
-2. Ejecuta: `docker compose --profile local up -d`
+2. Ejecuta: `docker compose --profile local up -d db backend-dev frontend`
 3. Accede a: `http://localhost:3000`
 
 Para desplegar en AWS:
