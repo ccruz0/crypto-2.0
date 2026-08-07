@@ -13,10 +13,6 @@ on:
         options:
           - "false"
           - "true"
-  push:
-    branches: [main]
-    paths:
-      - ".ops-run-cancel-dot-ghost-sl"
 
 permissions:
   contents: read
@@ -38,7 +34,7 @@ jobs:
       - name: Cancel DOT ghost SL on prod
         env:
           INSTANCE_ID: i-087953603011543c5
-          DRY_RUN: ${{ github.event_name == 'push' && 'false' || github.event.inputs.dry_run_only }}
+          DRY_RUN: ${{ github.event.inputs.dry_run_only }}
         run: |
           set -euo pipefail
           LIVE_FLAG=""
