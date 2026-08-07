@@ -10055,6 +10055,26 @@ class SignalMonitorService:
                 "✅ [AUTO_CLOSE] %s %s order %s: flatten market order created: %s (qty=%s).",
                 symbol, entry_side_upper, order_id, close_order_id, filled_qty,
             )
+            # Tag the close fill so hourly SL/TP backfill never treats it as a new entry
+            # (Telegram noise: HOURLY SL/TP CHECK failed on SUI flatten BUY 2026-08-02).
+            try:
+                from app.services.sl_tp_protection import mark_flatten_close_order
+
+                mark_flatten_close_order(
+                    db,
+                    close_order_id=str(close_order_id),
+                    entry_order_id=str(order_id),
+                    symbol=symbol,
+                    close_side=close_side,
+                    quantity=float(filled_qty),
+                )
+            except Exception as tag_err:
+                logger.warning(
+                    "Failed to tag flatten close %s for %s: %s",
+                    close_order_id,
+                    symbol,
+                    tag_err,
+                )
             try:
                 if self._telegram_send_enabled():
                     telegram_notifier.send_message(

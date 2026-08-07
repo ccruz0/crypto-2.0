@@ -22,6 +22,7 @@ from app.services.sl_tp_protection import (
     GHOST_CANCEL_GRACE_SECONDS,
     get_active_protection_order,
     has_complete_sl_tp_protection,
+    is_flatten_close_order,
     release_sl_tp_creation_lock,
     should_mark_unresolved_order_cancelled,
     should_send_protection_rejected_alert,
@@ -363,7 +364,7 @@ def _count_open_entry_buy_orders(db: Session, symbol: str) -> int:
             ),
             or_(
                 ExchangeOrder.order_role.is_(None),
-                ~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                ~ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT", "FLATTEN"]),
             ),
         )
         .count()
@@ -506,6 +507,9 @@ def should_auto_create_sl_tp_on_sync(
     linked = link_system_trade_signal_to_order(db, order)
 
     parent_id = str(order.exchange_order_id)
+    if is_flatten_close_order(order):
+        return False, "flatten_close"
+
     if has_complete_sl_tp_protection(db, parent_id):
         return False, "already_protected"
 
@@ -3343,6 +3347,31 @@ class ExchangeSyncService:
             return default_result
 
         side_upper = (side or "").upper()
+
+        # Emergency flatten closes are exits — never invent SL/TP for them.
+        try:
+            existing_fill = (
+                db.query(ExchangeOrder)
+                .filter(ExchangeOrder.exchange_order_id == str(order_id))
+                .first()
+            )
+        except Exception:
+            existing_fill = None
+        if is_flatten_close_order(existing_fill):
+            logger.info(
+                "Skipping SL/TP for flatten close order %s (%s) source=%s",
+                order_id,
+                symbol,
+                source,
+            )
+            return {
+                **default_result,
+                "status": "flatten_close",
+                "symbol": symbol,
+                "order_id": order_id,
+                "source": source,
+            }
+
         # Never invent short protection on a long wallet (or vice versa).
         # Skip for margin (spot wallet does not reflect margin inventory) and for
         # confirmed system fills (wallet snapshot can lag or show 0 when qty is locked).
