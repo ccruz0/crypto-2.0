@@ -13,6 +13,13 @@ system packages (PostgreSQL 16, Python 3.11 from deadsnakes), the
 `/workspace/.venv` virtualenv, the local Postgres cluster + data, and the
 gitignored `.env` files are all captured in the VM snapshot.
 
+### Docker Compose local profile (host machines with Docker)
+Both `backend` and `backend-dev` sit on the `local` profile and publish **:8002**.
+Never run a bare `docker compose --profile local up`. Canonical start:
+`docker compose --profile local up -d db backend-dev frontend` (also what
+`./dev_local.sh` runs). See `DEV.md`. Changing `docker-compose.yml` itself is
+path-guard protected — profile split needs a human-approved override.
+
 ### Services and how to run them (dev mode)
 - **PostgreSQL 16** (system service, port 5432, db `atp`, role `trader`/`traderpass`).
   It does not auto-start on boot here — start it with:

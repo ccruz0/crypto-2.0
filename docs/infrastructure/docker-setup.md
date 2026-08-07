@@ -69,13 +69,17 @@ Full reference: [deployment_aws.md](../contracts/deployment_aws.md).
 ## Local development (no production)
 
 ```bash
-# Start dev stack
-docker compose --profile local up -d
+# Start dev stack (explicit services — avoid :8002 clash)
+docker compose --profile local up -d db backend-dev frontend
 
-# Frontend: http://localhost:3000 (or 3001 per config)
-# Backend:  http://localhost:8002
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:8002 (backend-dev, hot reload)
 # API docs: http://localhost:8002/docs
 ```
+
+Do **not** run a bare `docker compose --profile local up`: both `backend` and
+`backend-dev` are on the `local` profile and bind host port 8002. Prefer
+`backend-dev` for day-to-day work (see [DEV.md](../../DEV.md)).
 
 Do not run `--profile local` backend (SignalMonitorService, scheduler, Telegram) in parallel with AWS production to avoid duplicate alerts and orders.
 
