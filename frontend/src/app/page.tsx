@@ -1120,10 +1120,10 @@ const VERSION_HISTORY = [
 `
   },
   {
-    version: '0.53',
+    version: '0.54',
     date: '2026-08-07',
     change: 'Dashboard P1 follow-up: reports empty states, sister books, fetch resilience',
-    details: `🚀 VERSIÓN 0.53 — DASHBOARD P1 UX FOLLOW-UP
+    details: `🚀 VERSIÓN 0.54 — DASHBOARD P1 UX FOLLOW-UP
 
 📋 **What shipped**
 • Reports (SL/TP + integrity): empty vs error states, 20s timeout, Retry — no blank page
@@ -1132,8 +1132,11 @@ const VERSION_HISTORY = [
 • Portfolio Total vs Gross copy + Derived fallback warning; softer limit watermark
 • Remove dead ExchangeCredentialsModal mount (no opener)
 
+🔧 **Notes**
+• Re-opened to \`main\` — original #387 merged only into the #386 feature branch and never landed
+
 📦 **PRs**
-• dashboard P1 UX follow-up
+• (pending)
 
 ---
 `
