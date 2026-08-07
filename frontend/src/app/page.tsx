@@ -1036,6 +1036,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.49',
+    date: '2026-08-07',
+    change: 'Hourly SL/TP ensure covers short wallets + side-aware close copy',
+    details: `🚀 VERSIÓN 0.49 — SHORT WALLET SL/TP ENSURE
+
+📋 **What shipped**
+• Position SL/TP ensure prefers signed \`quantity\` then \`balance\` (shorts are negative)
+• Failed-ensure Telegram reminder uses BUY cover for SHORT / SELL for LONG
+• Tests: short missing-TP flagged; fully protected short not flagged
+
+🔧 **Notes**
+• Flat-wallet skip (\`abs(balance) ≈ 0\`) already on main; this completes quantity source + reminder side
+
+📦 **PRs**
+• #327
+
+---
+`
   }
 ];
 

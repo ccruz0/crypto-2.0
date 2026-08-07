@@ -352,6 +352,48 @@ class TestEnsureMissingProtection(unittest.TestCase):
             any(c.get("source") == "multilot_tp_heal" for c in result["created"])
         )
 
+    @patch.object(SLTPCheckerService, "_ensure_multilot_tp_heal")
+    @patch.object(SLTPCheckerService, "_create_protection_order")
+    @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+    def test_ensure_creates_missing_tp_for_short(
+        self, mock_check, mock_create, mock_multilot
+    ):
+        """SHORT wallet with SL only: ensure must request create_tp (not create_sl)."""
+        svc = SLTPCheckerService()
+        mock_check.return_value = {
+            "positions_missing_sl_tp": [
+                {
+                    "symbol": "DOGE_USD",
+                    "currency": "DOGE",
+                    "balance": -845.19,
+                    "has_sl": True,
+                    "has_tp": False,
+                    "sl_price": None,
+                    "tp_price": None,
+                    "skip_reminder": False,
+                }
+            ],
+            "total_positions": 1,
+            "oco_issues": {},
+            "checked_at": None,
+        }
+        mock_create.return_value = {
+            "success": True,
+            "sl_order_id": None,
+            "tp_order_id": "tp-short-1",
+        }
+
+        result = svc.ensure_missing_protection(MagicMock())
+
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        self.assertFalse(kwargs["create_sl"])
+        self.assertTrue(kwargs["create_tp"])
+        self.assertTrue(kwargs["force"])
+        mock_multilot.assert_called_once()
+        self.assertEqual(len(result["created"]), 1)
+        self.assertEqual(result["still_missing"], [])
+
 
 class TestHalfProtectedMultilotHeal(unittest.TestCase):
     def test_iter_half_protected_keeps_sl_only_parents(self):
@@ -580,6 +622,94 @@ class TestCheckPositionsUsesUnifiedOrders(unittest.TestCase):
 
         self.assertEqual(result["positions_missing_sl_tp"], [])
         self.assertEqual(result["total_positions"], 0)
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=0.56)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_short_wallet_missing_tp_is_flagged(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        # APT SHORT: negative balance must enter ensure (not skip as "<= 0").
+        # SL covers abs(wallet); TP missing → positions_missing_sl_tp.
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "APT", "balance": "-17.661459559529817"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [
+                {
+                    "instrument_name": "APT_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "17.65",
+                    "order_id": "sl-apt-short-1",
+                    "side": "BUY",
+                }
+            ],
+        }
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        missing = result["positions_missing_sl_tp"]
+        self.assertEqual(result["total_positions"], 1)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("APT", missing[0]["symbol"])
+        self.assertTrue(missing[0]["has_sl"])
+        self.assertFalse(missing[0]["has_tp"])
+        self.assertLess(float(missing[0]["balance"]), 0)
+
+    @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
+    @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=0.07)
+    @patch.object(SLTPCheckerService, "_check_oco_issues", return_value={})
+    @patch("app.services.sl_tp_checker.fetch_unified_open_orders")
+    @patch("app.services.sl_tp_checker.trade_client")
+    def test_short_wallet_fully_protected_not_flagged(
+        self, mock_trade, mock_fetch, _mock_oco, _mock_mark, _mock_entry
+    ):
+        mock_trade.get_account_summary.return_value = {
+            "accounts": [{"currency": "DOGE", "quantity": "-140"}]
+        }
+        mock_fetch.return_value = {
+            "data_verified": True,
+            "trigger_orders_status": "ok",
+            "advanced_orders_status": "ok",
+            "all_raw_orders": [
+                {
+                    "instrument_name": "DOGE_USD",
+                    "order_type": "STOP_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "140",
+                    "order_id": "sl-doge-1",
+                    "side": "BUY",
+                },
+                {
+                    "instrument_name": "DOGE_USD",
+                    "order_type": "TAKE_PROFIT_LIMIT",
+                    "order_status": "ACTIVE",
+                    "quantity": "140",
+                    "order_id": "tp-doge-1",
+                    "side": "BUY",
+                },
+            ],
+        }
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = SLTPCheckerService()
+        result = svc.check_positions_for_sl_tp(db)
+
+        self.assertEqual(result["total_positions"], 1)
+        doge_missing = [
+            m for m in result["positions_missing_sl_tp"] if "DOGE" in str(m.get("symbol", ""))
+        ]
+        self.assertEqual(doge_missing, [])
 
     @patch("app.services.sl_tp_checker._find_recent_entry_order", return_value=None)
     @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=95.0)
