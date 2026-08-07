@@ -3,12 +3,15 @@ on:
   push:
     branches: [main]
     paths:
+      # Runtime image only — tests must not rebuild/recreate prod backend (race with Session Manager).
       - "backend/**"
+      - "!backend/tests/**"
       - "docker-compose.yml"
       - ".github/workflows/deploy-backend.yml"
   workflow_dispatch:
+# Shared with deploy_session_manager.yml so two compose deploys never hit the host at once.
 concurrency:
-  group: deploy-backend
+  group: atp-prod-ec2-deploy
   cancel-in-progress: false
 permissions:
   id-token: write
