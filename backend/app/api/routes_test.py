@@ -683,13 +683,28 @@ async def simulate_alert(
                             
                             # Create SELL order using the same logic as signal_monitor
                             logger.info(f"🔍 [Background] Calling _create_sell_order for {symbol} with amount_usd={bg_watchlist_item.trade_amount_usd}")
-                            order_result = await signal_monitor._create_sell_order(
-                                db=bg_db,
-                                watchlist_item=bg_watchlist_item,
-                                current_price=current_price,
-                                res_up=res_up,
-                                res_down=res_down
-                            )
+                            if force_order:
+                                from unittest.mock import patch
+
+                                with patch(
+                                    "app.utils.trading_guardrails.can_place_real_order",
+                                    return_value=(True, None),
+                                ):
+                                    order_result = await signal_monitor._create_sell_order(
+                                        db=bg_db,
+                                        watchlist_item=bg_watchlist_item,
+                                        current_price=current_price,
+                                        res_up=res_up,
+                                        res_down=res_down,
+                                    )
+                            else:
+                                order_result = await signal_monitor._create_sell_order(
+                                    db=bg_db,
+                                    watchlist_item=bg_watchlist_item,
+                                    current_price=current_price,
+                                    res_up=res_up,
+                                    res_down=res_down,
+                                )
                             logger.info(f"🔍 [Background] _create_sell_order returned: {order_result}")
                             
                             # Check if this is an authentication error (already handled with specific message)
@@ -1072,6 +1087,7 @@ def diagnose_alert_issue(
 def verify_protection(
     symbol: str,
     parent_order_id: Optional[str] = None,
+    entry_side: str = "BUY",
     minutes: int = 30,
     db: Session = Depends(get_db),
 ):
@@ -1086,11 +1102,13 @@ def verify_protection(
     )
 
     symbol = symbol.upper()
+    entry_side_upper = (entry_side or "BUY").upper()
+    side_enum = OrderSideEnum.BUY if entry_side_upper == "BUY" else OrderSideEnum.SELL
     threshold = datetime.now(timezone.utc) - timedelta(minutes=max(1, minutes))
 
     parent_q = db.query(ExchangeOrder).filter(
         ExchangeOrder.symbol == symbol,
-        ExchangeOrder.side == OrderSideEnum.BUY,
+        ExchangeOrder.side == side_enum,
         ExchangeOrder.status == OrderStatusEnum.FILLED,
     )
     if parent_order_id:
@@ -1139,6 +1157,7 @@ def verify_protection(
     return {
         "ok": verified,
         "symbol": symbol,
+        "entry_side": entry_side_upper,
         "parent_order_id": pid,
         "entry": {
             "filled_qty": float(parent.cumulative_quantity or parent.quantity or 0),
@@ -1158,6 +1177,140 @@ def verify_protection(
         },
         "exchange": exchange_status,
         "verified": verified,
+    }
+
+
+@router.post("/test/create-sl-tp-last/{symbol}")
+def test_create_sltp_last(
+    symbol: str,
+    entry_side: str = "BUY",
+    db: Session = Depends(get_db),
+):
+    """Create SL/TP for the most recent filled entry (long=BUY, short=SELL)."""
+    from sqlalchemy import func
+
+    from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
+    from app.services.exchange_sync import exchange_sync_service
+
+    symbol_u = symbol.upper()
+    entry_side_upper = (entry_side or "BUY").upper()
+    if entry_side_upper not in ("BUY", "SELL"):
+        raise HTTPException(status_code=400, detail="entry_side must be BUY or SELL")
+    side_enum = OrderSideEnum.BUY if entry_side_upper == "BUY" else OrderSideEnum.SELL
+
+    last_order = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol == symbol_u,
+            ExchangeOrder.side == side_enum,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+        )
+        .order_by(
+            func.coalesce(
+                ExchangeOrder.exchange_update_time,
+                ExchangeOrder.exchange_create_time,
+                ExchangeOrder.created_at,
+            ).desc()
+        )
+        .first()
+    )
+    if not last_order:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No filled {entry_side_upper} orders found for {symbol_u}",
+        )
+
+    filled_price = float(last_order.avg_price or last_order.price or 0)
+    filled_qty = float(last_order.cumulative_quantity or last_order.quantity or 0)
+    if filled_price <= 0 or filled_qty <= 0:
+        raise HTTPException(status_code=400, detail="Invalid fill price/qty on parent order")
+
+    oid = str(last_order.exchange_order_id)
+    side_val = last_order.side.value if hasattr(last_order.side, "value") else str(last_order.side)
+    creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
+        db=db,
+        symbol=symbol_u,
+        side=str(side_val).upper(),
+        filled_price=filled_price,
+        filled_qty=filled_qty,
+        order_id=oid,
+        force=False,
+        source="test_create_sltp_last",
+        strict_percentages=True,
+    )
+    sl_id = (creation_result.get("sl_result") or {}).get("order_id")
+    tp_id = (creation_result.get("tp_result") or {}).get("order_id")
+    ok = bool(sl_id) and bool(tp_id)
+    return {
+        "ok": ok,
+        "symbol": symbol_u,
+        "entry_side": entry_side_upper,
+        "order_id": oid,
+        "sl_order_id": sl_id,
+        "tp_order_id": tp_id,
+        "creation_result": creation_result,
+    }
+
+
+@router.post("/test/create-sl-tp/{order_id}")
+def test_create_sltp_for_order(
+    order_id: str,
+    symbol: str,
+    side: str,
+    price: float,
+    quantity: float,
+    db: Session = Depends(get_db),
+):
+    """Create SL/TP for a known filled order id (no auth — test harness only)."""
+    from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
+    from app.services.exchange_sync import exchange_sync_service
+
+    symbol_u = symbol.upper()
+    side_upper = side.upper()
+    side_enum = OrderSideEnum.BUY if side_upper == "BUY" else OrderSideEnum.SELL
+    order = db.query(ExchangeOrder).filter(ExchangeOrder.exchange_order_id == str(order_id)).first()
+    if not order:
+        order = ExchangeOrder(
+            exchange_order_id=str(order_id),
+            symbol=symbol_u,
+            side=side_enum,
+            order_type="MARKET",
+            status=OrderStatusEnum.FILLED,
+            price=price,
+            quantity=quantity,
+            cumulative_quantity=quantity,
+            avg_price=price,
+            exchange_update_time=datetime.now(timezone.utc),
+        )
+        db.add(order)
+        db.commit()
+        db.refresh(order)
+
+    filled_price = float(order.avg_price or order.price or price)
+    filled_qty = float(order.cumulative_quantity or order.quantity or quantity)
+    side_val = order.side.value if hasattr(order.side, "value") else str(order.side)
+    creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
+        db=db,
+        symbol=symbol_u,
+        side=str(side_val).upper(),
+        filled_price=filled_price,
+        filled_qty=filled_qty,
+        order_id=str(order_id),
+        force=False,
+        source="test_create_sltp_order",
+        strict_percentages=True,
+    )
+    sl_id = (creation_result.get("sl_result") or {}).get("order_id")
+    tp_id = (creation_result.get("tp_result") or {}).get("order_id")
+    return {
+        "ok": bool(sl_id) and bool(tp_id),
+        "order_id": str(order_id),
+        "symbol": symbol_u,
+        "side": str(side_val).upper(),
+        "sl_order_id": sl_id,
+        "tp_order_id": tp_id,
+        "creation_result": creation_result,
     }
 
 
