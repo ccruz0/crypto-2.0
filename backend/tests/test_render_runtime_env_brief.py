@@ -68,6 +68,7 @@ def _render_in_fixture(tmp_path: Path, runtime_env_body: str) -> tuple[subproces
 def test_render_script_declares_brief_ssm_and_preserve():
     script_text = RENDER_SCRIPT.read_text(encoding="utf-8")
     assert 'SSM_BRIEF_API_KEY="/automated-trading-platform/prod/brief/api_key"' in script_text
+    assert 'SSM_BRIEF_TELEGRAM_CHAT_ID="/automated-trading-platform/prod/brief/telegram_chat_id"' in script_text
     assert 'SSM_BRIEF_GRAPH_CLIENT_ID="/automated-trading-platform/prod/brief/graph_client_id"' in script_text
     assert 'SSM_TELEGRAM_API_ID="/automated-trading-platform/prod/telegram/api_id"' in script_text
     assert 'SSM_TELEGRAM_API_HASH="/automated-trading-platform/prod/telegram/api_hash"' in script_text
@@ -76,6 +77,7 @@ def test_render_script_declares_brief_ssm_and_preserve():
         "PRESERVE_BRIEF_MAILBOXES_PATH",
         "PRESERVE_BRIEF_RATE_LIMIT_PER_MINUTE",
         "PRESERVE_BRIEF_ICS_URLS",
+        "PRESERVE_BRIEF_TELEGRAM_CHAT_ID",
         "PRESERVE_BRIEF_GRAPH_TENANT_ID",
         "PRESERVE_BRIEF_GRAPH_CLIENT_ID",
         "PRESERVE_BRIEF_GRAPH_CLIENT_SECRET",
@@ -101,6 +103,7 @@ def test_render_preserves_brief_and_telegram_user_api(tmp_path: Path):
             BRIEF_MAILBOXES_PATH=/app/secrets/brief_mailboxes.json
             BRIEF_RATE_LIMIT_PER_MINUTE=30
             BRIEF_ICS_URLS=https://example.test/cal.ics
+            BRIEF_TELEGRAM_CHAT_ID=-1004449398414
             TELEGRAM_API_ID=12345678
             TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
             TELEGRAM_SESSION_PATH=/data/telegram/hilovivo.session
@@ -112,10 +115,12 @@ def test_render_preserves_brief_and_telegram_user_api(tmp_path: Path):
     assert rendered["BRIEF_MAILBOXES_PATH"] == "/app/secrets/brief_mailboxes.json"
     assert rendered["BRIEF_RATE_LIMIT_PER_MINUTE"] == "30"
     assert rendered["BRIEF_ICS_URLS"] == "https://example.test/cal.ics"
+    assert rendered["BRIEF_TELEGRAM_CHAT_ID"] == "-1004449398414"
     assert rendered["TELEGRAM_API_ID"] == "12345678"
     assert rendered["TELEGRAM_API_HASH"] == "abcdef0123456789abcdef0123456789"
     assert rendered["TELEGRAM_SESSION_PATH"] == "/data/telegram/hilovivo.session"
     assert "BRIEF_SOURCE=preserved" in result.stdout
+    assert "BRIEF_TELEGRAM_CHAT_ID=YES" in result.stdout
     assert "TELEGRAM_USER_API_SOURCE=preserved" in result.stdout
     assert "BRIEF_API_KEY=YES" in result.stdout
     assert "TELEGRAM_USER_API=YES" in result.stdout
@@ -134,6 +139,7 @@ def test_render_applies_brief_path_defaults_when_absent(tmp_path: Path):
     )
     assert result.returncode == 0, result.stderr + "\n" + result.stdout
     assert "BRIEF_API_KEY" not in rendered
+    assert "BRIEF_TELEGRAM_CHAT_ID" not in rendered
     assert rendered["BRIEF_MAILBOXES_PATH"] == "/app/secrets/brief_mailboxes.json"
     assert rendered["BRIEF_RATE_LIMIT_PER_MINUTE"] == "30"
     assert rendered["TELEGRAM_SESSION_PATH"] == "/data/telegram/hilovivo.session"
