@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { TopCoin, TradingSignals, saveCoinSettings, updateCoinConfig, updateWatchlistAlert, updateBuyAlert, updateSellAlert, StrategyDecision, TradingConfig } from '@/app/api';
-import { formatDateTime, formatNumber, normalizeSymbolKey } from '@/utils/formatting';
+import { formatDateTime, formatFixed, formatNumber, isFiniteNumber, normalizeSymbolKey } from '@/utils/formatting';
 import { logger } from '@/utils/logger';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import { usePriceStream } from '@/app/context/PriceStreamContext';
@@ -831,11 +831,12 @@ export default function WatchlistTab({
     if (signal) {
       lines.push('');
       lines.push('📈 Indicadores:');
-      if (signal.rsi !== undefined) lines.push(`  • RSI: ${signal.rsi.toFixed(2)}`);
-      if (signal.ema10 !== undefined) lines.push(`  • EMA10: $${formatNumber(signal.ema10, coin?.instrument_name)}`);
-      if (signal.ma50 !== undefined) lines.push(`  • MA50: $${formatNumber(signal.ma50, coin?.instrument_name)}`);
-      if (signal.ma200 !== undefined) lines.push(`  • MA200: $${formatNumber(signal.ma200, coin?.instrument_name)}`);
-      if (signal.volume_ratio !== undefined) lines.push(`  • Volume Ratio: ${signal.volume_ratio.toFixed(2)}x`);
+      // Guard with isFiniteNumber: `null !== undefined` is true, so bare `.toFixed` crashes
+      if (isFiniteNumber(signal.rsi)) lines.push(`  • RSI: ${formatFixed(signal.rsi)}`);
+      if (isFiniteNumber(signal.ema10)) lines.push(`  • EMA10: $${formatNumber(signal.ema10, coin?.instrument_name)}`);
+      if (isFiniteNumber(signal.ma50)) lines.push(`  • MA50: $${formatNumber(signal.ma50, coin?.instrument_name)}`);
+      if (isFiniteNumber(signal.ma200)) lines.push(`  • MA200: $${formatNumber(signal.ma200, coin?.instrument_name)}`);
+      if (isFiniteNumber(signal.volume_ratio)) lines.push(`  • Volume Ratio: ${formatFixed(signal.volume_ratio)}x`);
       
       lines.push('');
       lines.push('🎯 Señales:');
@@ -865,29 +866,29 @@ export default function WatchlistTab({
     
     if (signal) {
       // RSI - check if below buy threshold (typically 40)
-      const rsiOk = signal.rsi !== undefined && signal.rsi < 40;
-      lines.push(`  • RSI: ${signal.rsi !== undefined ? signal.rsi.toFixed(2) : 'N/A'} ${rsiOk ? '✓' : '✗'}`);
+      const rsiOk = isFiniteNumber(signal.rsi) && signal.rsi < 40;
+      lines.push(`  • RSI: ${formatFixed(signal.rsi)} ${rsiOk ? '✓' : '✗'}`);
       
       // EMA10 - always shown
-      lines.push(`  • EMA10: ${signal.ema10 !== undefined ? `$${formatNumber(signal.ema10, coin?.instrument_name)}` : 'N/A'} ✓`);
+      lines.push(`  • EMA10: ${isFiniteNumber(signal.ema10) ? `$${formatNumber(signal.ema10, coin?.instrument_name)}` : 'N/A'} ✓`);
       
       // MA50 - check if MA50 > EMA10
-      const ma50Ok = signal.ma50 !== undefined && signal.ema10 !== undefined && signal.ma50 > signal.ema10;
-      lines.push(`  • MA50: ${signal.ma50 !== undefined ? `$${formatNumber(signal.ma50, coin?.instrument_name)}` : 'N/A'} ${ma50Ok ? '✓' : '✗'}`);
-      if (signal.ma50 !== undefined && signal.ema10 !== undefined) {
+      const ma50Ok = isFiniteNumber(signal.ma50) && isFiniteNumber(signal.ema10) && signal.ma50 > signal.ema10;
+      lines.push(`  • MA50: ${isFiniteNumber(signal.ma50) ? `$${formatNumber(signal.ma50, coin?.instrument_name)}` : 'N/A'} ${ma50Ok ? '✓' : '✗'}`);
+      if (isFiniteNumber(signal.ma50) && isFiniteNumber(signal.ema10)) {
         lines.push(`    (MA50 ${signal.ma50 > signal.ema10 ? '>' : '<'} EMA10)`);
       }
       
       // MA200 - check if Price > MA200
-      const ma200Ok = coin?.current_price !== undefined && signal.ma200 !== undefined && coin.current_price > signal.ma200;
-      lines.push(`  • MA200: ${signal.ma200 !== undefined ? `$${formatNumber(signal.ma200, coin?.instrument_name)}` : 'N/A'} ${ma200Ok ? '✓' : '✗'}`);
-      if (coin?.current_price !== undefined && signal.ma200 !== undefined) {
+      const ma200Ok = isFiniteNumber(coin?.current_price) && isFiniteNumber(signal.ma200) && coin.current_price > signal.ma200;
+      lines.push(`  • MA200: ${isFiniteNumber(signal.ma200) ? `$${formatNumber(signal.ma200, coin?.instrument_name)}` : 'N/A'} ${ma200Ok ? '✓' : '✗'}`);
+      if (isFiniteNumber(coin?.current_price) && isFiniteNumber(signal.ma200)) {
         lines.push(`    (Precio ${coin.current_price > signal.ma200 ? '>' : '<'} MA200)`);
       }
       
       // Volume Ratio
-      const volumeOk = signal.volume_ratio !== undefined && signal.volume_ratio >= 0.5;
-      lines.push(`  • Volume Ratio: ${signal.volume_ratio !== undefined ? `${signal.volume_ratio.toFixed(2)}x` : 'N/A'} ${volumeOk ? '✓' : '✗'}`);
+      const volumeOk = isFiniteNumber(signal.volume_ratio) && signal.volume_ratio >= 0.5;
+      lines.push(`  • Volume Ratio: ${isFiniteNumber(signal.volume_ratio) ? `${formatFixed(signal.volume_ratio)}x` : 'N/A'} ${volumeOk ? '✓' : '✗'}`);
       
       lines.push('');
       lines.push('🎯 Señales del Backend:');
@@ -1018,8 +1019,8 @@ export default function WatchlistTab({
     } else if (signal?.stop_loss_take_profit?.stop_loss) {
       const sl = signal.stop_loss_take_profit.stop_loss;
       lines.push(`🛑 Stop Loss:`);
-      lines.push(`  • Conservadora: ${sl.conservative.percentage.toFixed(2)}%`);
-      lines.push(`  • Agresiva: ${sl.aggressive.percentage.toFixed(2)}%`);
+      lines.push(`  • Conservadora: ${formatFixed(sl.conservative?.percentage)}%`);
+      lines.push(`  • Agresiva: ${formatFixed(sl.aggressive?.percentage)}%`);
     }
     
     if (tpPercent) {
@@ -1033,17 +1034,17 @@ export default function WatchlistTab({
     } else if (signal?.stop_loss_take_profit?.take_profit) {
       const tp = signal.stop_loss_take_profit.take_profit;
       lines.push(`🎯 Take Profit:`);
-      lines.push(`  • Conservadora: ${tp.conservative.percentage.toFixed(2)}%`);
-      lines.push(`  • Agresiva: ${tp.aggressive.percentage.toFixed(2)}%`);
+      lines.push(`  • Conservadora: ${formatFixed(tp.conservative?.percentage)}%`);
+      lines.push(`  • Agresiva: ${formatFixed(tp.aggressive?.percentage)}%`);
     }
     
     if (signal) {
       lines.push('');
       lines.push('📈 Indicadores actuales:');
-      if (signal.rsi !== undefined) lines.push(`  • RSI: ${signal.rsi.toFixed(2)}`);
-      if (signal.ema10 !== undefined) lines.push(`  • EMA10: $${formatNumber(signal.ema10, coin?.instrument_name)}`);
-      if (signal.ma50 !== undefined) lines.push(`  • MA50: $${formatNumber(signal.ma50, coin?.instrument_name)}`);
-      if (signal.ma200 !== undefined) lines.push(`  • MA200: $${formatNumber(signal.ma200, coin?.instrument_name)}`);
+      if (isFiniteNumber(signal.rsi)) lines.push(`  • RSI: ${formatFixed(signal.rsi)}`);
+      if (isFiniteNumber(signal.ema10)) lines.push(`  • EMA10: $${formatNumber(signal.ema10, coin?.instrument_name)}`);
+      if (isFiniteNumber(signal.ma50)) lines.push(`  • MA50: $${formatNumber(signal.ma50, coin?.instrument_name)}`);
+      if (isFiniteNumber(signal.ma200)) lines.push(`  • MA200: $${formatNumber(signal.ma200, coin?.instrument_name)}`);
     }
     
     return lines.join('\n');
