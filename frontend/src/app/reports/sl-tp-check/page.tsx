@@ -60,16 +60,21 @@ export default function SlTpCheckReportPage() {
   const [storedAt, setStoredAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [emptyMessage, setEmptyMessage] = useState<string | null>(null);
   const [creatingKey, setCreatingKey] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const fetchReport = useCallback(async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 20000);
     try {
       setLoading(true);
       setError(null);
+      setEmptyMessage(null);
       const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/monitoring/reports/sl-tp-check/latest`, {
         cache: 'no-store',
+        signal: controller.signal,
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -78,7 +83,10 @@ export default function SlTpCheckReportPage() {
       if (data.status === 'not_found') {
         setReport(null);
         setStoredAt(null);
-        setError(data.message || 'No SL/TP Check report available yet. Run the workflow first.');
+        setEmptyMessage(
+          data.message ||
+            'No SL/TP Check report yet. Run the SL/TP check workflow (or Refresh on this page after deploy) to create one.'
+        );
         return;
       }
       if (data.status === 'success' && data.report) {
@@ -88,10 +96,15 @@ export default function SlTpCheckReportPage() {
         setError('Invalid report format received from server.');
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-      setError(errorMsg);
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setError('Request timed out after 20s. The API may be overloaded — retry in a moment.');
+      } else {
+        const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+        setError(errorMsg);
+      }
       console.error('Failed to fetch SL/TP check report:', err);
     } finally {
+      window.clearTimeout(timeoutId);
       setLoading(false);
     }
   }, []);
@@ -198,14 +211,43 @@ export default function SlTpCheckReportPage() {
     );
   }
 
+  if (emptyMessage && !report) {
+    return (
+      <div className="min-h-screen bg-gray-50 py-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="bg-white rounded-lg shadow p-6">
+            <h1 className="text-2xl font-bold text-gray-900 mb-4">SL/TP Check Report</h1>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-slate-800">
+              <p className="font-medium">No report available</p>
+              <p className="mt-1 text-sm text-slate-600">{emptyMessage}</p>
+            </div>
+            <div className="mt-4 flex gap-4 text-sm">
+              <a href="/" className="text-blue-600 hover:text-blue-800 underline">
+                ← Back to Dashboard
+              </a>
+              <button
+                type="button"
+                onClick={() => void fetchReport()}
+                className="text-blue-600 hover:text-blue-800 underline"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (error && !report) {
     return (
       <div className="min-h-screen bg-gray-50 py-8">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="bg-white rounded-lg shadow p-6">
             <h1 className="text-2xl font-bold text-gray-900 mb-4">SL/TP Check Report</h1>
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-              <p className="text-yellow-800">{error}</p>
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <p className="text-red-800 font-medium">Failed to load report</p>
+              <p className="text-red-700 text-sm mt-1">{error}</p>
             </div>
             <div className="mt-4 flex gap-4 text-sm">
               <a href="/" className="text-blue-600 hover:text-blue-800 underline">

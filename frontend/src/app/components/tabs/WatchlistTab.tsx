@@ -10,6 +10,7 @@ import { logger } from '@/utils/logger';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import { usePriceStream } from '@/app/context/PriceStreamContext';
 import { isAutoPreset, toWatchlistStrategySelectValue } from '@/types/dashboard';
+import { hasSisterBook, sisterInstrument } from '@/utils/sisterBooks';
 
 interface WatchlistTabProps {
   botStatus: { is_running: boolean; status: 'running' | 'stopped'; reason: string | null; live_trading_enabled?: boolean; mode?: 'LIVE' | 'DRY_RUN'; kill_switch_on?: boolean } | null;
@@ -22,6 +23,8 @@ interface WatchlistTabProps {
   onToggleLiveTrading: () => Promise<void>;
   // Pass data from parent component
   topCoins?: TopCoin[];
+  /** Set when top-coins fetch fails; keep showing last known list when present. */
+  topCoinsError?: string | null;
   signals?: Record<string, TradingSignals | null>;
   coinTradeStatus?: Record<string, boolean>;
   coinMarginStatus?: Record<string, boolean>;
@@ -75,6 +78,7 @@ export default function WatchlistTab({
   fastQueueRateLimited,
   onToggleLiveTrading,
   topCoins: parentTopCoins,
+  topCoinsError = null,
   signals: parentSignals,
   coinTradeStatus: parentCoinTradeStatus,
   coinMarginStatus: parentCoinMarginStatus,
@@ -1179,12 +1183,24 @@ export default function WatchlistTab({
     </th>
   );
 
+  const instrumentNames = useMemo(
+    () => topCoins.map((c) => c?.instrument_name).filter(Boolean) as string[],
+    [topCoins]
+  );
+
   if (watchlistLoading && topCoins.length === 0) {
     return <div>Loading watchlist...</div>;
   }
 
   return (
     <div>
+      {topCoinsError && (
+        <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+          {topCoins.length > 0
+            ? `Showing last known watchlist — refresh failed: ${topCoinsError}`
+            : `Watchlist unavailable: ${topCoinsError}`}
+        </div>
+      )}
       <div className="flex justify-between items-center mb-6">
         <div className="flex items-center gap-3">
           <h2 className="text-xl font-semibold">Watchlist</h2>
@@ -1339,16 +1355,16 @@ export default function WatchlistTab({
                         <div
                           aria-hidden
                           className="pointer-events-none absolute inset-y-0 left-0 z-[1] flex items-center overflow-hidden"
-                          style={{ width: 'min(1100px, 92vw)' }}
+                          style={{ width: 'min(420px, 55vw)' }}
                         >
-                          <span className="select-none whitespace-nowrap pl-24 text-xl font-black uppercase tracking-[0.35em] text-amber-600/25 dark:text-amber-200/20 -rotate-6 sm:text-2xl">
+                          <span className="select-none whitespace-nowrap pl-16 text-sm font-semibold uppercase tracking-widest text-amber-700/40 dark:text-amber-200/30 -rotate-6 sm:text-base">
                             {globalAtOrderLimit && coinOpenCount < perCoinLimit
-                              ? 'Global limit — no new orders'
-                              : 'Coin limit — no new orders'}
+                              ? 'Global limit'
+                              : 'Coin limit'}
                           </span>
                         </div>
                       )}
-                      <span className="relative z-[2]">
+                      <span className="relative z-[2] inline-flex flex-col gap-0.5 items-start">
                       <a
                         href={getCryptoPageUrl(coin?.instrument_name)}
                         target="_blank"
@@ -1358,6 +1374,14 @@ export default function WatchlistTab({
                       >
                         {coin?.instrument_name}
                       </a>
+                      {hasSisterBook(coin?.instrument_name, instrumentNames) && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                          title={`Also listed as ${sisterInstrument(coin?.instrument_name)} — same economic base, separate Crypto.com book`}
+                        >
+                          sister {sisterInstrument(coin?.instrument_name)?.split('_')[1]}
+                        </span>
+                      )}
                       </span>
                     </td>
                     <td className="px-4 py-2">
