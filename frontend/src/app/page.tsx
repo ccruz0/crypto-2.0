@@ -1073,7 +1073,7 @@ const VERSION_HISTORY = [
 • Reported net_qty still scales to wallet when pinned qty exceeds balance
 
 📦 **PRs**
-• (this PR)
+• #383
 
 ---
 `
