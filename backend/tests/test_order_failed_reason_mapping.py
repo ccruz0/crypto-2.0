@@ -40,3 +40,25 @@ def test_reason_code_es_label_one_active():
 def test_max_open_trades_system_core():
     code = classify_exchange_error("system_core_max_open_trades count=10 max=10")
     assert code == ReasonCode.SYSTEM_CORE_MAX_OPEN_TRADES.value
+
+
+def test_below_min_order_size_maps_clear_code():
+    msg = "500 Server Error: BELOW_MIN_ORDER_SIZE (code: 415)"
+    code = classify_exchange_error(msg)
+    assert code == ReasonCode.BELOW_MIN_ORDER_SIZE.value
+    assert code != ReasonCode.EXCHANGE_ERROR_UNKNOWN.value
+
+
+def test_below_min_order_size_telegram_copy():
+    msg = "500 Server Error: BELOW_MIN_ORDER_SIZE (code: 415)"
+    code = classify_exchange_error(msg)
+    text = format_order_failed_telegram(
+        symbol="DOGE_USD",
+        side="SELL",
+        error_msg=msg,
+        reason_code=code,
+    )
+    assert "BELOW_MIN_ORDER_SIZE" in text
+    assert "Cantidad bajo el mínimo" in text
+    assert "EXCHANGE_ERROR_UNKNOWN" not in text
+    assert "Exchange Error Unknown" not in text
