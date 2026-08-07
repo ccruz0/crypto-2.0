@@ -1133,7 +1133,7 @@ const VERSION_HISTORY = [
 • Remove dead ExchangeCredentialsModal mount (no opener)
 
 📦 **PRs**
-• dashboard P1 UX follow-up
+• #387
 
 ---
 `
