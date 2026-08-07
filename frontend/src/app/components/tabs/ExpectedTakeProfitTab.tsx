@@ -23,6 +23,7 @@ import {
   tpFillProximityPct,
   tpFillProximityToneClass,
 } from '@/utils/tpFillProximity';
+import { hasSisterBook, sisterInstrument } from '@/utils/sisterBooks';
 
 type SortField =
   | 'symbol'
@@ -324,6 +325,11 @@ export default function ExpectedTakeProfitTab({
     [expectedTPSummary]
   );
 
+  const etpInstrumentNames = useMemo(
+    () => (expectedTPSummary || []).map((item) => item.symbol).filter(Boolean),
+    [expectedTPSummary]
+  );
+
   const ghostPreview = useMemo(() => {
     if (!ghostProtectionAlerts.length) return null;
     const byBase = new Map<string, number>();
@@ -547,7 +553,17 @@ export default function ExpectedTakeProfitTab({
                     </button>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-200">
-                    {item.symbol}
+                    <div className="flex flex-col gap-0.5 items-start">
+                      <span>{item.symbol}</span>
+                      {hasSisterBook(item.symbol, etpInstrumentNames) && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                          title={`Also listed as ${sisterInstrument(item.symbol)} — same economic base, separate book`}
+                        >
+                          sister {sisterInstrument(item.symbol)?.split('_')[1]}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <div className="flex flex-col gap-1 items-start">

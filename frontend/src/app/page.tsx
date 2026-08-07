@@ -12,7 +12,6 @@ import MonitoringPanel from '@/app/components/MonitoringPanel';
 import ErrorBoundary from '@/app/components/ErrorBoundary';
 import StrategyConfigModal from '@/app/components/StrategyConfigModal';
 import GlobalSettingsModal from '@/app/components/GlobalSettingsModal';
-import ExchangeCredentialsModal from '@/app/components/ExchangeCredentialsModal';
 import PortfolioTab from '@/app/components/tabs/PortfolioTab';
 import WatchlistTab from '@/app/components/tabs/WatchlistTab';
 import OrdersTab from '@/app/components/tabs/OrdersTab';
@@ -1119,6 +1118,25 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.53',
+    date: '2026-08-07',
+    change: 'Dashboard P1 follow-up: reports empty states, sister books, fetch resilience',
+    details: `🚀 VERSIÓN 0.53 — DASHBOARD P1 UX FOLLOW-UP
+
+📋 **What shipped**
+• Reports (SL/TP + integrity): empty vs error states, 20s timeout, Retry — no blank page
+• Sister-book badge for dual USD/USDT rows (Watchlist + Expected TP)
+• Keep last-known System Health / Portfolio / Watchlist on transient fetch failures
+• Portfolio Total vs Gross copy + Derived fallback warning; softer limit watermark
+• Remove dead ExchangeCredentialsModal mount (no opener)
+
+📦 **PRs**
+• #387
+
+---
+`
   }
 ];
 
@@ -1242,7 +1260,6 @@ function DashboardPageContent() {
   const [signals, setSignals] = useState<Record<string, TradingSignals | null>>({});
   const [showSignalConfig, setShowSignalConfig] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
-  const [showExchangeCredentialsModal, setShowExchangeCredentialsModal] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [dataSourceStatus, setDataSourceStatus] = useState<DataSourceStatus | null>(null);
   const [tradingConfig, setTradingConfig] = useState<TradingConfig | null>(null);
@@ -5105,6 +5122,7 @@ function resolveDecisionIndexColor(value: number): string {
                 }
               }}
               topCoins={topCoins}
+              topCoinsError={topCoinsError}
               signals={signals}
               coinTradeStatus={coinTradeStatus}
               coinMarginStatus={coinMarginStatus}
@@ -5599,13 +5617,6 @@ function resolveDecisionIndexColor(value: number): string {
         onClose={() => setShowGlobalSettings(false)}
         tradingLimits={tradingLimits}
         onSave={handleSaveGlobalSettings}
-      />
-
-      {/* Exchange credentials: persisted to runtime.env; backend restart required for portfolio sync */}
-      <ExchangeCredentialsModal
-        isOpen={showExchangeCredentialsModal}
-        onClose={() => setShowExchangeCredentialsModal(false)}
-        onSaved={() => fetchPortfolio({ showLoader: false, forceRefresh: true })}
       />
     </div>
   );
