@@ -112,6 +112,8 @@ export default function DashboardTabNav({
           <button
             key={tab.id}
             type="button"
+            data-tab={tab.id}
+            data-testid={`dashboard-tab-${tab.id}`}
             onClick={() => onTabChange(tab.id)}
             className={tabButtonClass(activeTab === tab.id)}
           >

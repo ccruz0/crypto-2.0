@@ -1,11 +1,13 @@
 'use client';
 
 import '@/lib/polyfill';
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { getDashboard, getOpenOrders, getOrderHistory, getTopCoins, saveCoinSettings, getTradingSignals, getDataSourcesStatus, getTradingConfig, saveTradingConfig, updateCoinConfig, addCustomTopCoin, removeCustomTopCoin, getDashboardState, getDashboardSnapshot, quickOrder, updateWatchlistAlert, updateBuyAlert, updateSellAlert, simulateAlert, deleteDashboardItemBySymbol, toggleLiveTrading, getTPSLOrderValues, getOpenOrdersSummary, dashboardBalancesToPortfolioAssets, getExpectedTakeProfitSummary, getExpectedTakeProfitDetails, getTelegramMessages, fixBackendHealth, DashboardState, DashboardBalance, WatchlistItem, OpenOrder, PortfolioAsset, TradingSignals, TopCoin, DataSourceStatus, TradingConfig, CoinSettings, TPSLOrderValues, UnifiedOpenOrder, OpenPosition, ExpectedTPSummary, ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPMatchedLot, SimulateAlertResponse, TelegramMessage, StrategyDecision } from '@/app/api';
 import { getApiUrl } from '@/lib/environment';
 import { MonitoringNotificationsProvider, useMonitoringNotifications } from '@/app/context/MonitoringNotificationsContext';
 import { PriceStreamProvider } from '@/app/context/PriceStreamContext';
+import { parseDashboardTabParam } from '@/utils/dashboardTabs';
 import MonitoringPanel from '@/app/components/MonitoringPanel';
 import ErrorBoundary from '@/app/components/ErrorBoundary';
 import StrategyConfigModal from '@/app/components/StrategyConfigModal';
@@ -213,7 +215,9 @@ export default function DashboardPage() {
   return (
     <MonitoringNotificationsProvider>
       <PriceStreamProvider>
-        <DashboardPageContent />
+        <Suspense fallback={<div className="min-h-screen bg-gray-50 dark:bg-slate-900 p-4 text-gray-600 dark:text-gray-300">Loading dashboard…</div>}>
+          <DashboardPageContent />
+        </Suspense>
       </PriceStreamProvider>
     </MonitoringNotificationsProvider>
   );
@@ -1013,6 +1017,25 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.48',
+    date: '2026-08-07',
+    change: 'Dashboard tab deep-links via ?tab= (URL sync)',
+    details: `🚀 VERSIÓN 0.48 — TAB URL ROUTING
+
+📋 **What shipped**
+• Active dashboard tab syncs with \`?tab=\` (e.g. \`/?tab=watchlist\`, \`/?tab=monitoring\`)
+• Tab clicks / Version History badge update the URL via push (back/forward works)
+• Tab buttons expose \`data-tab\` / \`data-testid\` for reliable automation
+• Invalid or missing \`tab\` falls back to Portfolio
+
+🔧 **Technical notes**
+• parseDashboardTabParam in frontend/src/utils/dashboardTabs.ts
+• useSearchParams wrapped in Suspense on the dashboard page
+
+---
+`
   }
 ];
 
@@ -1023,7 +1046,33 @@ function getCurrentVersion(): string {
 
 function DashboardPageContent() {
   const { unreadCount: unreadMonitoringCount, handleNewMessages, markAllAsRead } = useMonitoringNotifications();
-  const [activeTab, setActiveTab] = useState<Tab>('portfolio');
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tabFromUrl = parseDashboardTabParam(searchParams.get('tab'));
+  const [activeTab, setActiveTabState] = useState<Tab>(() => tabFromUrl ?? 'portfolio');
+
+  // Keep React state aligned with URL (deep links, browser back/forward).
+  useEffect(() => {
+    const next = tabFromUrl ?? 'portfolio';
+    setActiveTabState((prev) => (prev === next ? prev : next));
+  }, [tabFromUrl]);
+
+  const setActiveTab = useCallback(
+    (tab: Tab) => {
+      setActiveTabState(tab);
+      const params = new URLSearchParams(searchParams.toString());
+      if (tab === 'portfolio') {
+        params.delete('tab');
+      } else {
+        params.set('tab', tab);
+      }
+      const qs = params.toString();
+      // push (not replace) so browser back/forward moves between tabs
+      router.push(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname, searchParams]
+  );
   const [loading, setLoading] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [portfolio, setPortfolio] = useState<{ assets: PortfolioAsset[], total_value_usd: number; total_assets_usd?: number; total_collateral_usd?: number; total_borrowed_usd?: number; portfolio_value_source?: string } | null>(null);
