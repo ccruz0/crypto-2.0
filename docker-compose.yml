@@ -75,7 +75,7 @@ services:
       - RUN_TELEGRAM=false
       - USE_CRYPTO_PROXY=false
       - API_BASE_URL=http://localhost:8002
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - DISABLE_AUTH=true
       - ENABLE_CORS=1
       - PYTHONUNBUFFERED=1
@@ -133,7 +133,7 @@ services:
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
@@ -219,7 +219,7 @@ services:
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       # Force internal API URL for Docker service-to-service communication
       - API_BASE_URL=http://backend-aws:8002
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
       # Build fingerprint: baked into image (Dockerfile.aws ENV + /app/.git_sha); entrypoint promotes file -> ATP_* when needed.
       # Do not override ATP_GIT_SHA here — compose ${GIT_SHA:-unknown} clobbers image env on manual `up` without GIT_SHA exported.
@@ -358,7 +358,7 @@ services:
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       - API_BASE_URL=http://backend-aws-canary:8002
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
       - UVICORN_WORKERS=1
@@ -491,7 +491,6 @@ services:
       - .env.aws
     environment:
       - NODE_ENV=${NODE_ENV:-development}
-      - FRONTEND_PORT=3000
       - NEXT_PUBLIC_API_URL=http://localhost:8002/api
       - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-local}
     ports:
@@ -519,7 +518,7 @@ services:
           cpus: "1.0"
           memory: "512M"
     depends_on:
-      backend-dev:
+      backend:
         condition: service_healthy
     profiles:
       - local
