@@ -1081,23 +1081,6 @@ const VERSION_HISTORY = [
   {
     version: '0.51',
     date: '2026-08-07',
-<<<<<<< HEAD
-    change: 'Dashboard Positions N/limit = bot exposure; ghost TP + naked short alerts',
-    details: `🚀 VERSIÓN 0.51 — DASHBOARD POSITION COUNTS + PROTECTION RISK
-
-📋 **What shipped**
-• Watchlist/Portfolio Positions N/limit now matches Signal Monitor (bot entry slots), not pending TP legs
-• System Health shows bot positions vs exchange open orders separately
-• Ghost/orphan SL-TP alerts when protective qty ≫ wallet; naked short (0 TP coverage) banners on Expected TP / Orders
-• Settings Escape + backdrop close; Volume labeled as ×avg ratio; EN labels for critical EN/ES mix
-
-🔧 **Notes**
-• open_tp_counts / open_protective_counts / ghost_protection_alerts added to /dashboard/state
-• Does not auto-cancel ghost legs on the exchange (human action)
-
-📦 **PRs**
-• #386
-=======
     change: 'ORDER FAILED maps BELOW_MIN_ORDER_SIZE (415) to a clear reason',
     details: `🚀 VERSIÓN 0.51 — BELOW_MIN_ORDER_SIZE REASON CODE
 
@@ -1111,7 +1094,28 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #385
->>>>>>> origin/main
+
+---
+`
+  },
+  {
+    version: '0.52',
+    date: '2026-08-07',
+    change: 'Dashboard Positions N/limit = bot exposure; ghost TP + naked short alerts',
+    details: `🚀 VERSIÓN 0.52 — DASHBOARD POSITION COUNTS + PROTECTION RISK
+
+📋 **What shipped**
+• Watchlist/Portfolio Positions N/limit now matches Signal Monitor (bot entry slots), not pending TP legs
+• System Health shows bot positions vs exchange open orders separately
+• Ghost/orphan SL-TP alerts when protective qty ≫ wallet; naked short (0 TP coverage) banners on Expected TP / Orders
+• Settings Escape + backdrop close; Volume labeled as ×avg ratio; EN labels for critical EN/ES mix
+
+🔧 **Notes**
+• open_tp_counts / open_protective_counts / ghost_protection_alerts added to /dashboard/state
+• Does not auto-cancel ghost legs on the exchange (human action)
+
+📦 **PRs**
+• #386
 
 ---
 `
