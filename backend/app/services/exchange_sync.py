@@ -557,6 +557,22 @@ def should_auto_create_sl_tp_on_sync(
     return True, "recent_external_fill"
 
 
+def _account_matches_symbol(account: dict, symbol: str) -> bool:
+    if not account or not symbol:
+        return False
+    base = symbol.split("_")[0].upper() if "_" in symbol else symbol.upper()
+    symbol_norm = symbol.replace("/", "_").upper()
+    currency = str(account.get("currency") or account.get("instrument_name") or "").upper()
+    if not currency:
+        return False
+    currency_norm = currency.replace("/", "_")
+    return (
+        currency_norm == symbol_norm
+        or currency_norm == base
+        or currency_norm.startswith(base + "_")
+    )
+
+
 def _base_wallet_balance_from_accounts(
     accounts: List[dict],
     symbol: str,
@@ -564,30 +580,55 @@ def _base_wallet_balance_from_accounts(
     """Best-effort signed wallet balance for the symbol base currency."""
     if not accounts or not symbol:
         return None
-    base = symbol.split("_")[0].upper() if "_" in symbol else symbol.upper()
-    symbol_norm = symbol.replace("/", "_").upper()
     best: Optional[float] = None
+    best_currency: Optional[str] = None
+    symbol_norm = symbol.replace("/", "_").upper()
     for account in accounts:
-        currency = str(account.get("currency") or account.get("instrument_name") or "").upper()
-        if not currency:
-            continue
-        currency_norm = currency.replace("/", "_")
-        matches = (
-            currency_norm == symbol_norm
-            or currency_norm == base
-            or currency_norm.startswith(base + "_")
-        )
-        if not matches:
+        if not _account_matches_symbol(account, symbol):
             continue
         try:
-            bal = float(account.get("balance") or 0)
+            bal = float(account.get("balance") or account.get("quantity") or 0)
         except (TypeError, ValueError):
             continue
-        # Prefer exact instrument match over bare base currency.
+        currency = str(account.get("currency") or account.get("instrument_name") or "").upper()
+        currency_norm = currency.replace("/", "_")
         if currency_norm == symbol_norm:
             return bal
-        if best is None or currency_norm == base:
+        if best is None:
             best = bal
+            best_currency = currency_norm
+    return best
+
+
+def _base_wallet_available_from_accounts(
+    accounts: List[dict],
+    symbol: str,
+) -> Optional[float]:
+    """Free/spendable balance for protection sizing (max_withdrawal / available)."""
+    if not accounts or not symbol:
+        return None
+    best: Optional[float] = None
+    symbol_norm = symbol.replace("/", "_").upper()
+    for account in accounts:
+        if not _account_matches_symbol(account, symbol):
+            continue
+        raw = (
+            account.get("available")
+            or account.get("max_withdrawal")
+            or account.get("max_withdrawal_balance")
+        )
+        if raw is None:
+            continue
+        try:
+            avail = float(raw)
+        except (TypeError, ValueError):
+            continue
+        currency = str(account.get("currency") or account.get("instrument_name") or "").upper()
+        currency_norm = currency.replace("/", "_")
+        if currency_norm == symbol_norm:
+            return avail
+        if best is None:
+            best = avail
     return best
 
 
@@ -3259,6 +3300,22 @@ class ExchangeSyncService:
         if has_complete_sl_tp_protection(db, str(parent_id)):
             return
 
+        role = (protection_order.order_role or "").strip().upper()
+        if role == "STOP_LOSS":
+            sibling_tp = get_active_protection_order(db, str(parent_id), "TAKE_PROFIT")
+            if sibling_tp:
+                from app.services.tp_sl_order_creator import cancel_protection_leg_on_exchange
+
+                logger.warning(
+                    "[SLTP_REJECT_RETRY] SL rejected with balance lock; cancelling sibling TP %s "
+                    "before OCO retry parent=%s",
+                    sibling_tp.exchange_order_id,
+                    parent_id,
+                )
+                cancel_protection_leg_on_exchange(
+                    db, sibling_tp, source="reject_retry"
+                )
+
         parent = (
             db.query(ExchangeOrder)
             .filter(ExchangeOrder.exchange_order_id == str(parent_id))
@@ -4286,6 +4343,94 @@ class ExchangeSyncService:
             )
             _heal_oco_group(active_sl)
         else:
+            # Dual standalone path may have placed TP first; a second full-qty SL
+            # then fails with INSUFFICIENT_ACC_BALANCE (prod DOGE_USD). Upgrade to
+            # native OCO on spot instead of posting a doomed SL leg.
+            tp_live_id = (tp_result or {}).get("order_id")
+            if (
+                tp_newly_created
+                and tp_live_id
+                and not (tp_result or {}).get("error")
+                and not is_margin
+                and is_native_oco_enabled()
+            ):
+                tp_leg = get_active_protection_order(db, order_id, "TAKE_PROFIT")
+                if tp_leg:
+                    from app.services.tp_sl_order_creator import (
+                        cancel_protection_leg_on_exchange,
+                        ensure_spot_oco_protection,
+                    )
+
+                    logger.warning(
+                        "[SLTP_BALANCE_RECOVERY] parent=%s symbol=%s standalone TP %s "
+                        "before SL — cancelling and upgrading to native OCO",
+                        order_id,
+                        symbol,
+                        tp_leg.exchange_order_id,
+                    )
+                    cancel_protection_leg_on_exchange(db, tp_leg, source=source)
+                    tp_result = {"order_id": None, "error": None}
+                    tp_newly_created = False
+                    oco_res = ensure_spot_oco_protection(
+                        db=db,
+                        symbol=symbol,
+                        side=side_upper,
+                        tp_price=tp_price,
+                        sl_price=sl_price,
+                        quantity=filled_qty,
+                        entry_price=filled_price_f,
+                        parent_order_id=order_id,
+                        dry_run=False,
+                        source=source,
+                        existing_sl=None,
+                        existing_tp=None,
+                    )
+                    if oco_res.get("status") == "already_protected" or (
+                        not oco_res.get("error")
+                        and not oco_res.get("skipped")
+                        and (
+                            (oco_res.get("sl_result") or {}).get("order_id")
+                            or oco_res.get("oco_group_id")
+                        )
+                    ):
+                        return {
+                            "sl_result": oco_res.get("sl_result")
+                            or {"order_id": None, "error": None},
+                            "tp_result": oco_res.get("tp_result")
+                            or {"order_id": None, "error": None},
+                            "oco_group_id": oco_res.get("oco_group_id"),
+                            "sl_price": sl_price,
+                            "tp_price": tp_price,
+                            "skip_tp_creation": False,
+                            "skip_tp_reason": None,
+                            "sl_newly_created": bool(oco_res.get("sl_newly_created")),
+                            "tp_newly_created": bool(oco_res.get("tp_newly_created")),
+                            **(
+                                {"status": "already_protected"}
+                                if oco_res.get("status") == "already_protected"
+                                else {}
+                            ),
+                        }
+                    sl_res = oco_res.get("sl_result") or {}
+                    tp_res = oco_res.get("tp_result") or {}
+                    return {
+                        "sl_result": {
+                            "order_id": sl_res.get("order_id"),
+                            "error": sl_res.get("error") or oco_res.get("error"),
+                        },
+                        "tp_result": {
+                            "order_id": tp_res.get("order_id"),
+                            "error": tp_res.get("error") or oco_res.get("error"),
+                        },
+                        "oco_group_id": oco_res.get("oco_group_id"),
+                        "sl_price": sl_price,
+                        "tp_price": tp_price,
+                        "skip_tp_creation": False,
+                        "skip_tp_reason": None,
+                        "sl_newly_created": False,
+                        "tp_newly_created": False,
+                        "error": oco_res.get("error"),
+                    }
             sl_result = _place_sl()
             sl_newly_created = bool(sl_result.get("order_id")) and not sl_result.get("error")
 
