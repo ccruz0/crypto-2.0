@@ -3,7 +3,7 @@
 import '@/lib/polyfill';
 import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { getDashboard, getOpenOrders, getOrderHistory, getTopCoins, saveCoinSettings, getTradingSignals, getDataSourcesStatus, getTradingConfig, saveTradingConfig, updateCoinConfig, addCustomTopCoin, removeCustomTopCoin, getDashboardState, getDashboardSnapshot, quickOrder, updateWatchlistAlert, updateBuyAlert, updateSellAlert, simulateAlert, deleteDashboardItemBySymbol, toggleLiveTrading, getTPSLOrderValues, getOpenOrdersSummary, dashboardBalancesToPortfolioAssets, getExpectedTakeProfitSummary, getExpectedTakeProfitDetails, getTelegramMessages, fixBackendHealth, DashboardState, DashboardBalance, WatchlistItem, OpenOrder, PortfolioAsset, TradingSignals, TopCoin, DataSourceStatus, TradingConfig, CoinSettings, TPSLOrderValues, UnifiedOpenOrder, OpenPosition, ExpectedTPSummary, ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPMatchedLot, SimulateAlertResponse, TelegramMessage, StrategyDecision } from '@/app/api';
+import { getDashboard, getOpenOrders, getOrderHistory, getTopCoins, saveCoinSettings, getTradingSignals, getDataSourcesStatus, getTradingConfig, saveTradingConfig, updateCoinConfig, addCustomTopCoin, removeCustomTopCoin, getDashboardState, getDashboardSnapshot, quickOrder, updateWatchlistAlert, updateBuyAlert, updateSellAlert, simulateAlert, deleteDashboardItemBySymbol, toggleLiveTrading, getTPSLOrderValues, getOpenOrdersSummary, dashboardBalancesToPortfolioAssets, getExpectedTakeProfitSummary, getExpectedTakeProfitDetails, getTelegramMessages, fixBackendHealth, DashboardState, DashboardBalance, WatchlistItem, OpenOrder, PortfolioAsset, TradingSignals, TopCoin, DataSourceStatus, TradingConfig, CoinSettings, TPSLOrderValues, UnifiedOpenOrder, OpenPosition, ExpectedTPSummary, ExpectedTPSummaryItem, ExpectedTPDetails, ExpectedTPMatchedLot, SimulateAlertResponse, TelegramMessage, StrategyDecision, GhostProtectionAlert } from '@/app/api';
 import { getApiUrl } from '@/lib/environment';
 import { MonitoringNotificationsProvider, useMonitoringNotifications } from '@/app/context/MonitoringNotificationsContext';
 import { PriceStreamProvider } from '@/app/context/PriceStreamContext';
@@ -1097,6 +1097,28 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.52',
+    date: '2026-08-07',
+    change: 'Dashboard Positions N/limit = bot exposure; ghost TP + naked short alerts',
+    details: `🚀 VERSIÓN 0.52 — DASHBOARD POSITION COUNTS + PROTECTION RISK
+
+📋 **What shipped**
+• Watchlist/Portfolio Positions N/limit now matches Signal Monitor (bot entry slots), not pending TP legs
+• System Health shows bot positions vs exchange open orders separately
+• Ghost/orphan SL-TP alerts when protective qty ≫ wallet; naked short (0 TP coverage) banners on Expected TP / Orders
+• Settings Escape + backdrop close; Volume labeled as ×avg ratio; EN labels for critical EN/ES mix
+
+🔧 **Notes**
+• open_tp_counts / open_protective_counts / ghost_protection_alerts added to /dashboard/state
+• Does not auto-cancel ghost legs on the exchange (human action)
+
+📦 **PRs**
+• #386
+
+---
+`
   }
 ];
 
@@ -1165,6 +1187,7 @@ function DashboardPageContent() {
   const [maxOpenOrdersLimit, setMaxOpenOrdersLimit] = useState<number | null>(null);
   /** Per-base-symbol open position counts from dashboard (TP legs). */
   const [openPositionCounts, setOpenPositionCounts] = useState<Record<string, number>>({});
+  const [ghostProtectionAlerts, setGhostProtectionAlerts] = useState<GhostProtectionAlert[]>([]);
   /** Per-coin cap from Signal Monitor (default 3). */
   const [maxOpenOrdersPerCoin, setMaxOpenOrdersPerCoin] = useState<number>(3);
   const [expectedTPSummary, setExpectedTPSummary] = useState<ExpectedTPSummaryItem[]>([]);
@@ -3411,6 +3434,9 @@ function resolveDecisionIndexColor(value: number): string {
       if (dashboardState.open_position_counts && typeof dashboardState.open_position_counts === 'object') {
         setOpenPositionCounts(dashboardState.open_position_counts);
       }
+      if (Array.isArray(dashboardState.ghost_protection_alerts)) {
+        setGhostProtectionAlerts(dashboardState.ghost_protection_alerts);
+      }
       
       // Set bot status - only update if we have valid status data
       // Preserve last known status on transient errors (don't immediately mark as stopped)
@@ -5426,6 +5452,7 @@ function resolveDecisionIndexColor(value: number): string {
               topCoinsLoading={topCoinsLoading}
               portfolioLoading={portfolioLoading}
               hideCancelledOpenOrders={hideCancelledOpenOrders}
+              ghostProtectionAlerts={ghostProtectionAlerts}
               onToggleLiveTrading={async () => {
                 setTogglingLiveTrading(true);
                 try {
@@ -5451,6 +5478,7 @@ function resolveDecisionIndexColor(value: number): string {
               expectedTPDetailsSymbol={expectedTPDetailsSymbol}
               showExpectedTPDetailsDialog={showExpectedTPDetailsDialog}
               deepLink={expectedTPDeepLink}
+              ghostProtectionAlerts={ghostProtectionAlerts}
               onDeepLinkHandled={() => setExpectedTPDeepLink(null)}
               onFetchExpectedTakeProfitSummary={async () => {
                 setExpectedTPLoading(true);

@@ -113,8 +113,10 @@ export interface PortfolioAsset {
   updated_at: string;
   tp?: number;  // Take profit price
   sl?: number;  // Stop loss price
-  /** Active TP open-order count for this coin (same basis as Watchlist Orders). */
+  /** Bot open positions for this coin (same basis as Watchlist Positions / Signal Monitor). */
   open_orders_count?: number;
+  tp_leg_count?: number;
+  protective_leg_count?: number;
   // Per-coin unrealized P&L vs cost basis (from filled BUY orders).
   // When cost_basis_unknown is true, pnl fields are null and the UI renders "—".
   avg_buy_price?: number | null;
@@ -231,6 +233,18 @@ export interface OpenOrdersSyncMeta {
   data_verified?: boolean;
 }
 
+/** Protective SL/TP leg whose qty disagrees with wallet (orphan / ghost). */
+export interface GhostProtectionAlert {
+  symbol: string;
+  base: string;
+  order_id?: string | null;
+  order_type?: string | null;
+  side?: string | null;
+  quantity: number;
+  wallet_qty: number;
+  reason: 'no_wallet' | 'qty_exceeds_wallet' | string;
+}
+
 export interface DashboardState {
   source?: string;  // "crypto.com" when using direct API values
   total_usd_value?: number;  // Total USD value from Crypto.com
@@ -238,7 +252,12 @@ export interface DashboardState {
   fast_signals: DashboardSignal[];
   slow_signals: DashboardSignal[];
   open_orders: DashboardOrder[];
+  /** Bot entry/exposure slots per base (Signal Monitor / MAX_OPEN_ORDERS) — not TP legs. */
   open_position_counts?: { [symbol: string]: number };
+  open_tp_counts?: { [symbol: string]: number };
+  open_protective_counts?: { [symbol: string]: number };
+  ghost_protection_alerts?: GhostProtectionAlert[];
+  exchange_open_orders_count?: number;
   open_orders_summary?: UnifiedOpenOrder[] | OpenOrdersSummary;
   open_orders_sync_status?: OpenOrdersSyncMeta['sync_status'];
   open_orders_data_verified?: boolean;

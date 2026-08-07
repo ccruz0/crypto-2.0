@@ -179,6 +179,8 @@ export interface PortfolioAsset {
   usd_value?: number;  // Optional alternative field name (backend may return either)
   updated_at: string;
   open_orders_count?: number;
+  tp_leg_count?: number;
+  protective_leg_count?: number;
   tp?: number | null;
   sl?: number | null;
 }
@@ -470,6 +472,18 @@ export interface DashboardOrder {
   updated_at?: string | null;
 }
 
+/** Protective SL/TP leg whose qty disagrees with wallet (orphan / ghost). */
+export interface GhostProtectionAlert {
+  symbol: string;
+  base: string;
+  order_id?: string | null;
+  order_type?: string | null;
+  side?: string | null;
+  quantity: number;
+  wallet_qty: number;
+  reason: 'no_wallet' | 'qty_exceeds_wallet' | string;
+}
+
 export interface DashboardState {
   source?: string;  // "crypto.com" when using direct API values
   total_usd_value?: number;  // Total USD value from Crypto.com
@@ -478,10 +492,12 @@ export interface DashboardState {
   slow_signals: DashboardSignal[];
   open_orders: DashboardOrder[];
   open_orders_summary?: UnifiedOpenOrder[];
-  // Unified open position counts per base currency (e.g., ADA, LDO).
-  // This uses the same logic as the backend protection system and is used
-  // by the Holdings table to show "Open Orders" per coin.
+  // Bot entry/exposure slots per base (Signal Monitor) — not pending TP/SL legs.
   open_position_counts?: { [symbol: string]: number };
+  open_tp_counts?: { [symbol: string]: number };
+  open_protective_counts?: { [symbol: string]: number };
+  ghost_protection_alerts?: GhostProtectionAlert[];
+  exchange_open_orders_count?: number;
   last_sync: string | null;
   partial?: boolean;
   portfolio?: {
@@ -2695,6 +2711,10 @@ export interface SystemHealth {
   trade_system: {
     status: 'PASS' | 'WARN' | 'FAIL';
     open_orders: number;
+    /** Bot entry/exposure slots (same value as open_orders; clearer name). */
+    bot_open_positions?: number;
+    /** Unified Crypto.com open orders (entries + SL/TP legs). */
+    exchange_open_orders?: number | null;
     max_open_orders: number | null;
     /** Per-coin open-order cap (Signal Monitor MAX_OPEN_ORDERS_PER_SYMBOL). */
     max_open_orders_per_symbol?: number | null;

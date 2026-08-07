@@ -240,9 +240,16 @@ export default function SystemHealthPanel({ className = '' }: SystemHealthProps)
             )}
           </div>
           <div>
-            <strong>Trade System:</strong> {trade_system.open_orders} open orders
+            <strong>Trade System:</strong>{' '}
+            {trade_system.bot_open_positions ?? trade_system.open_orders} bot positions
             {trade_system.max_open_orders !== null && (
               <span className="text-gray-600"> (max: {trade_system.max_open_orders})</span>
+            )}
+            {typeof trade_system.exchange_open_orders === 'number' && (
+              <span className="text-gray-600">
+                {' '}
+                · {trade_system.exchange_open_orders} exchange open orders
+              </span>
             )}
           </div>
 

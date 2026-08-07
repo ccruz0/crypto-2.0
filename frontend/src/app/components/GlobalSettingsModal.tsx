@@ -32,6 +32,21 @@ export default function GlobalSettingsModal({
     setSaveSuccess(false);
   }, [isOpen, tradingLimits]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setLimitsData(tradingLimits);
+        setSaveError(null);
+        setSaveSuccess(false);
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, tradingLimits, onClose]);
+
   if (!isOpen) return null;
 
   const handleLimitsChange = (
@@ -82,8 +97,18 @@ export default function GlobalSettingsModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto m-4">
+    <div
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      onClick={handleCancel}
+      role="presentation"
+    >
+      <div
+        className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto m-4"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Global Settings"
+      >
         <div className="p-6">
           <div className="flex justify-between items-start mb-6 gap-4">
             <div>

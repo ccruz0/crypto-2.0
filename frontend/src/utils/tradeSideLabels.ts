@@ -19,12 +19,25 @@ export function sideLabelEs(side: string | null | undefined): string {
   return normalizeTradeSide(side) === 'SELL' ? 'Venta' : 'Compra';
 }
 
+/** English label for a single order side. */
+export function sideLabelEn(side: string | null | undefined): string {
+  return normalizeTradeSide(side) === 'SELL' ? 'Sell' : 'Buy';
+}
+
 /** Spanish label for position direction (Long/Short/Mixto). */
 export function positionDirectionEs(positionSide: string | null | undefined): string {
   const side = normalizePositionSide(positionSide);
   if (side === 'SHORT') return 'Short (Venta)';
   if (side === 'MIXED') return 'Mixto (Long + Short)';
   return 'Long (Compra)';
+}
+
+/** English label for position direction (dashboard UI default). */
+export function positionDirectionEn(positionSide: string | null | undefined): string {
+  const side = normalizePositionSide(positionSide);
+  if (side === 'SHORT') return 'Short (Sell)';
+  if (side === 'MIXED') return 'Mixed (Long + Short)';
+  return 'Long (Buy)';
 }
 
 export function sideBadgeClass(side: string | null | undefined): string {

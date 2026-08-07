@@ -437,6 +437,25 @@ def _check_trade_system_health(db: Session) -> Dict:
         logger.warning(f"Error counting open positions: {e}")
         open_orders = 0
 
+    exchange_open_orders = None
+    try:
+        from app.services.open_orders_cache import get_open_orders_cache
+
+        cached = get_open_orders_cache() or {}
+        cached_orders = cached.get("orders") or []
+        if cached_orders:
+            exchange_open_orders = len(cached_orders)
+    except Exception as cache_err:
+        logger.debug("Could not read open-orders cache for health: %s", cache_err)
+    if exchange_open_orders is None:
+        try:
+            from app.services.open_orders_resolver import resolve_open_orders
+
+            resolved = resolve_open_orders(db)
+            exchange_open_orders = len(getattr(resolved, "orders", None) or [])
+        except Exception as resolve_err:
+            logger.debug("Could not resolve open orders for health: %s", resolve_err)
+
     max_open_orders = None
     max_open_orders_per_symbol = None
     try:
@@ -468,7 +487,10 @@ def _check_trade_system_health(db: Session) -> Dict:
 
     return {
         "status": status,
+        # Backward-compat: historically mislabeled "open_orders" = bot entry exposure.
         "open_orders": open_orders,
+        "bot_open_positions": open_orders,
+        "exchange_open_orders": exchange_open_orders,
         "max_open_orders": max_open_orders,
         "max_open_orders_per_symbol": max_open_orders_per_symbol,
         "order_intents_table_exists": order_intents_table_exists,

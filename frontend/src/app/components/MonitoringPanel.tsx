@@ -1261,7 +1261,7 @@ export default function MonitoringPanel({
             disabled={restarting || monitoringData.backend_restart_status === 'restarting'}
             className="w-full px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {restarting || monitoringData.backend_restart_status === 'restarting' ? 'Reiniciando...' : 'Reiniciar Backend'}
+            {restarting || monitoringData.backend_restart_status === 'restarting' ? 'Restarting...' : 'Restart Backend'}
           </button>
         </div>
       </div>
