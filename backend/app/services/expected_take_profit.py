@@ -198,17 +198,19 @@ def _drop_ghost_direction_lots(
 
 
 def _protected_entry_ids_for_lots(db: Session, open_lots: List[OpenLot]) -> set:
-    """Active parent-linked SL/TP entry IDs covering any symbol in open_lots."""
+    """Active parent-linked SL/TP entry IDs covering any symbol in open_lots.
+
+    Query each distinct pair (BTC_USD and BTC_USDT separately). Deduping only
+    by base currency would miss sister-book protection and let oldest-first
+    trim drop a protected USD dust fill behind an oversized USDT lot.
+    """
     protected: set = set()
-    seen_scopes: set = set()
+    seen_symbols: set = set()
     for lot in open_lots:
         sym = (lot.symbol or "").upper()
-        if not sym:
+        if not sym or sym in seen_symbols:
             continue
-        scope_key = sym.split("_")[0] if "_" in sym else sym
-        if scope_key in seen_scopes:
-            continue
-        seen_scopes.add(scope_key)
+        seen_symbols.add(sym)
         protected |= _filled_entry_ids_with_active_protection(db, _order_symbol_scope(sym))
     return protected
 
@@ -220,9 +222,13 @@ def _align_open_lots_to_wallet(
 ) -> Tuple[List[OpenLot], Optional[str]]:
     """Align FIFO lots to wallet truth: drop ghosts, then trim to |balance|.
 
-    MIXED hedges keep every lot that still has active parent-linked SL/TP so a
-    short wallet residue cannot hide a protected long (ALGO_USD regression), and
-    vice versa. Unprotected excess is still trimmed toward |wallet|.
+    Lots with active parent-linked SL/TP are pinned for every book shape
+    (MIXED hedges and same-side sister books). That keeps a protected BTC_USD
+    fill visible when an older oversized BTC_USDT lot would otherwise absorb
+    the whole wallet on oldest-first trim, and keeps ALGO-style MIXED longs
+    visible against a short wallet residue. Unprotected excess is still
+    trimmed toward |wallet|; when pinned protected qty exceeds |wallet|,
+    callers scale pair shares so reported net still matches the wallet.
 
     Returns (aligned_lots, warning) where warning is one of:
     ghost_short_vs_long, ghost_long_vs_short, lots_exceed_wallet, or None.
@@ -250,26 +256,18 @@ def _align_open_lots_to_wallet(
             lot.buy_time or datetime.min.replace(tzinfo=timezone.utc),
         )
 
-    long_lots = [
-        lot for lot in filtered if _entry_side_for_lot(db, lot) != OrderSideEnum.SELL
+    protected_ids = _protected_entry_ids_for_lots(db, filtered)
+    protected_lots = [
+        lot for lot in filtered if lot.buy_order_id and lot.buy_order_id in protected_ids
     ]
-    short_lots = [
-        lot for lot in filtered if _entry_side_for_lot(db, lot) == OrderSideEnum.SELL
+    unprotected_lots = [
+        lot
+        for lot in filtered
+        if not (lot.buy_order_id and lot.buy_order_id in protected_ids)
     ]
-    is_mixed = bool(long_lots) and bool(short_lots)
 
-    if is_mixed:
-        protected_ids = _protected_entry_ids_for_lots(db, filtered)
-        protected_lots = [
-            lot for lot in filtered if lot.buy_order_id and lot.buy_order_id in protected_ids
-        ]
-        unprotected_lots = [
-            lot
-            for lot in filtered
-            if not (lot.buy_order_id and lot.buy_order_id in protected_ids)
-        ]
-
-        # Pin protected long+short inventory; only trim unprotected leftovers.
+    if protected_lots:
+        # Pin protected inventory (MIXED or same-side); only trim unprotected.
         kept = [_clone_open_lot(lot) for lot in protected_lots]
         protected_qty = sum((lot.lot_qty for lot in kept), Decimal("0"))
         was_trimmed = protected_qty > wallet_abs
@@ -285,16 +283,10 @@ def _align_open_lots_to_wallet(
             else:
                 was_trimmed = True
 
-        if not kept:
-            # No active protection — fall back to direction-preferring trim.
-            trimmed, was_trimmed = _trim_lots_to_wallet_qty(
-                filtered, wallet_abs, sort_key=_trim_sort_key
-            )
-            return trimmed, ("lots_exceed_wallet" if was_trimmed else None)
-
         warning = "lots_exceed_wallet" if was_trimmed else None
         return kept, warning
 
+    # No active protection — fall back to direction-preferring trim.
     trimmed, was_trimmed = _trim_lots_to_wallet_qty(
         filtered, wallet_abs, sort_key=_trim_sort_key
     )
@@ -310,7 +302,7 @@ def _allocate_wallet_aligned_pairs(
     """Align lots to one wallet, then split net_qty across sister pairs.
 
     Largest pair absorbs leftover uncovered wallet so BTC_USD + BTC_USDT do not
-    each claim the full base balance. When protected MIXED inventory exceeds
+    each claim the full base balance. When pinned protected inventory exceeds
     |wallet|, pair shares are proportional so sum(net_qty) still equals the
     wallet. Returns ``{pair: (pair_lots, signed_pair_share)}`` and an optional
     warning.
@@ -331,7 +323,7 @@ def _allocate_wallet_aligned_pairs(
         reverse=True,
     )
     allocated: Dict[str, Tuple[List[OpenLot], Decimal]] = {}
-    # When protected MIXED lots exceed wallet, scale shares so sister books
+    # When pinned protected lots exceed wallet, scale shares so sister books
     # still sum to |wallet| (never each claim full lot qty as net_qty).
     scale_to_wallet = lot_total > wallet_abs > 0
     assigned = Decimal("0")

@@ -479,7 +479,7 @@ export default function PortfolioTab({
                 ? 'bg-green-100 text-green-700' 
                 : 'bg-red-100 text-red-700'
             }`} title={botStatus.reason || undefined}>
-              {botStatus.is_running ? '🟢 Bot Activo' : '🔴 Bot Detenido'}
+              {botStatus.is_running ? '🟢 Bot Active' : '🔴 Bot Stopped'}
             </div>
             {botStatus.kill_switch_on && (
               <div className="px-3 py-1 rounded-full text-xs font-semibold bg-red-600 text-white" title="Kill Switch is ON - All trading is disabled">
@@ -642,9 +642,9 @@ export default function PortfolioTab({
                     </th>
                     <th
                       className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      title={`Órdenes abiertas (TP) por moneda vs límite por moneda (${perCoinLimit}). Misma base que Watchlist.`}
+                      title={`Bot open positions vs per-coin limit (${perCoinLimit}). Same definition as Watchlist / Signal Monitor (not TP legs).`}
                     >
-                      <div className="flex items-center gap-1">Orders</div>
+                      <div className="flex items-center gap-1">Positions</div>
                     </th>
                     <th
                       className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
@@ -713,12 +713,12 @@ export default function PortfolioTab({
                                 ? 'text-amber-700 dark:text-amber-300'
                                 : 'text-gray-700 dark:text-gray-200'
                             }`}
-                            title={
-                              atPerCoinLimit
-                                ? `Límite por moneda alcanzado (${coinOpenCount}/${perCoinLimit}).`
-                                : `Órdenes abiertas (TP) para ${asset.coin}: ${coinOpenCount}/${perCoinLimit}`
-                            }
-                          >
+                              title={
+                                atPerCoinLimit
+                                  ? `Per-coin bot-position limit reached (${coinOpenCount}/${perCoinLimit}).`
+                                  : `Bot open positions for ${asset.coin}: ${coinOpenCount}/${perCoinLimit}`
+                              }
+                            >
                             {coinOpenCount}/{perCoinLimit}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm">

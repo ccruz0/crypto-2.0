@@ -999,53 +999,25 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         metrics_elapsed = time.time() - metrics_start
         log.info(f"[PERF] calculate_portfolio_order_metrics took {metrics_elapsed:.3f} seconds")
         
-        # Count only TP (Take Profit) orders as "open orders"
-        # Group TP orders by base symbol
-        # IMPORTANT: Only count ACTIVE orders (NEW, ACTIVE, PARTIALLY_FILLED, PENDING)
-        # Exclude CANCELLED, FILLED, REJECTED, EXPIRED orders
-        # Note: PENDING is used by some exchanges/APIs as equivalent to ACTIVE
-        tp_orders_by_symbol: Dict[str, int] = {}
-        active_statuses = {"NEW", "ACTIVE", "PARTIALLY_FILLED", "PENDING"}
-        
-        # Track order IDs from cache to avoid duplicates when merging with database
-        cached_tp_order_ids: set = set()
-        
-        for order in unified_open_orders:
-            order_type = (order.order_type or "").upper()
-            order_status = (order.status or "").upper()
-            if "TAKE_PROFIT" in order_type and order_status in active_statuses:
-                base_symbol = order.base_symbol
-                if base_symbol:
-                    tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
-                    # Track this order ID to avoid counting it again from database
-                    if order.order_id:
-                        cached_tp_order_ids.add(str(order.order_id))
-        
-        # Always check database for TP orders to ensure we have complete data
-        # This is important because the cache might not have all TP orders
-        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-        from app.services.open_orders import _extract_base_symbol
-        
-        open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
-        db_tp_orders = db.query(ExchangeOrder).filter(
-            ExchangeOrder.status.in_(open_statuses),
-            ExchangeOrder.order_type.like('%TAKE_PROFIT%')  # type: ignore[reportGeneralTypeIssues]
-        ).all()
-        
-        for order in db_tp_orders:
-            # Skip if this order was already counted from cache
-            _oid = getattr(order, "exchange_order_id", None)
-            order_id_str = str(_oid) if _oid is not None else None
-            if order_id_str and order_id_str in cached_tp_order_ids:
-                continue
-                
-            symbol = str(getattr(order, "symbol", "") or "")
-            base_symbol = _extract_base_symbol(symbol)
-            if base_symbol:
-                # Add to count (avoiding duplicates from cache)
-                tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
-        
-        open_position_counts = tp_orders_by_symbol
+        # Per-coin N/limit must match Signal Monitor / trading guardrails:
+        # bot entry exposure slots — NOT pending TP/SL legs (those inflated BTC to 14/3).
+        from app.services.dashboard_position_counts import (
+            collect_bases_for_position_counts,
+            compute_open_position_counts,
+            compute_protection_leg_stats,
+        )
+
+        bases_for_counts = collect_bases_for_position_counts(balances_list, unified_open_orders)
+        open_position_counts = compute_open_position_counts(db, bases_for_counts)
+        open_tp_counts, open_protective_counts, ghost_protection_alerts = compute_protection_leg_stats(
+            unified_open_orders, balances_list
+        )
+        if ghost_protection_alerts:
+            log.warning(
+                "[PORTFOLIO] %s ghost/orphan protection leg(s) vs wallet (showing up to 5): %s",
+                len(ghost_protection_alerts),
+                ghost_protection_alerts[:5],
+            )
         
         # Format portfolio assets (v4.0 format)
         # Filter: include non-zero balances/usd (margin shorts are negative)
@@ -1085,49 +1057,10 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                             log.debug(f"Found metrics for {currency} using variant {variant}")
                             break
                 
-                # Count only TP (Take Profit) orders as "open orders"
-                # Search for TP orders count using same symbol variant strategy
-                tp_count = 0
-                
-                # Try to get TP count using base_currency
-                if base_currency in open_position_counts:
-                    tp_count = open_position_counts[base_currency]
-                
-                # Try full currency name if different from base
-                if tp_count == 0 and currency != base_currency and currency in open_position_counts:
-                    tp_count = open_position_counts[currency]
-                
-                # Try common variants (USDT/USD)
-                if tp_count == 0:
-                    for variant in [f"{base_currency}_USDT", f"{base_currency}_USD"]:
-                        if variant in open_position_counts:
-                            tp_count = open_position_counts[variant]
-                            break
-                
-                # Also count TP orders directly from unified_open_orders if not found in counts
-                if tp_count == 0:
-                    # Count TP orders for this symbol and variants
-                    symbol_variants = [currency, base_currency]
-                    if "_" not in currency:
-                        symbol_variants.extend([f"{base_currency}_USDT", f"{base_currency}_USD"])
-                    else:
-                        if currency.endswith("_USDT"):
-                            symbol_variants.append(currency.replace("_USDT", "_USD"))
-                        elif currency.endswith("_USD"):
-                            symbol_variants.append(currency.replace("_USD", "_USDT"))
-                    
-                    for order in unified_open_orders:
-                        order_symbol = (order.symbol or "").upper()
-                        order_type = (order.order_type or "").upper()
-                        order_status = (order.status or "").upper()
-                        # Only count ACTIVE TP orders (exclude CANCELLED, FILLED, etc.)
-                        if (order_symbol in [v.upper() for v in symbol_variants] 
-                            and "TAKE_PROFIT" in order_type 
-                            and order_status in active_statuses):
-                            tp_count += 1
-                
-                # open_orders_count = count of TP orders only
-                open_orders_count = tp_count
+                # Bot entry/exposure count (same as Watchlist N/limit + Signal Monitor)
+                open_orders_count = int(open_position_counts.get(base_currency, 0) or 0)
+                tp_leg_count = int(open_tp_counts.get(base_currency, 0) or 0)
+                protective_leg_count = int(open_protective_counts.get(base_currency, 0) or 0)
 
                 tp_price = metrics.get("tp")
                 sl_price = metrics.get("sl")
@@ -1147,15 +1080,19 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                     "usd_value": float(usd_value) if usd_value is not None else 0.0,
                     "market_value": float(usd_value) if usd_value is not None else 0.0,  # Also include market_value for compatibility
                     "open_orders_count": open_orders_count,
+                    "tp_leg_count": tp_leg_count,
+                    "protective_leg_count": protective_leg_count,
                     "tp": float(tp_price) if tp_price is not None else None,
                     "sl": float(sl_price) if sl_price is not None else None,
                 })
                 
-                if open_orders_count or tp_price or sl_price:
+                if open_orders_count or tp_leg_count or tp_price or sl_price:
                     log.info(
-                        "[PORTFOLIO] %s: open_orders=%s, tp=%s, sl=%s",
+                        "[PORTFOLIO] %s: positions=%s tp_legs=%s protective=%s tp=%s sl=%s",
                         base_currency,
                         open_orders_count,
+                        tp_leg_count,
+                        protective_leg_count,
                         f"{float(tp_price):.2f}" if tp_price else None,
                         f"{float(sl_price):.2f}" if sl_price else None,
                     )
@@ -1292,6 +1229,10 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
             "slow_signals": [],
             "open_orders": open_orders_list,
             "open_position_counts": open_position_counts,
+            "open_tp_counts": open_tp_counts,
+            "open_protective_counts": open_protective_counts,
+            "ghost_protection_alerts": ghost_protection_alerts,
+            "exchange_open_orders_count": len(open_orders_list),
             "open_orders_summary": open_orders_summary,
             "open_orders_sync_status": open_orders_summary.get("sync_status"),
             "open_orders_data_verified": open_orders_summary.get("data_verified"),

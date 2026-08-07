@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { OpenOrder, quickOrder } from '@/app/api';
+import { GhostProtectionAlert, OpenOrder, quickOrder } from '@/app/api';
 import { formatDateTime, formatNumber } from '@/utils/formatting';
 import { useOrders } from '@/hooks/useOrders';
 import { logger } from '@/utils/logger';
@@ -27,7 +27,7 @@ interface OrdersTabProps {
   hideCancelledOpenOrders: boolean;
   onToggleLiveTrading: () => Promise<void>;
   onToggleHideCancelled: (value: boolean) => void;
-  // Add other props as needed
+  ghostProtectionAlerts?: GhostProtectionAlert[];
 }
 
 export default function OrdersTab({
@@ -39,6 +39,7 @@ export default function OrdersTab({
   hideCancelledOpenOrders,
   onToggleLiveTrading,
   onToggleHideCancelled,
+  ghostProtectionAlerts = [],
 }: OrdersTabProps) {
   const {
     openOrders,
@@ -186,6 +187,20 @@ export default function OrdersTab({
     return upperSide === 'BUY' ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
   };
 
+  const ghostPreview = useMemo(() => {
+    if (!ghostProtectionAlerts.length) return null;
+    const byBase = new Map<string, number>();
+    for (const alert of ghostProtectionAlerts) {
+      const key = alert.base || alert.symbol || '?';
+      byBase.set(key, (byBase.get(key) || 0) + 1);
+    }
+    const bases = Array.from(byBase.entries())
+      .slice(0, 6)
+      .map(([base, count]) => `${base}×${count}`)
+      .join(', ');
+    return { total: ghostProtectionAlerts.length, bases };
+  }, [ghostProtectionAlerts]);
+
   return (
     <div>
 
@@ -193,6 +208,16 @@ export default function OrdersTab({
         <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           {openOrdersSyncError ||
             'Open orders could not be verified. Crypto.com authentication failed. Showing cached or unavailable data.'}
+        </div>
+      )}
+      {ghostPreview && (
+        <div className="mb-4 rounded-md border border-rose-300 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
+          <strong>{ghostPreview.total} ghost/orphan protection leg(s)</strong>
+          {' '}
+          (SL/TP qty ≫ wallet or no wallet): {ghostPreview.bases}.
+          {' '}
+          These are <em>not</em> counted in Watchlist/Portfolio Positions N/limit.
+          Review Trigger Orders below or Expected Take Profit.
         </div>
       )}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-4">
@@ -211,7 +236,7 @@ export default function OrdersTab({
                   ? 'bg-green-100 text-green-700' 
                   : 'bg-red-100 text-red-700'
               }`} title={botStatus.reason || undefined}>
-                {botStatus.is_running ? '🟢 Bot Activo' : '🔴 Bot Detenido'}
+                {botStatus.is_running ? '🟢 Bot Active' : '🔴 Bot Stopped'}
               </div>
               <button
                 onClick={onToggleLiveTrading}
