@@ -17,6 +17,7 @@ export type ImprovementTrialLabel =
   | 'Testing in LAB'
   | 'LAB passed'
   | 'LAB failed'
+  | 'Creating PR'
   | 'Promoted'
   | 'Failed';
 
@@ -67,7 +68,9 @@ export function plainImprovementTrialLabel(input: {
   const canSend = Boolean(input.canSendToLab);
 
   // Real LAB outcomes first (Send to LAB actually happened).
+  // Promoted is terminal; Creating PR is in-flight before the PR exists.
   if (lab === 'promoted') return 'Promoted';
+  if (task === 'creating_pr') return 'Creating PR';
   if (lab === 'passed') return 'LAB passed';
   if (lab === 'failed' || lab === 'refused') return 'LAB failed';
   if (lab === 'testing') return 'Testing in LAB';
@@ -76,7 +79,7 @@ export function plainImprovementTrialLabel(input: {
   if (task === 'applying_patch' || task === 'sandbox_testing') return 'Testing in LAB';
 
   // Promote opened a PR (task may have left the approval queue; lab_trial may lag).
-  if (task === 'pr_created' || task === 'creating_pr') return 'Promoted';
+  if (task === 'pr_created') return 'Promoted';
 
   // Eligible for Send to LAB — patch trial ready, not yet started (never claim In LAB).
   if (canSend && (lab === 'not_started' || !lab)) return 'Ready for LAB';
@@ -132,8 +135,9 @@ function labRank(lab: string | null | undefined): number {
 function taskRank(status: string): number {
   switch ((status || '').toLowerCase()) {
     case 'pr_created':
-    case 'creating_pr':
       return 55;
+    case 'creating_pr':
+      return 52;
     case 'waiting_for_pr_approval':
       return 48;
     case 'sandbox_testing':

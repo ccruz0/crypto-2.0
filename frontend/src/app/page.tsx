@@ -1391,9 +1391,10 @@ const VERSION_HISTORY = [
 
 📋 **What shipped**
 • Ops → Jarvis Improvement cards badge when a matching Execute task exists (objective stamp \`Jarvis improvement recommendation [id]:\`)
-• Plain-language trial status: Queued / Waiting approval / Completed / Ready for LAB / Testing in LAB / LAB passed / LAB failed / Promoted
-• **Open in Jarvis** deep-links to \`/?tab=jarvis&task=<id>\` (same pattern as Phase A)
+• Plain-language trial status: Queued / Waiting approval / Completed / Ready for LAB / Testing in LAB / LAB passed / LAB failed / Creating PR / Promoted
+• **Open in Jarvis** deep-links to \`/?tab=jarvis&task=<id>\` matching the badge task (same pattern as Phase A)
 • LAB labels only from real \`lab_trial_status\` / Send-to-LAB lifecycle fields (#405) — never invent "In LAB"
+• **Promoted** only after \`pr_created\` or \`lab_trial_status=promoted\` — not while \`creating_pr\` is in flight
 • Cards stay in the analytics feed (badge + link); Execute copy stays honest (dry-run unless a patch trial already exists)
 
 🔧 **Why**

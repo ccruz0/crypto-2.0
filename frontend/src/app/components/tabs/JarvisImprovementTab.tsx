@@ -37,7 +37,10 @@ function TrialStatusBadge({ match }: { match: ImprovementTrialMatch }) {
       ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
       : label === 'LAB failed' || label === 'Failed'
         ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
-        : label === 'Testing in LAB' || label === 'Waiting approval' || label === 'Ready for LAB'
+        : label === 'Testing in LAB' ||
+            label === 'Waiting approval' ||
+            label === 'Ready for LAB' ||
+            label === 'Creating PR'
           ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
           : 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200';
   return (
@@ -96,7 +99,9 @@ function RecommendationCard({
     }
   };
 
-  const openTaskId = execResult?.task_id || trialMatch?.taskId || null;
+  // Prefer the matched trial so Open in Jarvis agrees with the Executed badge
+  // (Execute again queues a new dry-run whose task_id must not steal the link).
+  const openTaskId = trialMatch?.taskId || execResult?.task_id || null;
 
   return (
     <div

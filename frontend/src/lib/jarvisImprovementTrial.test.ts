@@ -82,6 +82,17 @@ describe('plainImprovementTrialLabel', () => {
         labTrialStatus: 'promoted',
       }),
     ).toBe('Promoted');
+    expect(plainImprovementTrialLabel({ taskStatus: 'pr_created' })).toBe('Promoted');
+  });
+
+  it('does not claim Promoted while PR creation is still in flight', () => {
+    expect(plainImprovementTrialLabel({ taskStatus: 'creating_pr' })).toBe('Creating PR');
+    expect(
+      plainImprovementTrialLabel({
+        taskStatus: 'creating_pr',
+        labTrialStatus: 'passed',
+      }),
+    ).toBe('Creating PR');
   });
 });
 
