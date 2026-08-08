@@ -1356,6 +1356,32 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.64',
+    date: '2026-08-08',
+    change: 'Jarvis Promote uses GitHub App API (no container gh login)',
+    details: `🚀 VERSIÓN 0.64 — PROMOTE AUTH VIA GITHUB APP
+
+📋 **What shipped**
+• Promote / Gate-2 PR open path mints a GitHub App installation token and creates the PR via the GitHub REST API
+• Same credential path as Cursor bridge / deploy trigger (\`GITHUB_APP_*\` from SSM → runtime.env)
+• Does **not** require \`gh\` inside the backend container or interactive \`gh auth login\` on the host
+• Broad Gate-2 flags stay off: \`JARVIS_PR_CREATION_ENABLED\` / \`JARVIS_GITHUB_WRITE_ENABLED\` unchanged
+
+🔧 **Why**
+• Phase C (#406) shelled out to \`gh pr create\`, but AWS \`backend-aws\` has App credentials and no \`gh\` binary
+• Host \`gh\` auth cannot help the container process
+
+⚙️ **Operator notes**
+• Keep \`JARVIS_PROMOTE_PR_ENABLED=true\` only; leave broad Gate-2 flags false
+• Ensure SSM GitHub App params remain present (render_runtime_env → recreate backend after deploy)
+
+📦 **PRs**
+• #407
+
+---
+`
   }
 ];
 
