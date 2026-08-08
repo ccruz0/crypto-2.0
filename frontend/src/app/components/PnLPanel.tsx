@@ -83,8 +83,8 @@ export default function PnLPanel({
         <div>
           <h2 className="text-xl font-semibold text-gray-900 dark:text-white">P&amp;L</h2>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            Realized uses close date in the selected period. Unrealized is live mark-to-market
-            (not filtered by period).
+            Realized, TP/SL fills, and win rate use close date in the selected period.
+            Unrealized is live mark-to-market (not filtered by period).
           </p>
         </div>
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="P&L period">
@@ -132,7 +132,7 @@ export default function PnLPanel({
         Period: {summary.period.label}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-4">
         <div className="bg-white dark:bg-gray-800 p-4 rounded shadow">
           <div className="text-sm text-gray-500">Realized</div>
           <div className="text-xs text-gray-400 mb-1">closes in period</div>
@@ -169,6 +169,33 @@ export default function PnLPanel({
               {summary.winCount}W / {summary.closeCount - summary.winCount}L
             </div>
           )}
+        </div>
+        <div
+          className="bg-white dark:bg-gray-800 p-4 rounded shadow"
+          data-testid="pnl-tp-sl-executed"
+        >
+          <div className="text-sm text-gray-500">TP / SL executed</div>
+          <div className="text-xs text-gray-400 mb-1">FILLED in period</div>
+          <div className="flex items-baseline gap-4 mt-1">
+            <div>
+              <div className="text-xs text-emerald-700 dark:text-emerald-300">TP</div>
+              <div
+                className="text-2xl font-bold text-emerald-700 dark:text-emerald-300"
+                data-testid="pnl-tp-executed-count"
+              >
+                {summary.tpExecutedCount}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-red-700 dark:text-red-300">SL</div>
+              <div
+                className="text-2xl font-bold text-red-700 dark:text-red-300"
+                data-testid="pnl-sl-executed-count"
+              >
+                {summary.slExecutedCount}
+              </div>
+            </div>
+          </div>
         </div>
         <div className="bg-white dark:bg-gray-800 p-4 rounded shadow col-span-2 md:col-span-1">
           <div className="text-sm text-gray-500 mb-2">Top symbols</div>
