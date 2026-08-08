@@ -1299,7 +1299,7 @@ const VERSION_HISTORY = [
 • Design: docs/architecture/jarvis-lab-promote-ux.md (PR #403)
 
 📦 **PRs**
-• Phase A follow-up to design doc #403
+• #404 (Phase A; design doc #403)
 
 ---
 `
