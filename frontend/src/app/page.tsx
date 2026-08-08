@@ -1276,7 +1276,7 @@ const VERSION_HISTORY = [
 • Operators queued dry-run tasks from Ops → Jarvis Improvement and could not find a top-level Jarvis tab
 
 📦 **PRs**
-• (this PR)
+• #402
 
 ---
 `
