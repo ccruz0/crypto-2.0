@@ -1445,7 +1445,7 @@ const VERSION_HISTORY = [
 • Prod: 55 trigger-related investigations misrouted across mismatch/auth/open_orders/generic templates
 
 📦 **PRs**
-• (this PR)
+• #410
 
 ---
 `
