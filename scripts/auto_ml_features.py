@@ -227,7 +227,132 @@ def attach_features_and_label(
                 "features": feats,
                 "x": feature_vector(feats),
                 "y": y,
+                "label_source": "alert",
                 "feature_version": FEATURE_VERSION,
             }
         )
     return out
+
+
+TRADE_OUTCOME_LABEL_DEF = (
+    "y=1 if round-trip pnl_usd > 0 else 0 (COMPLETE trade_outcomes with alert)"
+)
+
+
+def features_look_default(feats: dict[str, float]) -> bool:
+    """True when context was empty enough that features are uninformative defaults."""
+    return (
+        abs(feats.get("rsi", 50.0) - 50.0) < 1e-9
+        and abs(feats.get("ma50_dist", 0.0)) < 1e-12
+        and abs(feats.get("ma200_dist", 0.0)) < 1e-12
+        and abs(feats.get("ema10_dist", 0.0)) < 1e-12
+        and abs(feats.get("atr_pct", 0.0)) < 1e-12
+    )
+
+
+def attach_features_from_trade_outcomes(
+    outcomes: Sequence[dict[str, Any]],
+    *,
+    drop_degraded_features: bool = True,
+) -> list[dict[str, Any]]:
+    """Build ML rows from Phase 1a COMPLETE outcomes joined to alert context.
+
+    Expects each outcome dict to include:
+      label, side, entry_price, entry_ts (or entry_ts_ms), symbol,
+      telegram_message_id, context_json (from telegram_messages),
+      optional exit_reason / pnl_usd / entry_exchange_order_id.
+    Drops rows without telegram_message_id or without a usable label.
+    """
+    out: list[dict[str, Any]] = []
+    for oc in outcomes:
+        tid = oc.get("telegram_message_id")
+        if tid is None:
+            continue
+        label = oc.get("label")
+        if label is None:
+            continue
+        try:
+            y = int(label)
+        except (TypeError, ValueError):
+            continue
+        if y not in (0, 1):
+            continue
+
+        entry_ts = oc.get("entry_ts") or oc.get("entry_ts_ms") or oc.get("timestamp")
+        entry_ts_ms = to_utc_ms(entry_ts)
+        side = str(oc.get("side") or "BUY").upper()
+        entry_price = _f(oc.get("entry_price"))
+        raw = {
+            "id": tid,
+            "timestamp": entry_ts,
+            "context_json": oc.get("context_json") or {},
+            "side": side,
+            "entry_price": entry_price,
+        }
+        normalized = {
+            "side": side,
+            "entry_price": entry_price,
+            "entry_ts_ms": entry_ts_ms,
+        }
+        feats = features_from_alert_row(raw, normalized=normalized)
+        if drop_degraded_features and features_look_default(feats):
+            continue
+        out.append(
+            {
+                "id": tid,
+                "symbol": oc.get("symbol"),
+                "side": side,
+                "strategy_key": oc.get("strategy_key") or "auto",
+                "entry_price": entry_price,
+                "entry_ts_ms": entry_ts_ms,
+                "exit_reason": oc.get("exit_reason"),
+                "pnl_usd": oc.get("pnl_usd"),
+                "entry_exchange_order_id": oc.get("entry_exchange_order_id"),
+                "features": feats,
+                "x": feature_vector(feats),
+                "y": y,
+                "label_source": "trade_outcome",
+                "feature_version": FEATURE_VERSION,
+            }
+        )
+    return out
+
+
+def merge_alert_and_trade_datasets(
+    alert_rows: Sequence[dict[str, Any]],
+    trade_rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Prefer executed-fill labels when telegram id overlaps; keep alert-only rows."""
+    by_id: dict[Any, dict[str, Any]] = {}
+    for row in alert_rows:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        by_id[rid] = dict(row)
+        by_id[rid]["label_source"] = row.get("label_source") or "alert"
+    for row in trade_rows:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        # Trade label wins (realized PnL).
+        by_id[rid] = dict(row)
+        by_id[rid]["label_source"] = "trade_outcome"
+    # Preserve deterministic order: trade rows first (by id), then remaining alerts
+    trade_ids = {r.get("id") for r in trade_rows if r.get("id") is not None}
+    ordered: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    for row in trade_rows:
+        rid = row.get("id")
+        if rid is None or rid in seen:
+            continue
+        ordered.append(by_id[rid])
+        seen.add(rid)
+    for row in alert_rows:
+        rid = row.get("id")
+        if rid is None or rid in seen:
+            continue
+        if rid in trade_ids:
+            continue
+        ordered.append(by_id[rid])
+        seen.add(rid)
+    return ordered

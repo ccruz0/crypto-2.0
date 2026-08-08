@@ -60,6 +60,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     src.add_argument("--alerts-json", type=Path)
     p.add_argument("--days", type=int, default=30)
     p.add_argument(
+        "--label-source",
+        choices=("alert", "trade_outcomes", "hybrid"),
+        default="alert",
+        help="Dataset labels: alert | trade_outcomes | hybrid (prefer executed fills)",
+    )
+    p.add_argument(
         "--out-dir",
         type=Path,
         default=_REPO_ROOT / "models" / "auto_entry",
@@ -88,8 +94,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 def _build_dataset(args: argparse.Namespace) -> Path:
     if args.dataset:
         return args.dataset
-    build_argv: list[str] = ["--out", str(args.dataset_out)]
+    build_argv: list[str] = [
+        "--out",
+        str(args.dataset_out),
+        "--label-source",
+        args.label_source,
+    ]
     if args.demo:
+        if args.label_source != "alert":
+            print("--demo requires --label-source alert", file=sys.stderr)
+            raise SystemExit(2)
         build_argv.append("--demo")
     elif args.alerts_json:
         build_argv.extend(["--alerts-json", str(args.alerts_json)])
