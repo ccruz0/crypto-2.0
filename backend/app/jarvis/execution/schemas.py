@@ -632,3 +632,25 @@ class JarvisImprovementQualityResponse(BaseModel):
     evidence_coverage: float = 0.0
     read_only: bool = True
 
+
+class JarvisImprovementExecuteRequest(BaseModel):
+    """Execute (queue) a gated dry-run task from an improvement recommendation card."""
+
+    id: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1)
+    recommendation: str = Field(..., min_length=1)
+    reason: str = ""
+    category: str = ""
+    priority: str = "medium"
+
+
+class JarvisImprovementExecuteResponse(BaseModel):
+    recommendation_id: str
+    task_id: str
+    status: str
+    objective: str
+    approval_required: bool = True
+    approval_status: str = "pending"
+    dry_run: bool = True
+    message: str = ""
+

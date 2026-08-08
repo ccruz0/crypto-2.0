@@ -26,6 +26,8 @@ from app.jarvis.improvement.recommendation_ranker import (
     rank_priority,
 )
 from app.jarvis.improvement.recommendation_engine import (
+    build_improvement_execute_objective,
+    execute_improvement_recommendation,
     get_improvement_quality,
     get_improvement_recommendations,
     get_improvement_templates,
@@ -449,3 +451,89 @@ class TestImprovementAPI:
         assert body["read_only"] is True
         assert "quality_score" in body
         assert "suppressed_recommendations" in body
+
+    def test_execute_recommendation_queues_dry_run_manual_approval(
+        self, improvement_client, improvement_db, monkeypatch
+    ):
+        monkeypatch.setenv("JARVIS_ENABLED", "true")
+        monkeypatch.setenv("JARVIS_DRY_RUN_ONLY", "true")
+
+        def _fake_submit(**kwargs):
+            assert kwargs["dry_run"] is True
+            assert kwargs["approval_mode"] == "manual"
+            assert "Jarvis improvement recommendation" in kwargs["objective"]
+            assert "Do not apply patches" in kwargs["objective"]
+            return {
+                "task_id": "task-exec-rec-1",
+                "status": "waiting_for_approval",
+                "objective": kwargs["objective"],
+                "approval_required": True,
+                "approval_status": "pending",
+            }
+
+        monkeypatch.setattr(
+            "app.jarvis.execution.service.submit_execution_task",
+            _fake_submit,
+        )
+        resp = improvement_client.post(
+            "/api/jarvis/improvement/recommendations/execute",
+            json={
+                "id": "template-insuff-open_orders_empty",
+                "title": "Improve evidence collectors",
+                "recommendation": "Add mandatory log collectors for open orders.",
+                "reason": "High insufficient_evidence rate",
+                "category": "template_gap",
+                "priority": "high",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["task_id"] == "task-exec-rec-1"
+        assert body["dry_run"] is True
+        assert body["approval_required"] is True
+        assert body["approval_status"] == "pending"
+        assert body["recommendation_id"] == "template-insuff-open_orders_empty"
+        assert "No patches" in body["message"]
+
+
+class TestImprovementExecuteHelper:
+    def test_build_objective_includes_safety_clause(self):
+        objective = build_improvement_execute_objective(
+            recommendation_id="rec-1",
+            title="Title",
+            recommendation="Do the thing",
+            reason="Because",
+            category="template_gap",
+        )
+        assert "rec-1" in objective
+        assert "Do the thing" in objective
+        assert "Do not apply patches" in objective
+
+    def test_execute_maps_medium_priority_and_forces_dry_run(self, improvement_db, monkeypatch):
+        monkeypatch.setenv("JARVIS_ENABLED", "true")
+        captured: dict = {}
+
+        def _fake_submit(**kwargs):
+            captured.update(kwargs)
+            return {
+                "task_id": "t1",
+                "status": "waiting_for_approval",
+                "objective": kwargs["objective"],
+                "approval_required": True,
+                "approval_status": "pending",
+            }
+
+        monkeypatch.setattr(
+            "app.jarvis.execution.service.submit_execution_task",
+            _fake_submit,
+        )
+        result = execute_improvement_recommendation(
+            recommendation_id="rec-2",
+            title="Title",
+            recommendation="Action",
+            priority="medium",
+        )
+        assert captured["dry_run"] is True
+        assert captured["approval_mode"] == "manual"
+        assert captured["priority"] == "normal"
+        assert result["task_id"] == "t1"
