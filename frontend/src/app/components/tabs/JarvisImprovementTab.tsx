@@ -376,7 +376,8 @@ export default function JarvisImprovementTab() {
               Ops → Jarvis
             </Link>
             {' '}(<span className="font-medium">Approve investigation</span> — continues the plan only;
-            Send to LAB / Promote come in later phases). No patches, PRs, or deploys from this screen.
+            Suggestions feed — Execute queues a dry-run trial into Ops → Jarvis (Approve investigation /
+            Send to LAB there). No patches, PRs, or deploys from this screen.
           </p>
         </div>
         <button
