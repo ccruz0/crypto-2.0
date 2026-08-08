@@ -71,6 +71,11 @@ done
 if [ "$RC" -ne 0 ]; then
   echo "Health check failed - rolling back"
   if [ -n "$PREV_IMG" ]; then
+    # Restore host :latest mirrors to the prior image so a later :latest fallback
+    # cannot resurrect the failed deploy after we roll the container back.
+    docker tag "$PREV_IMG" "$LATEST_ECR" || true
+    docker tag "$PREV_IMG" "atp-frontend:latest" || true
+    echo "Restored host :latest -> ${PREV_IMG}"
     deploy "$PREV_IMG" && echo "rolled back to ${PREV_IMG}" || echo "rollback failed"
   else
     echo "no previous image captured; cannot auto-roll back"
@@ -84,13 +89,14 @@ fi
 pin_env() {
   local key="$1" val="$2"
   if grep -q "^${key}=" .env 2>/dev/null; then
-    sed -i "s|^${key}=.*|${key}=${val}|" .env
+    sed -i "s|^${key}=.*|${key}=${val}|" .env || return 1
   else
-    echo "${key}=${val}" >> .env
+    echo "${key}=${val}" >> .env || return 1
   fi
+  grep -q "^${key}=${val}$" .env
 }
-pin_env FRONTEND_IMAGE "$IMAGE_NEW"
-pin_env IMAGE "$IMAGE_NEW"
+pin_env FRONTEND_IMAGE "$IMAGE_NEW" || { echo "ERROR: failed to pin FRONTEND_IMAGE in .env"; exit 1; }
+pin_env IMAGE "$IMAGE_NEW" || { echo "ERROR: failed to pin IMAGE in .env"; exit 1; }
 echo "Pinned FRONTEND_IMAGE=${IMAGE_NEW} (and legacy IMAGE=) in ${COMPOSE_DIR}/.env"
 
 echo "${SERVICE} healthy on ${IMAGE_NEW}"
