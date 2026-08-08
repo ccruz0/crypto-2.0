@@ -12,6 +12,11 @@ vi.mock('@/app/api', () => ({
   getJarvisImprovementTrends: vi.fn(),
   getJarvisImprovementQuality: vi.fn(),
   executeJarvisImprovementRecommendation: vi.fn(),
+  listJarvisExecutionTasks: vi.fn(),
+}));
+
+vi.mock('@/lib/jarvisApproval', () => ({
+  fetchApprovalQueue: vi.fn(),
 }));
 
 import {
@@ -21,7 +26,9 @@ import {
   getJarvisImprovementTemplates,
   getJarvisImprovementTools,
   getJarvisImprovementTrends,
+  listJarvisExecutionTasks,
 } from '@/app/api';
+import { fetchApprovalQueue } from '@/lib/jarvisApproval';
 
 const mockGetRecs = vi.mocked(getJarvisImprovementRecommendations);
 const mockGetTemplates = vi.mocked(getJarvisImprovementTemplates);
@@ -29,6 +36,8 @@ const mockGetTools = vi.mocked(getJarvisImprovementTools);
 const mockGetTrends = vi.mocked(getJarvisImprovementTrends);
 const mockGetQuality = vi.mocked(getJarvisImprovementQuality);
 const mockExecute = vi.mocked(executeJarvisImprovementRecommendation);
+const mockListExecution = vi.mocked(listJarvisExecutionTasks);
+const mockFetchQueue = vi.mocked(fetchApprovalQueue);
 
 const sampleRec: JarvisImprovementRecommendation = {
   id: 'template-insuff-open_orders_empty',
@@ -92,6 +101,8 @@ beforeEach(() => {
     evidence_coverage: 100,
     read_only: true,
   });
+  mockListExecution.mockResolvedValue({ tasks: [] });
+  mockFetchQueue.mockResolvedValue([]);
 });
 
 describe('JarvisImprovementTab Execute', () => {
@@ -127,14 +138,12 @@ describe('JarvisImprovementTab Execute', () => {
     expect(
       await screen.findByTestId(`jarvis-improvement-execute-success-${sampleRec.id}`),
     ).toHaveTextContent(/Queued dry-run task abcd1234/i);
-    const approveLink = await screen.findByTestId(
-      `jarvis-improvement-open-approve-${sampleRec.id}`,
-    );
-    expect(approveLink).toHaveAttribute(
+    const openLink = await screen.findByTestId(`jarvis-improvement-open-jarvis-${sampleRec.id}`);
+    expect(openLink).toHaveAttribute(
       'href',
       '/?tab=jarvis&task=abcd1234-ffff-eeee-dddd-cccccccccccc',
     );
-    expect(approveLink).toHaveTextContent('Approve investigation in Ops → Jarvis');
+    expect(openLink).toHaveTextContent('Open in Jarvis');
   });
 
   it('does not point dry-run operators at Approval Center', async () => {
@@ -177,5 +186,123 @@ describe('JarvisImprovementTab Execute', () => {
       await screen.findByTestId(`jarvis-improvement-execute-failed-${sampleRec.id}`),
     ).toHaveTextContent(/status: failed.*FORBIDDEN/i);
     expect(screen.queryByTestId(`jarvis-improvement-execute-success-${sampleRec.id}`)).toBeNull();
+  });
+});
+
+describe('JarvisImprovementTab trial status badge', () => {
+  it('shows Executed badge + Open in Jarvis when a matching task exists', async () => {
+    const taskId = 'task-matching-rec-001';
+    mockListExecution.mockResolvedValue({
+      tasks: [
+        {
+          task_id: taskId,
+          objective: `Jarvis improvement recommendation [${sampleRec.id}]: Improve evidence collectors`,
+          status: 'waiting_for_approval',
+          created_at: '2026-08-08T12:00:00Z',
+        },
+      ],
+    });
+    mockFetchQueue.mockResolvedValue([
+      {
+        task_id: taskId,
+        objective: `Jarvis improvement recommendation [${sampleRec.id}]: Improve evidence collectors`,
+        status: 'waiting_for_approval',
+        patch_summary: '',
+        files_affected: [],
+        risk_score: null,
+        test_results: {},
+        review_findings: [],
+        approval_status: 'pending',
+        created_at: '2026-08-08T12:00:00Z',
+        workflow_type: 'phase3_investigation',
+        can_send_to_lab: false,
+        lab_trial_status: 'not_started',
+      },
+    ]);
+
+    render(<JarvisImprovementTab />);
+
+    expect(await screen.findByTestId(`jarvis-improvement-trial-badge-${taskId}`)).toHaveTextContent(
+      /Executed · Waiting approval/i,
+    );
+    const open = await screen.findByTestId(`jarvis-improvement-open-jarvis-${sampleRec.id}`);
+    expect(open).toHaveAttribute('href', `/?tab=jarvis&task=${taskId}`);
+    // Card remains visible in the recommendations feed
+    expect(screen.getByTestId(`jarvis-improvement-rec-${sampleRec.id}`)).toBeTruthy();
+    expect(screen.getByTestId(`jarvis-improvement-execute-${sampleRec.id}`)).toHaveTextContent(
+      'Execute again',
+    );
+  });
+
+  it('shows LAB passed from real lab_trial_status, not from dry-run waiting alone', async () => {
+    const taskId = 'task-lab-passed';
+    mockListExecution.mockResolvedValue({
+      tasks: [
+        {
+          task_id: taskId,
+          objective: `Jarvis improvement recommendation [${sampleRec.id}]: Improve evidence collectors`,
+          status: 'waiting_for_pr_approval',
+          created_at: '2026-08-08T12:00:00Z',
+        },
+      ],
+    });
+    mockFetchQueue.mockResolvedValue([
+      {
+        task_id: taskId,
+        objective: `Jarvis improvement recommendation [${sampleRec.id}]: Improve evidence collectors`,
+        status: 'waiting_for_pr_approval',
+        patch_summary: 'diff',
+        files_affected: [],
+        risk_score: 10,
+        test_results: {},
+        review_findings: [],
+        approval_status: 'pending',
+        created_at: '2026-08-08T12:00:00Z',
+        workflow_type: 'phase4b_patch_proposal',
+        can_send_to_lab: false,
+        lab_trial_status: 'passed',
+      },
+    ]);
+
+    render(<JarvisImprovementTab />);
+    expect(await screen.findByTestId(`jarvis-improvement-trial-badge-${taskId}`)).toHaveTextContent(
+      /Executed · LAB passed/i,
+    );
+  });
+
+  it('does not show Testing in LAB when lab trial was never started', async () => {
+    const taskId = 'task-dry-only';
+    mockListExecution.mockResolvedValue({
+      tasks: [
+        {
+          task_id: taskId,
+          objective: `Jarvis improvement recommendation [${sampleRec.id}]: Improve evidence collectors`,
+          status: 'waiting_for_approval',
+          created_at: '2026-08-08T12:00:00Z',
+        },
+      ],
+    });
+    mockFetchQueue.mockResolvedValue([
+      {
+        task_id: taskId,
+        objective: `Jarvis improvement recommendation [${sampleRec.id}]: Improve evidence collectors`,
+        status: 'waiting_for_approval',
+        patch_summary: '',
+        files_affected: [],
+        risk_score: null,
+        test_results: {},
+        review_findings: [],
+        approval_status: 'pending',
+        created_at: '2026-08-08T12:00:00Z',
+        workflow_type: 'phase3_investigation',
+        can_send_to_lab: false,
+        lab_trial_status: 'not_started',
+      },
+    ]);
+
+    render(<JarvisImprovementTab />);
+    const badge = await screen.findByTestId(`jarvis-improvement-trial-badge-${taskId}`);
+    expect(badge).toHaveTextContent(/Waiting approval/i);
+    expect(badge).not.toHaveTextContent(/LAB/i);
   });
 });

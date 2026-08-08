@@ -1382,6 +1382,29 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.65',
+    date: '2026-08-08',
+    change: 'Improvement cards show Executed trial status + Open in Jarvis',
+    details: `🚀 VERSIÓN 0.65 — IMPROVEMENT EXECUTED / LAB TRIAL BADGES
+
+📋 **What shipped**
+• Ops → Jarvis Improvement cards badge when a matching Execute task exists (objective stamp \`Jarvis improvement recommendation [id]:\`)
+• Plain-language trial status: Queued / Waiting approval / Completed / Ready for LAB / Testing in LAB / LAB passed / LAB failed / Creating PR / Promoted
+• **Open in Jarvis** deep-links to \`/?tab=jarvis&task=<id>\` matching the badge task (same pattern as Phase A)
+• LAB labels only from real \`lab_trial_status\` / Send-to-LAB lifecycle fields (#405) — never invent "In LAB"
+• **Promoted** only after \`pr_created\` or \`lab_trial_status=promoted\` — not while \`creating_pr\` is in flight
+• Cards stay in the analytics feed (badge + link); Execute copy stays honest (dry-run unless a patch trial already exists)
+
+🔧 **Why**
+• Carlos could Execute a recommendation but had no persistent view of whether that trial was waiting, in LAB, or promoted
+
+📦 **PRs**
+• #408
+
+---
+`
   }
 ];
 
