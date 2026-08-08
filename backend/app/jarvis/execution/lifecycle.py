@@ -97,12 +97,24 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
             TaskLifecycleState.FAILED,
         }
     ),
-    # Phase 5 transitions
+    # Phase 5 / LAB trial transitions.
+    # WAITING_FOR_APPROVAL return path: LAB apply/test failure keeps the task
+    # retryable (Send to LAB again) instead of terminal FAILED.
     TaskLifecycleState.APPLYING_PATCH: frozenset(
-        {TaskLifecycleState.SANDBOX_TESTING, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+        {
+            TaskLifecycleState.SANDBOX_TESTING,
+            TaskLifecycleState.WAITING_FOR_APPROVAL,
+            TaskLifecycleState.FAILED,
+            TaskLifecycleState.CANCELLED,
+        }
     ),
     TaskLifecycleState.SANDBOX_TESTING: frozenset(
-        {TaskLifecycleState.WAITING_FOR_PR_APPROVAL, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+        {
+            TaskLifecycleState.WAITING_FOR_PR_APPROVAL,
+            TaskLifecycleState.WAITING_FOR_APPROVAL,
+            TaskLifecycleState.FAILED,
+            TaskLifecycleState.CANCELLED,
+        }
     ),
     TaskLifecycleState.WAITING_FOR_PR_APPROVAL: frozenset(
         {TaskLifecycleState.CREATING_PR, TaskLifecycleState.CANCELLED, TaskLifecycleState.FAILED}

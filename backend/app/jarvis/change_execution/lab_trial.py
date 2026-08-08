@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,19 +43,46 @@ LAB_MECHANISM_LABEL = (
 )
 GATE_LAB = "lab_trial"
 
+_LAB_LOCKS_GUARD = threading.Lock()
+_LAB_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _task_lab_lock(task_id: str) -> threading.Lock:
+    with _LAB_LOCKS_GUARD:
+        lock = _LAB_LOCKS.get(task_id)
+        if lock is None:
+            lock = threading.Lock()
+            _LAB_LOCKS[task_id] = lock
+        return lock
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _load_patch_content(task: dict[str, Any]) -> str:
+    """Load the newest patch.diff artifact (highest version, else last match)."""
+    matches: list[dict[str, Any]] = []
     for art in task.get("artifacts") or []:
         name = art.get("standard_name") or art.get("name") or ""
-        if name == "patch.diff" or name.startswith("patch.diff"):
-            try:
-                return load_artifact_content(art)
-            except (OSError, TypeError):
-                pass
+        if name == "patch.diff" or str(name).startswith("patch.diff"):
+            matches.append(art)
+    if not matches:
+        return ""
+
+    def _version_key(art: dict[str, Any]) -> int:
+        try:
+            return int(art.get("version") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    matches.sort(key=_version_key)
+    # Prefer highest version; ties keep later list order via stable sort.
+    for art in reversed(matches):
+        try:
+            return load_artifact_content(art)
+        except (OSError, TypeError):
+            continue
     return ""
 
 
@@ -63,8 +91,10 @@ def _get_lab_meta(task: dict[str, Any]) -> dict[str, Any]:
     return dict(plan.get("lab_trial") or {})
 
 
-def _set_lab_meta(task_id: str, task: dict[str, Any], updates: dict[str, Any]) -> None:
-    plan = dict(task.get("plan") or {})
+def _set_lab_meta(task_id: str, task: dict[str, Any] | None, updates: dict[str, Any]) -> None:
+    """Merge lab_trial updates onto the latest persisted plan (avoids stale overwrites)."""
+    fresh = get_execution_task(task_id) or task or {}
+    plan = dict(fresh.get("plan") or {})
     lab = dict(plan.get("lab_trial") or {})
     lab.update(updates)
     plan["lab_trial"] = lab
@@ -179,6 +209,74 @@ def send_to_lab(
     if not jarvis_lab_trial_enabled():
         raise RuntimeError("Send to LAB disabled (JARVIS_LAB_TRIAL_ENABLED=false)")
 
+    lock = _task_lab_lock(task_id)
+    if not lock.acquire(blocking=False):
+        raise ValueError("LAB trial already in progress.")
+    try:
+        return _send_to_lab_locked(task_id, actor_id=actor_id, comment=comment)
+    finally:
+        lock.release()
+
+
+def _lab_fail_and_retryable(
+    task_id: str,
+    task: dict[str, Any],
+    *,
+    actor_id: str,
+    action: str,
+    error: str,
+    apply_result: dict[str, Any] | None = None,
+    test_results: dict[str, Any] | None = None,
+    branch: str | None = None,
+    changed: list[str] | None = None,
+    workdir: Path | None = None,
+) -> dict[str, Any]:
+    """Record LAB failure and return task to waiting_for_approval for retry."""
+    summary = _plain_summary(status="failed", tests_passed=False, error=error)
+    meta: dict[str, Any] = {
+        "status": "failed",
+        "sandbox_applied": bool(apply_result and apply_result.get("success")),
+        "tests_passed": False,
+        "error": error,
+        "summary": summary,
+        "completed_at": _now_iso(),
+    }
+    if branch is not None:
+        meta["branch_name"] = branch
+    if changed is not None:
+        meta["changed_files"] = changed
+    if test_results is not None:
+        meta["test_results"] = test_results
+    if apply_result is not None:
+        meta["forbidden_check"] = apply_result.get("forbidden_check", {})
+    if workdir is not None:
+        meta["workdir"] = str(workdir)
+    _set_lab_meta(task_id, task, meta)
+    log_phase5_event(
+        task_id=task_id,
+        actor=actor_id,
+        approval_gate=GATE_LAB,
+        action=action,
+        branch_name=branch or (apply_result or {}).get("branch_name", ""),
+        changed_files=changed if changed is not None else (apply_result or {}).get("changed_files"),
+        test_result=f"failed: {error}",
+    )
+    transition_task_status(
+        task_id,
+        TaskLifecycleState.WAITING_FOR_APPROVAL,
+        current_step="lab_failed_retryable",
+        error=summary,
+        approval_status="pending",
+    )
+    return _detail(task_id)
+
+
+def _send_to_lab_locked(
+    task_id: str,
+    *,
+    actor_id: str,
+    comment: str,
+) -> dict[str, Any]:
     task = get_execution_task(task_id)
     if task is None:
         raise LookupError("task not found")
@@ -218,6 +316,7 @@ def send_to_lab(
         action="send_to_lab",
     )
 
+    started_at = _now_iso()
     _set_lab_meta(
         task_id,
         task,
@@ -226,7 +325,7 @@ def send_to_lab(
             "summary": _plain_summary(status="testing", tests_passed=None, error=None),
             "mechanism": LAB_MECHANISM,
             "mechanism_label": LAB_MECHANISM_LABEL,
-            "started_at": _now_iso(),
+            "started_at": started_at,
             "error": None,
         },
     )
@@ -242,35 +341,14 @@ def send_to_lab(
 
     if not apply_result.get("success"):
         error = apply_result.get("error", "LAB sandbox apply failed")
-        summary = _plain_summary(status="failed", tests_passed=False, error=error)
-        _set_lab_meta(
+        return _lab_fail_and_retryable(
             task_id,
             task,
-            {
-                "status": "failed",
-                "sandbox_applied": False,
-                "tests_passed": False,
-                "error": error,
-                "summary": summary,
-                "completed_at": _now_iso(),
-            },
-        )
-        log_phase5_event(
-            task_id=task_id,
-            actor=actor_id,
-            approval_gate=GATE_LAB,
+            actor_id=actor_id,
             action="lab_apply_failed",
-            branch_name=apply_result.get("branch_name", ""),
-            changed_files=apply_result.get("changed_files"),
-            test_result=f"failed: {error}",
+            error=error,
+            apply_result=apply_result,
         )
-        transition_task_status(
-            task_id,
-            TaskLifecycleState.FAILED,
-            error=summary,
-            completed_at=_now_iso(),
-        )
-        return _detail(task_id)
 
     branch = apply_result["branch_name"]
     changed = apply_result["changed_files"]
@@ -319,50 +397,29 @@ def send_to_lab(
         except OSError:
             pass
 
-    existing = task.get("artifacts") or []
+    fresh = get_execution_task(task_id) or task
+    existing = fresh.get("artifacts") or []
     _update_task(task_id, artifacts_json=[*existing, *new_artifacts])
 
     if not tests_passed:
         error = "LAB tests failed after isolated patch apply"
-        summary = _plain_summary(status="failed", tests_passed=False, error=error)
-        _set_lab_meta(
+        return _lab_fail_and_retryable(
             task_id,
-            task,
-            {
-                "status": "failed",
-                "sandbox_applied": True,
-                "branch_name": branch,
-                "changed_files": changed,
-                "tests_passed": False,
-                "test_results": test_results,
-                "forbidden_check": apply_result.get("forbidden_check", {}),
-                "workdir": str(workdir),
-                "error": error,
-                "summary": summary,
-                "completed_at": _now_iso(),
-            },
-        )
-        log_phase5_event(
-            task_id=task_id,
-            actor=actor_id,
-            approval_gate=GATE_LAB,
+            fresh,
+            actor_id=actor_id,
             action="lab_tests_failed",
-            branch_name=branch,
-            changed_files=changed,
-            test_result="failed",
+            error=error,
+            apply_result=apply_result,
+            test_results=test_results,
+            branch=branch,
+            changed=changed,
+            workdir=workdir,
         )
-        transition_task_status(
-            task_id,
-            TaskLifecycleState.FAILED,
-            error=summary,
-            completed_at=_now_iso(),
-        )
-        return _detail(task_id)
 
     summary = _plain_summary(status="passed", tests_passed=True, error=None)
     _set_lab_meta(
         task_id,
-        task,
+        fresh,
         {
             "status": "passed",
             "sandbox_applied": True,

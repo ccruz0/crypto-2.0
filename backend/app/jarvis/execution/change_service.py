@@ -357,7 +357,15 @@ def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
             if "patch" in art.get("name", ""):
                 patch_summary = patch_summary or art.get("preview", "")[:200]
         plan = detail.get("plan") or {}
-        workflow_type = plan.get("workflow_type") or WORKFLOW_TYPE
+        workflow_type = plan.get("workflow_type") or (
+            WORKFLOW_TYPE
+            if any(
+                (a.get("standard_name") == "patch.diff")
+                or str(a.get("name") or "").startswith("patch.diff")
+                for a in (detail.get("artifacts") or [])
+            )
+            else "phase3_investigation"
+        )
         eligibility = assess_lab_eligibility(detail)
         try:
             lab = get_lab_trial_status(detail["task_id"])

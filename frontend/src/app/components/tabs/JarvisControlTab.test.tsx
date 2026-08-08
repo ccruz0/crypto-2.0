@@ -70,6 +70,25 @@ beforeEach(() => {
       },
     ],
   } as never);
+  mockQueue.mockResolvedValue([
+    {
+      task_id: 'wait-1111-aaaa-bbbb-cccccccccccc',
+      objective: 'Inspect dry-run approval wording',
+      status: 'waiting_for_approval',
+      patch_summary: '',
+      files_affected: [],
+      risk_score: null,
+      test_results: {},
+      review_findings: [],
+      approval_status: 'pending',
+      created_at: null,
+      workflow_type: 'phase3_investigation',
+      can_send_to_lab: false,
+      lab_ineligible_reason: 'No patch.diff artifact on this task — nothing to try in LAB.',
+      lab_trial_status: 'not_started',
+      lab_trial_summary: 'Not sent to LAB yet.',
+    },
+  ]);
   mockGet.mockResolvedValue({
     task_id: 'wait-1111-aaaa-bbbb-cccccccccccc',
     objective: 'Inspect dry-run approval wording',
@@ -86,7 +105,6 @@ beforeEach(() => {
     error: null,
     final_answer: null,
   } as never);
-  mockQueue.mockResolvedValue([]);
   mockChange.mockRejectedValue(new Error('not a change task'));
   mockLab.mockRejectedValue(new Error('no lab'));
 });

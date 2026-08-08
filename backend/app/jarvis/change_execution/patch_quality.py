@@ -11,12 +11,13 @@ _STUB_MARKERS = (
 
 
 def is_stub_patch(patch_content: str) -> bool:
-    """Return True when the patch is empty or a Phase-4 TODO placeholder."""
+    """Return True when the patch is empty or a Phase-4 TODO placeholder.
+
+    Marker checks look only at added (+) / removed (-) content lines so that
+    legitimate patches whose *context* mentions stub wording are not refused.
+    """
     text = (patch_content or "").strip()
     if not text:
-        return True
-    lowered = text.lower()
-    if any(marker.lower() in lowered for marker in _STUB_MARKERS):
         return True
     # Unified diffs need at least one added/removed content line beyond headers.
     content_lines = [
@@ -25,6 +26,9 @@ def is_stub_patch(patch_content: str) -> bool:
         if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---"))
     ]
     if not content_lines:
+        return True
+    joined = "\n".join(content_lines).lower()
+    if any(marker.lower() in joined for marker in _STUB_MARKERS):
         return True
     # All content lines are comments / placeholders → still a stub.
     meaningful = [

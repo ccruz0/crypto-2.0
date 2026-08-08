@@ -218,20 +218,39 @@ export default function JarvisControlTab() {
   const investigationWaiting = tasks.filter((t) => {
     if (t.status.toLowerCase() !== 'waiting_for_approval') return false;
     const inLabQueue = labQueue.find((q) => q.task_id === t.task_id);
-    if (!inLabQueue) return true;
+    // Absent from the change approval queue: do not assume investigation —
+    // patch trials can fall out of the queue window and must not get
+    // "Approve investigation".
+    if (!inLabQueue) return false;
     // Change/patch workflows belong in Ready for LAB, not investigation Approve.
-    return !PATCH_WORKFLOWS.has(inLabQueue.workflow_type || '');
+    if (PATCH_WORKFLOWS.has(inLabQueue.workflow_type || '')) return false;
+    if (
+      inLabQueue.can_send_to_lab ||
+      (inLabQueue.lab_trial_status && inLabQueue.lab_trial_status !== 'not_started')
+    ) {
+      return false;
+    }
+    return true;
   });
 
-  const readyForLab = labQueue.filter(
-    (q) =>
-      q.status === 'waiting_for_approval' ||
+  const readyForLab = labQueue.filter((q) => {
+    const isPatchWorkflow = PATCH_WORKFLOWS.has(q.workflow_type || '');
+    const hasLabActivity =
       q.lab_trial_status === 'testing' ||
       q.lab_trial_status === 'passed' ||
       q.lab_trial_status === 'failed' ||
       q.lab_trial_status === 'refused' ||
-      q.status === 'waiting_for_pr_approval',
-  );
+      q.can_send_to_lab;
+    if (q.status === 'waiting_for_pr_approval') return true;
+    if (q.status === 'waiting_for_approval' && (isPatchWorkflow || hasLabActivity)) return true;
+    if (
+      q.status === 'applying_patch' ||
+      q.status === 'sandbox_testing'
+    ) {
+      return isPatchWorkflow || hasLabActivity;
+    }
+    return hasLabActivity;
+  });
 
   // Prefer a Waiting-on-you / Ready-for-LAB task when nothing is selected.
   useEffect(() => {
@@ -246,8 +265,15 @@ export default function JarvisControlTab() {
     const firstWaiting = tasks.find((t) => {
       if (t.status.toLowerCase() !== 'waiting_for_approval') return false;
       const inLabQueue = labQueue.find((q) => q.task_id === t.task_id);
-      if (!inLabQueue) return true;
-      return !PATCH_WORKFLOWS.has(inLabQueue.workflow_type || '');
+      if (!inLabQueue) return false;
+      if (PATCH_WORKFLOWS.has(inLabQueue.workflow_type || '')) return false;
+      if (
+        inLabQueue.can_send_to_lab ||
+        (inLabQueue.lab_trial_status && inLabQueue.lab_trial_status !== 'not_started')
+      ) {
+        return false;
+      }
+      return true;
     });
     if (!firstWaiting) return;
     setSelectedId(firstWaiting.task_id);
@@ -335,6 +361,7 @@ export default function JarvisControlTab() {
     patchTrial &&
     (detail?.status === 'waiting_for_approval' ||
       labStatus?.status === 'refused' ||
+      labStatus?.status === 'failed' ||
       labStatus?.can_send_to_lab);
   const showApproveInvestigation =
     !patchTrial && detail?.status === 'waiting_for_approval';

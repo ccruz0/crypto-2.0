@@ -126,6 +126,36 @@ def test_is_stub_patch_detects_phase4_placeholder():
     assert is_stub_patch(REAL_PATCH) is False
 
 
+def test_is_stub_patch_ignores_stub_text_in_context_only():
+    """Unchanged context mentioning stub wording must not refuse a real edit."""
+    patch = """\
+--- a/docs/notes.md
++++ b/docs/notes.md
+@@ -1,4 +1,5 @@
+ # Notes
+ # Jarvis Phase 4 proposed patch (NOT APPLIED)
++# genuine addition
+ Docs
+"""
+    assert is_stub_patch(patch) is False
+
+
+def test_load_patch_prefers_newest_version(exec_db):
+    from app.jarvis.change_execution.lab_trial import _load_patch_content
+
+    task_id = "lab-trial-patch-vers-bbbb-cccccccccccc"
+    create_execution_task(task_id=task_id, objective="newest patch", dry_run=True)
+    old = create_versioned_artifact(
+        task_id=task_id, name="patch.diff", content=STUB_PATCH, fmt="text", version=1
+    )
+    new = create_versioned_artifact(
+        task_id=task_id, name="patch.diff", content=REAL_PATCH, fmt="text", version=2
+    )
+    _update_task(task_id, artifacts_json=[old, new], plan_json={"workflow_type": "phase4b_patch_proposal"})
+    task = get_execution_task(task_id)
+    assert _load_patch_content(task) == REAL_PATCH
+
+
 def test_lab_trial_enabled_by_default(monkeypatch):
     monkeypatch.delenv("JARVIS_LAB_TRIAL_ENABLED", raising=False)
     assert jarvis_lab_trial_enabled() is True
@@ -151,6 +181,28 @@ def test_send_to_lab_refuses_stub_without_gate1_flag(exec_db, monkeypatch):
     lab = get_lab_trial_status(task_id)
     assert lab["status"] == "refused"
     assert lab["can_send_to_lab"] is False
+
+
+def test_send_to_lab_failure_stays_retryable(exec_db, monkeypatch):
+    monkeypatch.setenv("JARVIS_ENABLED", "true")
+    monkeypatch.setenv("JARVIS_PATCH_APPLY_ENABLED", "false")
+    task_id = _seed_waiting_task(REAL_PATCH)
+    mock_apply = {
+        "success": False,
+        "error": "git apply failed",
+        "branch_name": "",
+        "changed_files": [],
+    }
+    with patch(
+        "app.jarvis.change_execution.lab_trial.apply_patch_in_sandbox",
+        return_value=mock_apply,
+    ):
+        result = send_to_lab(task_id, actor_id="tester")
+    assert result["status"] == TaskLifecycleState.WAITING_FOR_APPROVAL.value
+    assert result["current_step"] == "lab_failed_retryable"
+    lab = result["lab_trial"]
+    assert lab["status"] == "failed"
+    assert lab["can_send_to_lab"] is True
 
 
 def test_send_to_lab_applies_and_passes(exec_db, monkeypatch):

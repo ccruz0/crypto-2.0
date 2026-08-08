@@ -1317,13 +1317,14 @@ const VERSION_HISTORY = [
 • Works while prod Gate-1 flags stay OFF (\`patch_apply\` / \`pr_creation\` / \`github_write\`)
 • Disabled **Promote to production** shown after LAB green (Phase C unlocks the real action)
 • Mechanism label: isolated sandbox today — remote LAB host orchestration is B2
+• LAB failures stay retryable (return to waiting_for_approval); newest patch.diff used; concurrent Send-to-LAB locked in-process
 
 🔧 **Why**
 • Design Phase B: Recommendation → Send to LAB → review result (honest trial path)
 • Design: docs/architecture/jarvis-lab-promote-ux.md
 
 📦 **PRs**
-• (this PR)
+• #405
 
 ---
 `
