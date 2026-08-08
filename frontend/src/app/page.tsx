@@ -1256,7 +1256,7 @@ const VERSION_HISTORY = [
 • Execute on "Improve evidence collectors for deployment_unhealthy" queued task 72f0f556… then immediately failed with "Objective or plan classified as FORBIDDEN" because the dry-run safety clause ended with ", or deploy."
 
 📦 **PRs**
-• (this PR)
+• #401
 
 ---
 `
