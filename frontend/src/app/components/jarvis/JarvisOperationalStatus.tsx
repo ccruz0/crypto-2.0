@@ -72,10 +72,9 @@ export default function JarvisOperationalStatus() {
       </div>
 
       <p className="text-xs text-slate-600 dark:text-slate-400 mb-3 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 px-2 py-1.5">
-        Prefer this tab for investigation approvals (
-        <span className="font-medium">Approve investigation</span>). Approval Center is for advanced
-        Phase-5 sandbox/PR gates. Send to LAB / Promote to production are coming later — not enabled
-        yet.
+        Prefer this tab for <span className="font-medium">Approve investigation</span> (dry-run) and{' '}
+        <span className="font-medium">Send to LAB</span> (isolated patch trial). Approval Center is for
+        advanced Phase-5 sandbox/PR gates. Promote to production ships in Phase C.
       </p>
 
       {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
@@ -100,8 +99,8 @@ export default function JarvisOperationalStatus() {
 
       {writeGatesDisabled && (
         <p className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 rounded px-2 py-1.5">
-          Write gates disabled — investigation and patch generation only; no sandbox apply or PR creation without
-          explicit gate approval.
+          Prod write gates disabled — Send to LAB still runs isolated sandbox trials; Gate-1 apply / PR
+          creation stay off until explicitly enabled.
         </p>
       )}
     </div>

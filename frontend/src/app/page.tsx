@@ -1303,6 +1303,31 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.62',
+    date: '2026-08-08',
+    change: 'Jarvis Phase B: Send to LAB (isolated sandbox apply + tests) on Ops → Jarvis',
+    details: `🚀 VERSIÓN 0.62 — LAB→PROMOTE UX PHASE B (SEND TO LAB)
+
+📋 **What shipped**
+• Ops → Jarvis **Send to LAB** applies a real patch.diff in an isolated sandbox and runs tests
+• Plain-language LAB status (testing / passed / failed / refused stub) on the task panel
+• Stub/TODO Patch-agent diffs are refused with a clear reason (prefer 4B real proposals)
+• Works while prod Gate-1 flags stay OFF (\`patch_apply\` / \`pr_creation\` / \`github_write\`)
+• Disabled **Promote to production** shown after LAB green (Phase C unlocks the real action)
+• Mechanism label: isolated sandbox today — remote LAB host orchestration is B2
+• LAB failures stay retryable (return to waiting_for_approval); newest patch.diff used; concurrent Send-to-LAB locked in-process
+
+🔧 **Why**
+• Design Phase B: Recommendation → Send to LAB → review result (honest trial path)
+• Design: docs/architecture/jarvis-lab-promote-ux.md
+
+📦 **PRs**
+• #405
+
+---
+`
   }
 ];
 

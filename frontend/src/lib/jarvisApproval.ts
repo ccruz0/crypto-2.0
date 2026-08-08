@@ -15,6 +15,10 @@ export interface ApprovalQueueItem {
   created_at: string | null;
   workflow_type: string;
   phase5_available?: boolean;
+  can_send_to_lab?: boolean;
+  lab_ineligible_reason?: string;
+  lab_trial_status?: string;
+  lab_trial_summary?: string;
 }
 
 export interface Phase5Status {
@@ -26,6 +30,7 @@ export interface Phase5Status {
     pr_creation_enabled: boolean;
     github_write_enabled: boolean;
     double_approval_required: boolean;
+    lab_trial_enabled?: boolean;
   };
   gate1_approved: boolean;
   gate2_approved: boolean;
@@ -40,6 +45,26 @@ export interface Phase5Status {
   forbidden_check: Record<string, unknown>;
 }
 
+export interface LabTrialStatus {
+  task_id: string;
+  status: string;
+  summary: string;
+  mechanism: string;
+  mechanism_label: string;
+  can_send_to_lab: boolean;
+  ineligible_reason: string;
+  tests_passed: boolean;
+  sandbox_applied: boolean;
+  changed_files: string[];
+  branch_name: string | null;
+  test_results: Record<string, unknown>;
+  error: string | null;
+  can_promote: boolean;
+  promote_available: boolean;
+  promote_hint: string;
+  safety_flags: Phase5Status['safety_flags'];
+}
+
 export interface ChangeTaskDetail {
   task_id: string;
   objective: string;
@@ -50,6 +75,12 @@ export interface ChangeTaskDetail {
   approvals: Array<Record<string, unknown>>;
   workflow_type: string;
   phase5?: Phase5Status;
+  lab_trial?: LabTrialStatus;
+  plan?: Record<string, unknown>;
+  error?: string | null;
+  final_answer?: string | null;
+  current_step?: string | null;
+  approval_status?: string;
 }
 
 export interface SafetyStatus {
@@ -102,6 +133,35 @@ export async function approvePatchApply(taskId: string, actorId = 'dashboard', c
     body: JSON.stringify({ actor_id: actorId, comment }),
   });
   if (!resp.ok) throw new Error(`approve-apply failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function sendChangeTaskToLab(
+  taskId: string,
+  actorId = 'dashboard',
+  comment = '',
+): Promise<ChangeTaskDetail> {
+  const resp = await fetch(`${API}/jarvis/tasks/change/${taskId}/send-to-lab`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actor_id: actorId, comment }),
+  });
+  if (!resp.ok) {
+    let detail = `send-to-lab failed: ${resp.status}`;
+    try {
+      const body = await resp.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return resp.json();
+}
+
+export async function fetchLabTrialStatus(taskId: string): Promise<LabTrialStatus> {
+  const resp = await fetch(`${API}/jarvis/tasks/change/${taskId}/lab-status`, { cache: 'no-store' });
+  if (!resp.ok) throw new Error(`lab status failed: ${resp.status}`);
   return resp.json();
 }
 

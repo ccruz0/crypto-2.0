@@ -102,6 +102,9 @@ describe('JarvisApprovalPage Phase A copy', () => {
     expect(screen.getByTestId('jarvis-approval-soft-redirect')).toHaveTextContent(
       /Send to LAB/i,
     );
+    expect(screen.getByTestId('jarvis-approval-soft-redirect')).toHaveTextContent(
+      /Ops → Jarvis/i,
+    );
     expect(screen.getAllByRole('link', { name: /Ops → Jarvis/i }).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByRole('link', { name: /Ops → Jarvis/i })[0]).toHaveAttribute(
       'href',

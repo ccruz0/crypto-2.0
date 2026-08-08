@@ -137,9 +137,12 @@ export default function JarvisApprovalPage() {
             This page is for advanced sandbox apply / PR creation gates — usually flags-off.
           </p>
           <p className="mt-2 text-xs text-indigo-300/80">
-            Coming later: Send to LAB (trial) and Promote to production (open PR for you to merge/deploy).
-            They are not available yet — see{' '}
-            <code className="text-indigo-200">docs/architecture/jarvis-lab-promote-ux.md</code> Phases B/C.
+            <span className="font-medium">Send to LAB</span> lives on{' '}
+            <Link href="/?tab=jarvis" className="underline hover:text-white">
+              Ops → Jarvis
+            </Link>{' '}
+            (isolated sandbox trial). Promote to production is Phase C. See{' '}
+            <code className="text-indigo-200">docs/architecture/jarvis-lab-promote-ux.md</code>.
           </p>
         </div>
 
