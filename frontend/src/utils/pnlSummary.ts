@@ -9,6 +9,7 @@ import {
   calculateOpenLotsAggregateProfitLoss,
   dedupeProtectionCloseTwins,
   getAssetBaseSymbol,
+  getExecutedProtectionRole,
   getOpenPositionLotsForAsset,
   getOrderExecutionTime,
   isFilledCloseOrder,
@@ -37,6 +38,10 @@ export interface PnLSummaryResult {
   closeCount: number;
   winCount: number;
   winRate: number | null;
+  /** FILLED TAKE_PROFIT fills in the selected period (after twin dedupe). */
+  tpExecutedCount: number;
+  /** FILLED STOP_LOSS fills in the selected period (after twin dedupe). */
+  slExecutedCount: number;
   topSymbols: PnLSymbolBreakdown[];
   period: PnLPeriodRange;
 }
@@ -156,6 +161,8 @@ export function computePnLSummary(args: {
   let realizedPL = 0;
   let closeCount = 0;
   let winCount = 0;
+  let tpExecutedCount = 0;
+  let slExecutedCount = 0;
   const bySymbol = new Map<string, { pnl: number; closes: number }>();
 
   for (const [orderId, pnlData] of realizedMap.entries()) {
@@ -175,6 +182,16 @@ export function computePnLSummary(args: {
     prev.pnl += pnl;
     prev.closes += 1;
     bySymbol.set(sym, prev);
+  }
+
+  // Count executed TP/SL fills in the same period window (order_role / FILL data).
+  for (const order of orders) {
+    const protectionRole = getExecutedProtectionRole(order);
+    if (!protectionRole) continue;
+    const t = getOrderExecutionTime(order);
+    if (!t || t < period.startMs || t > period.endMs) continue;
+    if (protectionRole === 'TAKE_PROFIT') tpExecutedCount += 1;
+    else slExecutedCount += 1;
   }
 
   let unrealizedPL = 0;
@@ -211,6 +228,8 @@ export function computePnLSummary(args: {
     closeCount,
     winCount,
     winRate: closeCount > 0 ? winCount / closeCount : null,
+    tpExecutedCount,
+    slExecutedCount,
     topSymbols,
     period,
   };

@@ -99,6 +99,68 @@ describe('computePnLSummary', () => {
     expect(summary.closeCount).toBe(1);
     expect(summary.winCount).toBe(1);
     expect(summary.winRate).toBeCloseTo(1);
+    expect(summary.tpExecutedCount).toBe(1);
+    expect(summary.slExecutedCount).toBe(0);
+  });
+
+  it('counts FILLED TP and SL fills in the selected period', () => {
+    const buy = makeEntry({
+      order_id: 'buy-tp-sl',
+      side: 'BUY',
+      quantity: '2',
+      price: '100',
+      create_time: new Date(2026, 6, 10).getTime(),
+      update_time: new Date(2026, 6, 10).getTime(),
+    });
+    const tp = makeTpClose({
+      order_id: 'tp-1',
+      side: 'SELL',
+      quantity: '1',
+      price: '120',
+      parent_order_id: 'buy-tp-sl',
+      create_time: new Date(2026, 6, 20).getTime(),
+      update_time: new Date(2026, 6, 20).getTime(),
+    });
+    const sl = makeOrder({
+      order_id: 'sl-1',
+      side: 'SELL',
+      quantity: '1',
+      price: '90',
+      order_type: 'STOP_LIMIT',
+      order_role: 'STOP_LOSS',
+      execution_origin: 'STOP_LOSS',
+      parent_order_id: 'buy-tp-sl',
+      create_time: new Date(2026, 6, 22).getTime(),
+      update_time: new Date(2026, 6, 22).getTime(),
+    });
+    const oldTp = makeTpClose({
+      order_id: 'tp-old',
+      side: 'SELL',
+      quantity: '1',
+      price: '130',
+      parent_order_id: 'buy-tp-sl',
+      create_time: new Date(2026, 0, 5).getTime(),
+      update_time: new Date(2026, 0, 5).getTime(),
+    });
+    const manualClose = makeOrder({
+      order_id: 'manual-1',
+      side: 'SELL',
+      quantity: '1',
+      price: '110',
+      order_type: 'MARKET',
+      execution_origin: 'MANUAL',
+      create_time: new Date(2026, 6, 23).getTime(),
+      update_time: new Date(2026, 6, 23).getTime(),
+    });
+
+    const summary = computePnLSummary({
+      executedOrders: [buy, tp, sl, oldTp, manualClose],
+      preset: '30d',
+      now,
+    });
+
+    expect(summary.tpExecutedCount).toBe(1);
+    expect(summary.slExecutedCount).toBe(1);
   });
 
   it('excludes closes outside the selected period', () => {
@@ -128,6 +190,8 @@ describe('computePnLSummary', () => {
 
     expect(summary.realizedPL).toBe(0);
     expect(summary.closeCount).toBe(0);
+    expect(summary.tpExecutedCount).toBe(0);
+    expect(summary.slExecutedCount).toBe(0);
   });
 
   it('adds unrealized from open lots regardless of period', () => {

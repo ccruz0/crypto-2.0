@@ -158,6 +158,55 @@ export function isFilledCloseOrder(order: OpenOrder): boolean {
   return getOrderLifecycleRole(order) === 'close';
 }
 
+/** FILLED Take Profit / Stop Loss protection role for performance counts. */
+export type ExecutedProtectionRole = 'TAKE_PROFIT' | 'STOP_LOSS';
+
+/**
+ * Classify a FILLED exchange order as an executed TP or SL fill.
+ * Prefers order_role, then order_type / execution_origin / type_display.
+ * Returns null for entries, manual flattens, and untagged fills.
+ */
+export function getExecutedProtectionRole(
+  order: OpenOrder
+): ExecutedProtectionRole | null {
+  if ((order.status || '').toUpperCase() !== 'FILLED') return null;
+
+  const role = (order.order_role || '').toUpperCase();
+  if (role === 'TAKE_PROFIT') return 'TAKE_PROFIT';
+  if (role === 'STOP_LOSS') return 'STOP_LOSS';
+
+  const orderType = (order.order_type || '').toUpperCase();
+  if (
+    orderType === 'TAKE_PROFIT' ||
+    orderType === 'TAKE_PROFIT_LIMIT' ||
+    orderType.includes('TAKE_PROFIT')
+  ) {
+    return 'TAKE_PROFIT';
+  }
+  if (
+    orderType === 'STOP_LOSS' ||
+    orderType === 'STOP_LIMIT' ||
+    orderType === 'STOP_LOSS_LIMIT' ||
+    (orderType.includes('STOP') && !orderType.includes('TAKE_PROFIT'))
+  ) {
+    return 'STOP_LOSS';
+  }
+
+  const origin = (order.execution_origin || '').toUpperCase();
+  if (origin === 'TAKE_PROFIT') return 'TAKE_PROFIT';
+  if (origin === 'STOP_LOSS') return 'STOP_LOSS';
+
+  const typeDisplay = (
+    order.type_display ||
+    order.execution_origin_label ||
+    ''
+  ).toLowerCase();
+  if (typeDisplay.includes('tp ejecutado')) return 'TAKE_PROFIT';
+  if (typeDisplay.includes('sl ejecutado')) return 'STOP_LOSS';
+
+  return null;
+}
+
 export function isFilledPositionOrder(order: OpenOrder): boolean {
   const role = getOrderLifecycleRole(order);
   return role === 'entry' || role === 'close';
