@@ -1260,6 +1260,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.60',
+    date: '2026-08-08',
+    change: 'Deep-link Improvement Execute → Ops → Jarvis Approve',
+    details: `🚀 VERSIÓN 0.60 — OPEN JARVIS TO APPROVE
+
+📋 **What shipped**
+• Success copy no longer says "Jarvis tab" (Jarvis lives under Ops ▾, not main nav)
+• "Open Jarvis to Approve" button deep-links to /?tab=jarvis&task=<id>
+• Jarvis Control pre-selects the task from ?task= so Approve is one click away
+
+🔧 **Why**
+• Operators queued dry-run tasks from Ops → Jarvis Improvement and could not find a top-level Jarvis tab
+
+📦 **PRs**
+• #402
+
+---
+`
   }
 ];
 
@@ -1291,6 +1311,8 @@ function DashboardPageContent() {
       } else {
         params.set('tab', tab);
       }
+      // ?task= is only for one-shot Approve deep-links (Next <Link>); do not sticky across Ops nav.
+      params.delete('task');
       const qs = params.toString();
       // push (not replace) so browser back/forward moves between tabs
       router.push(qs ? `${pathname}?${qs}` : pathname, { scroll: false });

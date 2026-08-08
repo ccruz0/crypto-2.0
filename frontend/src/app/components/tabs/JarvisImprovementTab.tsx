@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   executeJarvisImprovementRecommendation,
   getJarvisImprovementQuality,
@@ -15,6 +16,13 @@ import {
   type JarvisImprovementToolEffectiveness,
   type JarvisImprovementTrends,
 } from '@/app/api';
+
+/** Deep-link to Ops → Jarvis with optional task pre-selected for Approve. */
+export function jarvisApproveHref(taskId?: string | null): string {
+  const params = new URLSearchParams({ tab: 'jarvis' });
+  if (taskId) params.set('task', taskId);
+  return `/?${params.toString()}`;
+}
 
 type Section = 'recommendations' | 'template-gaps' | 'tool-efficiency' | 'quality-trends' | 'backlog';
 
@@ -91,13 +99,13 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
             data-testid={`jarvis-improvement-execute-${rec.id}`}
             onClick={handleExecute}
             disabled={executing}
-            title="Queue a dry-run Jarvis task. Approve the queued task later in the Jarvis tab. Does not apply patches or deploy."
+            title="Queue a dry-run Jarvis task. Approve later via Ops → Jarvis (or Approval Center). Does not apply patches or deploy."
             className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
           >
             {executing ? 'Queuing…' : 'Execute'}
           </button>
           <span className="text-[11px] text-gray-400 dark:text-slate-500 text-right max-w-[14rem]">
-            Queues dry-run · Approve in Jarvis tab
+            Queues dry-run · Approve via Ops → Jarvis
           </span>
         </div>
       </div>
@@ -116,13 +124,24 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
         </p>
       )}
       {execResult && execResult.status !== 'failed' && (
-        <p
-          className="text-xs text-green-700 dark:text-green-300"
+        <div
+          className="flex flex-wrap items-center gap-2 text-xs text-green-700 dark:text-green-300"
           data-testid={`jarvis-improvement-execute-success-${rec.id}`}
         >
-          Queued dry-run task {execResult.task_id.slice(0, 8)}… — status: {execResult.status}
-          {execResult.approval_required ? ' — open Jarvis tab to Approve' : ''}. No patches applied.
-        </p>
+          <p>
+            Queued dry-run task {execResult.task_id.slice(0, 8)}… — status: {execResult.status}.
+            No patches applied.
+          </p>
+          {execResult.approval_required && (
+            <Link
+              href={jarvisApproveHref(execResult.task_id)}
+              data-testid={`jarvis-improvement-open-approve-${rec.id}`}
+              className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+            >
+              Open Jarvis to Approve
+            </Link>
+          )}
+        </div>
       )}
     </div>
   );
@@ -352,9 +371,12 @@ export default function JarvisImprovementTab() {
           <p className="text-sm text-gray-500 dark:text-slate-400">
             Self-improvement recommendations from investigation analytics. Use{' '}
             <span className="font-semibold text-indigo-600 dark:text-indigo-300">Execute</span> on a
-            card to queue a dry-run Jarvis task;{' '}
-            <span className="font-semibold">Approve</span> the task in the Jarvis tab. No patches,
-            PRs, or deploys from this screen.
+            card to queue a dry-run Jarvis task; then{' '}
+            <span className="font-semibold">Ops → Jarvis</span> (or{' '}
+            <Link href="/jarvis/approval" className="underline hover:text-indigo-600">
+              Approval Center
+            </Link>
+            ) to Approve. No patches, PRs, or deploys from this screen.
           </p>
         </div>
         <button
