@@ -9368,7 +9368,22 @@ class SignalMonitorService:
             logger.info(f"[{source}] {symbol} {side} Order placed successfully: order_id={order_id}")
 
             entry_side_upper = side.upper()
-            needs_protection = entry_side_upper == "BUY" or is_margin_short_entry
+            # BUY always needs protection. SELL must re-detect short inventory AFTER fill.
+            # Pre-place ``is_margin_short_entry`` is True only when no bot position exists, so
+            # adding to an existing margin short (prod DOGE_USD 5755600492782582799) skipped
+            # SL/TP entirely while healing is OFF.
+            if entry_side_upper == "BUY":
+                needs_protection = True
+            elif entry_side_upper == "SELL":
+                needs_protection = self._is_short_entry_needing_protection(
+                    db=db,
+                    symbol=symbol,
+                    order_id=str(order_id) if order_id else None,
+                    user_wants_margin=bool(user_wants_margin),
+                    use_margin=bool(use_margin),
+                )
+            else:
+                needs_protection = False
             protection_result = None
             if needs_protection and order_id:
                 try:
@@ -9576,6 +9591,76 @@ class SignalMonitorService:
             )
         return None
     
+    def _is_short_entry_needing_protection(
+        self,
+        db: Session,
+        symbol: str,
+        order_id: Optional[str],
+        *,
+        user_wants_margin: bool = False,
+        use_margin: bool = False,
+    ) -> bool:
+        """True when a filled SELL left (or added to) short inventory that needs SL/TP.
+
+        Prefer live wallet: negative base balance = short. Flat/long wallet = long-close.
+        When the wallet API is unavailable, fall back to margin+shorting_enabled — including
+        when a bot short lot already exists (adding to a short must still be protected).
+        """
+        wallet_balance = None
+        try:
+            from app.services.exchange_sync import _base_wallet_balance_from_accounts
+
+            summary = trade_client.get_account_summary()
+            wallet_balance = _base_wallet_balance_from_accounts(
+                summary.get("accounts") or [],
+                symbol,
+            )
+        except Exception as wallet_err:
+            logger.debug(
+                "[SL/TP] wallet unavailable for post-fill short-entry check %s %s: %s",
+                symbol,
+                order_id,
+                wallet_err,
+            )
+        if wallet_balance is not None:
+            is_short = float(wallet_balance) < 0
+            logger.info(
+                "[SL/TP] SELL %s order %s short-entry via wallet: balance=%s is_short_entry=%s",
+                symbol,
+                order_id,
+                wallet_balance,
+                is_short,
+            )
+            return is_short
+
+        marginish = bool(user_wants_margin) or bool(use_margin)
+        if not marginish:
+            logger.info(
+                "[SL/TP] SELL %s order %s treated as long-close (wallet unavailable, spot)",
+                symbol,
+                order_id,
+            )
+            return False
+        try:
+            from app.services.risk_guard import shorting_enabled
+
+            if not shorting_enabled():
+                logger.info(
+                    "[SL/TP] SELL %s order %s no protection (wallet unavailable, shorting disabled)",
+                    symbol,
+                    order_id,
+                )
+                return False
+        except Exception:
+            pass
+        logger.info(
+            "[SL/TP] SELL %s order %s short-entry via margin fallback "
+            "(wallet unavailable; protect open/add short)",
+            symbol,
+            order_id,
+        )
+        return True
+
     def _create_protection_after_entry_fill(
         self,
         db: Session,
@@ -11191,70 +11276,15 @@ class SignalMonitorService:
                                 # PART A (real path): a SELL fills two very different roles.
                                 # Prefer live wallet: negative base balance = short that MUST be
                                 # protected. Flat/long wallet = long-close → no new SL/TP.
-                                # Fallback heuristic (wallet API down): margin + no open bot
-                                # position + shorting enabled (legacy).
-                                is_short_entry = False
-                                wallet_balance = None
-                                try:
-                                    from app.services.exchange_sync import (
-                                        _base_wallet_balance_from_accounts,
-                                    )
-                                    summary = trade_client.get_account_summary()
-                                    wallet_balance = _base_wallet_balance_from_accounts(
-                                        summary.get("accounts") or [],
-                                        symbol,
-                                    )
-                                except Exception as wallet_err:
-                                    logger.debug(
-                                        "[SL/TP] wallet unavailable for SELL short-entry check "
-                                        "%s %s: %s",
-                                        symbol,
-                                        order_id,
-                                        wallet_err,
-                                    )
-                                if wallet_balance is not None:
-                                    is_short_entry = float(wallet_balance) < 0
-                                    logger.info(
-                                        "[SL/TP] SELL %s order %s short-entry via wallet: "
-                                        "balance=%s is_short_entry=%s",
-                                        symbol,
-                                        order_id,
-                                        wallet_balance,
-                                        is_short_entry,
-                                    )
-                                else:
-                                    base_symbol = (
-                                        symbol.split("_")[0] if "_" in symbol else symbol
-                                    )
-                                    try:
-                                        from app.services.order_position_service import (
-                                            count_open_positions_for_symbol,
-                                        )
-                                        position_exists = (
-                                            count_open_positions_for_symbol(db, base_symbol)
-                                            > 0
-                                        )
-                                    except Exception:
-                                        position_exists = False
-                                    is_short_entry = bool(user_wants_margin) and (
-                                        not position_exists
-                                    )
-                                    try:
-                                        from app.services.risk_guard import shorting_enabled
-                                        is_short_entry = (
-                                            is_short_entry and shorting_enabled()
-                                        )
-                                    except Exception:
-                                        pass
-                                    logger.info(
-                                        "[SL/TP] SELL %s order %s short-entry via fallback: "
-                                        "margin=%s position_exists=%s is_short_entry=%s",
-                                        symbol,
-                                        order_id,
-                                        bool(user_wants_margin),
-                                        position_exists,
-                                        is_short_entry,
-                                    )
+                                # Shared helper also covers margin short *adds* when wallet API
+                                # is down (legacy fallback wrongly required position_exists=0).
+                                is_short_entry = self._is_short_entry_needing_protection(
+                                    db=db,
+                                    symbol=symbol,
+                                    order_id=str(order_id),
+                                    user_wants_margin=bool(user_wants_margin),
+                                    use_margin=bool(use_margin),
+                                )
 
                                 if is_short_entry:
                                     # Create SL/TP directly via the working, side-aware mechanism.
@@ -11361,25 +11391,13 @@ class SignalMonitorService:
                     f"Attempting fill-time protection (extended polls); healing is not a backup."
                 )
                 try:
-                    is_short_entry = False
-                    try:
-                        from app.services.exchange_sync import (
-                            _base_wallet_balance_from_accounts,
-                        )
-                        summary = trade_client.get_account_summary()
-                        wallet_balance = _base_wallet_balance_from_accounts(
-                            summary.get("accounts") or [],
-                            symbol,
-                        )
-                        if wallet_balance is not None:
-                            is_short_entry = float(wallet_balance) < 0
-                    except Exception:
-                        is_short_entry = bool(use_margin)
-                        try:
-                            from app.services.risk_guard import shorting_enabled
-                            is_short_entry = is_short_entry and shorting_enabled()
-                        except Exception:
-                            pass
+                    is_short_entry = self._is_short_entry_needing_protection(
+                        db=db,
+                        symbol=symbol,
+                        order_id=str(order_id),
+                        user_wants_margin=bool(user_wants_margin),
+                        use_margin=bool(use_margin),
+                    )
                     if is_short_entry:
                         self._create_protection_after_entry_fill(
                             db=db,
