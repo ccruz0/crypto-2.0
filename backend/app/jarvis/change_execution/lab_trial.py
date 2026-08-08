@@ -1,12 +1,14 @@
-"""Jarvis Phase B: Send to LAB trial (isolated sandbox apply + tests).
+"""Jarvis Phase B/C: Send to LAB trial + Promote to production (open PR).
 
-Honest scope for B1:
-- Uses the existing isolated sandbox under {tempdir}/jarvis-sandbox/{task_id}
+Honest scope:
+- B1: Uses the existing isolated sandbox under {tempdir}/jarvis-sandbox/{task_id}
   (same apply/test machinery as Phase-5 Gate 1).
 - Does NOT require JARVIS_PATCH_APPLY_ENABLED — LAB trial is intentionally separate
   from the prod Gate-1 flag so prod safety flags can stay off.
 - Does NOT orchestrate a remote atp-lab-builder host (that's B2).
-- Never creates PRs or writes to production.
+- Phase C Promote opens a GitHub PR only when LAB is green and the operator clicks.
+  Gated by JARVIS_PROMOTE_PR_ENABLED (default false). Never merges or deploys.
+  Does NOT require broad JARVIS_PR_CREATION_ENABLED / JARVIS_GITHUB_WRITE_ENABLED.
 """
 
 from __future__ import annotations
@@ -20,9 +22,13 @@ from typing import Any
 
 from app.jarvis.artifacts.storage import create_versioned_artifact, load_artifact_content
 from app.jarvis.change_execution.audit import log_phase5_event
-from app.jarvis.change_execution.config import jarvis_lab_trial_enabled, phase5_safety_status
+from app.jarvis.change_execution.config import (
+    jarvis_lab_trial_enabled,
+    jarvis_promote_pr_enabled,
+    phase5_safety_status,
+)
 from app.jarvis.change_execution.patch_quality import is_stub_patch, stub_refusal_message
-from app.jarvis.change_execution.sandbox import apply_patch_in_sandbox
+from app.jarvis.change_execution.sandbox import SANDBOX_BASE, apply_patch_in_sandbox
 from app.jarvis.change_execution.test_runner import run_sandbox_tests, write_test_artifacts
 from app.jarvis.execution.lifecycle import TaskLifecycleState
 from app.jarvis.execution.persistence import (
@@ -31,6 +37,12 @@ from app.jarvis.execution.persistence import (
     list_approvals,
     record_approval,
     transition_task_status,
+)
+from app.jarvis.github.pr_service import (
+    build_pr_body,
+    check_lab_promote_pr_allowed,
+    create_pull_request,
+    prepare_sandbox_branch_for_push,
 )
 from app.jarvis.mvp.config import jarvis_enabled
 
@@ -42,6 +54,7 @@ LAB_MECHANISM_LABEL = (
     "Remote LAB host orchestration is not wired yet (Phase B2)."
 )
 GATE_LAB = "lab_trial"
+GATE_PROMOTE = "lab_promote"
 
 _LAB_LOCKS_GUARD = threading.Lock()
 _LAB_LOCKS: dict[str, threading.Lock] = {}
@@ -105,7 +118,12 @@ def _plain_summary(*, status: str, tests_passed: bool | None, error: str | None)
     if status == "testing":
         return "Testing in LAB — applying the patch in isolation and running tests."
     if status == "passed":
-        return "LAB passed — isolated apply and tests succeeded. Promote to production comes in Phase C."
+        return (
+            "LAB passed — isolated apply and tests succeeded. "
+            "You can Promote to production to open a PR (you still merge and deploy)."
+        )
+    if status == "promoted":
+        return "Promoted — PR opened. Merge and deploy yourself when ready."
     if status == "failed":
         why = error or "apply or tests failed"
         return f"LAB failed — {why}"
@@ -114,6 +132,26 @@ def _plain_summary(*, status: str, tests_passed: bool | None, error: str | None)
     if status == "not_started":
         return "Not sent to LAB yet."
     return status
+
+
+def _promote_hint(lab: dict[str, Any], *, can_promote: bool, promote_available: bool) -> str:
+    if lab.get("pr_url") or lab.get("status") == "promoted":
+        url = lab.get("pr_url") or ""
+        return (
+            f"PR already opened{': ' + url if url else ''}. "
+            "Merge and deploy yourself — Jarvis will not."
+        )
+    if lab.get("status") != "passed" or not lab.get("tests_passed"):
+        return "Send to LAB and get a green result before Promote becomes available."
+    if not jarvis_promote_pr_enabled():
+        return (
+            "LAB is green. Enable Promote on the host: set JARVIS_PROMOTE_PR_ENABLED=true "
+            "in secrets/runtime.env and restart the backend. Promote opens a PR only; "
+            "you still merge and deploy. Keep Gate-2 flags (PR_CREATION / GITHUB_WRITE) off."
+        )
+    if promote_available or can_promote:
+        return "LAB is green. Promote opens a GitHub PR — you still merge and deploy."
+    return "Promote is not available for this trial."
 
 
 def assess_lab_eligibility(task: dict[str, Any]) -> dict[str, Any]:
@@ -133,7 +171,12 @@ def assess_lab_eligibility(task: dict[str, Any]) -> dict[str, Any]:
     if lab.get("status") == "passed":
         return {
             "can_send_to_lab": False,
-            "reason": "LAB already passed for this trial. Promote to production arrives in Phase C.",
+            "reason": "LAB already passed for this trial. Use Promote to production when ready.",
+        }
+    if lab.get("status") == "promoted" or lab.get("pr_created"):
+        return {
+            "can_send_to_lab": False,
+            "reason": "Already promoted (PR opened). Merge/deploy yourself.",
         }
     if status != TaskLifecycleState.WAITING_FOR_APPROVAL.value:
         return {
@@ -168,6 +211,21 @@ def get_lab_trial_status(task_id: str) -> dict[str, Any]:
         status=status, tests_passed=tests_passed, error=error
     )
 
+    patch = _load_patch_content(task)
+    stub = is_stub_patch(patch) if patch.strip() else False
+    already = bool(lab.get("pr_created") or lab.get("pr_url") or status == "promoted")
+    lab_passed = status == "passed" and bool(tests_passed)
+    can_promote = lab_passed and not already and not stub
+    prereq = check_lab_promote_pr_allowed(
+        lab_passed=lab_passed or status == "promoted",
+        tests_passed=bool(tests_passed),
+        patch_safety_passed=bool(lab.get("forbidden_check", {}).get("passed", True)),
+        stub_patch=stub,
+        already_promoted=already,
+    )
+    # Button unlock: LAB green + dedicated flag + not stub + not already promoted.
+    promote_available = bool(can_promote and jarvis_promote_pr_enabled() and prereq["allowed"])
+
     return {
         "task_id": task_id,
         "status": status,
@@ -182,13 +240,14 @@ def get_lab_trial_status(task_id: str) -> dict[str, Any]:
         "branch_name": lab.get("branch_name"),
         "test_results": lab.get("test_results") or {},
         "error": error,
-        "can_promote": bool(lab.get("status") == "passed" and lab.get("tests_passed")),
-        "promote_available": False,  # Phase C
-        "promote_hint": (
-            "Promote to production unlocks in Phase C after LAB green (opens a PR; you still merge/deploy)."
-            if lab.get("status") == "passed"
-            else "Send to LAB and get a green result before Promote becomes available."
+        "can_promote": can_promote,
+        "promote_available": promote_available,
+        "promote_hint": _promote_hint(
+            lab, can_promote=can_promote, promote_available=promote_available
         ),
+        "pr_url": lab.get("pr_url"),
+        "pr_created": bool(lab.get("pr_created")),
+        "promote_block_reasons": prereq["reasons"] if not promote_available else [],
         "safety_flags": phase5_safety_status(),
     }
 
@@ -216,6 +275,252 @@ def send_to_lab(
         return _send_to_lab_locked(task_id, actor_id=actor_id, comment=comment)
     finally:
         lock.release()
+
+
+def promote_to_production(
+    task_id: str,
+    *,
+    actor_id: str = "dashboard",
+    comment: str = "",
+    mock_pr: bool = False,
+) -> dict[str, Any]:
+    """
+    Operator action after LAB green: open a GitHub PR (never merge/deploy).
+
+    Human gates: Send to LAB (earlier) + Promote click (this). Uses
+    JARVIS_PROMOTE_PR_ENABLED only — does not enable broad Gate-2 write flags.
+    Stub patches are refused.
+    """
+    if not jarvis_enabled():
+        raise RuntimeError("Jarvis is disabled (JARVIS_ENABLED=false)")
+    if not jarvis_promote_pr_enabled() and not mock_pr:
+        raise RuntimeError(
+            "Promote disabled (JARVIS_PROMOTE_PR_ENABLED=false). "
+            "Enable on the host to allow opening a PR after LAB green."
+        )
+
+    lock = _task_lab_lock(task_id)
+    if not lock.acquire(blocking=False):
+        raise ValueError("LAB trial or promote already in progress.")
+    try:
+        return _promote_locked(task_id, actor_id=actor_id, comment=comment, mock_pr=mock_pr)
+    finally:
+        lock.release()
+
+
+def _promote_locked(
+    task_id: str,
+    *,
+    actor_id: str,
+    comment: str,
+    mock_pr: bool,
+) -> dict[str, Any]:
+    task = get_execution_task(task_id)
+    if task is None:
+        raise LookupError("task not found")
+
+    lab = _get_lab_meta(task)
+    if task.get("status") != TaskLifecycleState.WAITING_FOR_PR_APPROVAL.value:
+        raise ValueError(
+            f"Task is not ready to promote (status={task.get('status')}). "
+            "LAB must pass first."
+        )
+    if lab.get("status") != "passed" or not lab.get("tests_passed"):
+        raise ValueError("LAB must pass before Promote to production.")
+
+    patch = _load_patch_content(task)
+    stub = is_stub_patch(patch)
+    already = bool(lab.get("pr_created") or lab.get("pr_url"))
+    prereq = check_lab_promote_pr_allowed(
+        lab_passed=True,
+        tests_passed=True,
+        patch_safety_passed=bool(lab.get("forbidden_check", {}).get("passed", True)),
+        stub_patch=stub,
+        already_promoted=already,
+    )
+    if stub:
+        raise ValueError(stub_refusal_message() + " Stub patches cannot be promoted.")
+    if already:
+        raise ValueError("Already promoted for this trial.")
+    if not mock_pr and not prereq["allowed"]:
+        raise RuntimeError("; ".join(prereq["reasons"]))
+
+    # Double-approval spirit: require prior Send to LAB approval decision.
+    approvals = list_approvals(task_id)
+    if not any(a.get("decision") == "sent_to_lab" for a in approvals):
+        raise ValueError("Send to LAB approval missing — cannot promote.")
+
+    record_approval(
+        task_id=task_id,
+        decision="promoted_pr",
+        actor_id=actor_id,
+        comment=comment or "Promote to production (open PR after LAB green)",
+    )
+    log_phase5_event(
+        task_id=task_id,
+        actor=actor_id,
+        approval_gate=GATE_PROMOTE,
+        action="promote_to_production",
+    )
+
+    transition_task_status(task_id, TaskLifecycleState.CREATING_PR, current_step="lab_promoting_pr")
+
+    branch = lab.get("branch_name") or f"jarvis/task-{task_id[:12]}"
+    changed = lab.get("changed_files") or []
+    if not changed:
+        raise ValueError("LAB trial has no changed_files; cannot promote an empty patch.")
+    workdir = Path(lab.get("workdir") or str(SANDBOX_BASE / task_id))
+    review = task.get("review") or {}
+    test_results = lab.get("test_results") or {}
+
+    safety_report = {
+        "passed": lab.get("forbidden_check", {}).get("passed", True),
+        "blocked_paths": lab.get("forbidden_check", {}).get("blocked_paths", []),
+        "flags": phase5_safety_status(),
+        "via": "lab_promote",
+    }
+
+    body = build_pr_body(
+        task_id=task_id,
+        objective=task.get("objective", ""),
+        changed_files=changed,
+        test_results=test_results,
+        review=review,
+        safety_report=safety_report,
+        artifact_links=[a.get("name", "") for a in task.get("artifacts") or []],
+    )
+    body = (
+        "## Jarvis Promote to production (after LAB green)\n\n"
+        "LAB apply + tests passed. This PR was opened by **Promote to production**. "
+        "**Merge and deploy are still human steps — Jarvis will not merge or deploy.**\n\n"
+        + body
+    )
+
+    if not mock_pr:
+        prep = prepare_sandbox_branch_for_push(
+            workdir=workdir,
+            branch_name=branch,
+            commit_message=f"[Jarvis LAB promote] {task.get('objective', '')[:72]}",
+            changed_files=list(changed),
+        )
+        if not prep.get("ok"):
+            error = prep.get("error", "sandbox prepare for push failed")
+            log_phase5_event(
+                task_id=task_id,
+                actor=actor_id,
+                approval_gate=GATE_PROMOTE,
+                action="promote_prepare_failed",
+                branch_name=branch,
+                test_result=error,
+            )
+            # Stay promote-ready so Carlos can retry after fixing remote/gh.
+            transition_task_status(
+                task_id,
+                TaskLifecycleState.WAITING_FOR_PR_APPROVAL,
+                current_step="lab_passed_awaiting_promote",
+                error=error,
+                approval_status="pending",
+            )
+            _set_lab_meta(
+                task_id,
+                task,
+                {"promote_error": error, "updated_at": _now_iso()},
+            )
+            raise RuntimeError(error)
+
+    title = f"[Jarvis LAB] {task.get('objective', '')[:80]}"
+    pr_result = create_pull_request(
+        task_id=task_id,
+        branch_name=branch,
+        title=title,
+        body=body,
+        workdir=workdir,
+        mock=mock_pr,
+        via_lab_promote=True,
+    )
+
+    if not pr_result.get("success"):
+        error = pr_result.get("error", "PR creation failed")
+        log_phase5_event(
+            task_id=task_id,
+            actor=actor_id,
+            approval_gate=GATE_PROMOTE,
+            action="promote_pr_failed",
+            branch_name=branch,
+            test_result=error,
+        )
+        transition_task_status(
+            task_id,
+            TaskLifecycleState.WAITING_FOR_PR_APPROVAL,
+            current_step="lab_passed_awaiting_promote",
+            error=error,
+            approval_status="pending",
+        )
+        _set_lab_meta(task_id, task, {"promote_error": error, "updated_at": _now_iso()})
+        raise RuntimeError(error)
+
+    pr_url = pr_result.get("pr_url", "")
+    summary = _plain_summary(status="promoted", tests_passed=True, error=None)
+    if pr_url:
+        summary = f"{summary} PR: {pr_url}"
+    _set_lab_meta(
+        task_id,
+        task,
+        {
+            "status": "promoted",
+            "pr_url": pr_url,
+            "pr_created": True,
+            "pr_mock": bool(pr_result.get("mock")),
+            "summary": summary,
+            "promote_error": None,
+            "promoted_at": _now_iso(),
+            "promoted_by": actor_id,
+        },
+    )
+
+    # Mirror into phase5 meta for Advanced views.
+    fresh = get_execution_task(task_id) or task
+    plan = dict(fresh.get("plan") or {})
+    phase5 = dict(plan.get("phase5") or {})
+    phase5.update(
+        {
+            "pr_url": pr_url,
+            "pr_created": True,
+            "pr_mock": bool(pr_result.get("mock")),
+            "via_lab_promote": True,
+        }
+    )
+    plan["phase5"] = phase5
+    _update_task(task_id, plan_json=plan)
+
+    log_phase5_event(
+        task_id=task_id,
+        actor=actor_id,
+        approval_gate=GATE_PROMOTE,
+        action="promote_pr_created",
+        branch_name=branch,
+        changed_files=changed,
+        pr_url=pr_url,
+    )
+
+    final = (
+        f"PR opened: {pr_url}. Merge and deploy yourself — Jarvis will not."
+        if pr_url
+        else "PR opened. Merge and deploy yourself — Jarvis will not."
+    )
+    if pr_result.get("mock"):
+        final = f"[Mock] {final}"
+
+    transition_task_status(task_id, TaskLifecycleState.PR_CREATED, current_step="lab_promoted_pr_created")
+    transition_task_status(
+        task_id,
+        TaskLifecycleState.COMPLETED,
+        final_answer=final,
+        completed_at=_now_iso(),
+        approval_status="approved",
+        current_step="lab_promoted_awaiting_human_merge",
+    )
+    return _detail(task_id)
 
 
 def _lab_fail_and_retryable(
@@ -464,8 +769,8 @@ def _send_to_lab_locked(
         test_result="passed",
     )
 
-    # Park in waiting_for_pr_approval as "LAB green / ready to promote later".
-    # Gate 2 / Promote remain blocked until Phase C (no approved_apply / flags).
+    # Park in waiting_for_pr_approval as "LAB green / ready to promote".
+    # Promote remains blocked until operator clicks + JARVIS_PROMOTE_PR_ENABLED.
     transition_task_status(
         task_id,
         TaskLifecycleState.WAITING_FOR_PR_APPROVAL,

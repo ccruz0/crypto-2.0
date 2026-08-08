@@ -57,6 +57,16 @@ def jarvis_lab_trial_enabled() -> bool:
     return _bool_env("JARVIS_LAB_TRIAL_ENABLED", default=True)
 
 
+def jarvis_promote_pr_enabled() -> bool:
+    """Allow Promote to production (open PR) after LAB green. Default: disabled.
+
+    Scoped narrowly: only the promote-from-LAB-passed path may create a PR when
+    this is true. Does NOT enable broad Gate-2 / JARVIS_PR_CREATION_ENABLED /
+    JARVIS_GITHUB_WRITE_ENABLED for Approval Center approve-pr.
+    """
+    return _bool_env("JARVIS_PROMOTE_PR_ENABLED", default=False)
+
+
 def phase5_safety_status() -> dict[str, bool]:
     """Current Phase 5 safety flag snapshot (no secrets)."""
     return {
@@ -65,4 +75,5 @@ def phase5_safety_status() -> dict[str, bool]:
         "github_write_enabled": jarvis_github_write_enabled(),
         "double_approval_required": jarvis_require_double_approval(),
         "lab_trial_enabled": jarvis_lab_trial_enabled(),
+        "promote_pr_enabled": jarvis_promote_pr_enabled(),
     }

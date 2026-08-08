@@ -1,7 +1,8 @@
 # Jarvis Operator UX + LAB → Promote Flow
 
-> **Status:** Agreed design (Carlos, 2026-08-08) — source of truth for operator UX  
-> **Scope:** Design only. No frontend/backend code in the PR that lands this doc.  
+> **Status:** Agreed design (Carlos, 2026-08-08) — Phases A (#404) + B (#405) shipped;
+> Phase C (Promote = open PR after LAB green) implemented in code — enable on host via
+> `JARVIS_PROMOTE_PR_ENABLED=true` (default false; does not flip broad Gate-2 write flags).  
 > **Audience:** Carlos (non-engineer operator) + implementers building Phases A/B/C  
 > **Related:** `JARVIS_CONTROL_CENTER_IMPLEMENTATION_PLAN.md`, `docs/runbooks/jarvis-phase5-safety-flag-verification.md`, `docs/runbooks/LAB_JARVIS_BUILDER_BOOTSTRAP.md`, CLAUDE.md ACW safety flags
 
@@ -121,8 +122,8 @@ Nav wiring: `DashboardTabNav.tsx`, tab ids in `utils/dashboardTabs.ts`.
 | Sandbox apply / PR create | **Implemented, flags default off**; never merge/deploy |
 | Real Cursor ACW / coding_workflow | **Missing from tree** (docs stale) |
 | Builder prepare (Control Center) | **Stub** |
-| Send to LAB / LAB test orchestration | **Missing** |
-| Promote to prod (Jarvis) | **Missing** — prod = human open-PR + merge/deploy, by design |
+| Send to LAB / LAB test orchestration | **Phase B shipped (#405)** — isolated sandbox; remote LAB host = B2 |
+| Promote to prod (Jarvis) | **Phase C shipped** — open PR after LAB green via `JARVIS_PROMOTE_PR_ENABLED`; merge/deploy still human |
 
 Safety flags that stay conservative (CLAUDE.md): `patch_apply_enabled`, `pr_creation_enabled`, `github_write_enabled` default **false**; `double_approval_required` default **true**.
 
@@ -209,6 +210,8 @@ Small PRs only. One objective per PR. Investigation → recommendation before ea
 - Enable **Promote to production** only when LAB tests green **and** human clicks.
 - Promote = **open PR** (or kick an approved “open PR” path) + clear copy that Carlos merges/deploys — **never** silent merge/deploy.
 - Keep double-approval / github_write conservative; explicit enablement per gate.
+- **Shipped:** gated by dedicated `JARVIS_PROMOTE_PR_ENABLED` (default false) so broad
+  `JARVIS_PR_CREATION_ENABLED` / `JARVIS_GITHUB_WRITE_ENABLED` can stay off for Gate-2.
 - **Risks:** accidental prod path if button too early; naming clash with ML “Promote”; path-guard protected files.
 - **Rollback:** hide button / leave flag false; no-op promote endpoint.
 - **Validation:** button disabled until LAB green; click opens PR only; merge/deploy still human.

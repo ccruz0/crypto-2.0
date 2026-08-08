@@ -1328,6 +1328,34 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.63',
+    date: '2026-08-08',
+    change: 'Jarvis Phase C: Promote to production opens a PR after LAB green',
+    details: `🚀 VERSIÓN 0.63 — LAB→PROMOTE UX PHASE C (PROMOTE = OPEN PR)
+
+📋 **What shipped**
+• Ops → Jarvis **Promote to production** unlocks only when LAB trial is green
+• Promote opens a GitHub PR from the LAB sandbox branch — never merges or auto-deploys
+• Scoped flag \`JARVIS_PROMOTE_PR_ENABLED\` (default false) — does NOT require broad Gate-2 \`JARVIS_PR_CREATION_ENABLED\` / \`JARVIS_GITHUB_WRITE_ENABLED\`
+• Double human gate: Send to LAB + Promote click; stub/TODO patches cannot promote
+• Success shows PR URL in Ops → Jarvis (task panel + message); Carlos still merges/deploys
+
+🔧 **Why**
+• Design Phase C: human promote gate after LAB green = open PR only
+• Design: docs/architecture/jarvis-lab-promote-ux.md
+
+⚙️ **Host enable (Carlos)**
+• Set \`JARVIS_PROMOTE_PR_ENABLED=true\` in secrets/runtime.env and restart backend
+• Keep \`JARVIS_PR_CREATION_ENABLED=false\` and \`JARVIS_GITHUB_WRITE_ENABLED=false\` unless you intentionally want Advanced Gate-2 too
+• Host needs \`gh\` auth that can push a branch and open a PR
+
+📦 **PRs**
+• #406
+
+---
+`
   }
 ];
 
