@@ -4,6 +4,10 @@
 # Safety:
 #   - Never touches the trading backend or any other container. Deploy uses
 #     `docker compose up -d --no-deps frontend-aws` (no --remove-orphans).
+#   - Shares concurrency group `atp-prod-ec2-deploy` with backend + Session Manager
+#     deploys so parallel compose ops cannot stomp FE onto a stale :latest.
+#   - After healthcheck, pins FRONTEND_IMAGE (and legacy IMAGE) in host .env and
+#     retags host :latest to the deployed sha (mirrors BACKEND_IMAGE pin / #113).
 #   - Least-privilege OIDC role (no long-lived AWS keys).
 #   - Health-checks `/` and `/peluqueria`; rolls back to the previously running
 #     image on failure.
@@ -19,8 +23,10 @@ on:
       - 'ci-cd/remote-deploy-frontend.sh'
   workflow_dispatch: {}
 
+# Shared with deploy-backend.yml + deploy_session_manager.yml so FE/BE compose
+# deploys never hit the host concurrently (stale :latest recreate race).
 concurrency:
-  group: deploy-frontend
+  group: atp-prod-ec2-deploy
   cancel-in-progress: false
 
 permissions:

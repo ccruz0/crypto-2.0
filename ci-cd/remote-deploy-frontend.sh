@@ -34,7 +34,19 @@ aws ecr get-login-password --region "$REGION" \
 echo "Pulling ${IMAGE_NEW}"
 docker pull "$IMAGE_NEW" || { echo "docker pull failed"; exit 1; }
 
-deploy() { IMAGE="$1" docker compose --profile aws up -d --no-deps "$SERVICE"; }
+# Refresh host :latest mirrors of this sha so any accidental :latest fallback
+# (local short name or ECR tag) is the just-deployed digest — not a days-old
+# image left from an earlier on-host build.
+LATEST_ECR="${REGISTRY}/atp-frontend:latest"
+docker tag "$IMAGE_NEW" "$LATEST_ECR" || true
+docker tag "$IMAGE_NEW" "atp-frontend:latest" || true
+echo "Retagged host :latest -> ${IMAGE_NEW}"
+
+deploy() {
+  # Prefer FRONTEND_IMAGE (compose primary). Also set legacy IMAGE= so an older
+  # on-host compose file that still interpolates ${IMAGE} stays pinned.
+  FRONTEND_IMAGE="$1" IMAGE="$1" docker compose --profile aws up -d --no-deps "$SERVICE"
+}
 
 health() {
   local ok=1 path code
@@ -65,5 +77,20 @@ if [ "$RC" -ne 0 ]; then
   fi
   exit 1
 fi
+
+# Pin the deployed digest in .env (mirrors BACKEND_IMAGE pin from #113) so a later
+# MANUAL "docker compose up" / ops recreate / concurrent compose reconcile reuses
+# THIS image via ${FRONTEND_IMAGE:-...} instead of falling back to stale :latest.
+pin_env() {
+  local key="$1" val="$2"
+  if grep -q "^${key}=" .env 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" .env
+  else
+    echo "${key}=${val}" >> .env
+  fi
+}
+pin_env FRONTEND_IMAGE "$IMAGE_NEW"
+pin_env IMAGE "$IMAGE_NEW"
+echo "Pinned FRONTEND_IMAGE=${IMAGE_NEW} (and legacy IMAGE=) in ${COMPOSE_DIR}/.env"
 
 echo "${SERVICE} healthy on ${IMAGE_NEW}"
