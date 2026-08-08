@@ -399,6 +399,7 @@ def _promote_locked(
             workdir=workdir,
             branch_name=branch,
             commit_message=f"[Jarvis LAB promote] {task.get('objective', '')[:72]}",
+            changed_files=list(changed),
         )
         if not prep.get("ok"):
             error = prep.get("error", "sandbox prepare for push failed")

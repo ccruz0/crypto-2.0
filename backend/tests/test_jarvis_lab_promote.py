@@ -282,3 +282,50 @@ def test_promote_api_blocked_when_flag_off(jarvis_client, monkeypatch):
     )
     assert resp.status_code == 403
     assert "JARVIS_PROMOTE_PR_ENABLED" in resp.json()["detail"]
+
+
+def test_prepare_sandbox_stages_only_changed_files(tmp_path, monkeypatch):
+    """Promote must not git-add sandbox artifacts (approved.patch, etc.)."""
+    import subprocess
+
+    from app.jarvis.github import pr_service as prs
+
+    repo = tmp_path / "sandbox"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    target = repo / "docs"
+    target.mkdir()
+    (target / "README.md").write_text("# hi\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    (target / "README.md").write_text("# hi\n# patch\n", encoding="utf-8")
+    (repo / "approved.patch").write_text("JUNK\n", encoding="utf-8")
+    (repo / "test_results.json").write_text("{}\n", encoding="utf-8")
+
+    # Point workspace remote resolution at this sandbox.
+    monkeypatch.setattr(prs, "workspace_root", lambda: repo)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:ccruz0/crypto-2.0.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    out = prs.prepare_sandbox_branch_for_push(
+        workdir=repo,
+        branch_name="jarvis/test-promote",
+        commit_message="promote test",
+        changed_files=["docs/README.md"],
+    )
+    assert out.get("ok") is True, out
+
+    names = subprocess.check_output(
+        ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+        cwd=repo,
+        text=True,
+    )
+    assert "docs/README.md" in names
+    assert "approved.patch" not in names
+    assert "test_results.json" not in names

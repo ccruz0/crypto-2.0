@@ -107,11 +107,16 @@ def prepare_sandbox_branch_for_push(
     workdir: Path,
     branch_name: str,
     commit_message: str,
+    changed_files: list[str] | None = None,
 ) -> dict[str, Any]:
     """Commit sandbox changes and retarget origin to the workspace GitHub remote.
 
     Sandbox clones use a local-path origin; GitHub push needs the real remote URL.
     Never pushes to main/master.
+
+    When ``changed_files`` is provided (LAB promote path), only those paths are
+    staged — never ``git add -A``, which would include sandbox artifacts such as
+    ``approved.patch`` / ``test_results.json``.
     """
     if block_push_to_main(branch_name):
         return {"ok": False, "error": "push to main/master is forbidden"}
@@ -137,9 +142,19 @@ def prepare_sandbox_branch_for_push(
     if code != 0:
         return {"ok": False, "error": f"checkout branch failed: {err}"}
 
-    code, _, err = _run(["git", "add", "-A"], cwd=workdir, timeout=60)
-    if code != 0:
-        return {"ok": False, "error": f"git add failed: {err}"}
+    if changed_files:
+        for rel in changed_files:
+            rel_n = str(rel or "").strip().lstrip("./")
+            if not rel_n or rel_n.startswith("/") or ".." in Path(rel_n).parts:
+                return {"ok": False, "error": f"invalid changed file path: {rel}"}
+            code, _, err = _run(["git", "add", "--", rel_n], cwd=workdir, timeout=60)
+            if code != 0:
+                return {"ok": False, "error": f"git add failed for {rel_n}: {err}"}
+    else:
+        # Legacy callers: stage tracked modifications only (not untracked sandbox junk).
+        code, _, err = _run(["git", "add", "-u"], cwd=workdir, timeout=60)
+        if code != 0:
+            return {"ok": False, "error": f"git add failed: {err}"}
 
     # Commit only when there is something to commit.
     code, status_out, _ = _run(["git", "status", "--porcelain"], cwd=workdir, timeout=30)
