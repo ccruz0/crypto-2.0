@@ -1158,6 +1158,27 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.55',
+    date: '2026-08-08',
+    change: 'Widen Bali sales-report dual-ID fill dedupe window (5s → 30s)',
+    details: `🚀 VERSIÓN 0.55 — SALES REPORT DUAL-ID WINDOW
+
+📋 **What shipped**
+• Follow-up to #378: Crypto.com trigger+execution twin fills can land 6–10s apart
+• Default sales-report economic dedupe window raised from 5s to 30s
+• Reporting-only — no trading / order path changes
+
+🔧 **Why**
+• 2026-08-08 Bali report still double-counted DOT_USD + BTC_USD TPs after #378
+  (gaps 6s / 10s exceeded the prior 5s window)
+
+📦 **PRs**
+• #393
+
+---
+`
   }
 ];
 

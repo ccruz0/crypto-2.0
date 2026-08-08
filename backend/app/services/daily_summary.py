@@ -780,19 +780,26 @@ class DailySummaryService:
             qty_key = "0"
         return (symbol, role, qty_key, price_key)
 
+    # Crypto.com dual-ID lag observed up to ~10s (2026-08-07 DOT/BTC TPs).
+    # Keep well above that; still short enough not to merge distinct same-size fills.
+    _SALES_REPORT_FILL_DEDUPE_WINDOW_SECONDS = 30
+
     @staticmethod
     def _dedupe_filled_sells_for_report(
         orders: List[Any],
         *,
-        window_seconds: int = 5,
+        window_seconds: Optional[int] = None,
     ) -> List[Any]:
         """Collapse near-duplicate FILLED SELL rows that share one economic fill.
 
         Crypto.com protection fills can land in ``exchange_orders`` under two IDs
         (trigger/order id + execution/trade id) with the same symbol/qty/price/role
-        a few seconds apart. The Bali sales report must count that once or P&L
-        doubles (seen 2026-08-06 BTC_USD TP ~$1893 listed twice → ~$3786 total).
+        several seconds apart. The Bali sales report must count that once or P&L
+        doubles (seen 2026-08-06 BTC_USD TP ~$1893 listed twice → ~$3786 total;
+        2026-08-07 DOT/BTC TPs still doubled under the prior 5s window at 6–10s lag).
         """
+        if window_seconds is None:
+            window_seconds = DailySummaryService._SALES_REPORT_FILL_DEDUPE_WINDOW_SECONDS
         if not orders:
             return []
 
