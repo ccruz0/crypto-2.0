@@ -1,0 +1,3 @@
+# One-shot: merge to main → recreate DOGE_USD SL+TP for naked short.
+# Remove this file after the ops run succeeds (same pattern as #360/#391).
+run=1
