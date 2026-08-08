@@ -9,6 +9,7 @@ import {
   getJarvisImprovementTemplates,
   getJarvisImprovementTools,
   getJarvisImprovementTrends,
+  listJarvisExecutionTasks,
   type JarvisImprovementExecuteResult,
   type JarvisImprovementQuality,
   type JarvisImprovementRecommendation,
@@ -16,12 +17,38 @@ import {
   type JarvisImprovementToolEffectiveness,
   type JarvisImprovementTrends,
 } from '@/app/api';
+import { fetchApprovalQueue } from '@/lib/jarvisApproval';
+import {
+  indexImprovementTrialMatches,
+  type ImprovementTrialMatch,
+} from '@/lib/jarvisImprovementTrial';
 
 /** Deep-link to Ops → Jarvis with optional task pre-selected for Approve investigation. */
 export function jarvisApproveHref(taskId?: string | null): string {
   const params = new URLSearchParams({ tab: 'jarvis' });
   if (taskId) params.set('task', taskId);
   return `/?${params.toString()}`;
+}
+
+function TrialStatusBadge({ match }: { match: ImprovementTrialMatch }) {
+  const label = match.label;
+  const tone =
+    label === 'LAB passed' || label === 'Promoted' || label === 'Completed'
+      ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+      : label === 'LAB failed' || label === 'Failed'
+        ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+        : label === 'Testing in LAB' || label === 'Waiting approval' || label === 'Ready for LAB'
+          ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+          : 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200';
+  return (
+    <span
+      data-testid={`jarvis-improvement-trial-badge-${match.taskId}`}
+      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${tone}`}
+      title="Matched from a prior Execute task (objective contains this recommendation id)"
+    >
+      Executed · {label}
+    </span>
+  );
 }
 
 type Section = 'recommendations' | 'template-gaps' | 'tool-efficiency' | 'quality-trends' | 'backlog';
@@ -39,7 +66,17 @@ function PriorityBadge({ priority }: { priority: string }) {
   );
 }
 
-function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendation; rank?: number }) {
+function RecommendationCard({
+  rec,
+  rank,
+  trialMatch,
+  onExecuted,
+}: {
+  rec: JarvisImprovementRecommendation;
+  rank?: number;
+  trialMatch?: ImprovementTrialMatch | null;
+  onExecuted?: () => void;
+}) {
   const [executing, setExecuting] = useState(false);
   const [execError, setExecError] = useState<string | null>(null);
   const [execResult, setExecResult] = useState<JarvisImprovementExecuteResult | null>(null);
@@ -51,6 +88,7 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
     try {
       const result = await executeJarvisImprovementRecommendation(rec);
       setExecResult(result);
+      onExecuted?.();
     } catch (e) {
       setExecError(e instanceof Error ? e.message : 'Failed to queue recommendation task');
     } finally {
@@ -58,17 +96,20 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
     }
   };
 
+  const openTaskId = execResult?.task_id || trialMatch?.taskId || null;
+
   return (
     <div
       className="rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 space-y-2"
       data-testid={`jarvis-improvement-rec-${rec.id}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {rank !== undefined && (
             <span className="text-lg font-bold text-gray-400 dark:text-slate-500">#{rank}</span>
           )}
           <h3 className="font-semibold text-gray-900 dark:text-white">{rec.title}</h3>
+          {trialMatch && <TrialStatusBadge match={trialMatch} />}
         </div>
         <div className="flex items-center gap-2">
           <PriorityBadge priority={rec.priority} />
@@ -94,18 +135,31 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
           {rec.expected_benefit && <span>Benefit: {rec.expected_benefit}</span>}
         </div>
         <div className="flex flex-col items-end gap-1">
-          <button
-            type="button"
-            data-testid={`jarvis-improvement-execute-${rec.id}`}
-            onClick={handleExecute}
-            disabled={executing}
-            title="Queue a dry-run investigation in Ops → Jarvis. Continues only after you Approve investigation there. Does not Send to LAB, apply patches, or deploy."
-            className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
-          >
-            {executing ? 'Queuing…' : 'Execute'}
-          </button>
-          <span className="text-[11px] text-gray-400 dark:text-slate-500 text-right max-w-[14rem]">
-            Queues dry-run · Approve investigation in Ops → Jarvis
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {openTaskId && (
+              <Link
+                href={jarvisApproveHref(openTaskId)}
+                data-testid={`jarvis-improvement-open-jarvis-${rec.id}`}
+                className="px-3 py-2 rounded-md border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 text-sm font-semibold hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
+              >
+                Open in Jarvis
+              </Link>
+            )}
+            <button
+              type="button"
+              data-testid={`jarvis-improvement-execute-${rec.id}`}
+              onClick={handleExecute}
+              disabled={executing}
+              title="Queue a dry-run investigation in Ops → Jarvis. Continues only after you Approve investigation there. Does not Send to LAB, apply patches, or deploy."
+              className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
+            >
+              {executing ? 'Queuing…' : trialMatch ? 'Execute again' : 'Execute'}
+            </button>
+          </div>
+          <span className="text-[11px] text-gray-400 dark:text-slate-500 text-right max-w-[16rem]">
+            {trialMatch
+              ? 'Card stays in the feed · Execute still queues dry-run unless a patch trial already exists'
+              : 'Queues dry-run · Approve investigation in Ops → Jarvis'}
           </span>
         </div>
       </div>
@@ -131,16 +185,8 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
           <p>
             Queued dry-run task {execResult.task_id.slice(0, 8)}… — status: {execResult.status}.
             No patches applied.
+            {execResult.approval_required ? ' Use Open in Jarvis to Approve investigation.' : ''}
           </p>
-          {execResult.approval_required && (
-            <Link
-              href={jarvisApproveHref(execResult.task_id)}
-              data-testid={`jarvis-improvement-open-approve-${rec.id}`}
-              className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-            >
-              Approve investigation in Ops → Jarvis
-            </Link>
-          )}
         </div>
       )}
     </div>
@@ -246,7 +292,15 @@ function ToolEfficiencyTable({ tools }: { tools: JarvisImprovementToolEffectiven
   );
 }
 
-function QualityTrendsPanel({ trends }: { trends: JarvisImprovementTrends }) {
+function QualityTrendsPanel({
+  trends,
+  trialByRecId,
+  onExecuted,
+}: {
+  trends: JarvisImprovementTrends;
+  trialByRecId: Map<string, ImprovementTrialMatch>;
+  onExecuted?: () => void;
+}) {
   const qs = trends.quality_scores;
   const fp = trends.false_positives;
   const direction = String(qs.trend_direction || 'stable');
@@ -301,7 +355,12 @@ function QualityTrendsPanel({ trends }: { trends: JarvisImprovementTrends }) {
         <div className="space-y-3">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Trend Recommendations</h3>
           {trends.recommendations.map((rec) => (
-            <RecommendationCard key={rec.id} rec={rec} />
+            <RecommendationCard
+              key={rec.id}
+              rec={rec}
+              trialMatch={trialByRecId.get(rec.id)}
+              onExecuted={onExecuted}
+            />
           ))}
         </div>
       )}
@@ -318,6 +377,7 @@ export default function JarvisImprovementTab() {
   const [toolData, setToolData] = useState<Awaited<ReturnType<typeof getJarvisImprovementTools>> | null>(null);
   const [trendData, setTrendData] = useState<JarvisImprovementTrends | null>(null);
   const [qualityData, setQualityData] = useState<JarvisImprovementQuality | null>(null);
+  const [trialByRecId, setTrialByRecId] = useState<Map<string, ImprovementTrialMatch>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -325,12 +385,14 @@ export default function JarvisImprovementTab() {
     setLoading(true);
     setError(null);
     try {
-      const [recs, tmpl, tools, trends, quality] = await Promise.all([
+      const [recs, tmpl, tools, trends, quality, execution, queue] = await Promise.all([
         getJarvisImprovementRecommendations(),
         getJarvisImprovementTemplates(),
         getJarvisImprovementTools(),
         getJarvisImprovementTrends(),
         getJarvisImprovementQuality(),
+        listJarvisExecutionTasks(50).catch(() => ({ tasks: [] })),
+        fetchApprovalQueue(50).catch(() => []),
       ]);
       setRecommendations(recs.recommendations || []);
       setBacklog(recs.backlog || []);
@@ -339,6 +401,7 @@ export default function JarvisImprovementTab() {
       setToolData(tools);
       setTrendData(trends);
       setQualityData(quality);
+      setTrialByRecId(indexImprovementTrialMatches(execution.tasks || [], queue || []));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load improvement data');
     } finally {
@@ -362,6 +425,11 @@ export default function JarvisImprovementTab() {
 
   const highPriority = recommendations.filter((r) => r.priority === 'high');
   const mediumPriority = recommendations.filter((r) => r.priority === 'medium');
+  const cardProps = (rec: JarvisImprovementRecommendation) => ({
+    rec,
+    trialMatch: trialByRecId.get(rec.id),
+    onExecuted: refresh,
+  });
 
   return (
     <div className="space-y-4" data-testid="jarvis-improvement-tab">
@@ -376,8 +444,10 @@ export default function JarvisImprovementTab() {
               Ops → Jarvis
             </Link>
             {' '}via <span className="font-medium">Approve investigation</span> (dry-run) or{' '}
-            <span className="font-medium">Send to LAB</span> when a real patch trial is ready. Promote
-            to production is Phase C. No patches, PRs, or deploys from this screen.
+            <span className="font-medium">Send to LAB</span> when a real patch trial is ready.
+            Cards stay here as an analytics feed — executed ones show a trial badge and{' '}
+            <span className="font-medium">Open in Jarvis</span>. Promote to production is Phase C.
+            No patches, PRs, or deploys from this screen.
           </p>
         </div>
         <button
@@ -449,7 +519,7 @@ export default function JarvisImprovementTab() {
                   <h3 className="text-sm font-semibold text-red-700 dark:text-red-300 mb-2 uppercase">High Priority</h3>
                   <div className="space-y-3">
                     {highPriority.map((rec) => (
-                      <RecommendationCard key={rec.id} rec={rec} />
+                      <RecommendationCard key={rec.id} {...cardProps(rec)} />
                     ))}
                   </div>
                 </div>
@@ -459,13 +529,13 @@ export default function JarvisImprovementTab() {
                   <h3 className="text-sm font-semibold text-amber-700 dark:text-amber-300 mb-2 uppercase">Medium Priority</h3>
                   <div className="space-y-3">
                     {mediumPriority.map((rec) => (
-                      <RecommendationCard key={rec.id} rec={rec} />
+                      <RecommendationCard key={rec.id} {...cardProps(rec)} />
                     ))}
                   </div>
                 </div>
               )}
               {recommendations.filter((r) => r.priority === 'low').map((rec) => (
-                <RecommendationCard key={rec.id} rec={rec} />
+                <RecommendationCard key={rec.id} {...cardProps(rec)} />
               ))}
               {recommendations.length === 0 && (
                 <p className="text-sm text-gray-500 dark:text-slate-400">No recommendations yet — run more investigations to generate insights.</p>
@@ -480,7 +550,7 @@ export default function JarvisImprovementTab() {
                 <div className="space-y-3 mt-4">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Template Gap Recommendations</h3>
                   {templateData.recommendations.map((rec) => (
-                    <RecommendationCard key={rec.id} rec={rec} />
+                    <RecommendationCard key={rec.id} {...cardProps(rec)} />
                   ))}
                 </div>
               )}
@@ -494,19 +564,25 @@ export default function JarvisImprovementTab() {
                 <div className="space-y-3 mt-4">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Tool Optimization Recommendations</h3>
                   {toolData.recommendations.map((rec) => (
-                    <RecommendationCard key={rec.id} rec={rec} />
+                    <RecommendationCard key={rec.id} {...cardProps(rec)} />
                   ))}
                 </div>
               )}
             </div>
           )}
 
-          {section === 'quality-trends' && trendData && <QualityTrendsPanel trends={trendData} />}
+          {section === 'quality-trends' && trendData && (
+            <QualityTrendsPanel
+              trends={trendData}
+              trialByRecId={trialByRecId}
+              onExecuted={refresh}
+            />
+          )}
 
           {section === 'backlog' && (
             <div className="space-y-3" data-testid="jarvis-improvement-backlog">
               {backlog.map((rec, idx) => (
-                <RecommendationCard key={rec.id} rec={rec} rank={idx + 1} />
+                <RecommendationCard key={rec.id} {...cardProps(rec)} rank={idx + 1} />
               ))}
               {backlog.length === 0 && (
                 <p className="text-sm text-gray-500 dark:text-slate-400">Backlog empty — insufficient investigation data.</p>
