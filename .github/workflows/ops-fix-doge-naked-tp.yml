@@ -1,6 +1,6 @@
 # Ops: recreate SL+TP for DOGE_USD naked short (covered_qty=0).
 # Requires repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
-# Push trigger fires once via .ops-run-fix-doge-naked-tp — remove marker after success.
+# Push trigger removed after successful run=3 (#396). Use workflow_dispatch only.
 name: Ops — fix DOGE naked TP
 
 on:
@@ -14,10 +14,6 @@ on:
         options:
           - "false"
           - "true"
-  push:
-    branches: [main]
-    paths:
-      - ".ops-run-fix-doge-naked-tp"
 
 permissions:
   contents: read
