@@ -1311,6 +1311,8 @@ function DashboardPageContent() {
       } else {
         params.set('tab', tab);
       }
+      // ?task= is only for one-shot Approve deep-links (Next <Link>); do not sticky across Ops nav.
+      params.delete('task');
       const qs = params.toString();
       // push (not replace) so browser back/forward moves between tabs
       router.push(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
