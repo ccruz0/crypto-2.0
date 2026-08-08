@@ -495,12 +495,17 @@ def evidence_from_tool_output(output: dict[str, Any]) -> list[EvidenceItem]:
         unhealthy_count = int(output.get("unhealthy_count") or 0)
         healthy_count = int(output.get("healthy_count") or 0)
         unhealthy_names = output.get("unhealthy_names") or []
+        has_error = bool(output.get("error"))
         if not unhealthy_names and containers:
             unhealthy_names = [
                 c.get("name")
                 for c in containers
                 if isinstance(c, dict)
-                and re.search(r"unhealthy|restarting|exited|dead|oom", str(c.get("status") or ""), re.I)
+                and re.search(
+                    r"\(unhealthy\)|restarting|\bexited\b|\bdead\b|\boom\b",
+                    str(c.get("status") or ""),
+                    re.I,
+                )
             ]
             unhealthy_count = unhealthy_count or len(unhealthy_names)
         sample = []
@@ -514,18 +519,20 @@ def evidence_from_tool_output(output: dict[str, Any]) -> list[EvidenceItem]:
             + (f"; sample=[{'; '.join(sample)}]" if sample else "")
             + (f"; checked_at={checked_at}" if checked_at else "")
         )
+        # Empty or errored docker ps is not a direct healthy observation.
+        observation_ok = count > 0 and not has_error
         items.append(
             {
                 "source": "container",
                 "reference": "docker_ps",
                 "detail": detail,
-                "confidence": "high",
+                "confidence": "high" if observation_ok else "low",
                 "evidence_type": "container",
                 "row_count": count,
-                "is_direct": True,
+                "is_direct": observation_ok,
             }
         )
-        if output.get("error"):
+        if has_error:
             items.append(
                 {
                     "source": "container",

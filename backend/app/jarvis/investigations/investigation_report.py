@@ -406,7 +406,7 @@ _KNOWN_CAUSE_PATTERNS: list[dict[str, Any]] = [
         "matchers": [
             re.compile(
                 r"unhealthy_count=[1-9]|status=degraded|status=unhealthy|health.*degraded|"
-                r"\(unhealthy\)|restarting|exited|oom|crash|dead",
+                r"\(unhealthy\)|restarting|\bexited\b|\boom\b|\bcrash(?:ed|ing)?\b|\bdead\b",
                 re.I,
             ),
         ],
@@ -421,9 +421,13 @@ _KNOWN_CAUSE_PATTERNS: list[dict[str, Any]] = [
             "Re-check /api/health and compose healthchecks on next schedule.",
         ],
         "matchers": [
+            # Require observed containers (containers>=1 + unhealthy_count=0).
+            # Bare unhealthy_count=0 with containers=0 must NOT complete healthy
+            # (empty/failed docker ps is missing evidence, not a pass).
             re.compile(
-                r"unhealthy_count=0|status=pass|status=ok|status=healthy|"
-                r"HEALTH=PASS|running,\s*healthy|healthy_count=[1-9]",
+                r"containers=[1-9]\d*;\s*healthy_count=\d+;\s*unhealthy_count=0|"
+                r"status=pass|status=ok|status=healthy|"
+                r"HEALTH=PASS|running,\s*healthy",
                 re.I,
             ),
         ],

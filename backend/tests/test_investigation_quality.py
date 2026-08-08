@@ -127,6 +127,22 @@ class TestEvidenceExtraction:
         assert items[0]["is_direct"] is True
         assert "unhealthy_count=1" in items[0]["detail"]
 
+    def test_empty_inspect_container_is_not_direct_observation(self):
+        items = evidence_from_tool_output(
+            {
+                "tool": "inspect_container",
+                "containers": [],
+                "count": 0,
+                "healthy_count": 0,
+                "unhealthy_count": 0,
+                "error": "docker unavailable",
+            }
+        )
+        assert items[0]["is_direct"] is False
+        assert items[0]["confidence"] == "low"
+        assert "containers=0" in items[0]["detail"]
+        assert any(i.get("reference") == "docker_ps_error" for i in items)
+
     def test_inspect_runtime_and_read_logs_emit_evidence(self):
         runtime_items = evidence_from_tool_output(
             {

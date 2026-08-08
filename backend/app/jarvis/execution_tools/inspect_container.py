@@ -7,7 +7,12 @@ import subprocess
 from datetime import datetime, timezone
 from typing import Any
 
-_UNHEALTHY_STATUS = re.compile(r"unhealthy|restarting|exited|dead|oom|created\b", re.IGNORECASE)
+# Only live `docker ps` rows (not -a): stale Exited/Created leftovers must not
+# inflate unhealthy_count when the compose stack is actually up.
+_UNHEALTHY_STATUS = re.compile(
+    r"\(unhealthy\)|restarting|\bdead\b|\boom[- ]killed\b|\boom\b",
+    re.IGNORECASE,
+)
 _HEALTHY_STATUS = re.compile(r"\(healthy\)|\bhealthy\b|up\s+\d", re.IGNORECASE)
 
 
@@ -16,11 +21,13 @@ def inspect_container(*, service: str = "", **_kwargs: Any) -> dict[str, Any]:
 
     Default ``service=""`` returns the full docker ps list so deployment
     investigations see all stack services, not only frontend-aws.
+    Uses ``docker ps`` (running only) so stopped leftovers from prior deploys
+    are not counted as unhealthy.
     """
     containers: list[dict[str, Any]] = []
     try:
         proc = subprocess.run(
-            ["docker", "ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.Image}}"],
+            ["docker", "ps", "--format", "{{.Names}}|{{.Status}}|{{.Image}}"],
             capture_output=True,
             text=True,
             timeout=15,
