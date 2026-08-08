@@ -371,13 +371,13 @@ export default function JarvisImprovementTab() {
           <p className="text-sm text-gray-500 dark:text-slate-400">
             Suggestions feed from investigation analytics. Use{' '}
             <span className="font-semibold text-indigo-600 dark:text-indigo-300">Execute</span> on a
-            card to queue a dry-run investigation; then approve it in{' '}
+            card to queue a dry-run investigation; then continue it in{' '}
             <Link href={jarvisApproveHref()} className="font-semibold underline hover:text-indigo-600">
               Ops → Jarvis
             </Link>
-            {' '}(<span className="font-medium">Approve investigation</span> — continues the plan only;
-            Suggestions feed — Execute queues a dry-run trial into Ops → Jarvis (Approve investigation /
-            Send to LAB there). No patches, PRs, or deploys from this screen.
+            {' '}via <span className="font-medium">Approve investigation</span> (dry-run) or{' '}
+            <span className="font-medium">Send to LAB</span> when a real patch trial is ready. Promote
+            to production is Phase C. No patches, PRs, or deploys from this screen.
           </p>
         </div>
         <button
