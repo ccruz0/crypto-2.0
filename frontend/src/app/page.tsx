@@ -1196,7 +1196,7 @@ const VERSION_HISTORY = [
 • Manual flattens are not counted as TP/SL
 
 📦 **PRs**
-• (this PR)
+• #395
 
 ---
 `
