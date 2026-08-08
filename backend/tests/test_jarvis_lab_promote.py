@@ -329,3 +329,33 @@ def test_prepare_sandbox_stages_only_changed_files(tmp_path, monkeypatch):
     assert "docs/README.md" in names
     assert "approved.patch" not in names
     assert "test_results.json" not in names
+
+
+def test_prepare_sandbox_rejects_empty_changed_files(tmp_path, monkeypatch):
+    import subprocess
+
+    from app.jarvis.github import pr_service as prs
+
+    repo = tmp_path / "sandbox"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.setattr(prs, "workspace_root", lambda: repo)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:ccruz0/crypto-2.0.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    out = prs.prepare_sandbox_branch_for_push(
+        workdir=repo,
+        branch_name="jarvis/empty",
+        commit_message="x",
+        changed_files=[],
+    )
+    assert out.get("ok") is False
+    assert "empty" in (out.get("error") or "").lower()

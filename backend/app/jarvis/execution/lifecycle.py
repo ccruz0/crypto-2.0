@@ -120,7 +120,13 @@ ALLOWED_TRANSITIONS: dict[TaskLifecycleState, frozenset[TaskLifecycleState]] = {
         {TaskLifecycleState.CREATING_PR, TaskLifecycleState.CANCELLED, TaskLifecycleState.FAILED}
     ),
     TaskLifecycleState.CREATING_PR: frozenset(
-        {TaskLifecycleState.PR_CREATED, TaskLifecycleState.FAILED, TaskLifecycleState.CANCELLED}
+        {
+            TaskLifecycleState.PR_CREATED,
+            TaskLifecycleState.FAILED,
+            TaskLifecycleState.CANCELLED,
+            # LAB promote prep/PR create can fail; return to promote-ready for retry.
+            TaskLifecycleState.WAITING_FOR_PR_APPROVAL,
+        }
     ),
     TaskLifecycleState.PR_CREATED: frozenset({TaskLifecycleState.COMPLETED, TaskLifecycleState.FAILED}),
     TaskLifecycleState.EXECUTING: frozenset(

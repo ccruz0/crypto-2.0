@@ -367,6 +367,8 @@ def _promote_locked(
 
     branch = lab.get("branch_name") or f"jarvis/task-{task_id[:12]}"
     changed = lab.get("changed_files") or []
+    if not changed:
+        raise ValueError("LAB trial has no changed_files; cannot promote an empty patch.")
     workdir = Path(lab.get("workdir") or str(SANDBOX_BASE / task_id))
     review = task.get("review") or {}
     test_results = lab.get("test_results") or {}

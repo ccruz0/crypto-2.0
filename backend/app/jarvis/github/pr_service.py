@@ -142,7 +142,9 @@ def prepare_sandbox_branch_for_push(
     if code != 0:
         return {"ok": False, "error": f"checkout branch failed: {err}"}
 
-    if changed_files:
+    if changed_files is not None:
+        if not changed_files:
+            return {"ok": False, "error": "changed_files is empty; nothing to stage for promote"}
         for rel in changed_files:
             rel_n = str(rel or "").strip().lstrip("./")
             if not rel_n or rel_n.startswith("/") or ".." in Path(rel_n).parts:
@@ -158,14 +160,24 @@ def prepare_sandbox_branch_for_push(
 
     # Commit only when there is something to commit.
     code, status_out, _ = _run(["git", "status", "--porcelain"], cwd=workdir, timeout=30)
-    if code == 0 and status_out.strip():
-        code, _, err = _run(
-            ["git", "commit", "-m", commit_message],
-            cwd=workdir,
-            timeout=60,
-        )
-        if code != 0:
-            return {"ok": False, "error": f"git commit failed: {err}"}
+    if code != 0:
+        return {"ok": False, "error": "git status failed after staging"}
+    if not status_out.strip():
+        if changed_files is not None:
+            return {
+                "ok": False,
+                "error": "no staged changes after adding changed_files; refusing empty promote commit",
+            }
+        # Legacy: already committed or clean tree — allow push of existing tip.
+        return {"ok": True, "remote_url_host": remote_url.strip().split("@")[-1][:80]}
+
+    code, _, err = _run(
+        ["git", "commit", "-m", commit_message],
+        cwd=workdir,
+        timeout=60,
+    )
+    if code != 0:
+        return {"ok": False, "error": f"git commit failed: {err}"}
 
     return {"ok": True, "remote_url_host": remote_url.strip().split("@")[-1][:80]}
 
