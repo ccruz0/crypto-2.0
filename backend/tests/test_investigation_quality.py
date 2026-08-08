@@ -107,6 +107,74 @@ class TestEvidenceExtraction:
         assert items[0]["file_path"] == "backend/app/api/routes_orders.py"
         assert items[0]["line_number"] == "42"
 
+    def test_inspect_container_emits_container_evidence(self):
+        items = evidence_from_tool_output(
+            {
+                "tool": "inspect_container",
+                "containers": [
+                    {"name": "backend-aws-1", "status": "Up 2 hours (healthy)", "image": "backend:latest"},
+                    {"name": "frontend-aws-1", "status": "Up 2 hours (unhealthy)", "image": "frontend:latest"},
+                ],
+                "count": 2,
+                "healthy_count": 1,
+                "unhealthy_count": 1,
+                "unhealthy_names": ["frontend-aws-1"],
+                "checked_at": "2026-08-08T00:00:00+00:00",
+            }
+        )
+        assert items
+        assert items[0]["source"] == "container"
+        assert items[0]["is_direct"] is True
+        assert "unhealthy_count=1" in items[0]["detail"]
+
+    def test_empty_inspect_container_is_not_direct_observation(self):
+        items = evidence_from_tool_output(
+            {
+                "tool": "inspect_container",
+                "containers": [],
+                "count": 0,
+                "healthy_count": 0,
+                "unhealthy_count": 0,
+                "error": "docker unavailable",
+            }
+        )
+        assert items[0]["is_direct"] is False
+        assert items[0]["confidence"] == "low"
+        assert "containers=0" in items[0]["detail"]
+        assert any(i.get("reference") == "docker_ps_error" for i in items)
+
+    def test_inspect_runtime_and_read_logs_emit_evidence(self):
+        runtime_items = evidence_from_tool_output(
+            {
+                "tool": "inspect_runtime",
+                "environment": "prod",
+                "runtime_origin": "aws",
+                "jarvis_enabled": "true",
+                "jarvis_dry_run_only": "true",
+                "checked_at": "2026-08-08T00:00:00+00:00",
+            }
+        )
+        assert runtime_items[0]["source"] == "runtime"
+        assert "environment=prod" in runtime_items[0]["detail"]
+
+        log_items = evidence_from_tool_output(
+            {
+                "tool": "read_logs",
+                "source": "backend-aws",
+                "match_count": 1,
+                "entries": [
+                    {
+                        "ts": "2026-08-08T00:00:00",
+                        "level": "LOG",
+                        "message": "container restart loop detected",
+                        "source": "backend-aws",
+                    }
+                ],
+            }
+        )
+        assert log_items[0]["source"] == "logs"
+        assert "restart" in log_items[0]["detail"]
+
 
 class TestEvidenceSufficiency:
     def test_two_independent_sources_accepted(self):
@@ -306,3 +374,73 @@ class TestTemplateRouting:
         template = match_investigation_template("Investigate portfolio reconciliation mismatch")
         assert template is not None
         assert template.template_id == "portfolio_reconciliation_mismatch"
+
+    def test_deployment_unhealthy_collectors_include_container_and_repo(self):
+        template = match_investigation_template("Why is deployment unhealthy?")
+        assert template is not None
+        assert template.template_id == "deployment_unhealthy"
+        tools = [c.tool for c in template.collectors]
+        assert "inspect_container" in tools
+        assert "search_repository" in tools
+        assert "search_logs" in tools
+        container = next(c for c in template.collectors if c.tool == "inspect_container")
+        assert container.params.get("service") == ""
+
+    def test_healthy_deployment_report_completes_with_container_evidence(self):
+        container_ev = evidence_from_tool_output(
+            {
+                "tool": "inspect_container",
+                "containers": [
+                    {"name": "backend-aws-1", "status": "Up 3 hours (healthy)", "image": "backend"},
+                    {"name": "frontend-aws-1", "status": "Up 3 hours (healthy)", "image": "frontend"},
+                ],
+                "count": 2,
+                "healthy_count": 2,
+                "unhealthy_count": 0,
+                "unhealthy_names": [],
+                "checked_at": "2026-08-08T12:00:00+00:00",
+            }
+        )
+        runtime_ev = evidence_from_tool_output(
+            {
+                "tool": "inspect_runtime",
+                "environment": "prod",
+                "runtime_origin": "aws",
+                "jarvis_enabled": "true",
+                "jarvis_dry_run_only": "true",
+            }
+        )
+        evidence = merge_evidence(container_ev, runtime_ev)
+        ranked = [
+            RootCauseCandidate(
+                cause="No unhealthy services detected; deployment health checks passing",
+                score=72.0,
+                supporting_evidence=["unhealthy_count=0"],
+                explanation="Containers healthy.",
+            )
+        ]
+        report = build_investigation_report(
+            investigation_id="dep-healthy-1",
+            objective="Why is deployment unhealthy?",
+            category="deployment",
+            template_id="deployment_unhealthy",
+            evidence=evidence,
+            ranked_causes=ranked,
+            tool_outputs=[
+                {
+                    "tool": "inspect_container",
+                    "ok": True,
+                    "count": 2,
+                    "unhealthy_count": 0,
+                    "healthy_count": 2,
+                }
+            ],
+            created_at="2026-08-08T12:00:00+00:00",
+        )
+        assert report.status == InvestigationStatus.COMPLETED
+        assert report.root_cause and "no unhealthy" in report.root_cause.lower()
+        assert any(e["source"] == "container" for e in report.evidence)
+
+    def test_deployment_missing_evidence_lists_container_gap(self):
+        gaps = identify_missing_evidence([], [], category="deployment")
+        assert any("container" in g.lower() for g in gaps)

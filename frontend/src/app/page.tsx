@@ -1405,6 +1405,28 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.66',
+    date: '2026-08-08',
+    change: 'Fix deployment_unhealthy investigation evidence collectors',
+    details: `🚀 VERSIÓN 0.66 — DEPLOYMENT_UNHEALTHY EVIDENCE COLLECTORS
+
+📋 **What shipped**
+• \`deployment_unhealthy\` template now inspects **all** containers (not only frontend-aws), searches deploy/error logs, and searches the repo for compose/deploy healthchecks
+• Evidence extraction now materializes \`inspect_container\`, \`inspect_runtime\`, and \`read_logs\` outputs (previously dropped → 100% insufficient_evidence)
+• Root-cause ranking requires a real pattern hit (stops inventing "Deployment health check failing" from category bonus when health=PASS)
+• Healthy path can complete as "No unhealthy services detected…" when container health evidence is present
+
+🔧 **Why**
+• First engineer fix from Jarvis Improvement → Execute loop (dry-runs never produced patch.diff; direct eng PR preferred)
+• Prod showed 532/532 \`deployment_unhealthy\` investigations as insufficient_evidence with health=pass + no container evidence
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 ];
 

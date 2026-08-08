@@ -99,13 +99,13 @@ class TestRootCauseRanking:
             {
                 "source": "database",
                 "reference": "exchange_orders",
-                "detail": "Open-status count: 5",
+                "detail": "Open-status count: 5; database has pending orders but dashboard cache is empty",
                 "confidence": "high",
             },
             {
                 "source": "api",
                 "reference": "open_orders_cache",
-                "detail": "Cache contains 0 open orders",
+                "detail": "Cache contains 0 open orders; db=5 cache=0",
                 "confidence": "high",
             },
         ]
@@ -113,6 +113,83 @@ class TestRootCauseRanking:
         assert ranked
         scores = [c.score for c in ranked]
         assert max(scores) >= min(scores)
+
+    def test_category_bonus_alone_does_not_rank_deployment_failure(self):
+        """Healthy PASS logs must not invent 'Deployment health check failing'."""
+        evidence: list[EvidenceItem] = [
+            {
+                "source": "runtime",
+                "reference": "health_endpoint",
+                "detail": "Health check status=pass",
+                "confidence": "high",
+            },
+            {
+                "source": "logs",
+                "reference": "github_app_monitor.log",
+                "detail": "GITHUB_APP_CUTOVER_HEALTH=PASS; backend-aws running, healthy",
+                "confidence": "medium",
+            },
+        ]
+        ranked = rank_root_causes(evidence=evidence, category="deployment")
+        failing = [c for c in ranked if "failing" in c.cause.lower()]
+        assert not failing
+        healthy = [c for c in ranked if "no unhealthy" in c.cause.lower()]
+        assert healthy
+
+    def test_empty_docker_ps_does_not_rank_healthy_deployment(self):
+        """containers=0 + unhealthy_count=0 is missing evidence, not a healthy pass."""
+        evidence: list[EvidenceItem] = [
+            {
+                "source": "container",
+                "reference": "docker_ps",
+                "detail": "containers=0; healthy_count=0; unhealthy_count=0",
+                "confidence": "low",
+                "is_direct": False,
+            },
+        ]
+        ranked = rank_root_causes(evidence=evidence, category="deployment")
+        healthy = [c for c in ranked if "no unhealthy" in c.cause.lower()]
+        assert not healthy
+
+    def test_observed_healthy_containers_rank_healthy_deployment(self):
+        evidence: list[EvidenceItem] = [
+            {
+                "source": "container",
+                "reference": "docker_ps",
+                "detail": (
+                    "containers=2; healthy_count=2; unhealthy_count=0; "
+                    "sample=[backend-aws-1=Up 3 hours (healthy), frontend-aws-1=Up 3 hours (healthy)]"
+                ),
+                "confidence": "high",
+                "is_direct": True,
+            },
+        ]
+        ranked = rank_root_causes(evidence=evidence, category="deployment")
+        healthy = [c for c in ranked if "no unhealthy" in c.cause.lower()]
+        assert healthy
+        failing = [c for c in ranked if "failing" in c.cause.lower()]
+        assert not failing
+
+    def test_deadline_substring_does_not_rank_deployment_failure(self):
+        """Bare 'dead'/'crash' tokens must not match inside deadline/crashlytics."""
+        evidence: list[EvidenceItem] = [
+            {
+                "source": "logs",
+                "reference": "backend-aws",
+                "detail": "request deadline exceeded; crashlytics noop; zoom meeting",
+                "confidence": "medium",
+            },
+            {
+                "source": "container",
+                "reference": "docker_ps",
+                "detail": "containers=2; healthy_count=2; unhealthy_count=0",
+                "confidence": "high",
+                "is_direct": True,
+            },
+        ]
+        ranked = rank_root_causes(evidence=evidence, category="deployment")
+        failing = [c for c in ranked if "failing" in c.cause.lower()]
+        assert not failing
 
     def test_empty_evidence_yields_low_or_empty_ranking(self):
         ranked = rank_root_causes(evidence=[], category="orders")

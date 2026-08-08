@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import datetime, timezone
 from typing import Any
 
+# Only live `docker ps` rows (not -a): stale Exited/Created leftovers must not
+# inflate unhealthy_count when the compose stack is actually up.
+_UNHEALTHY_STATUS = re.compile(
+    r"\(unhealthy\)|restarting|\bdead\b|\boom[- ]killed\b|\boom\b",
+    re.IGNORECASE,
+)
+_HEALTHY_STATUS = re.compile(r"\(healthy\)|\bhealthy\b|up\s+\d", re.IGNORECASE)
 
-def inspect_container(*, service: str = "frontend-aws", **_kwargs: Any) -> dict[str, Any]:
+
+def inspect_container(*, service: str = "", **_kwargs: Any) -> dict[str, Any]:
+    """List running containers (optionally filtered by name substring).
+
+    Default ``service=""`` returns the full docker ps list so deployment
+    investigations see all stack services, not only frontend-aws.
+    Uses ``docker ps`` (running only) so stopped leftovers from prior deploys
+    are not counted as unhealthy.
+    """
     containers: list[dict[str, Any]] = []
     try:
         proc = subprocess.run(
@@ -28,18 +44,32 @@ def inspect_container(*, service: str = "frontend-aws", **_kwargs: Any) -> dict[
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {
             "tool": "inspect_container",
-            "service_filter": service,
+            "service_filter": service or None,
             "containers": [],
+            "count": 0,
+            "unhealthy_count": 0,
+            "healthy_count": 0,
             "read_only": True,
             "error": str(exc),
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    unhealthy = [c for c in containers if _UNHEALTHY_STATUS.search(c.get("status") or "")]
+    unhealthy_names = {c["name"] for c in unhealthy}
+    healthy = [
+        c
+        for c in containers
+        if c["name"] not in unhealthy_names and _HEALTHY_STATUS.search(c.get("status") or "")
+    ]
+
     return {
         "tool": "inspect_container",
-        "service_filter": service,
+        "service_filter": service or None,
         "containers": containers,
         "count": len(containers),
+        "unhealthy_count": len(unhealthy),
+        "healthy_count": len(healthy),
+        "unhealthy_names": [c["name"] for c in unhealthy[:10]],
         "read_only": True,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }

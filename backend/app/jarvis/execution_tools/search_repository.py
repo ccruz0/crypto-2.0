@@ -89,6 +89,14 @@ _TOPIC_QUERIES: dict[str, list[str]] = {
         "build_plan",
         "objective_classification",
     ],
+    "deployment": [
+        "docker-compose",
+        "docker compose",
+        "prod_frontend_deploy",
+        "inspect_container",
+        "deployment_unhealthy",
+        "healthcheck",
+    ],
 }
 
 _DEFAULT_FRAMEWORK_TOPICS: list[str] = ["jarvis", "result_validation", "planner", "repository_agent"]
@@ -131,6 +139,7 @@ _TOPIC_EXPLANATIONS: dict[str, str] = {
     "result_validation": "Jarvis result validation, evidence gates, and completion checks",
     "repository_agent": "Repository agent and search_repository topic routing",
     "planner": "Jarvis planner agent and objective classification",
+    "deployment": "Docker Compose services, deploy scripts, and deployment health collectors",
 }
 
 

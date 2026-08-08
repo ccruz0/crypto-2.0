@@ -172,6 +172,8 @@ def has_direct_evidence(
             continue
         if output.get("counts"):
             return True
+        if output.get("tool") == "inspect_container" and int(output.get("count") or 0) > 0:
+            return True
         if output.get("root_cause") and output.get("tool") in (
             "reconcile_crypto_com_open_orders",
             "diagnose_open_orders",
@@ -204,6 +206,13 @@ def identify_missing_evidence(
         missing.append("No credential or auth-error diagnostics from logs or runtime")
     if category == "portfolio" and "exchange" not in sources:
         missing.append("No exchange account summary or equity field comparison")
+    if category == "deployment":
+        if "container" not in sources and "inspect_container" not in tools_run:
+            missing.append("No container status evidence (docker ps / compose status)")
+        if "logs" not in sources and "search_logs" not in tools_run and "read_logs" not in tools_run:
+            missing.append("No deployment/error log search evidence")
+        if "repository" not in sources and "search_repository" not in tools_run:
+            missing.append("No repository evidence for deploy scripts / compose healthchecks")
 
     substantive_count = sum(1 for item in evidence if is_substantive_evidence(item))
     if substantive_count == 0:
@@ -459,13 +468,130 @@ def evidence_from_tool_output(output: dict[str, Any]) -> list[EvidenceItem]:
     if tool == "inspect_health":
         status = output.get("status")
         if status:
+            details = output.get("details") or {}
+            detail = f"Health check status={status}"
+            if isinstance(details, dict) and details:
+                global_status = details.get("global_status")
+                checks = details.get("checks")
+                if global_status:
+                    detail += f"; global_status={global_status}"
+                if checks:
+                    detail += f"; checks={list(checks)[:8] if not isinstance(checks, list) else checks[:8]}"
+            degraded = str(status).lower() in ("degraded", "fail", "failed", "unhealthy", "error")
             items.append(
                 {
                     "source": "runtime",
                     "reference": "health_endpoint",
-                    "detail": f"Health check status={status}",
-                    "confidence": "high" if status in ("healthy", "pass") else "medium",
+                    "detail": detail,
+                    "confidence": "high" if status in ("healthy", "pass", "ok") or degraded else "medium",
                     "evidence_type": "runtime",
+                    "is_direct": degraded,
+                }
+            )
+
+    if tool == "inspect_container":
+        containers = output.get("containers") or []
+        count = int(output.get("count") or len(containers))
+        unhealthy_count = int(output.get("unhealthy_count") or 0)
+        healthy_count = int(output.get("healthy_count") or 0)
+        unhealthy_names = output.get("unhealthy_names") or []
+        has_error = bool(output.get("error"))
+        if not unhealthy_names and containers:
+            unhealthy_names = [
+                c.get("name")
+                for c in containers
+                if isinstance(c, dict)
+                and re.search(
+                    r"\(unhealthy\)|restarting|\bexited\b|\bdead\b|\boom\b",
+                    str(c.get("status") or ""),
+                    re.I,
+                )
+            ]
+            unhealthy_count = unhealthy_count or len(unhealthy_names)
+        sample = []
+        for c in containers[:6]:
+            if not isinstance(c, dict):
+                continue
+            sample.append(f"{c.get('name')}={c.get('status')}")
+        detail = (
+            f"containers={count}; healthy_count={healthy_count}; unhealthy_count={unhealthy_count}"
+            + (f"; unhealthy={unhealthy_names[:5]}" if unhealthy_names else "")
+            + (f"; sample=[{'; '.join(sample)}]" if sample else "")
+            + (f"; checked_at={checked_at}" if checked_at else "")
+        )
+        # Empty or errored docker ps is not a direct healthy observation.
+        observation_ok = count > 0 and not has_error
+        items.append(
+            {
+                "source": "container",
+                "reference": "docker_ps",
+                "detail": detail,
+                "confidence": "high" if observation_ok else "low",
+                "evidence_type": "container",
+                "row_count": count,
+                "is_direct": observation_ok,
+            }
+        )
+        if has_error:
+            items.append(
+                {
+                    "source": "container",
+                    "reference": "docker_ps_error",
+                    "detail": f"Container inspection error: {output.get('error')}",
+                    "confidence": "medium",
+                    "evidence_type": "container",
+                }
+            )
+
+    if tool == "inspect_runtime":
+        detail = (
+            f"environment={output.get('environment')}; "
+            f"runtime_origin={output.get('runtime_origin')}; "
+            f"jarvis_enabled={output.get('jarvis_enabled')}; "
+            f"jarvis_dry_run_only={output.get('jarvis_dry_run_only')}"
+            + (f"; checked_at={checked_at}" if checked_at else "")
+        )
+        items.append(
+            {
+                "source": "runtime",
+                "reference": "runtime_env",
+                "detail": detail,
+                "confidence": "medium",
+                "evidence_type": "runtime",
+            }
+        )
+
+    if tool == "read_logs":
+        entries = output.get("entries") or []
+        match_count = int(output.get("match_count") or len(entries))
+        source_name = str(output.get("source") or "application")
+        for entry in entries[:5]:
+            if not isinstance(entry, dict):
+                continue
+            ts = entry.get("ts") or checked_at or ""
+            message = str(entry.get("message") or "")[:300]
+            entry_source = entry.get("source") or source_name
+            items.append(
+                {
+                    "source": "logs",
+                    "reference": str(entry_source),
+                    "detail": f"[{ts}] container={entry_source}: {message}",
+                    "confidence": "medium",
+                    "evidence_type": "log",
+                    "log_source": str(entry_source),
+                    "log_container": str(entry_source),
+                    "timestamps": [ts] if ts else [],
+                }
+            )
+        if match_count == 0:
+            items.append(
+                {
+                    "source": "logs",
+                    "reference": "read_logs",
+                    "detail": f"No recent log entries from source={source_name}; match_count=0",
+                    "confidence": "low",
+                    "evidence_type": "log",
+                    "row_count": 0,
                 }
             )
 

@@ -200,3 +200,13 @@ Caveats: confidence calibration will likely move a few borderline investigations
 - **B. Confidence calibration:** a bounded 4-factor model (Evidence, Objective alignment, Domain match, Specificity) with hard caps that make 90–100 impossible under weak evidence or domain mismatch.
 - **C. Recommendation quality:** a structured `RecommendationPlan` (files, commands, validation, risks) sourced from the template catalog + collected evidence, with a generic-phrase ban.
 - ACW gating stays exactly as-is and only receives better inputs. Projected overall lift **4.81 → ~6.7**.
+
+---
+
+## Implementation note — first eng fix from Improvement → Execute (2026-08-08)
+
+**Not** the Send-to-LAB path. Carlos executed `template-insuff-deployment_unhealthy` many times as dry-run only; tasks completed without `patch.diff`. A direct engineer PR is the preferred delivery for this class of template-gap recommendations.
+
+**Root cause (prod):** `deployment_unhealthy` collectors ran `inspect_container` / `inspect_runtime` / `read_logs`, but `evidence_from_tool_output` never extracted those tool outputs. Combined with `inspect_container` defaulting to `frontend-aws` only and ranking inventing "Deployment health check failing" from category-bonus alone (health=PASS), validation correctly ended `insufficient_evidence` (historically 100%).
+
+**Fix shipped:** expand mandatory collectors + keyword/repo coverage; extract container/runtime/read_logs evidence; require pattern hits for known causes; add healthy-deployment completion path. See dashboard `VERSION_HISTORY` v0.66.

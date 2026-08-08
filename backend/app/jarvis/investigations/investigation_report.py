@@ -404,7 +404,32 @@ _KNOWN_CAUSE_PATTERNS: list[dict[str, Any]] = [
             "Check docker compose service status.",
         ],
         "matchers": [
-            re.compile(r"health.*degraded|unhealthy|status=degraded", re.I),
+            re.compile(
+                r"unhealthy_count=[1-9]|status=degraded|status=unhealthy|health.*degraded|"
+                r"\(unhealthy\)|restarting|\bexited\b|\boom\b|\bcrash(?:ed|ing)?\b|\bdead\b",
+                re.I,
+            ),
+        ],
+        "category": "deployment",
+    },
+    {
+        "cause": "No unhealthy services detected; deployment health checks passing",
+        "fix": "No repair needed. Continue scheduled deployment verification monitoring.",
+        "impact": "No deployment outage indicated by current container/health evidence.",
+        "verification": [
+            "Confirm docker ps shows healthy for backend/frontend/market-updater.",
+            "Re-check /api/health and compose healthchecks on next schedule.",
+        ],
+        "matchers": [
+            # Require observed containers (containers>=1 + unhealthy_count=0).
+            # Bare unhealthy_count=0 with containers=0 must NOT complete healthy
+            # (empty/failed docker ps is missing evidence, not a pass).
+            re.compile(
+                r"containers=[1-9]\d*;\s*healthy_count=\d+;\s*unhealthy_count=0|"
+                r"status=pass|status=ok|status=healthy|"
+                r"HEALTH=PASS|running,\s*healthy",
+                re.I,
+            ),
         ],
         "category": "deployment",
     },
@@ -730,10 +755,18 @@ def rank_root_causes(
 
         total_score = category_bonus
         all_supporting: list[str] = []
+        pattern_hit = False
         for matcher in pattern_def["matchers"]:
             pts, supporting = _score_pattern_match(matcher, corpus, evidence)
+            if pts > 0:
+                pattern_hit = True
             total_score += pts
             all_supporting.extend(supporting)
+
+        # Category bonus alone must not invent a root cause (seen on deployment_unhealthy
+        # when health=pass but "Deployment health check failing" still ranked).
+        if not pattern_hit:
+            continue
 
         total_score += _cross_source_bonus(evidence, all_supporting)
         total_score += min(recent_failures * 3.0, 15.0)
