@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
@@ -58,13 +59,19 @@ def _redact_secrets(text: str) -> str:
     # Generic userinfo, but do not re-mangle already-redacted x-access-token URLs.
     out = re.sub(r"://(?!x-access-token:)[^/\s:@]+:[^@\s]+@", "://***:***@", out)
     out = re.sub(
-        r"(?i)(Authorization:\s*bearer)\s+\S+",
-        r"\1 ***",
+        r"(?i)(Authorization:\s*(?:bearer|basic))\s+\S+",
+        lambda m: f"{m.group(1)} ***",
         out,
     )
     out = re.sub(r"\bgh[pous]_[A-Za-z0-9_]+\b", "[REDACTED]", out)
     out = re.sub(r"\bgithub_pat_[A-Za-z0-9_]+\b", "[REDACTED]", out)
     return out[:800]
+
+
+def _git_basic_auth_header(token: str) -> str:
+    """Build Authorization: Basic … for Git smart-HTTP (x-access-token + installation token)."""
+    raw = f"x-access-token:{token}".encode("utf-8")
+    return f"Authorization: Basic {base64.b64encode(raw).decode('ascii')}"
 
 
 def check_pr_creation_allowed(
@@ -329,7 +336,7 @@ def _authed_https_remote(remote_url: str, token: str) -> str | None:
 
 
 def _push_branch(*, workdir: Path, branch_name: str, token: str) -> dict[str, Any]:
-    """Push branch with a short-lived bearer header (never writes token into origin URL)."""
+    """Push branch with short-lived Basic auth header (never writes token into origin URL)."""
     code, remote_url, err = _run(["git", "remote", "get-url", "origin"], cwd=workdir, timeout=15)
     if code != 0 or not (remote_url or "").strip():
         return {"ok": False, "error": f"could not read origin remote: {_redact_secrets(err or remote_url)}"}
@@ -342,8 +349,10 @@ def _push_branch(*, workdir: Path, branch_name: str, token: str) -> dict[str, An
         }
 
     # Push to an explicit HTTPS URL so we never mutate origin with credentials.
+    # GitHub Git smart-HTTP expects Basic (x-access-token:TOKEN), not Bearer.
     # Token lives only in process argv for the duration of this push (not .git/config).
     push_url = f"https://github.com/{slug}.git"
+    auth_header = _git_basic_auth_header(token)
     env = {
         **os.environ,
         "GIT_ASKPASS": "echo",
@@ -354,7 +363,7 @@ def _push_branch(*, workdir: Path, branch_name: str, token: str) -> dict[str, An
         [
             "git",
             "-c",
-            f"http.extraHeader=Authorization: bearer {token}",
+            f"http.extraHeader={auth_header}",
             "push",
             "-u",
             push_url,

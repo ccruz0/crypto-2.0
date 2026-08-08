@@ -30,6 +30,9 @@ def test_redact_secrets_strips_pats():
     assert "Authorization: bearer ***" in prs._redact_secrets(
         "fatal: http.extraHeader=Authorization: bearer ghs_SECRETVALUE"
     )
+    assert "Authorization: Basic ***" in prs._redact_secrets(
+        "fatal: http.extraHeader=Authorization: Basic YWJjMTIz"
+    )
 
 
 def test_create_pull_request_uses_github_app_api(tmp_path, monkeypatch):
@@ -142,10 +145,13 @@ def test_create_pull_request_still_blocks_main(monkeypatch):
 
 def test_push_branch_uses_extra_header_not_origin_url(tmp_path):
     """Token must not be written into origin remote URL (.git/config)."""
+    import base64
+
     workdir = tmp_path / "sandbox"
     workdir.mkdir()
     (workdir / ".git").mkdir()
     calls: list[list[str]] = []
+    expected_basic = base64.b64encode(b"x-access-token:ghs_secret").decode("ascii")
 
     def fake_run(cmd, *, cwd=None, timeout=60, env=None):
         calls.append(list(cmd))
@@ -163,6 +169,8 @@ def test_push_branch_uses_extra_header_not_origin_url(tmp_path):
     push_cmds = [c for c in calls if "push" in c]
     assert len(push_cmds) == 1
     push = push_cmds[0]
-    assert "http.extraHeader=Authorization: bearer ghs_secret" in push
+    assert f"http.extraHeader=Authorization: Basic {expected_basic}" in push
     assert "https://github.com/ccruz0/crypto-2.0.git" in push
-    assert not any("x-access-token:" in part for part in push)
+    # Raw token must not appear as plaintext userinfo; only inside Basic payload.
+    assert not any(part.startswith("https://x-access-token:") for part in push)
+    assert "Authorization: bearer" not in " ".join(push).lower()
