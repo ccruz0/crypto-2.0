@@ -127,6 +127,14 @@ describe('JarvisImprovementTab Execute', () => {
     expect(
       await screen.findByTestId(`jarvis-improvement-execute-success-${sampleRec.id}`),
     ).toHaveTextContent(/Queued dry-run task abcd1234/i);
+    const approveLink = await screen.findByTestId(
+      `jarvis-improvement-open-approve-${sampleRec.id}`,
+    );
+    expect(approveLink).toHaveAttribute(
+      'href',
+      '/?tab=jarvis&task=abcd1234-ffff-eeee-dddd-cccccccccccc',
+    );
+    expect(approveLink).toHaveTextContent('Open Jarvis to Approve');
   });
 
   it('shows an error when Execute fails', async () => {

@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
   approveJarvisTask,
   getJarvisExecutionTask,
@@ -63,6 +64,8 @@ function ValidationOutcome({ validation }: { validation: JarvisExecutionTaskDeta
 }
 
 export default function JarvisControlTab() {
+  const searchParams = useSearchParams();
+  const taskFromUrl = searchParams.get('task');
   const [objective, setObjective] = useState('');
   const [priority, setPriority] = useState<'low' | 'normal' | 'high'>('normal');
   const [approvalMode, setApprovalMode] = useState<'auto' | 'manual'>('auto');
@@ -70,7 +73,7 @@ export default function JarvisControlTab() {
   const [error, setError] = useState<string | null>(null);
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const [tasks, setTasks] = useState<JarvisExecutionTaskSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => taskFromUrl);
   const [detail, setDetail] = useState<JarvisExecutionTaskDetail | null>(null);
 
   const refreshList = useCallback(async () => {
@@ -90,6 +93,11 @@ export default function JarvisControlTab() {
       setError(String(e));
     }
   }, []);
+
+  // Deep-link: ?tab=jarvis&task=<id> from Improvement Execute → Approve
+  useEffect(() => {
+    if (taskFromUrl) setSelectedId(taskFromUrl);
+  }, [taskFromUrl]);
 
   useEffect(() => {
     refreshList();
