@@ -1450,6 +1450,30 @@ const VERSION_HISTORY = [
 ---
 `
   }
+
+  {
+    version: '0.68',
+    date: '2026-08-09',
+    change: 'Protect margin short adds at fill-time (DOGE Auto SELL)',
+    details: `🚀 VERSIÓN 0.68 — SHORT-ADD FILL-TIME SL/TP
+
+📋 **What shipped**
+• Auto/orchestrator path re-detects short inventory AFTER SELL fill (wallet < 0)
+• Adding to an existing margin short now creates SL/TP (was skipped when position_exists)
+• Keep pre-place first-short flag so protection still runs before wallet goes negative
+• Wallet-down fallback skips long-only open lots (long-close must not get short SL/TP)
+• Legacy SELL path uses the same helper; healing remains OFF by design
+
+🔧 **Why**
+• DOGE_USD SELL 5755600492782582799 (2026-08-08) filled naked: pre-place is_margin_short_entry required no open position
+
+📦 **PRs**
+• #410
+
+---
+`
+  }
+
 ];
 
 // Helper function to get current version (must be defined before component)
