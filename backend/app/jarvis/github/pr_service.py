@@ -57,6 +57,11 @@ def _redact_secrets(text: str) -> str:
     out = re.sub(r"x-access-token:[^@\s]+@", "x-access-token:***@", out)
     # Generic userinfo, but do not re-mangle already-redacted x-access-token URLs.
     out = re.sub(r"://(?!x-access-token:)[^/\s:@]+:[^@\s]+@", "://***:***@", out)
+    out = re.sub(
+        r"(?i)(Authorization:\s*bearer)\s+\S+",
+        r"\1 ***",
+        out,
+    )
     out = re.sub(r"\bgh[pous]_[A-Za-z0-9_]+\b", "[REDACTED]", out)
     out = re.sub(r"\bgithub_pat_[A-Za-z0-9_]+\b", "[REDACTED]", out)
     return out[:800]
@@ -324,46 +329,44 @@ def _authed_https_remote(remote_url: str, token: str) -> str | None:
 
 
 def _push_branch(*, workdir: Path, branch_name: str, token: str) -> dict[str, Any]:
-    """Push branch using a short-lived authenticated remote URL, then restore origin."""
+    """Push branch with a short-lived bearer header (never writes token into origin URL)."""
     code, remote_url, err = _run(["git", "remote", "get-url", "origin"], cwd=workdir, timeout=15)
     if code != 0 or not (remote_url or "").strip():
         return {"ok": False, "error": f"could not read origin remote: {_redact_secrets(err or remote_url)}"}
 
-    clean_remote = remote_url.strip()
-    # Prefer a non-token remote for restore (strip userinfo if somehow present).
-    restore_remote = clean_remote
-    slug = _repo_slug_from_remote(clean_remote)
-    if slug and ("@" in urlsplit(clean_remote).netloc or clean_remote.startswith("git@")):
-        restore_remote = f"https://github.com/{slug}.git"
-    elif slug and clean_remote.startswith("https://"):
-        restore_remote = f"https://github.com/{slug}.git"
-
-    authed = _authed_https_remote(clean_remote, token)
-    if not authed:
-        return {"ok": False, "error": "unsupported git remote for authenticated push (need github.com HTTPS or SSH URL)"}
-
-    try:
-        code, _, err = _run(["git", "remote", "set-url", "origin", authed], cwd=workdir, timeout=15)
-        if code != 0:
-            return {"ok": False, "error": f"failed to set authenticated origin: {_redact_secrets(err)}"}
-
-        env = {
-            **os.environ,
-            "GIT_ASKPASS": "echo",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GCM_INTERACTIVE": "never",
+    slug = _repo_slug_from_remote(remote_url.strip())
+    if not slug or not token:
+        return {
+            "ok": False,
+            "error": "unsupported git remote for authenticated push (need github.com HTTPS or SSH URL)",
         }
-        code, out, err = _run(
-            ["git", "push", "-u", "origin", branch_name],
-            cwd=workdir,
-            timeout=120,
-            env=env,
-        )
-        if code != 0:
-            return {"ok": False, "error": f"push failed: {_redact_secrets(err or out)}"}
-        return {"ok": True}
-    finally:
-        _run(["git", "remote", "set-url", "origin", restore_remote], cwd=workdir, timeout=15)
+
+    # Push to an explicit HTTPS URL so we never mutate origin with credentials.
+    # Token lives only in process argv for the duration of this push (not .git/config).
+    push_url = f"https://github.com/{slug}.git"
+    env = {
+        **os.environ,
+        "GIT_ASKPASS": "echo",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+    }
+    code, out, err = _run(
+        [
+            "git",
+            "-c",
+            f"http.extraHeader=Authorization: bearer {token}",
+            "push",
+            "-u",
+            push_url,
+            f"HEAD:refs/heads/{branch_name}",
+        ],
+        cwd=workdir,
+        timeout=120,
+        env=env,
+    )
+    if code != 0:
+        return {"ok": False, "error": f"push failed: {_redact_secrets(err or out)}"}
+    return {"ok": True}
 
 
 def _create_pr_via_api(

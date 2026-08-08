@@ -27,6 +27,9 @@ def test_authed_https_remote_redacts_in_helper_shape():
 def test_redact_secrets_strips_pats():
     assert "[REDACTED]" in prs._redact_secrets("token ghp_ABCDEFG1234567890")
     assert "x-access-token:***@" in prs._redact_secrets("https://x-access-token:secret@github.com/a/b.git")
+    assert "Authorization: bearer ***" in prs._redact_secrets(
+        "fatal: http.extraHeader=Authorization: bearer ghs_SECRETVALUE"
+    )
 
 
 def test_create_pull_request_uses_github_app_api(tmp_path, monkeypatch):
@@ -135,3 +138,31 @@ def test_create_pull_request_still_blocks_main(monkeypatch):
     )
     assert result["success"] is False
     assert "forbidden" in (result.get("error") or "").lower()
+
+
+def test_push_branch_uses_extra_header_not_origin_url(tmp_path):
+    """Token must not be written into origin remote URL (.git/config)."""
+    workdir = tmp_path / "sandbox"
+    workdir.mkdir()
+    (workdir / ".git").mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *, cwd=None, timeout=60, env=None):
+        calls.append(list(cmd))
+        if cmd[:3] == ["git", "remote", "get-url"]:
+            return 0, "https://github.com/ccruz0/crypto-2.0.git\n", ""
+        if cmd[0] == "git" and "push" in cmd:
+            return 0, "ok\n", ""
+        return 1, "", "unexpected"
+
+    with patch.object(prs, "_run", side_effect=fake_run):
+        result = prs._push_branch(workdir=workdir, branch_name="jarvis/lab-promote-x", token="ghs_secret")
+
+    assert result == {"ok": True}
+    assert not any("set-url" in c for c in calls)
+    push_cmds = [c for c in calls if "push" in c]
+    assert len(push_cmds) == 1
+    push = push_cmds[0]
+    assert "http.extraHeader=Authorization: bearer ghs_secret" in push
+    assert "https://github.com/ccruz0/crypto-2.0.git" in push
+    assert not any("x-access-token:" in part for part in push)
