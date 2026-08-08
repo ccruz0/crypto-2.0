@@ -508,6 +508,25 @@ class TestImprovementExecuteHelper:
         assert "rec-1" in objective
         assert "Do the thing" in objective
         assert "Do not apply patches" in objective
+        assert "Do not create pull requests" in objective
+        assert "Do not deploy" in objective
+        # Comma-list footer historically tripped FORBIDDEN on bare "deploy"
+        assert ", or deploy" not in objective
+
+    def test_build_objective_not_classified_forbidden(self):
+        from app.jarvis.execution.safety import SafetyLevel, classify_text
+
+        objective = build_improvement_execute_objective(
+            recommendation_id="template-insuff-deployment_unhealthy",
+            title="Improve evidence collectors for 'deployment_unhealthy' template",
+            recommendation=(
+                "Template 'deployment_unhealthy' has 100% insufficient_evidence rate. "
+                "Add mandatory collectors or expand log/search coverage."
+            ),
+            reason="High insufficient_evidence rate",
+            category="template_gap",
+        )
+        assert classify_text(objective) == SafetyLevel.SAFE_AUTO
 
     def test_execute_maps_medium_priority_and_forces_dry_run(self, improvement_db, monkeypatch):
         monkeypatch.setenv("JARVIS_ENABLED", "true")

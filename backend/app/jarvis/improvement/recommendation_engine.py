@@ -192,7 +192,7 @@ def build_improvement_execute_objective(
         parts.append(f"Category: {category.strip()}")
     parts.append(
         "Investigate and propose a gated follow-up only. "
-        "Do not apply patches, create PRs, or deploy."
+        "Do not apply patches. Do not create pull requests. Do not deploy."
     )
     return "\n".join(parts)[:2000]
 
@@ -231,16 +231,32 @@ def execute_improvement_recommendation(
         approval_mode="manual",
         dry_run=True,
     )
+    status = str(detail.get("status") or "")
+    error = (detail.get("error") or "").strip() or None
+    if status == "failed":
+        message = (
+            f"Dry-run task queued but failed immediately"
+            f"{f': {error}' if error else ''}."
+            " No patches applied; no PR or deploy."
+        )
+    elif status == "waiting_for_approval":
+        message = (
+            "Queued dry-run Jarvis task (manual approval). "
+            "Open the Jarvis tab to Approve. No patches applied; no PR or deploy."
+        )
+    else:
+        message = (
+            f"Queued dry-run Jarvis task (status: {status or 'unknown'}). "
+            "No patches applied; no PR or deploy."
+        )
     return {
         "recommendation_id": recommendation_id,
         "task_id": detail.get("task_id"),
-        "status": detail.get("status"),
+        "status": status,
         "objective": detail.get("objective"),
         "approval_required": bool(detail.get("approval_required")),
         "approval_status": detail.get("approval_status") or "pending",
         "dry_run": True,
-        "message": (
-            "Queued dry-run Jarvis task (manual approval). "
-            "No patches applied; no PR or deploy."
-        ),
+        "error": error,
+        "message": message,
     }

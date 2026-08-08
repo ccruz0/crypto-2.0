@@ -2855,6 +2855,7 @@ export interface JarvisImprovementExecuteResult {
   approval_required: boolean;
   approval_status: string;
   dry_run: boolean;
+  error?: string | null;
   message: string;
 }
 
