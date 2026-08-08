@@ -1204,7 +1204,6 @@ const VERSION_HISTORY = [
   {
     version: '0.57',
     date: '2026-08-08',
-<<<<<<< HEAD
     change: 'Jarvis Improvement: Execute button per recommendation',
     details: `🚀 VERSIÓN 0.57 — EXECUTE IMPROVEMENT RECOMMENDATIONS
 
@@ -1218,9 +1217,15 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #399
-=======
+
+---
+`
+  },
+  {
+    version: '0.58',
+    date: '2026-08-08',
     change: 'Auto ML Phase 1b: train on executed TP/SL (trade_outcomes hybrid)',
-    details: `🚀 VERSIÓN 0.57 — AUTO ML LEARNS FROM EXECUTED FILLS
+    details: `🚀 VERSIÓN 0.58 — AUTO ML LEARNS FROM EXECUTED FILLS
 
 📋 **What shipped**
 • Dataset builder --label-source alert | trade_outcomes | hybrid
@@ -1232,8 +1237,7 @@ const VERSION_HISTORY = [
 • Phase 0 only labeled from OHLCV forward path; user asked for learning from real TP/SL
 
 📦 **PRs**
-• (this PR)
->>>>>>> ef846abb (feat(auto-ml): Phase 1b — train on executed TP/SL trade_outcomes)
+• #398
 
 ---
 `
