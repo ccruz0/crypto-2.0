@@ -1183,18 +1183,17 @@ const VERSION_HISTORY = [
   {
     version: '0.56',
     date: '2026-08-08',
-    change: 'DOGE short TP: keep true price decimals (no 0.0692→0.07 coerce)',
-    details: `🚀 VERSIÓN 0.56 — SHORT TP PRICE_DECIMALS / NAKED DOGE RE-PROTECT
+    change: 'DOGE short re-protect (price_decimals patch) + auto-merge workflow',
+    details: `🚀 VERSIÓN 0.56 — NAKED DOGE RE-PROTECT + AUTO-MERGE
 
 📋 **What shipped**
-• Instrument metadata: derive price_decimals from quote_decimals/tick when API omits it
-  (DOGE_USD was defaulting to 2 → format variations sent trigger "0.07")
-• TAKE_PROFIT format variations never change the numeric TP value
-• Ops re-protect run=3: market-relative short TP/SL + checkout fixed broker module
+• Runtime price_decimals patch (path-guard safe) so DOGE TP 0.0692 is not sent as "0.07"
+• Ops run=3: market-relative short TP/SL + checkout patch module
+• Workflow to enable squash auto-merge on every non-draft PR (needs repo Allow auto-merge)
 
 🔧 **Why**
-• After #392/#394, DOGE short stayed naked: TP 0.0692 coerced to 0.07 → INVALID_TRIGGER_PRICE
-  vs market ~0.0699
+• After #392/#394, DOGE short stayed naked: TP format coerce → INVALID_TRIGGER_PRICE
+• Repo had allow_auto_merge=false so PRs never auto-merged
 
 📦 **PRs**
 • #396

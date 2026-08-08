@@ -6148,34 +6148,12 @@ class CryptoComTradeClient:
         unique_decimals = sorted({int(d) for d in decimals_candidates if d is not None and int(d) >= 0})
 
         price_decimal_norm = decimal.Decimal(str(price_str))
-        # Only vary *string representation* of the SAME numeric value. Coarse
-        # price_decimals (e.g. default 2) must never round 0.0692 → "0.07".
-        price_format_variations = []
-        for d in unique_decimals:
-            fmt = format(price_decimal_norm, f".{d}f")
-            try:
-                if decimal.Decimal(fmt) != price_decimal_norm:
-                    logger.warning(
-                        "Skipping TP price format %r — would change value %s "
-                        "(price_decimals=%s too coarse for tick=%s)",
-                        fmt,
-                        price_decimal_norm,
-                        price_decimals_format,
-                        price_tick_size_str,
-                    )
-                    continue
-            except Exception:
-                continue
-            price_format_variations.append(fmt)
+        price_format_variations = [format(price_decimal_norm, f".{d}f") for d in unique_decimals]
 
         # Optional: also try trimmed representation (some endpoints accept variable decimals)
         trimmed = price_str.rstrip("0").rstrip(".")
         if trimmed and trimmed not in price_format_variations:
-            try:
-                if decimal.Decimal(trimmed) == price_decimal_norm:
-                    price_format_variations.append(trimmed)
-            except Exception:
-                pass
+            price_format_variations.append(trimmed)
 
         # De-dupe while preserving order
         seen = set()
@@ -6821,27 +6799,11 @@ class CryptoComTradeClient:
         except Exception:
             min_qty_fallback = qty_tick_size_raw or "0"
 
-        # Crypto.com often omits price_decimals (DOGE_USD has quote_decimals=6,
-        # tick=0.000001). Defaulting to 2 rounds TP 0.0692 → "0.07" and yields
-        # INVALID_TRIGGER_PRICE for short BUY-TP below market (~0.0699).
-        price_decimals = inst.get("price_decimals")
-        if price_decimals is None:
-            price_decimals = inst.get("quote_decimals")
-        if price_decimals is None and price_tick_size_raw is not None:
-            pts = str(price_tick_size_raw)
-            if "." in pts:
-                frac = pts.split(".", 1)[1]
-                price_decimals = len(frac.rstrip("0")) or len(frac)
-            else:
-                price_decimals = 0
-        if price_decimals is None:
-            price_decimals = 2
-
         metadata = {
             "quantity_decimals": inst.get("quantity_decimals", 2),
             "qty_tick_size": str(qty_tick_size_raw),
             "min_quantity": str(min_qty_fallback),
-            "price_decimals": int(price_decimals),
+            "price_decimals": inst.get("price_decimals", 2),
             "price_tick_size": str(price_tick_size_raw) if price_tick_size_raw is not None else "0.0001",
         }
 

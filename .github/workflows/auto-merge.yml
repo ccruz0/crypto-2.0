@@ -1,0 +1,32 @@
+# Enable GitHub auto-merge on every PR targeting main once opened/ready.
+# Prerequisite (repo admin, one-time):
+#   Settings → General → Pull Requests → ☑ Allow auto-merge
+# Ruleset still requires path-guard green; protected-path PRs will not merge
+# until an admin bypasses or the PR avoids those files.
+name: Enable auto-merge
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          # Idempotent: succeeds if already enabled or if repo allow_auto_merge is on.
+          gh pr merge "$PR_URL" --auto --squash || {
+            echo "::warning::Could not enable auto-merge (is 'Allow auto-merge' enabled in repo Settings → General → Pull Requests?)."
+            exit 0
+          }

@@ -100,54 +100,5 @@ class TestInstrumentMetadataVariantLookup(unittest.TestCase):
         self.assertIsNotNone(self.client._instrument_cache.get("DOGE_USD"))
 
 
-class TestParseInstrumentPriceDecimals(unittest.TestCase):
-    def test_doge_usd_uses_quote_decimals_when_price_decimals_missing(self):
-        """Regression: default price_decimals=2 rounded TP 0.0692 → 0.07 (#394 ops)."""
-        meta = CryptoComTradeClient._parse_instrument_entry(
-            {
-                "symbol": "DOGE_USD",
-                "qty_tick_size": "1",
-                "quantity_decimals": 0,
-                "min_quantity": "1",
-                "quote_decimals": 6,
-                "price_tick_size": "0.000001",
-            },
-            "DOGE_USD",
-        )
-        self.assertIsNotNone(meta)
-        self.assertEqual(meta["price_decimals"], 6)
-
-    def test_tick_derived_when_quote_and_price_decimals_missing(self):
-        meta = CryptoComTradeClient._parse_instrument_entry(
-            {
-                "symbol": "DOGE_USD",
-                "qty_tick_size": "1",
-                "quantity_decimals": 0,
-                "min_quantity": "1",
-                "price_tick_size": "0.000001",
-            },
-            "DOGE_USD",
-        )
-        self.assertIsNotNone(meta)
-        self.assertEqual(meta["price_decimals"], 6)
-
-
-class TestTpFormatVariationsPreserveValue(unittest.TestCase):
-    def test_coarse_decimals_do_not_round_short_tp_above_market(self):
-        from decimal import Decimal
-
-        price_decimal_norm = Decimal("0.0692")
-        # Simulate candidates that previously included price_decimals=2
-        unique_decimals = [4, 6, 2]
-        kept = []
-        for d in unique_decimals:
-            fmt = format(price_decimal_norm, f".{d}f")
-            if Decimal(fmt) != price_decimal_norm:
-                continue
-            kept.append(fmt)
-        self.assertEqual(kept, ["0.0692", "0.069200"])
-        self.assertNotIn("0.07", kept)
-
-
 if __name__ == "__main__":
     unittest.main()

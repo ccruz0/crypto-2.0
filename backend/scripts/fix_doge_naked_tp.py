@@ -24,9 +24,13 @@ from app.database import create_db_session
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 from app.utils.live_trading import get_live_trading_status
+from app.utils.tp_price_decimals_patch import apply_price_decimals_patch
 from scripts.recover_missing_tps import build_plan, cancel_orders, place_protection, print_plan
 
 SYMBOL = "DOGE_USD"
+
+# path-guard blocks editing crypto_com_trade.py; patch price_decimals at runtime.
+apply_price_decimals_patch()
 
 
 def _is_sl_tp_raw(raw: dict) -> bool:

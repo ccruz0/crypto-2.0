@@ -57,8 +57,8 @@ jobs:
             backend/scripts/recover_missing_tps.py \
             backend/scripts/cancel_duplicate_sl_tp.py \
             backend/app/services/sl_tp_protection.py \
-            backend/app/services/brokers/crypto_com_trade.py \
-            backend/app/utils/sl_trigger_guard.py
+            backend/app/utils/sl_trigger_guard.py \
+            backend/app/utils/tp_price_decimals_patch.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER
           test -n "\$CONTAINER"

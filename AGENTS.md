@@ -86,17 +86,19 @@ The main dashboard keeps `activeTab` in sync with `?tab=` (e.g. `/?tab=watchlist
 fall back to Portfolio. Version History is `?tab=version-history` (also the
 header `v{version}` badge).
 
-### GitHub auto-merge on `main` (human repo setting)
-Cloud agents cannot change repo rulesets (API 403). Ruleset
-`protect-main-production` requires status check `path-guard` and
-**conversation resolution** before merge; bypass is disabled.
+### GitHub auto-merge on `main` (human repo setting — required once)
+Cloud agents cannot flip repo settings (API 403). Today
+`allow_auto_merge` is **false**, so the “Enable auto-merge” button never works.
 
-To make PRs merge themselves once green:
-1. Open the PR → **Enable auto-merge** (or `gh pr merge <n> --auto --squash`).
-2. Resolve every review thread (Bugbot comments count).
-3. Optional (repo admin): [ruleset](https://github.com/ccruz0/crypto-2.0/rules/13156283)
-   → turn off “Require conversation resolution before merging”, and/or add
-   yourself as a bypass actor.
+**One-time (you):**
+1. Repo **Settings → General → Pull Requests** → check **Allow auto-merge** → Save.
+2. Optional: [ruleset](https://github.com/ccruz0/crypto-2.0/rules/13156283) → under
+   “Require a pull request… → additional settings” turn off conversation
+   resolution (if you see it), or resolve Bugbot threads on each PR.
+3. After `.github/workflows/auto-merge.yml` is on `main`, every non-draft PR
+   gets `gh pr merge --auto --squash` automatically. It still waits for
+   **path-guard** (and will never pass if the PR edits protected files like
+   `crypto_com_trade.py` without an admin bypass).
 
 ### Dashboard version history (mandatory on shippable PRs)
 Every user-visible / production-bound change **must** append a new entry to
