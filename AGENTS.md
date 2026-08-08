@@ -86,6 +86,18 @@ The main dashboard keeps `activeTab` in sync with `?tab=` (e.g. `/?tab=watchlist
 fall back to Portfolio. Version History is `?tab=version-history` (also the
 header `v{version}` badge).
 
+### GitHub auto-merge on `main` (human repo setting)
+Cloud agents cannot change repo rulesets (API 403). Ruleset
+`protect-main-production` requires status check `path-guard` and
+**conversation resolution** before merge; bypass is disabled.
+
+To make PRs merge themselves once green:
+1. Open the PR → **Enable auto-merge** (or `gh pr merge <n> --auto --squash`).
+2. Resolve every review thread (Bugbot comments count).
+3. Optional (repo admin): [ruleset](https://github.com/ccruz0/crypto-2.0/rules/13156283)
+   → turn off “Require conversation resolution before merging”, and/or add
+   yourself as a bypass actor.
+
 ### Dashboard version history (mandatory on shippable PRs)
 Every user-visible / production-bound change **must** append a new entry to
 `VERSION_HISTORY` in `frontend/src/app/page.tsx` before the PR is considered
