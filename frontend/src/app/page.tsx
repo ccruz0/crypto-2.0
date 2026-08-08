@@ -1378,7 +1378,7 @@ const VERSION_HISTORY = [
 • Ensure SSM GitHub App params remain present (render_runtime_env → recreate backend after deploy)
 
 📦 **PRs**
-• (this PR)
+• #407
 
 ---
 `
