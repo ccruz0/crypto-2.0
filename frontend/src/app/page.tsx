@@ -1175,7 +1175,7 @@ const VERSION_HISTORY = [
   (gaps 6s / 10s exceeded the prior 5s window)
 
 📦 **PRs**
-• (morning anomaly automation — see PR)
+• #393
 
 ---
 `
