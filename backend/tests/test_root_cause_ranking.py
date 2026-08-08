@@ -99,13 +99,13 @@ class TestRootCauseRanking:
             {
                 "source": "database",
                 "reference": "exchange_orders",
-                "detail": "Open-status count: 5",
+                "detail": "Open-status count: 5; database has pending orders but dashboard cache is empty",
                 "confidence": "high",
             },
             {
                 "source": "api",
                 "reference": "open_orders_cache",
-                "detail": "Cache contains 0 open orders",
+                "detail": "Cache contains 0 open orders; db=5 cache=0",
                 "confidence": "high",
             },
         ]
@@ -113,6 +113,29 @@ class TestRootCauseRanking:
         assert ranked
         scores = [c.score for c in ranked]
         assert max(scores) >= min(scores)
+
+    def test_category_bonus_alone_does_not_rank_deployment_failure(self):
+        """Healthy PASS logs must not invent 'Deployment health check failing'."""
+        evidence: list[EvidenceItem] = [
+            {
+                "source": "runtime",
+                "reference": "health_endpoint",
+                "detail": "Health check status=pass",
+                "confidence": "high",
+            },
+            {
+                "source": "logs",
+                "reference": "github_app_monitor.log",
+                "detail": "GITHUB_APP_CUTOVER_HEALTH=PASS; backend-aws running, healthy",
+                "confidence": "medium",
+            },
+        ]
+        ranked = rank_root_causes(evidence=evidence, category="deployment")
+        failing = [c for c in ranked if "failing" in c.cause.lower()]
+        assert not failing
+        healthy = [c for c in ranked if "no unhealthy" in c.cause.lower()]
+        assert healthy
+
 
     def test_empty_evidence_yields_low_or_empty_ranking(self):
         ranked = rank_root_causes(evidence=[], category="orders")

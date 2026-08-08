@@ -256,11 +256,28 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         ),
         title="Why is deployment unhealthy?",
         collectors=(
-            EvidenceCollector("read_logs", "gather_logs"),
+            # Inspect all compose services (empty filter), not only frontend-aws.
+            EvidenceCollector("inspect_container", "inspect_container", {"service": ""}),
             EvidenceCollector("inspect_health", "inspect_health"),
             EvidenceCollector("inspect_runtime", "inspect_runtime"),
-            EvidenceCollector("inspect_container", "inspect_container"),
-            EvidenceCollector("search_logs", "search_logs", {"keywords": ("error", "unhealthy", "health")}),
+            EvidenceCollector(
+                "search_logs",
+                "search_logs",
+                {
+                    "keywords": (
+                        "unhealthy",
+                        "restart",
+                        "OOM",
+                        "exited",
+                        "crash",
+                        "Error",
+                        "deploy",
+                        "compose",
+                    )
+                },
+            ),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "deployment"}),
+            EvidenceCollector("read_logs", "gather_logs", {"source": "backend-aws"}, mandatory=False),
         ),
         keywords=("deployment", "unhealthy", "health"),
     ),

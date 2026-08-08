@@ -75,8 +75,15 @@ def build_tool_kwargs(
     if tool == "inspect_repository" and extra.get("path"):
         kwargs["path"] = extra["path"]
 
-    if tool == "inspect_container" and extra.get("service"):
+    # Allow empty string to mean "all containers" (deployment investigations).
+    if tool == "inspect_container" and "service" in extra:
         kwargs["service"] = extra["service"]
+
+    if tool == "read_logs":
+        if extra.get("source"):
+            kwargs["source"] = extra["source"]
+        if extra.get("lines") is not None:
+            kwargs["lines"] = extra["lines"]
 
     return kwargs
 
