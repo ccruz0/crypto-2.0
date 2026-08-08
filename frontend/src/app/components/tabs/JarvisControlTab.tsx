@@ -18,6 +18,7 @@ import {
   fetchApprovalQueue,
   fetchChangeTask,
   fetchLabTrialStatus,
+  promoteChangeTask,
   rejectChangeTask,
   sendChangeTaskToLab,
   type ApprovalQueueItem,
@@ -35,7 +36,7 @@ const PATCH_WORKFLOWS = new Set([
 function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
   const variant =
-    normalized === 'completed' || normalized === 'passed'
+        normalized === 'completed' || normalized === 'passed' || normalized === 'promoted'
       ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
       : normalized === 'failed' ||
           normalized === 'cancelled' ||
@@ -101,7 +102,7 @@ function ValidationOutcome({ validation }: { validation: JarvisExecutionTaskDeta
 
 function LabResultPanel({ lab }: { lab: LabTrialStatus }) {
   const tone =
-    lab.status === 'passed'
+    lab.status === 'passed' || lab.status === 'promoted'
       ? 'border-green-300 bg-green-50 dark:border-green-800 dark:bg-green-900/20'
       : lab.status === 'failed' || lab.status === 'refused'
         ? 'border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-900/20'
@@ -123,6 +124,22 @@ function LabResultPanel({ lab }: { lab: LabTrialStatus }) {
         <p className="text-xs text-gray-600 dark:text-gray-400">
           Files: {lab.changed_files.slice(0, 8).join(', ')}
           {lab.changed_files.length > 8 ? '…' : ''}
+        </p>
+      )}
+      {lab.pr_url && (
+        <p className="text-xs" data-testid="jarvis-promote-pr-url">
+          <span className="font-medium text-green-800 dark:text-green-200">PR opened: </span>
+          <a
+            href={lab.pr_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-700 dark:text-blue-300 underline break-all"
+          >
+            {lab.pr_url}
+          </a>
+          <span className="block mt-1 text-[11px] text-slate-600 dark:text-slate-400">
+            Merge and deploy yourself — Jarvis will not.
+          </span>
         </p>
       )}
     </div>
@@ -252,11 +269,16 @@ export default function JarvisControlTab() {
     return hasLabActivity;
   });
 
-  // Prefer a Waiting-on-you / Ready-for-LAB task when nothing is selected.
+  // Prefer a Waiting-on-you / Ready-for-LAB / ready-to-promote task when nothing is selected.
   useEffect(() => {
     if (selectedId || taskFromUrl) return;
     const firstLab = labQueue.find(
-      (q) => q.can_send_to_lab || q.status === 'waiting_for_approval',
+      (q) =>
+        q.can_send_to_lab ||
+        q.status === 'waiting_for_approval' ||
+        q.status === 'waiting_for_pr_approval' ||
+        q.lab_trial_status === 'passed' ||
+        q.lab_trial_status === 'promoted',
     );
     if (firstLab) {
       setSelectedId(firstLab.task_id);
@@ -337,6 +359,36 @@ export default function JarvisControlTab() {
     }
   };
 
+  const onPromote = async () => {
+    if (!selectedId) return;
+    setActionPending(true);
+    setError(null);
+    setSubmitMessage(null);
+    try {
+      const result = await promoteChangeTask(
+        selectedId,
+        'dashboard',
+        'Promote to production via Ops Jarvis',
+      );
+      const prUrl =
+        result.lab_trial?.pr_url ||
+        (typeof result.final_answer === 'string' && result.final_answer.match(/https?:\/\/\S+/)?.[0]) ||
+        null;
+      setSubmitMessage(
+        prUrl
+          ? `PR opened: ${prUrl}. Merge and deploy yourself — Jarvis will not.`
+          : result.final_answer || 'Promote completed. Merge and deploy yourself.',
+      );
+      await refreshDetail(selectedId);
+      await refreshList();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      await refreshDetail(selectedId);
+    } finally {
+      setActionPending(false);
+    }
+  };
+
   const onReject = async () => {
     if (!selectedId) return;
     setActionPending(true);
@@ -365,7 +417,11 @@ export default function JarvisControlTab() {
       labStatus?.can_send_to_lab);
   const showApproveInvestigation =
     !patchTrial && detail?.status === 'waiting_for_approval';
-  const labPassed = labStatus?.status === 'passed' || detail?.current_step === 'lab_passed_awaiting_promote';
+  const labPassed =
+    labStatus?.status === 'passed' || detail?.current_step === 'lab_passed_awaiting_promote';
+  const promoteEnabled = Boolean(labStatus?.promote_available);
+  const alreadyPromoted =
+    labStatus?.status === 'promoted' || Boolean(labStatus?.pr_url) || Boolean(labStatus?.pr_created);
 
   return (
     <div data-testid="jarvis-tab" className="space-y-6">
@@ -382,8 +438,8 @@ export default function JarvisControlTab() {
             Ready for LAB / LAB results
           </h2>
           <p className="text-xs text-indigo-800 dark:text-indigo-200/80 mb-3">
-            Patch trials you can send to LAB (isolated apply + tests). This is not production and does
-            not open a PR yet — Promote comes later when LAB is green.
+            Patch trials you can send to LAB (isolated apply + tests). This is not production.
+            When LAB is green, Promote opens a PR for you to merge and deploy.
           </p>
           <ul className="space-y-2">
             {readyForLab.map((t) => (
@@ -603,7 +659,7 @@ export default function JarvisControlTab() {
                       type="button"
                       data-testid="jarvis-promote-disabled"
                       disabled
-                      title={labStatus?.promote_hint || 'Promote arrives in Phase C'}
+                      title={labStatus?.promote_hint || 'LAB must pass before Promote'}
                       className="px-3 py-1 bg-slate-400 text-white rounded text-xs cursor-not-allowed opacity-60"
                     >
                       Promote to production
@@ -612,20 +668,57 @@ export default function JarvisControlTab() {
                 </div>
               )}
 
-              {labPassed && !showSendToLab && (
+              {(labPassed || alreadyPromoted) && !showSendToLab && (
                 <div className="space-y-2" data-testid="jarvis-lab-passed-panel">
-                  <p className="text-xs text-green-800 dark:text-green-200 bg-green-50 dark:bg-green-900/20 rounded px-2 py-1.5">
-                    LAB passed. Promote to production (open PR for you to merge/deploy) ships in Phase C —
-                    button stays disabled for now.
-                  </p>
-                  <button
-                    type="button"
-                    data-testid="jarvis-promote-disabled"
-                    disabled
-                    className="px-3 py-1 bg-slate-400 text-white rounded text-xs cursor-not-allowed opacity-60"
-                  >
-                    Promote to production
-                  </button>
+                  {alreadyPromoted ? (
+                    <p className="text-xs text-green-800 dark:text-green-200 bg-green-50 dark:bg-green-900/20 rounded px-2 py-1.5">
+                      Promoted — PR opened. Merge and deploy yourself when ready.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-green-800 dark:text-green-200 bg-green-50 dark:bg-green-900/20 rounded px-2 py-1.5">
+                      LAB passed. <span className="font-medium">Promote to production</span> opens a
+                      GitHub PR — you still merge and deploy. Jarvis will not merge or deploy.
+                    </p>
+                  )}
+                  {!alreadyPromoted && labStatus?.promote_hint && !promoteEnabled && (
+                    <p
+                      data-testid="jarvis-promote-hint"
+                      className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1.5"
+                    >
+                      {labStatus.promote_hint}
+                    </p>
+                  )}
+                  {!alreadyPromoted && (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        data-testid={promoteEnabled ? 'jarvis-promote' : 'jarvis-promote-disabled'}
+                        onClick={onPromote}
+                        disabled={actionPending || !promoteEnabled}
+                        title={
+                          promoteEnabled
+                            ? 'Open a GitHub PR (you merge/deploy)'
+                            : labStatus?.promote_hint || 'Promote not available'
+                        }
+                        className={
+                          promoteEnabled
+                            ? 'px-3 py-1 bg-green-700 text-white rounded text-xs disabled:opacity-50'
+                            : 'px-3 py-1 bg-slate-400 text-white rounded text-xs cursor-not-allowed opacity-60'
+                        }
+                      >
+                        {actionPending ? 'Promoting…' : 'Promote to production'}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="jarvis-reject-task"
+                        onClick={onReject}
+                        disabled={actionPending}
+                        className="px-3 py-1 bg-red-600 text-white rounded text-xs disabled:opacity-50"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

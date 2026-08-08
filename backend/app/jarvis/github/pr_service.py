@@ -12,6 +12,7 @@ from typing import Any
 from app.jarvis.change_execution.config import (
     jarvis_github_write_enabled,
     jarvis_pr_creation_enabled,
+    jarvis_promote_pr_enabled,
 )
 from app.jarvis.change_execution.sandbox import block_push_to_main
 from app.jarvis.execution.safety import SafetyLevel, classify_phase5_action, is_forbidden
@@ -43,7 +44,7 @@ def check_pr_creation_allowed(
     patch_safety_passed: bool,
     gate2_approved: bool,
 ) -> dict[str, Any]:
-    """Verify all prerequisites for PR creation."""
+    """Verify all prerequisites for Phase-5 Gate 2 PR creation."""
     reasons: list[str] = []
     if not jarvis_pr_creation_enabled():
         reasons.append("JARVIS_PR_CREATION_ENABLED=false")
@@ -65,6 +66,93 @@ def check_pr_creation_allowed(
             "github_write_enabled": jarvis_github_write_enabled(),
         },
     }
+
+
+def check_lab_promote_pr_allowed(
+    *,
+    lab_passed: bool,
+    tests_passed: bool,
+    patch_safety_passed: bool,
+    stub_patch: bool,
+    already_promoted: bool,
+) -> dict[str, Any]:
+    """Prerequisites for Promote-from-LAB (scoped; independent of Gate-2 flags)."""
+    reasons: list[str] = []
+    if not jarvis_promote_pr_enabled():
+        reasons.append("JARVIS_PROMOTE_PR_ENABLED=false")
+    if already_promoted:
+        reasons.append("Already promoted (PR already opened for this trial)")
+    if stub_patch:
+        reasons.append("Stub/TODO patches cannot be promoted")
+    if not lab_passed:
+        reasons.append("LAB trial has not passed")
+    if not tests_passed:
+        reasons.append("LAB tests did not pass")
+    if not patch_safety_passed:
+        reasons.append("Patch safety check failed")
+    return {
+        "allowed": len(reasons) == 0,
+        "reasons": reasons,
+        "flags": {
+            "promote_pr_enabled": jarvis_promote_pr_enabled(),
+            # Intentionally do NOT require broad github_write / pr_creation.
+            "pr_creation_enabled": jarvis_pr_creation_enabled(),
+            "github_write_enabled": jarvis_github_write_enabled(),
+        },
+    }
+
+
+def prepare_sandbox_branch_for_push(
+    *,
+    workdir: Path,
+    branch_name: str,
+    commit_message: str,
+) -> dict[str, Any]:
+    """Commit sandbox changes and retarget origin to the workspace GitHub remote.
+
+    Sandbox clones use a local-path origin; GitHub push needs the real remote URL.
+    Never pushes to main/master.
+    """
+    if block_push_to_main(branch_name):
+        return {"ok": False, "error": "push to main/master is forbidden"}
+
+    root = workspace_root()
+    code, remote_url, err = _run(["git", "remote", "get-url", "origin"], cwd=root, timeout=30)
+    if code != 0 or not (remote_url or "").strip():
+        return {"ok": False, "error": f"could not resolve GitHub remote from workspace: {err or remote_url}"}
+
+    code, _, err = _run(["git", "remote", "set-url", "origin", remote_url.strip()], cwd=workdir, timeout=30)
+    if code != 0:
+        # Remote may not exist yet in some fallback sandboxes.
+        _run(["git", "remote", "remove", "origin"], cwd=workdir, timeout=15)
+        code, _, err = _run(
+            ["git", "remote", "add", "origin", remote_url.strip()],
+            cwd=workdir,
+            timeout=30,
+        )
+        if code != 0:
+            return {"ok": False, "error": f"failed to set origin remote: {err}"}
+
+    code, _, err = _run(["git", "checkout", "-B", branch_name], cwd=workdir, timeout=30)
+    if code != 0:
+        return {"ok": False, "error": f"checkout branch failed: {err}"}
+
+    code, _, err = _run(["git", "add", "-A"], cwd=workdir, timeout=60)
+    if code != 0:
+        return {"ok": False, "error": f"git add failed: {err}"}
+
+    # Commit only when there is something to commit.
+    code, status_out, _ = _run(["git", "status", "--porcelain"], cwd=workdir, timeout=30)
+    if code == 0 and status_out.strip():
+        code, _, err = _run(
+            ["git", "commit", "-m", commit_message],
+            cwd=workdir,
+            timeout=60,
+        )
+        if code != 0:
+            return {"ok": False, "error": f"git commit failed: {err}"}
+
+    return {"ok": True, "remote_url_host": remote_url.strip().split("@")[-1][:80]}
 
 
 def build_pr_body(
@@ -132,10 +220,14 @@ def create_pull_request(
     workdir: Path,
     labels: list[str] | None = None,
     mock: bool = False,
+    via_lab_promote: bool = False,
 ) -> dict[str, Any]:
     """
     Push branch and create PR. Never merges or deploys.
-    Returns mock PR in test mode or when gh unavailable.
+    Returns mock PR in test mode or when JARVIS_PR_MOCK=1.
+
+    via_lab_promote=True uses JARVIS_PROMOTE_PR_ENABLED only (does not require
+    broad JARVIS_PR_CREATION_ENABLED / JARVIS_GITHUB_WRITE_ENABLED).
     """
     result: dict[str, Any] = {
         "task_id": task_id,
@@ -145,6 +237,7 @@ def create_pull_request(
         "mock": mock,
         "merge": False,
         "deploy": False,
+        "via_lab_promote": via_lab_promote,
     }
 
     action_level = classify_phase5_action("pr_creation")
@@ -168,15 +261,22 @@ def create_pull_request(
         )
         return result
 
-    prereq = check_pr_creation_allowed(tests_passed=True, patch_safety_passed=True, gate2_approved=True)
-    if not prereq["allowed"]:
-        result["error"] = "; ".join(prereq["reasons"])
-        result["prerequisites"] = prereq
-        return result
+    if via_lab_promote:
+        if not jarvis_promote_pr_enabled():
+            result["error"] = "JARVIS_PROMOTE_PR_ENABLED=false"
+            return result
+    else:
+        prereq = check_pr_creation_allowed(
+            tests_passed=True, patch_safety_passed=True, gate2_approved=True
+        )
+        if not prereq["allowed"]:
+            result["error"] = "; ".join(prereq["reasons"])
+            result["prerequisites"] = prereq
+            return result
 
-    if not jarvis_github_write_enabled() or not jarvis_pr_creation_enabled():
-        result["error"] = "GitHub write/PR creation disabled"
-        return result
+        if not jarvis_github_write_enabled() or not jarvis_pr_creation_enabled():
+            result["error"] = "GitHub write/PR creation disabled"
+            return result
 
     # Push branch (never to main)
     code, out, err = _run(["git", "push", "-u", "origin", branch_name], cwd=workdir, timeout=120)
@@ -185,6 +285,7 @@ def create_pull_request(
         return result
 
     # Create PR via gh CLI
+    default_labels = ["jarvis", "lab-promote"] if via_lab_promote else ["jarvis", "automated"]
     gh_args = [
         "gh",
         "pr",
@@ -198,7 +299,7 @@ def create_pull_request(
         "--base",
         "main",
     ]
-    for label in labels or ["jarvis", "automated"]:
+    for label in labels or default_labels:
         gh_args.extend(["--label", label])
 
     code, out, err = _run(gh_args, cwd=workdir, timeout=60)

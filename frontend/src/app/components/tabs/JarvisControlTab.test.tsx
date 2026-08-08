@@ -22,6 +22,7 @@ vi.mock('@/lib/jarvisApproval', () => ({
   fetchChangeTask: vi.fn(),
   fetchLabTrialStatus: vi.fn(),
   sendChangeTaskToLab: vi.fn(),
+  promoteChangeTask: vi.fn(),
   rejectChangeTask: vi.fn(),
 }));
 
@@ -311,5 +312,93 @@ describe('JarvisControlTab Phase A/B copy', () => {
 
     expect(await screen.findByTestId('jarvis-send-to-lab')).toBeDisabled();
     expect(screen.getByTestId('jarvis-lab-ineligible')).toHaveTextContent(/stub/i);
+  });
+
+  it('enables Promote to production when LAB passed and promote_available', async () => {
+    const taskId = 'passed-4444-aaaa-bbbb-cccccccccccc';
+    mockQueue.mockResolvedValue([
+      {
+        task_id: taskId,
+        objective: 'LAB-green patch trial',
+        status: 'waiting_for_pr_approval',
+        patch_summary: 'diff',
+        files_affected: ['docs/README.md'],
+        risk_score: 15,
+        test_results: {},
+        review_findings: [],
+        approval_status: 'pending',
+        created_at: null,
+        workflow_type: 'phase4b_patch_proposal',
+        can_send_to_lab: false,
+        lab_ineligible_reason: 'LAB already passed',
+        lab_trial_status: 'passed',
+        lab_trial_summary: 'LAB passed',
+      },
+    ]);
+    mockList.mockResolvedValue({
+      tasks: [
+        {
+          task_id: taskId,
+          objective: 'LAB-green patch trial',
+          status: 'waiting_for_pr_approval',
+          approval_status: 'pending',
+          priority: 'normal',
+          created_at: null,
+          updated_at: null,
+          estimated_cost_usd: 0,
+          actual_cost_usd: 0,
+        },
+      ],
+    } as never);
+    const lab = {
+      task_id: taskId,
+      status: 'passed',
+      summary: 'LAB passed — isolated apply and tests succeeded.',
+      mechanism: 'isolated_sandbox',
+      mechanism_label: 'LAB trial via isolated sandbox',
+      can_send_to_lab: false,
+      ineligible_reason: 'LAB already passed for this trial.',
+      tests_passed: true,
+      sandbox_applied: true,
+      changed_files: ['docs/README.md'],
+      branch_name: 'jarvis/task-passed',
+      test_results: {},
+      error: null,
+      can_promote: true,
+      promote_available: true,
+      promote_hint: 'LAB is green. Promote opens a GitHub PR — you still merge and deploy.',
+      pr_url: null,
+      pr_created: false,
+      safety_flags: {
+        patch_apply_enabled: false,
+        pr_creation_enabled: false,
+        github_write_enabled: false,
+        double_approval_required: true,
+        lab_trial_enabled: true,
+        promote_pr_enabled: true,
+      },
+    };
+    mockChange.mockResolvedValue({
+      task_id: taskId,
+      objective: 'LAB-green patch trial',
+      status: 'waiting_for_pr_approval',
+      artifacts: [{ name: 'patch.diff', format: 'text', artifact_id: 'a3' }],
+      review: {},
+      execution_log: [],
+      approvals: [],
+      workflow_type: 'phase4b_patch_proposal',
+      plan: { workflow_type: 'phase4b_patch_proposal' },
+      current_step: 'lab_passed_awaiting_promote',
+      lab_trial: lab,
+    });
+    mockLab.mockResolvedValue(lab);
+
+    render(<JarvisControlTab />);
+
+    expect(await screen.findByTestId('jarvis-lab-passed-panel')).toHaveTextContent(/LAB passed/i);
+    const promote = await screen.findByTestId('jarvis-promote');
+    expect(promote).toBeEnabled();
+    expect(promote).toHaveTextContent('Promote to production');
+    expect(screen.queryByTestId('jarvis-promote-disabled')).toBeNull();
   });
 });

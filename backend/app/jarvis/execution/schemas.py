@@ -184,6 +184,9 @@ class JarvisLabTrialStatusResponse(BaseModel):
     can_promote: bool = False
     promote_available: bool = False
     promote_hint: str = ""
+    pr_url: str | None = None
+    pr_created: bool = False
+    promote_block_reasons: list[str] = Field(default_factory=list)
     safety_flags: dict[str, bool] = Field(default_factory=dict)
 
 

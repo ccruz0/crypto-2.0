@@ -918,6 +918,28 @@ def jarvis_change_lab_status(task_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="task not found") from exc
 
 
+@router.post("/api/jarvis/tasks/change/{task_id}/promote", response_model=JarvisChangeTaskDetail)
+def jarvis_change_promote(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    """Phase C: Promote to production after LAB green — opens a GitHub PR only.
+
+    Never merges or deploys. Requires JARVIS_PROMOTE_PR_ENABLED (does not enable
+    broad Gate-2 / github_write flags).
+    """
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.change_execution.lab_trial import promote_to_production
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return promote_to_production(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 # --- Phase 5: Sandbox apply + PR creation ---
 
 

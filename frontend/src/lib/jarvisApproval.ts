@@ -31,6 +31,7 @@ export interface Phase5Status {
     github_write_enabled: boolean;
     double_approval_required: boolean;
     lab_trial_enabled?: boolean;
+    promote_pr_enabled?: boolean;
   };
   gate1_approved: boolean;
   gate2_approved: boolean;
@@ -62,6 +63,9 @@ export interface LabTrialStatus {
   can_promote: boolean;
   promote_available: boolean;
   promote_hint: string;
+  pr_url?: string | null;
+  pr_created?: boolean;
+  promote_block_reasons?: string[];
   safety_flags: Phase5Status['safety_flags'];
 }
 
@@ -162,6 +166,29 @@ export async function sendChangeTaskToLab(
 export async function fetchLabTrialStatus(taskId: string): Promise<LabTrialStatus> {
   const resp = await fetch(`${API}/jarvis/tasks/change/${taskId}/lab-status`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`lab status failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function promoteChangeTask(
+  taskId: string,
+  actorId = 'dashboard',
+  comment = '',
+): Promise<ChangeTaskDetail> {
+  const resp = await fetch(`${API}/jarvis/tasks/change/${taskId}/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actor_id: actorId, comment }),
+  });
+  if (!resp.ok) {
+    let detail = `promote failed: ${resp.status}`;
+    try {
+      const body = await resp.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
   return resp.json();
 }
 
