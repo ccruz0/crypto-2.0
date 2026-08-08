@@ -134,7 +134,15 @@ describe('JarvisImprovementTab Execute', () => {
       'href',
       '/?tab=jarvis&task=abcd1234-ffff-eeee-dddd-cccccccccccc',
     );
-    expect(approveLink).toHaveTextContent('Open Jarvis to Approve');
+    expect(approveLink).toHaveTextContent('Approve investigation in Ops → Jarvis');
+  });
+
+  it('does not point dry-run operators at Approval Center', async () => {
+    render(<JarvisImprovementTab />);
+    const tab = await screen.findByTestId('jarvis-improvement-tab');
+    expect(tab).toHaveTextContent(/Ops → Jarvis/i);
+    expect(tab).toHaveTextContent(/Approve investigation/i);
+    expect(tab.querySelector('a[href="/jarvis/approval"]')).toBeNull();
   });
 
   it('shows an error when Execute fails', async () => {
