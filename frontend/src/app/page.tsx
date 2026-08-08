@@ -1183,20 +1183,20 @@ const VERSION_HISTORY = [
   {
     version: '0.56',
     date: '2026-08-08',
-    change: 'Portfolio P&L shows executed TP and SL fill counts',
-    details: `🚀 VERSIÓN 0.56 — P&L TP/SL EXECUTED COUNTS
+    change: 'DOGE short re-protect (price_decimals patch) + auto-merge workflow',
+    details: `🚀 VERSIÓN 0.56 — NAKED DOGE RE-PROTECT + AUTO-MERGE
 
 📋 **What shipped**
-• Portfolio P&L panel adds TP / SL executed counts for the selected period
-• Counts FILLED TAKE_PROFIT / STOP_LOSS fills from executed-order data (order_role preferred)
-• Uses the same period filters as Realized / win rate (Today, 7d, 30d, Month, Year, Custom)
+• Runtime price_decimals patch (path-guard safe) so DOGE TP 0.0692 is not sent as "0.07"
+• Ops run=3: market-relative short TP/SL + checkout patch module
+• Workflow to enable squash auto-merge on every non-draft PR (needs repo Allow auto-merge)
 
-🔧 **Notes**
-• Twin protection closes are deduped before counting (same as realized P&L)
-• Manual flattens are not counted as TP/SL
+🔧 **Why**
+• After #392/#394, DOGE short stayed naked: TP format coerce → INVALID_TRIGGER_PRICE
+• Repo had allow_auto_merge=false so PRs never auto-merged
 
 📦 **PRs**
-• #395
+• #396
 
 ---
 `

@@ -1,5 +1,6 @@
 # One-shot: merge to main → recreate DOGE_USD SL+TP for naked short.
-# run=1 cancelled SLs then failed place (wallet_empty_short on available=0).
-# run=2: short-wallet cap fix + re-place (position already naked).
+# run=1: cancelled SLs then wallet_empty_short (available=0 on loans).
+# run=2: wallet gate fixed; TP 0.0692 coerced to "0.07" (price_decimals=2) → INVALID_TRIGGER_PRICE.
+# run=3: path-guard-safe runtime price_decimals patch + market-relative short levels.
 # Remove this file after the ops run succeeds (same pattern as #360/#391).
-run=2
+run=3

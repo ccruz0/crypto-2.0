@@ -86,6 +86,20 @@ The main dashboard keeps `activeTab` in sync with `?tab=` (e.g. `/?tab=watchlist
 fall back to Portfolio. Version History is `?tab=version-history` (also the
 header `v{version}` badge).
 
+### GitHub auto-merge on `main` (human repo setting — required once)
+Cloud agents cannot flip repo settings (API 403). Today
+`allow_auto_merge` is **false**, so the “Enable auto-merge” button never works.
+
+**One-time (you):**
+1. Repo **Settings → General → Pull Requests** → check **Allow auto-merge** → Save.
+2. Optional: [ruleset](https://github.com/ccruz0/crypto-2.0/rules/13156283) → under
+   “Require a pull request… → additional settings” turn off conversation
+   resolution (if you see it), or resolve Bugbot threads on each PR.
+3. After `.github/workflows/auto-merge.yml` is on `main`, every non-draft PR
+   gets `gh pr merge --auto --squash` automatically. It still waits for
+   **path-guard** (and will never pass if the PR edits protected files like
+   `crypto_com_trade.py` without an admin bypass).
+
 ### Dashboard version history (mandatory on shippable PRs)
 Every user-visible / production-bound change **must** append a new entry to
 `VERSION_HISTORY` in `frontend/src/app/page.tsx` before the PR is considered
