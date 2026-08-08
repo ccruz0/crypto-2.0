@@ -4,8 +4,10 @@
 Prod audit 2026-08-07 / follow-up:
   wallet short, covered_qty=0, only STOP_LIMIT SLs on exchange (no TP).
 
-Cancels open DOGE_USD SL/TP on the exchange, then places fresh protection for
-the full |wallet| via recover_missing_tps helpers.
+run=1 (PR #392) cancelled existing SLs then failed place: short path treated
+Crypto.com available/max_withdrawal=0 as wallet_empty_short despite DOGE≈-2276.
+Position is now fully naked — this script cancels any leftover SL/TP (usually
+none) and places fresh protection for the full |wallet|.
 
   python3 /repo/backend/scripts/fix_doge_naked_tp.py
   python3 /repo/backend/scripts/fix_doge_naked_tp.py --live

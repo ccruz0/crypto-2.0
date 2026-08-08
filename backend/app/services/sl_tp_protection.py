@@ -47,6 +47,11 @@ def cap_protection_quantity_to_wallet(
     because sibling TP/SL legs or other open orders lock coins — posting full
     wallet qty then yields exchange ``INSUFFICIENT_ACC_BALANCE`` (prod DOGE_USD).
 
+    Short (SELL entry): size from ``abs(wallet_balance)`` when balance is
+    negative (borrowed). Crypto.com reports ``max_withdrawal``/available as 0
+    for loaned base currency — that must NOT gate short protection (prod
+    DOGE_USD #392: cancelled SLs then failed place with wallet_empty_short).
+
     Returns (capped_qty, skip_reason).
     """
     side = (entry_side or "").upper()
@@ -67,20 +72,30 @@ def cap_protection_quantity_to_wallet(
                 spendable,
             )
             return spendable, "capped_to_wallet_balance"
-    elif side == "SELL" and wallet_balance is not None:
-        # Short: wallet is negative; cap to abs(borrowed) when spendable known.
-        if wallet_available is not None:
-            spendable = max(0.0, abs(float(wallet_available)))
-            if spendable <= 0:
+    elif side == "SELL":
+        if wallet_balance is None:
+            return requested_qty, None
+        bal = float(wallet_balance)
+        if bal >= -1e-12:
+            # Flat (or unexpectedly long) — no short inventory to protect.
+            if abs(bal) <= 1e-12:
                 return requested_qty, "wallet_empty_short"
-            if requested_qty > spendable + 1e-12:
-                logger.warning(
-                    "[SLTP_QTY_CAP] %s short protection qty %s > available %s — capping",
-                    symbol,
-                    requested_qty,
-                    spendable,
-                )
-                return spendable, "capped_to_wallet_balance"
+            return requested_qty, None
+        spendable = abs(bal)
+        # Only tighten further when available is itself a negative borrow signal.
+        # Non-negative available (typical 0 for loans) is ignored for shorts.
+        if wallet_available is not None and float(wallet_available) < -1e-12:
+            spendable = min(spendable, abs(float(wallet_available)))
+        if spendable <= 0:
+            return requested_qty, "wallet_empty_short"
+        if requested_qty > spendable + 1e-12:
+            logger.warning(
+                "[SLTP_QTY_CAP] %s short protection qty %s > borrowed %s — capping",
+                symbol,
+                requested_qty,
+                spendable,
+            )
+            return spendable, "capped_to_wallet_balance"
     return requested_qty, None
 
 

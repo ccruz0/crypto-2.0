@@ -50,10 +50,13 @@ jobs:
           set -eu
           cd /home/ubuntu/crypto-2.0
           sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
+          # Checkout script + short-wallet cap fix onto host /repo mount so the
+          # ops process picks them up without waiting for a backend image deploy.
           sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- \
             backend/scripts/fix_doge_naked_tp.py \
             backend/scripts/recover_missing_tps.py \
-            backend/scripts/cancel_duplicate_sl_tp.py
+            backend/scripts/cancel_duplicate_sl_tp.py \
+            backend/app/services/sl_tp_protection.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER
           test -n "\$CONTAINER"

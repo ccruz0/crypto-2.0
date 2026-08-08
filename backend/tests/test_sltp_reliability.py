@@ -67,6 +67,43 @@ def test_cap_protection_quantity_skips_when_wallet_none():
     assert reason is None
 
 
+def test_cap_protection_quantity_short_uses_abs_balance_not_zero_available():
+    """Margin shorts report available/max_withdrawal=0; must still size from borrow."""
+    qty, reason = cap_protection_quantity_to_wallet(
+        "DOGE_USD",
+        "SELL",
+        2276.92,
+        wallet_balance=-2276.92,
+        wallet_available=0.0,
+    )
+    assert qty == 2276.92
+    assert reason is None
+
+
+def test_cap_protection_quantity_short_caps_to_borrowed():
+    qty, reason = cap_protection_quantity_to_wallet(
+        "DOGE_USD",
+        "SELL",
+        5000.0,
+        wallet_balance=-2276.92,
+        wallet_available=0.0,
+    )
+    assert qty == 2276.92
+    assert reason == "capped_to_wallet_balance"
+
+
+def test_cap_protection_quantity_short_empty_flat_wallet():
+    qty, reason = cap_protection_quantity_to_wallet(
+        "DOGE_USD",
+        "SELL",
+        100.0,
+        wallet_balance=0.0,
+        wallet_available=0.0,
+    )
+    assert qty == 100.0
+    assert reason == "wallet_empty_short"
+
+
 def test_spot_oco_fail_both_missing_refuses_dual(db_session, monkeypatch):
     monkeypatch.setenv("SLTP_NATIVE_OCO", "true")
     legacy = []

@@ -1,3 +1,5 @@
 # One-shot: merge to main → recreate DOGE_USD SL+TP for naked short.
+# run=1 cancelled SLs then failed place (wallet_empty_short on available=0).
+# run=2: short-wallet cap fix + re-place (position already naked).
 # Remove this file after the ops run succeeds (same pattern as #360/#391).
-run=1
+run=2
