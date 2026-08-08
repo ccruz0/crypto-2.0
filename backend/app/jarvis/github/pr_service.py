@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
+
+import httpx
 
 from app.jarvis.change_execution.config import (
     jarvis_github_write_enabled,
@@ -15,15 +19,23 @@ from app.jarvis.change_execution.config import (
     jarvis_promote_pr_enabled,
 )
 from app.jarvis.change_execution.sandbox import block_push_to_main
-from app.jarvis.execution.safety import SafetyLevel, classify_phase5_action, is_forbidden
+from app.jarvis.execution.safety import classify_phase5_action, is_forbidden
 from app.services._paths import workspace_root
 
 logger = logging.getLogger(__name__)
 
 FORBIDDEN_ACTIONS = frozenset({"merge", "close_pr", "deploy", "push_to_main", "force_push", "delete_branch"})
+_DEFAULT_REPO = "ccruz0/crypto-2.0"
+_GITHUB_API = "https://api.github.com"
 
 
-def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 60) -> tuple[int, str, str]:
+def _run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = 60,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             cmd,
@@ -32,10 +44,22 @@ def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 60) -> tuple
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, "", str(exc)
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip credential material from command output before returning/logging."""
+    out = text or ""
+    out = re.sub(r"x-access-token:[^@\s]+@", "x-access-token:***@", out)
+    # Generic userinfo, but do not re-mangle already-redacted x-access-token URLs.
+    out = re.sub(r"://(?!x-access-token:)[^/\s:@]+:[^@\s]+@", "://***:***@", out)
+    out = re.sub(r"\bgh[pous]_[A-Za-z0-9_]+\b", "[REDACTED]", out)
+    out = re.sub(r"\bgithub_pat_[A-Za-z0-9_]+\b", "[REDACTED]", out)
+    return out[:800]
 
 
 def check_pr_creation_allowed(
@@ -238,6 +262,202 @@ def build_pr_body(
     return "\n".join(lines)
 
 
+def _resolve_github_repo(workdir: Path) -> str:
+    """Return owner/repo for API calls (no credentials)."""
+    env_repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if env_repo and "/" in env_repo and " " not in env_repo:
+        return env_repo
+
+    for cwd in (workdir, workspace_root()):
+        code, remote_url, _ = _run(["git", "remote", "get-url", "origin"], cwd=cwd, timeout=15)
+        if code != 0:
+            continue
+        slug = _repo_slug_from_remote(remote_url.strip())
+        if slug:
+            return slug
+    return _DEFAULT_REPO
+
+
+def _repo_slug_from_remote(remote_url: str) -> str | None:
+    url = (remote_url or "").strip()
+    if not url:
+        return None
+    if url.startswith("git@"):
+        # git@github.com:owner/repo.git
+        try:
+            path = url.split(":", 1)[1]
+        except IndexError:
+            return None
+    else:
+        parts = urlsplit(url)
+        path = parts.path or ""
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    segments = [s for s in path.split("/") if s]
+    if len(segments) >= 2:
+        return f"{segments[0]}/{segments[1]}"
+    return None
+
+
+def _authed_https_remote(remote_url: str, token: str) -> str | None:
+    """Build https://x-access-token:TOKEN@github.com/owner/repo.git without logging it."""
+    url = (remote_url or "").strip()
+    if not url or not token:
+        return None
+    if url.startswith("git@"):
+        slug = _repo_slug_from_remote(url)
+        if not slug:
+            return None
+        encoded = quote(token, safe="")
+        return f"https://x-access-token:{encoded}@github.com/{slug}.git"
+    if url.startswith("https://") and "github.com" in url:
+        parts = urlsplit(url)
+        # Drop any embedded userinfo before injecting the installation token.
+        netloc = parts.hostname or "github.com"
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        encoded = quote(token, safe="")
+        authed_netloc = f"x-access-token:{encoded}@{netloc}"
+        return urlunsplit((parts.scheme, authed_netloc, parts.path, parts.query, parts.fragment))
+    return None
+
+
+def _push_branch(*, workdir: Path, branch_name: str, token: str) -> dict[str, Any]:
+    """Push branch using a short-lived authenticated remote URL, then restore origin."""
+    code, remote_url, err = _run(["git", "remote", "get-url", "origin"], cwd=workdir, timeout=15)
+    if code != 0 or not (remote_url or "").strip():
+        return {"ok": False, "error": f"could not read origin remote: {_redact_secrets(err or remote_url)}"}
+
+    clean_remote = remote_url.strip()
+    # Prefer a non-token remote for restore (strip userinfo if somehow present).
+    restore_remote = clean_remote
+    slug = _repo_slug_from_remote(clean_remote)
+    if slug and ("@" in urlsplit(clean_remote).netloc or clean_remote.startswith("git@")):
+        restore_remote = f"https://github.com/{slug}.git"
+    elif slug and clean_remote.startswith("https://"):
+        restore_remote = f"https://github.com/{slug}.git"
+
+    authed = _authed_https_remote(clean_remote, token)
+    if not authed:
+        return {"ok": False, "error": "unsupported git remote for authenticated push (need github.com HTTPS or SSH URL)"}
+
+    try:
+        code, _, err = _run(["git", "remote", "set-url", "origin", authed], cwd=workdir, timeout=15)
+        if code != 0:
+            return {"ok": False, "error": f"failed to set authenticated origin: {_redact_secrets(err)}"}
+
+        env = {
+            **os.environ,
+            "GIT_ASKPASS": "echo",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+        }
+        code, out, err = _run(
+            ["git", "push", "-u", "origin", branch_name],
+            cwd=workdir,
+            timeout=120,
+            env=env,
+        )
+        if code != 0:
+            return {"ok": False, "error": f"push failed: {_redact_secrets(err or out)}"}
+        return {"ok": True}
+    finally:
+        _run(["git", "remote", "set-url", "origin", restore_remote], cwd=workdir, timeout=15)
+
+
+def _create_pr_via_api(
+    *,
+    repo: str,
+    token: str,
+    branch_name: str,
+    title: str,
+    body: str,
+    labels: list[str],
+    base: str = "main",
+) -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    payload = {
+        "title": (title or "")[:256],
+        "body": body or "",
+        "head": branch_name,
+        "base": base,
+    }
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(f"{_GITHUB_API}/repos/{repo}/pulls", headers=headers, json=payload)
+            if resp.status_code not in (200, 201):
+                return {
+                    "ok": False,
+                    "error": f"GitHub PR API HTTP {resp.status_code}: {_redact_secrets(resp.text[:400])}",
+                }
+            data = resp.json()
+            pr_url = (data.get("html_url") or "").strip()
+            pr_number = data.get("number")
+            if labels and pr_number is not None:
+                try:
+                    label_resp = client.post(
+                        f"{_GITHUB_API}/repos/{repo}/issues/{pr_number}/labels",
+                        headers=headers,
+                        json={"labels": labels},
+                    )
+                    if label_resp.status_code not in (200, 201):
+                        logger.warning(
+                            "PR created but labeling failed HTTP %s (labels best-effort)",
+                            label_resp.status_code,
+                        )
+                except Exception as label_exc:
+                    logger.warning("PR created but labeling failed: %s", label_exc)
+            return {"ok": True, "pr_url": pr_url, "pr_number": pr_number}
+    except Exception as exc:
+        return {"ok": False, "error": f"GitHub PR API error: {_redact_secrets(str(exc))}"}
+
+
+def _create_pr_via_gh_cli(
+    *,
+    workdir: Path,
+    branch_name: str,
+    title: str,
+    body: str,
+    labels: list[str],
+    token: str,
+) -> dict[str, Any]:
+    """Optional fallback when ``gh`` is installed (host tooling); not required in AWS containers."""
+    if not shutil.which("gh"):
+        return {"ok": False, "error": "gh CLI not available"}
+
+    gh_args = [
+        "gh",
+        "pr",
+        "create",
+        "--head",
+        branch_name,
+        "--title",
+        title,
+        "--body",
+        body,
+        "--base",
+        "main",
+    ]
+    for label in labels:
+        gh_args.extend(["--label", label])
+
+    env = {
+        **os.environ,
+        "GH_TOKEN": token,
+        "GITHUB_TOKEN": token,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    code, out, err = _run(gh_args, cwd=workdir, timeout=60, env=env)
+    if code != 0:
+        return {"ok": False, "error": f"gh pr create failed: {_redact_secrets(err or out)}"}
+    return {"ok": True, "pr_url": out.strip(), "pr_number": None}
+
+
 def create_pull_request(
     *,
     task_id: str,
@@ -252,6 +472,13 @@ def create_pull_request(
     """
     Push branch and create PR. Never merges or deploys.
     Returns mock PR in test mode or when JARVIS_PR_MOCK=1.
+
+    Auth preference (same as cursor bridge / deploy trigger):
+    1. GitHub App installation token via get_github_api_token()
+    2. Legacy PAT when ALLOW_LEGACY_GITHUB_PAT=true
+
+    Creates the PR via GitHub REST API (preferred). Falls back to ``gh`` only when
+    the CLI is present — AWS backend containers do not ship ``gh``.
 
     via_lab_promote=True uses JARVIS_PROMOTE_PR_ENABLED only (does not require
     broad JARVIS_PR_CREATION_ENABLED / JARVIS_GITHUB_WRITE_ENABLED).
@@ -305,37 +532,78 @@ def create_pull_request(
             result["error"] = "GitHub write/PR creation disabled"
             return result
 
-    # Push branch (never to main)
-    code, out, err = _run(["git", "push", "-u", "origin", branch_name], cwd=workdir, timeout=120)
-    if code != 0:
-        result["error"] = f"push failed: {err or out}"
+    from app.services.github_app_auth import get_github_api_token
+
+    token, auth_method = get_github_api_token()
+    if not token:
+        result["error"] = (
+            "GitHub auth unavailable: configure GITHUB_APP_* "
+            "(or ALLOW_LEGACY_GITHUB_PAT=true with GITHUB_TOKEN)"
+        )
+        result["auth_method"] = auth_method
         return result
 
-    # Create PR via gh CLI
+    result["auth_method"] = auth_method
+    logger.info(
+        "jarvis_pr_create auth_method=%s via_lab_promote=%s task_id=%s",
+        auth_method,
+        via_lab_promote,
+        task_id,
+    )
+
+    push = _push_branch(workdir=workdir, branch_name=branch_name, token=token)
+    if not push.get("ok"):
+        result["error"] = push.get("error") or "push failed"
+        return result
+
     default_labels = ["jarvis", "lab-promote"] if via_lab_promote else ["jarvis", "automated"]
-    gh_args = [
-        "gh",
-        "pr",
-        "create",
-        "--head",
-        branch_name,
-        "--title",
-        title,
-        "--body",
-        body,
-        "--base",
-        "main",
-    ]
-    for label in labels or default_labels:
-        gh_args.extend(["--label", label])
+    label_list = list(labels or default_labels)
+    repo = _resolve_github_repo(workdir)
 
-    code, out, err = _run(gh_args, cwd=workdir, timeout=60)
-    if code != 0:
-        result["error"] = f"gh pr create failed: {err or out}"
+    api_result = _create_pr_via_api(
+        repo=repo,
+        token=token,
+        branch_name=branch_name,
+        title=title,
+        body=body,
+        labels=label_list,
+    )
+    if api_result.get("ok"):
+        result.update(
+            {
+                "success": True,
+                "pr_url": api_result.get("pr_url") or "",
+                "pr_number": api_result.get("pr_number"),
+                "merge": False,
+                "deploy": False,
+                "transport": "github_api",
+            }
+        )
         return result
 
-    pr_url = out.strip()
-    result.update({"success": True, "pr_url": pr_url, "merge": False, "deploy": False})
+    # Fallback for developer hosts that have gh installed.
+    gh_result = _create_pr_via_gh_cli(
+        workdir=workdir,
+        branch_name=branch_name,
+        title=title,
+        body=body,
+        labels=label_list,
+        token=token,
+    )
+    if gh_result.get("ok"):
+        result.update(
+            {
+                "success": True,
+                "pr_url": gh_result.get("pr_url") or "",
+                "pr_number": gh_result.get("pr_number"),
+                "merge": False,
+                "deploy": False,
+                "transport": "gh_cli",
+            }
+        )
+        return result
+
+    result["error"] = api_result.get("error") or gh_result.get("error") or "PR creation failed"
     return result
 
 
