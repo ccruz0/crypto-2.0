@@ -1179,6 +1179,27 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.56',
+    date: '2026-08-08',
+    change: 'Portfolio P&L shows executed TP and SL fill counts',
+    details: `🚀 VERSIÓN 0.56 — P&L TP/SL EXECUTED COUNTS
+
+📋 **What shipped**
+• Portfolio P&L panel adds TP / SL executed counts for the selected period
+• Counts FILLED TAKE_PROFIT / STOP_LOSS fills from executed-order data (order_role preferred)
+• Uses the same period filters as Realized / win rate (Today, 7d, 30d, Month, Year, Custom)
+
+🔧 **Notes**
+• Twin protection closes are deduped before counting (same as realized P&L)
+• Manual flattens are not counted as TP/SL
+
+📦 **PRs**
+• #395
+
+---
+`
   }
 ];
 
