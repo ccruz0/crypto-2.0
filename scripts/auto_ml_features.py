@@ -227,7 +227,132 @@ def attach_features_and_label(
                 "features": feats,
                 "x": feature_vector(feats),
                 "y": y,
+                "label_source": "alert",
                 "feature_version": FEATURE_VERSION,
             }
         )
     return out
+
+
+TRADE_OUTCOME_LABEL_DEF = (
+    "y=1 if round-trip pnl_usd > 0 else 0 (COMPLETE trade_outcomes with alert)"
+)
+
+
+def features_look_default(feats: dict[str, float]) -> bool:
+    """True when context was empty enough that features are uninformative defaults."""
+    return (
+        abs(feats.get("rsi", 50.0) - 50.0) < 1e-9
+        and abs(feats.get("ma50_dist", 0.0)) < 1e-12
+        and abs(feats.get("ma200_dist", 0.0)) < 1e-12
+        and abs(feats.get("ema10_dist", 0.0)) < 1e-12
+        and abs(feats.get("atr_pct", 0.0)) < 1e-12
+    )
+
+
+def attach_features_from_trade_outcomes(
+    outcomes: Sequence[dict[str, Any]],
+    *,
+    drop_degraded_features: bool = True,
+) -> tuple[list[dict[str, Any]], set[Any]]:
+    """Build ML rows from Phase 1a COMPLETE outcomes joined to alert context.
+
+    Expects each outcome dict to include:
+      label, side, entry_price, entry_ts (or entry_ts_ms), symbol,
+      telegram_message_id, context_json (from telegram_messages),
+      optional exit_reason / pnl_usd / entry_exchange_order_id.
+
+    Returns (rows, suppress_alert_ids). ``suppress_alert_ids`` are telegram
+    message ids that had a COMPLETE outcome but were dropped (e.g. degraded
+    features) — hybrid must not keep Phase 0 labels for those alerts.
+    """
+    out: list[dict[str, Any]] = []
+    suppress_alert_ids: set[Any] = set()
+    for oc in outcomes:
+        tid = oc.get("telegram_message_id")
+        if tid is None:
+            continue
+        label = oc.get("label")
+        if label is None:
+            continue
+        try:
+            y = int(label)
+        except (TypeError, ValueError):
+            continue
+        if y not in (0, 1):
+            continue
+
+        entry_ts = oc.get("entry_ts") or oc.get("entry_ts_ms") or oc.get("timestamp")
+        entry_ts_ms = to_utc_ms(entry_ts)
+        side = str(oc.get("side") or "BUY").upper()
+        entry_price = _f(oc.get("entry_price"))
+        raw = {
+            "id": tid,
+            "timestamp": entry_ts,
+            "context_json": oc.get("context_json") or {},
+            "side": side,
+            "entry_price": entry_price,
+        }
+        normalized = {
+            "side": side,
+            "entry_price": entry_price,
+            "entry_ts_ms": entry_ts_ms,
+        }
+        feats = features_from_alert_row(raw, normalized=normalized)
+        if drop_degraded_features and features_look_default(feats):
+            suppress_alert_ids.add(tid)
+            continue
+        out.append(
+            {
+                "id": tid,
+                "symbol": oc.get("symbol"),
+                "side": side,
+                "strategy_key": oc.get("strategy_key") or "auto",
+                "entry_price": entry_price,
+                "entry_ts_ms": entry_ts_ms,
+                "exit_reason": oc.get("exit_reason"),
+                "pnl_usd": oc.get("pnl_usd"),
+                "entry_exchange_order_id": oc.get("entry_exchange_order_id"),
+                "features": feats,
+                "x": feature_vector(feats),
+                "y": y,
+                "label_source": "trade_outcome",
+                "feature_version": FEATURE_VERSION,
+            }
+        )
+    return out, suppress_alert_ids
+
+
+def merge_alert_and_trade_datasets(
+    alert_rows: Sequence[dict[str, Any]],
+    trade_rows: Sequence[dict[str, Any]],
+    *,
+    suppress_alert_ids: Optional[set[Any]] = None,
+) -> list[dict[str, Any]]:
+    """Emit all fill rows (keyed by entry order), then alert rows without fills.
+
+    Multiple COMPLETE outcomes per alert are kept as separate training rows
+    (unique ``entry_exchange_order_id``). Alert-path labels are suppressed for
+    any telegram id that has a fill row or is in ``suppress_alert_ids``.
+    """
+    suppress: set[Any] = set(suppress_alert_ids or ())
+    ordered: list[dict[str, Any]] = []
+    seen_entry: set[Any] = set()
+    for row in trade_rows:
+        eid = row.get("entry_exchange_order_id") or f"tid:{row.get('id')}"
+        if eid in seen_entry:
+            continue
+        seen_entry.add(eid)
+        item = dict(row)
+        item["label_source"] = "trade_outcome"
+        ordered.append(item)
+        if row.get("id") is not None:
+            suppress.add(row["id"])
+    for row in alert_rows:
+        rid = row.get("id")
+        if rid is None or rid in suppress:
+            continue
+        item = dict(row)
+        item["label_source"] = row.get("label_source") or "alert"
+        ordered.append(item)
+    return ordered

@@ -252,7 +252,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "dataset_meta": {
             "source": ds_meta.get("source"),
+            "phase": ds_meta.get("phase"),
+            "label_source": ds_meta.get("label_source"),
             "n_dataset_rows": ds_meta.get("n_dataset_rows"),
+            "n_from_trade_outcome": ds_meta.get("n_from_trade_outcome"),
+            "n_from_alert": ds_meta.get("n_from_alert"),
             "n_positive": ds_meta.get("n_positive"),
             "n_negative": ds_meta.get("n_negative"),
             "label_def": ds_meta.get("label_def"),

@@ -199,8 +199,50 @@ curl -sS http://127.0.0.1:8002/api/config/auto-ml | jq \
 **Fail / no-op:** `promoted: false` in retrain JSON and API still shows prior version /
 `promote_reason: force` from the old seed — that is OK; leave it until data improves.
 
-### Label provenance (until Phase 1)
+### Label provenance
 
-Phase 0 still trains on **alert-path** labels, not realized fill PnL.
-Trade round-trips land in `trade_outcomes` via Phase 1a
-(`scripts/build_trade_outcomes.py`); wiring those labels into train/promote is Phase 1b.
+| Mode | Flag | Labels |
+|------|------|--------|
+| Phase 0 | `--label-source alert` (default) | OHLCV forward: `dir_acc_1h OR tp_before_sl` |
+| Phase 1b fills | `--label-source trade_outcomes` | COMPLETE `trade_outcomes`: `y=1 if pnl_usd > 0` |
+| Phase 1b hybrid | `--label-source hybrid` | Prefer fill PnL when alert has a COMPLETE outcome; else alert-path |
+
+Phase 1a still builds rows via `scripts/build_trade_outcomes.py`. Phase 1b only
+changes the **training dataset** — live BUY gate / promote merit rules unchanged.
+
+### Phase 1b — train on executed TP/SL (hybrid recommended)
+
+Requires DB with populated `trade_outcomes` (run Phase 1a builder first if empty).
+
+```bash
+# 1) Refresh COMPLETE outcomes from exchange joins (if needed)
+backend/.venv/bin/python scripts/build_trade_outcomes.py \
+  --database-url "$DATABASE_URL" --days 90
+
+# 2) Dataset: prefer realized fills, keep alert labels for open/unmatched
+backend/.venv/bin/python scripts/build_auto_ml_dataset.py \
+  --database-url "$DATABASE_URL" --days 90 \
+  --label-source hybrid \
+  --out docs/analysis/auto-ml-dataset-hybrid.json
+
+# Inspect counts (no secrets)
+python3 - <<'PY'
+import json
+from pathlib import Path
+m = json.loads(Path("docs/analysis/auto-ml-dataset-hybrid.json").read_text())["meta"]
+print({k: m.get(k) for k in (
+    "label_source", "phase", "n_dataset_rows", "n_from_trade_outcome",
+    "n_from_alert", "n_positive", "n_negative", "label_def",
+)})
+PY
+
+# 3) Retrain + merit promote (no --force-promote)
+AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+  scripts/retrain_and_promote_auto_entry.py \
+  --database-url "$DATABASE_URL" --days 90 \
+  --label-source hybrid \
+  --out-dir models/auto_entry
+```
+
+If `n_from_trade_outcome` is low, widen `--days` or keep hybrid (alert fallback).
+Do **not** `--force-promote` to paper over thin fill labels.

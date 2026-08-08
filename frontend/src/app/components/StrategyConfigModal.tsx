@@ -49,6 +49,9 @@ export default function StrategyConfigModal({
     promoted_at?: string | null;
     promote_reason?: string | null;
     n_fit_rows?: number | null;
+    label_source?: string | null;
+    n_from_trade_outcome?: number | null;
+    n_from_alert?: number | null;
     metrics?: {
       accuracy?: number | null;
       roc_auc?: number | null;
@@ -309,6 +312,22 @@ export default function StrategyConfigModal({
                       <dt>Promote</dt>
                       <dd>
                         {autoMlStatus.autonomous_promote ? 'autonomous ON' : 'autonomous OFF'}
+                      </dd>
+                      <dt>Labels</dt>
+                      <dd
+                        data-testid="auto-ml-label-source"
+                        title={
+                          autoMlStatus.n_from_trade_outcome != null
+                            ? `trade=${autoMlStatus.n_from_trade_outcome} alert=${autoMlStatus.n_from_alert ?? '?'}`
+                            : undefined
+                        }
+                      >
+                        {autoMlStatus.label_source
+                          ? String(autoMlStatus.label_source)
+                          : 'alert (legacy)'}
+                        {autoMlStatus.n_from_trade_outcome != null
+                          ? ` · fills ${autoMlStatus.n_from_trade_outcome}`
+                          : ''}
                       </dd>
                       <dt>Holdout</dt>
                       <dd>
