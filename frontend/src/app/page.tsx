@@ -1179,6 +1179,28 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.56',
+    date: '2026-08-08',
+    change: 'DOGE short TP: keep true price decimals (no 0.0692→0.07 coerce)',
+    details: `🚀 VERSIÓN 0.56 — SHORT TP PRICE_DECIMALS / NAKED DOGE RE-PROTECT
+
+📋 **What shipped**
+• Instrument metadata: derive price_decimals from quote_decimals/tick when API omits it
+  (DOGE_USD was defaulting to 2 → format variations sent trigger "0.07")
+• TAKE_PROFIT format variations never change the numeric TP value
+• Ops re-protect run=3: market-relative short TP/SL + checkout fixed broker module
+
+🔧 **Why**
+• After #392/#394, DOGE short stayed naked: TP 0.0692 coerced to 0.07 → INVALID_TRIGGER_PRICE
+  vs market ~0.0699
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 ];
 
