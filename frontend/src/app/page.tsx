@@ -1216,7 +1216,7 @@ const VERSION_HISTORY = [
 • Operators wanted to run a recommendation directly from Ops → Jarvis Improvement instead of copy-pasting into Jarvis Control
 
 📦 **PRs**
-• (this PR)
+• #399
 
 ---
 `
