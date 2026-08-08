@@ -1236,7 +1236,7 @@ const VERSION_HISTORY = [
 • #399 merged and backend execute API was live, but Deploy frontend failed at build with "defined multiple times"; prod stayed on pre-#399 bundle (badge ~v0.49, read-only copy)
 
 📦 **PRs**
-• follow-up to #399
+• #400 (follow-up to #399)
 
 ---
 `
