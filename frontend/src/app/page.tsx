@@ -1352,7 +1352,7 @@ const VERSION_HISTORY = [
 • Host needs \`gh\` auth that can push a branch and open a PR
 
 📦 **PRs**
-• (this PR)
+• #406
 
 ---
 `
