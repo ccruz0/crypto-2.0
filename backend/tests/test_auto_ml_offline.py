@@ -129,8 +129,11 @@ def _rich_outcome(**overrides):
 
 
 def test_trade_outcome_win_to_dataset_row():
-    rows = attach_features_from_trade_outcomes([_rich_outcome(label=1, pnl_usd=5.0)])
+    rows, suppress = attach_features_from_trade_outcomes(
+        [_rich_outcome(label=1, pnl_usd=5.0)]
+    )
     assert len(rows) == 1
+    assert suppress == set()
     assert rows[0]["y"] == 1
     assert rows[0]["label_source"] == "trade_outcome"
     assert len(rows[0]["x"]) == len(FEATURE_NAMES)
@@ -138,7 +141,7 @@ def test_trade_outcome_win_to_dataset_row():
 
 
 def test_trade_outcome_loss_label():
-    rows = attach_features_from_trade_outcomes(
+    rows, _ = attach_features_from_trade_outcomes(
         [_rich_outcome(label=0, pnl_usd=-3.0, exit_reason="STOP_LOSS")]
     )
     assert len(rows) == 1
@@ -147,14 +150,15 @@ def test_trade_outcome_loss_label():
 
 
 def test_drop_without_alert_for_ml():
-    rows = attach_features_from_trade_outcomes(
+    rows, suppress = attach_features_from_trade_outcomes(
         [_rich_outcome(telegram_message_id=None)]
     )
     assert rows == []
+    assert suppress == set()
 
 
 def test_drop_degraded_default_features():
-    rows = attach_features_from_trade_outcomes(
+    rows, suppress = attach_features_from_trade_outcomes(
         [
             _rich_outcome(
                 context_json={},  # empty → default features
@@ -163,11 +167,12 @@ def test_drop_degraded_default_features():
         ]
     )
     assert rows == []
+    assert suppress == {101}
 
 
 def test_exit_reason_not_used_as_y():
     # Odd but possible: TP exit with negative pnl → still follow label/pnl, not reason.
-    rows = attach_features_from_trade_outcomes(
+    rows, _ = attach_features_from_trade_outcomes(
         [_rich_outcome(label=0, pnl_usd=-1.0, exit_reason="TAKE_PROFIT")]
     )
     assert rows[0]["y"] == 0
@@ -186,13 +191,75 @@ def test_hybrid_prefers_trade_label():
             "features": {},
         }
     ]
-    trade_rows = attach_features_from_trade_outcomes(
+    trade_rows, suppress = attach_features_from_trade_outcomes(
         [_rich_outcome(telegram_message_id=101, label=1, pnl_usd=9.0)]
     )
-    merged = merge_alert_and_trade_datasets(alert_rows, trade_rows)
+    merged = merge_alert_and_trade_datasets(
+        alert_rows, trade_rows, suppress_alert_ids=suppress
+    )
     assert len(merged) == 1
     assert merged[0]["y"] == 1
     assert merged[0]["label_source"] == "trade_outcome"
+
+
+def test_hybrid_suppresses_alert_when_fill_degraded():
+    alert_rows = [
+        {
+            "id": 101,
+            "symbol": "DOGE_USD",
+            "side": "SELL",
+            "y": 1,
+            "x": [0.0] * len(FEATURE_NAMES),
+            "label_source": "alert",
+            "features": {},
+        }
+    ]
+    trade_rows, suppress = attach_features_from_trade_outcomes(
+        [_rich_outcome(telegram_message_id=101, context_json={}, entry_price=0.07)]
+    )
+    assert trade_rows == []
+    assert 101 in suppress
+    merged = merge_alert_and_trade_datasets(
+        alert_rows, trade_rows, suppress_alert_ids=suppress
+    )
+    assert merged == []
+
+
+def test_hybrid_keeps_multiple_fills_per_alert():
+    alert_rows = [
+        {
+            "id": 101,
+            "symbol": "DOGE_USD",
+            "side": "SELL",
+            "y": 0,
+            "x": [0.0] * len(FEATURE_NAMES),
+            "label_source": "alert",
+            "features": {},
+        }
+    ]
+    trade_rows, suppress = attach_features_from_trade_outcomes(
+        [
+            _rich_outcome(
+                telegram_message_id=101,
+                entry_exchange_order_id="entry-a",
+                label=1,
+                pnl_usd=2.0,
+            ),
+            _rich_outcome(
+                telegram_message_id=101,
+                entry_exchange_order_id="entry-b",
+                label=0,
+                pnl_usd=-1.0,
+            ),
+        ]
+    )
+    assert len(trade_rows) == 2
+    merged = merge_alert_and_trade_datasets(
+        alert_rows, trade_rows, suppress_alert_ids=suppress
+    )
+    assert len(merged) == 2
+    assert {r["entry_exchange_order_id"] for r in merged} == {"entry-a", "entry-b"}
+    assert all(r["label_source"] == "trade_outcome" for r in merged)
 
 
 def test_label_source_meta_trade_outcomes(tmp_path, monkeypatch):

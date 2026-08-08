@@ -254,16 +254,20 @@ def attach_features_from_trade_outcomes(
     outcomes: Sequence[dict[str, Any]],
     *,
     drop_degraded_features: bool = True,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], set[Any]]:
     """Build ML rows from Phase 1a COMPLETE outcomes joined to alert context.
 
     Expects each outcome dict to include:
       label, side, entry_price, entry_ts (or entry_ts_ms), symbol,
       telegram_message_id, context_json (from telegram_messages),
       optional exit_reason / pnl_usd / entry_exchange_order_id.
-    Drops rows without telegram_message_id or without a usable label.
+
+    Returns (rows, suppress_alert_ids). ``suppress_alert_ids`` are telegram
+    message ids that had a COMPLETE outcome but were dropped (e.g. degraded
+    features) — hybrid must not keep Phase 0 labels for those alerts.
     """
     out: list[dict[str, Any]] = []
+    suppress_alert_ids: set[Any] = set()
     for oc in outcomes:
         tid = oc.get("telegram_message_id")
         if tid is None:
@@ -296,6 +300,7 @@ def attach_features_from_trade_outcomes(
         }
         feats = features_from_alert_row(raw, normalized=normalized)
         if drop_degraded_features and features_look_default(feats):
+            suppress_alert_ids.add(tid)
             continue
         out.append(
             {
@@ -315,44 +320,39 @@ def attach_features_from_trade_outcomes(
                 "feature_version": FEATURE_VERSION,
             }
         )
-    return out
+    return out, suppress_alert_ids
 
 
 def merge_alert_and_trade_datasets(
     alert_rows: Sequence[dict[str, Any]],
     trade_rows: Sequence[dict[str, Any]],
+    *,
+    suppress_alert_ids: Optional[set[Any]] = None,
 ) -> list[dict[str, Any]]:
-    """Prefer executed-fill labels when telegram id overlaps; keep alert-only rows."""
-    by_id: dict[Any, dict[str, Any]] = {}
-    for row in alert_rows:
-        rid = row.get("id")
-        if rid is None:
-            continue
-        by_id[rid] = dict(row)
-        by_id[rid]["label_source"] = row.get("label_source") or "alert"
-    for row in trade_rows:
-        rid = row.get("id")
-        if rid is None:
-            continue
-        # Trade label wins (realized PnL).
-        by_id[rid] = dict(row)
-        by_id[rid]["label_source"] = "trade_outcome"
-    # Preserve deterministic order: trade rows first (by id), then remaining alerts
-    trade_ids = {r.get("id") for r in trade_rows if r.get("id") is not None}
+    """Emit all fill rows (keyed by entry order), then alert rows without fills.
+
+    Multiple COMPLETE outcomes per alert are kept as separate training rows
+    (unique ``entry_exchange_order_id``). Alert-path labels are suppressed for
+    any telegram id that has a fill row or is in ``suppress_alert_ids``.
+    """
+    suppress: set[Any] = set(suppress_alert_ids or ())
     ordered: list[dict[str, Any]] = []
-    seen: set[Any] = set()
+    seen_entry: set[Any] = set()
     for row in trade_rows:
-        rid = row.get("id")
-        if rid is None or rid in seen:
+        eid = row.get("entry_exchange_order_id") or f"tid:{row.get('id')}"
+        if eid in seen_entry:
             continue
-        ordered.append(by_id[rid])
-        seen.add(rid)
+        seen_entry.add(eid)
+        item = dict(row)
+        item["label_source"] = "trade_outcome"
+        ordered.append(item)
+        if row.get("id") is not None:
+            suppress.add(row["id"])
     for row in alert_rows:
         rid = row.get("id")
-        if rid is None or rid in seen:
+        if rid is None or rid in suppress:
             continue
-        if rid in trade_ids:
-            continue
-        ordered.append(by_id[rid])
-        seen.add(rid)
+        item = dict(row)
+        item["label_source"] = row.get("label_source") or "alert"
+        ordered.append(item)
     return ordered
