@@ -49,6 +49,9 @@ export default function StrategyConfigModal({
     promoted_at?: string | null;
     promote_reason?: string | null;
     n_fit_rows?: number | null;
+    label_source?: string | null;
+    n_from_trade_outcome?: number | null;
+    n_from_alert?: number | null;
     metrics?: {
       accuracy?: number | null;
       roc_auc?: number | null;
