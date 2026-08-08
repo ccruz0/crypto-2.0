@@ -1443,7 +1443,7 @@ const VERSION_HISTORY = [
 • DOGE_USD SELL 5755600492782582799 (2026-08-08) filled naked: pre-place is_margin_short_entry required no open position
 
 📦 **PRs**
-• (this PR)
+• #410
 
 ---
 `
