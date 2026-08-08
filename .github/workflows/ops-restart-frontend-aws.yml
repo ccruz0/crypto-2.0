@@ -65,7 +65,7 @@ jobs:
             echo "=== Skip ECR pull (restart local image only) ==="
           fi
           echo "=== Start frontend-aws (\${IMAGE_URI}) ==="
-          IMAGE="\$IMAGE_URI" docker compose --profile aws up -d --no-deps frontend-aws
+          FRONTEND_IMAGE="\$IMAGE_URI" IMAGE="\$IMAGE_URI" docker compose --profile aws up -d --no-deps frontend-aws
           ok=0
           for i in \$(seq 1 30); do
             code=\$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ 2>/dev/null || echo 000)
