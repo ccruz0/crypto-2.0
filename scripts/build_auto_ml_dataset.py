@@ -145,8 +145,8 @@ def load_complete_outcomes_with_alerts(
         WHERE o.join_status = 'COMPLETE'
           AND o.label IS NOT NULL
           AND o.telegram_message_id IS NOT NULL
-          AND (o.entry_ts IS NULL OR o.entry_ts >= :cutoff)
-        ORDER BY o.entry_ts DESC NULLS LAST
+          AND COALESCE(o.entry_ts, m.timestamp) >= :cutoff
+        ORDER BY COALESCE(o.entry_ts, m.timestamp) DESC NULLS LAST
         LIMIT :lim
         """
     )
@@ -177,8 +177,8 @@ def load_complete_outcomes_with_alerts(
         WHERE o.join_status = 'COMPLETE'
           AND o.label IS NOT NULL
           AND o.telegram_message_id IS NOT NULL
-          AND (o.entry_ts IS NULL OR o.entry_ts >= :cutoff)
-        ORDER BY o.entry_ts DESC
+          AND COALESCE(o.entry_ts, m.timestamp) >= :cutoff
+        ORDER BY COALESCE(o.entry_ts, m.timestamp) DESC
         LIMIT :lim
         """
     )
@@ -190,6 +190,16 @@ def load_complete_outcomes_with_alerts(
             # Prefer alert timestamp when entry_ts missing
             if d.get("entry_ts") is None and d.get("alert_timestamp") is not None:
                 d["entry_ts"] = d["alert_timestamp"]
+            # Belt-and-suspenders: re-apply window after backfill
+            ts = d.get("entry_ts") or d.get("alert_timestamp")
+            if ts is not None:
+                if getattr(ts, "tzinfo", None) is None and isinstance(ts, datetime):
+                    ts = ts.replace(tzinfo=timezone.utc)
+                try:
+                    if ts < cutoff:
+                        continue
+                except TypeError:
+                    pass
             rows.append(d)
     return rows
 
@@ -315,8 +325,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception as exc:
             print(f"Failed to load trade_outcomes: {exc}", file=sys.stderr)
             return 2
-        trade_dataset = attach_features_from_trade_outcomes(outcomes)
+        trade_dataset, suppress_alert_ids = attach_features_from_trade_outcomes(outcomes)
         source = f"{source}+trade_outcomes"
+    else:
+        suppress_alert_ids = set()
 
     if label_source == "alert":
         dataset = alert_dataset
@@ -327,7 +339,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         label_def = TRADE_OUTCOME_LABEL_DEF
         phase = "1b-trade-outcomes"
     else:
-        dataset = merge_alert_and_trade_datasets(alert_dataset, trade_dataset)
+        dataset = merge_alert_and_trade_datasets(
+            alert_dataset,
+            trade_dataset,
+            suppress_alert_ids=suppress_alert_ids,
+        )
         label_def = HYBRID_LABEL_DEF
         phase = "1b-hybrid"
 
