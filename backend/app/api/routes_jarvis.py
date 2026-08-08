@@ -108,6 +108,7 @@ from app.jarvis.execution.schemas import (
     JarvisProposalEligibilityResponse,
     JarvisProposalTaskDetail,
     JarvisPatchRevisionRequest,
+    JarvisLabTrialStatusResponse,
     JarvisPhase5StatusResponse,
     JarvisTaskApprovalRequest,
     JarvisTaskSubmitRequest,
@@ -881,6 +882,40 @@ def jarvis_change_reject(task_id: str, body: JarvisTaskApprovalRequest) -> dict[
         raise HTTPException(status_code=404, detail="task not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# --- Phase B: Send to LAB (isolated sandbox trial; does not require Gate-1 flag) ---
+
+
+@router.post("/api/jarvis/tasks/change/{task_id}/send-to-lab", response_model=JarvisChangeTaskDetail)
+def jarvis_change_send_to_lab(task_id: str, body: JarvisTaskApprovalRequest) -> dict[str, Any]:
+    """Operator Send to LAB: apply+test in isolated sandbox without enabling prod Gate-1 flags."""
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.change_execution.lab_trial import send_to_lab
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return send_to_lab(task_id, actor_id=body.actor_id, comment=body.comment)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/api/jarvis/tasks/change/{task_id}/lab-status", response_model=JarvisLabTrialStatusResponse)
+def jarvis_change_lab_status(task_id: str) -> dict[str, Any]:
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.change_execution.lab_trial import get_lab_trial_status
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return get_lab_trial_status(task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
 
 
 # --- Phase 5: Sandbox apply + PR creation ---

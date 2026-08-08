@@ -48,6 +48,15 @@ def jarvis_test_timeout_sec() -> int:
         return 120
 
 
+def jarvis_lab_trial_enabled() -> bool:
+    """Allow Send to LAB (isolated sandbox apply+tests). Default: enabled.
+
+    Distinct from JARVIS_PATCH_APPLY_ENABLED (Phase-5 Gate 1). LAB trials must
+    work while prod Gate-1 / PR / github_write flags stay false.
+    """
+    return _bool_env("JARVIS_LAB_TRIAL_ENABLED", default=True)
+
+
 def phase5_safety_status() -> dict[str, bool]:
     """Current Phase 5 safety flag snapshot (no secrets)."""
     return {
@@ -55,4 +64,5 @@ def phase5_safety_status() -> dict[str, bool]:
         "pr_creation_enabled": jarvis_pr_creation_enabled(),
         "github_write_enabled": jarvis_github_write_enabled(),
         "double_approval_required": jarvis_require_double_approval(),
+        "lab_trial_enabled": jarvis_lab_trial_enabled(),
     }

@@ -132,6 +132,10 @@ class JarvisApprovalQueueItem(BaseModel):
     approval_status: ApprovalStatus = "pending"
     created_at: str | None = None
     workflow_type: str = "phase4_change"
+    can_send_to_lab: bool = False
+    lab_ineligible_reason: str = ""
+    lab_trial_status: str = "not_started"
+    lab_trial_summary: str = ""
 
 
 class JarvisApprovalQueueResponse(BaseModel):
@@ -142,6 +146,7 @@ class JarvisChangeTaskDetail(JarvisExecutionTaskDetail):
     workflow_type: str = "phase4_change"
     review: dict[str, Any] = Field(default_factory=dict)
     phase5: dict[str, Any] = Field(default_factory=dict)
+    lab_trial: dict[str, Any] = Field(default_factory=dict)
 
 
 class JarvisPhase5StatusResponse(BaseModel):
@@ -160,6 +165,26 @@ class JarvisPhase5StatusResponse(BaseModel):
     changed_files: list[str] = Field(default_factory=list)
     test_results: dict[str, Any] = Field(default_factory=dict)
     forbidden_check: dict[str, Any] = Field(default_factory=dict)
+
+
+class JarvisLabTrialStatusResponse(BaseModel):
+    task_id: str
+    status: str = "not_started"
+    summary: str = ""
+    mechanism: str = "isolated_sandbox"
+    mechanism_label: str = ""
+    can_send_to_lab: bool = False
+    ineligible_reason: str = ""
+    tests_passed: bool = False
+    sandbox_applied: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    branch_name: str | None = None
+    test_results: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    can_promote: bool = False
+    promote_available: bool = False
+    promote_hint: str = ""
+    safety_flags: dict[str, bool] = Field(default_factory=dict)
 
 
 # --- Phase 4A: Production diagnostic investigations ---

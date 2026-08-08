@@ -328,7 +328,9 @@ def _safe_review_findings(value: Any) -> list[dict[str, Any]]:
 
 
 def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
-    """List tasks waiting for approval with patch summary metadata."""
+    """List tasks waiting for approval with patch summary + LAB trial eligibility."""
+    from app.jarvis.change_execution.lab_trial import assess_lab_eligibility, get_lab_trial_status
+
     try:
         tasks = list_execution_tasks(limit=limit)
     except Exception:
@@ -338,6 +340,8 @@ def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
         if task.get("status") not in (
             TaskLifecycleState.WAITING_FOR_APPROVAL.value,
             TaskLifecycleState.WAITING_FOR_PR_APPROVAL.value,
+            TaskLifecycleState.APPLYING_PATCH.value,
+            TaskLifecycleState.SANDBOX_TESTING.value,
         ):
             continue
         detail = get_execution_task(task["task_id"])
@@ -349,12 +353,16 @@ def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
         for art in detail.get("artifacts") or []:
             if art.get("standard_name") == "patch.diff":
                 patch_summary = art.get("preview", "")[:200]
-            meta = art.get("metadata") or {}
-            if meta.get("patch_id"):
-                pass
         for art in detail.get("artifacts") or []:
             if "patch" in art.get("name", ""):
                 patch_summary = patch_summary or art.get("preview", "")[:200]
+        plan = detail.get("plan") or {}
+        workflow_type = plan.get("workflow_type") or WORKFLOW_TYPE
+        eligibility = assess_lab_eligibility(detail)
+        try:
+            lab = get_lab_trial_status(detail["task_id"])
+        except LookupError:
+            lab = {"status": "not_started", "summary": ""}
         queue.append(
             {
                 "task_id": detail["task_id"],
@@ -367,8 +375,12 @@ def list_approval_queue(*, limit: int = 20) -> list[dict[str, Any]]:
                 "review_findings": _safe_review_findings(review.get("findings", [])),
                 "approval_status": _safe_approval_status(detail.get("approval_status")),
                 "created_at": detail.get("created_at"),
-                "workflow_type": WORKFLOW_TYPE,
+                "workflow_type": workflow_type,
                 "phase5_available": True,
+                "can_send_to_lab": eligibility.get("can_send_to_lab", False),
+                "lab_ineligible_reason": eligibility.get("reason", ""),
+                "lab_trial_status": lab.get("status") or "not_started",
+                "lab_trial_summary": lab.get("summary") or "",
             }
         )
     return queue
@@ -390,12 +402,19 @@ def _extract_test_summary(detail: dict[str, Any]) -> dict[str, Any]:
 
 
 def _detail(task_id: str) -> dict[str, Any]:
+    from app.jarvis.change_execution.lab_trial import get_lab_trial_status
+
     row = get_execution_task(task_id)
     if row is None:
         raise LookupError("task not found")
     row["execution_log"] = list_execution_log(task_id)
     row["approvals"] = list_approvals(task_id)
-    row["workflow_type"] = WORKFLOW_TYPE
+    plan = row.get("plan") or {}
+    row["workflow_type"] = plan.get("workflow_type") or WORKFLOW_TYPE
+    try:
+        row["lab_trial"] = get_lab_trial_status(task_id)
+    except Exception:
+        row["lab_trial"] = {}
     return row
 
 
