@@ -2,11 +2,13 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  executeJarvisImprovementRecommendation,
   getJarvisImprovementQuality,
   getJarvisImprovementRecommendations,
   getJarvisImprovementTemplates,
   getJarvisImprovementTools,
   getJarvisImprovementTrends,
+  type JarvisImprovementExecuteResult,
   type JarvisImprovementQuality,
   type JarvisImprovementRecommendation,
   type JarvisImprovementTemplateGap,
@@ -30,8 +32,29 @@ function PriorityBadge({ priority }: { priority: string }) {
 }
 
 function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendation; rank?: number }) {
+  const [executing, setExecuting] = useState(false);
+  const [execError, setExecError] = useState<string | null>(null);
+  const [execResult, setExecResult] = useState<JarvisImprovementExecuteResult | null>(null);
+
+  const handleExecute = async () => {
+    setExecuting(true);
+    setExecError(null);
+    setExecResult(null);
+    try {
+      const result = await executeJarvisImprovementRecommendation(rec);
+      setExecResult(result);
+    } catch (e) {
+      setExecError(e instanceof Error ? e.message : 'Failed to queue recommendation task');
+    } finally {
+      setExecuting(false);
+    }
+  };
+
   return (
-    <div className="rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 space-y-2">
+    <div
+      className="rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 space-y-2"
+      data-testid={`jarvis-improvement-rec-${rec.id}`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex items-center gap-2">
           {rank !== undefined && (
@@ -55,12 +78,38 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
           ))}
         </ul>
       )}
-      <div className="flex flex-wrap gap-3 text-xs text-gray-500 dark:text-slate-400 pt-1 border-t border-gray-100 dark:border-slate-700">
-        <span>Impact: {rec.impact}</span>
-        <span>Frequency: {rec.frequency}</span>
-        <span>Confidence: {rec.confidence.toFixed(0)}%</span>
-        {rec.expected_benefit && <span>Benefit: {rec.expected_benefit}</span>}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-gray-500 dark:text-slate-400 pt-1 border-t border-gray-100 dark:border-slate-700">
+        <div className="flex flex-wrap gap-3">
+          <span>Impact: {rec.impact}</span>
+          <span>Frequency: {rec.frequency}</span>
+          <span>Confidence: {rec.confidence.toFixed(0)}%</span>
+          {rec.expected_benefit && <span>Benefit: {rec.expected_benefit}</span>}
+        </div>
+        <button
+          type="button"
+          data-testid={`jarvis-improvement-execute-${rec.id}`}
+          onClick={handleExecute}
+          disabled={executing}
+          title="Queue a dry-run Jarvis task (manual approval). Does not apply patches or deploy."
+          className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50"
+        >
+          {executing ? 'Executing…' : 'Execute'}
+        </button>
       </div>
+      {execError && (
+        <p className="text-xs text-red-600 dark:text-red-400" data-testid={`jarvis-improvement-execute-error-${rec.id}`}>
+          {execError}
+        </p>
+      )}
+      {execResult && (
+        <p
+          className="text-xs text-green-700 dark:text-green-300"
+          data-testid={`jarvis-improvement-execute-success-${rec.id}`}
+        >
+          Queued dry-run task {execResult.task_id.slice(0, 8)}… — status: {execResult.status}
+          {execResult.approval_required ? ' (awaiting approval in Jarvis tab)' : ''}. No patches applied.
+        </p>
+      )}
     </div>
   );
 }
@@ -287,7 +336,8 @@ export default function JarvisImprovementTab() {
         <div>
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">Jarvis Improvement</h2>
           <p className="text-sm text-gray-500 dark:text-slate-400">
-            Self-improvement recommendations from investigation analytics (read-only)
+            Self-improvement recommendations from investigation analytics. Execute queues a dry-run
+            Jarvis task with manual approval — no patches, PRs, or deploys.
           </p>
         </div>
         <button

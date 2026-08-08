@@ -1200,6 +1200,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.57',
+    date: '2026-08-08',
+    change: 'Jarvis Improvement: Execute button per recommendation',
+    details: `🚀 VERSIÓN 0.57 — EXECUTE IMPROVEMENT RECOMMENDATIONS
+
+📋 **What shipped**
+• Per-card Execute on Jarvis Improvement recommendations / backlog / related sections
+• POST /api/jarvis/improvement/recommendations/execute queues a dry-run Jarvis task with manual approval
+• Loading / error / success feedback; no patches, PRs, or deploys from the button
+
+🔧 **Why**
+• Operators wanted to run a recommendation directly from Ops → Jarvis Improvement instead of copy-pasting into Jarvis Control
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 ];
 

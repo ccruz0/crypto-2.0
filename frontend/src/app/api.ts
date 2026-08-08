@@ -2847,3 +2847,65 @@ export async function getJarvisImprovementQuality(): Promise<JarvisImprovementQu
   return fetchAPI<JarvisImprovementQuality>('/jarvis/improvement/quality');
 }
 
+export interface JarvisImprovementExecuteResult {
+  recommendation_id: string;
+  task_id: string;
+  status: string;
+  objective: string;
+  approval_required: boolean;
+  approval_status: string;
+  dry_run: boolean;
+  message: string;
+}
+
+/** Queue a dry-run, approval-gated Jarvis task from an improvement recommendation. */
+export async function executeJarvisImprovementRecommendation(
+  rec: Pick<
+    JarvisImprovementRecommendation,
+    'id' | 'title' | 'recommendation' | 'reason' | 'category' | 'priority'
+  >,
+): Promise<JarvisImprovementExecuteResult> {
+  return fetchAPI<JarvisImprovementExecuteResult>('/jarvis/improvement/recommendations/execute', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: rec.id,
+      title: rec.title,
+      recommendation: rec.recommendation,
+      reason: rec.reason,
+      category: rec.category,
+      priority: rec.priority,
+    }),
+  });
+}
+
+export interface JarvisImprovementExecuteResult {
+  recommendation_id: string;
+  task_id: string;
+  status: string;
+  objective: string;
+  approval_required: boolean;
+  approval_status: string;
+  dry_run: boolean;
+  message: string;
+}
+
+/** Queue a dry-run, manually approval-gated Jarvis task from an improvement recommendation. */
+export async function executeJarvisImprovementRecommendation(
+  rec: Pick<
+    JarvisImprovementRecommendation,
+    'id' | 'title' | 'recommendation' | 'reason' | 'category' | 'priority'
+  >,
+): Promise<JarvisImprovementExecuteResult> {
+  return fetchAPI<JarvisImprovementExecuteResult>('/jarvis/improvement/recommendations/execute', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: rec.id,
+      title: rec.title,
+      recommendation: rec.recommendation,
+      reason: rec.reason,
+      category: rec.category,
+      priority: rec.priority,
+    }),
+  });
+}
+

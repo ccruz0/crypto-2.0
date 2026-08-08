@@ -171,3 +171,76 @@ def get_improvement_trends() -> dict[str, Any]:
         "recommendations": rank_backlog(filtered),
         "read_only": True,
     }
+
+
+def build_improvement_execute_objective(
+    *,
+    recommendation_id: str,
+    title: str,
+    recommendation: str,
+    reason: str = "",
+    category: str = "",
+) -> str:
+    """Build a dry-run ACW objective from an improvement recommendation card."""
+    parts = [
+        f"Jarvis improvement recommendation [{recommendation_id}]: {title.strip()}",
+        f"Recommended action: {recommendation.strip()}",
+    ]
+    if reason.strip():
+        parts.append(f"Reason: {reason.strip()}")
+    if category.strip():
+        parts.append(f"Category: {category.strip()}")
+    parts.append(
+        "Investigate and propose a gated follow-up only. "
+        "Do not apply patches, create PRs, or deploy."
+    )
+    return "\n".join(parts)[:2000]
+
+
+def execute_improvement_recommendation(
+    *,
+    recommendation_id: str,
+    title: str,
+    recommendation: str,
+    reason: str = "",
+    category: str = "",
+    priority: str = "normal",
+) -> dict[str, Any]:
+    """
+    Queue a dry-run, approval-gated Jarvis execution task for a recommendation.
+
+    Never applies patches / creates PRs / deploys — those remain behind existing
+    double-approval and safety flags on the change/phase-5 paths.
+    """
+    from app.jarvis.execution.service import submit_execution_task
+
+    objective = build_improvement_execute_objective(
+        recommendation_id=recommendation_id,
+        title=title,
+        recommendation=recommendation,
+        reason=reason,
+        category=category,
+    )
+    mapped_priority = priority if priority in ("low", "normal", "high") else "normal"
+    if priority == "medium":
+        mapped_priority = "normal"
+
+    detail = submit_execution_task(
+        objective=objective,
+        priority=mapped_priority,
+        approval_mode="manual",
+        dry_run=True,
+    )
+    return {
+        "recommendation_id": recommendation_id,
+        "task_id": detail.get("task_id"),
+        "status": detail.get("status"),
+        "objective": detail.get("objective"),
+        "approval_required": bool(detail.get("approval_required")),
+        "approval_status": detail.get("approval_status") or "pending",
+        "dry_run": True,
+        "message": (
+            "Queued dry-run Jarvis task (manual approval). "
+            "No patches applied; no PR or deploy."
+        ),
+    }

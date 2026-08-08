@@ -82,6 +82,8 @@ from app.jarvis.execution.schemas import (
     JarvisAnalyticsRootCausesResponse,
     JarvisAnalyticsTemplatesResponse,
     JarvisAnalyticsToolsResponse,
+    JarvisImprovementExecuteRequest,
+    JarvisImprovementExecuteResponse,
     JarvisImprovementRecommendationsResponse,
     JarvisImprovementQualityResponse,
     JarvisImprovementTemplatesResponse,
@@ -744,6 +746,48 @@ def jarvis_improvement_quality() -> dict[str, Any]:
     if not ensure_jarvis_execution_log_table(engine):
         raise HTTPException(status_code=503, detail="Database unavailable")
     return get_improvement_quality()
+
+
+@router.post(
+    "/api/jarvis/improvement/recommendations/execute",
+    response_model=JarvisImprovementExecuteResponse,
+)
+def jarvis_improvement_execute_recommendation(
+    body: JarvisImprovementExecuteRequest,
+) -> dict[str, Any]:
+    """Queue a dry-run, manually approval-gated Jarvis task from a recommendation.
+
+    Does not apply patches, create PRs, or deploy. Those remain behind existing
+    safety flags (github_write / pr_creation / patch_apply) and double approval.
+    """
+    from app.database import engine, ensure_jarvis_task_runs_table
+    from app.jarvis.improvement.recommendation_engine import execute_improvement_recommendation
+
+    if engine is None or not ensure_jarvis_task_runs_table(engine):
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        return execute_improvement_recommendation(
+            recommendation_id=body.id,
+            title=body.title,
+            recommendation=body.recommendation,
+            reason=body.reason,
+            category=body.category,
+            priority=body.priority,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "jarvis.improvement.execute_failed recommendation_id=%s err=%s",
+            body.id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"jarvis_improvement_execute_failed: {exc}",
+        ) from exc
 
 
 # --- Phase 4: Change workflow (patch generation + review + approval, no application) ---
