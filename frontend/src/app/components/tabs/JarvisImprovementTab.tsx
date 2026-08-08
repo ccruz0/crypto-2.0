@@ -85,16 +85,21 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
           <span>Confidence: {rec.confidence.toFixed(0)}%</span>
           {rec.expected_benefit && <span>Benefit: {rec.expected_benefit}</span>}
         </div>
-        <button
-          type="button"
-          data-testid={`jarvis-improvement-execute-${rec.id}`}
-          onClick={handleExecute}
-          disabled={executing}
-          title="Queue a dry-run Jarvis task (manual approval). Does not apply patches or deploy."
-          className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {executing ? 'Executing…' : 'Execute'}
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            data-testid={`jarvis-improvement-execute-${rec.id}`}
+            onClick={handleExecute}
+            disabled={executing}
+            title="Queue a dry-run Jarvis task. Approve the queued task later in the Jarvis tab. Does not apply patches or deploy."
+            className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
+          >
+            {executing ? 'Queuing…' : 'Execute'}
+          </button>
+          <span className="text-[11px] text-gray-400 dark:text-slate-500 text-right max-w-[14rem]">
+            Queues dry-run · Approve in Jarvis tab
+          </span>
+        </div>
       </div>
       {execError && (
         <p className="text-xs text-red-600 dark:text-red-400" data-testid={`jarvis-improvement-execute-error-${rec.id}`}>
@@ -107,7 +112,7 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
           data-testid={`jarvis-improvement-execute-success-${rec.id}`}
         >
           Queued dry-run task {execResult.task_id.slice(0, 8)}… — status: {execResult.status}
-          {execResult.approval_required ? ' (awaiting approval in Jarvis tab)' : ''}. No patches applied.
+          {execResult.approval_required ? ' — open Jarvis tab to Approve' : ''}. No patches applied.
         </p>
       )}
     </div>
@@ -336,8 +341,11 @@ export default function JarvisImprovementTab() {
         <div>
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">Jarvis Improvement</h2>
           <p className="text-sm text-gray-500 dark:text-slate-400">
-            Self-improvement recommendations from investigation analytics. Execute queues a dry-run
-            Jarvis task with manual approval — no patches, PRs, or deploys.
+            Self-improvement recommendations from investigation analytics. Use{' '}
+            <span className="font-semibold text-indigo-600 dark:text-indigo-300">Execute</span> on a
+            card to queue a dry-run Jarvis task;{' '}
+            <span className="font-semibold">Approve</span> the task in the Jarvis tab. No patches,
+            PRs, or deploys from this screen.
           </p>
         </div>
         <button

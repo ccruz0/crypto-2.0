@@ -1220,6 +1220,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.58',
+    date: '2026-08-08',
+    change: 'Fix Jarvis Improvement Execute deploy (duplicate api export)',
+    details: `🚀 VERSIÓN 0.58 — EXECUTE BUTTON LIVE IN PROD
+
+📋 **What shipped**
+• Removed duplicate executeJarvisImprovementRecommendation export that broke Next.js build / frontend deploy for #399
+• Clearer Execute CTA + "Approve in Jarvis tab" helper on recommendation cards
+• Replaced outdated "(read-only)" subtitle wording
+
+🔧 **Why**
+• #399 merged and backend execute API was live, but Deploy frontend failed at build with "defined multiple times"; prod stayed on pre-#399 bundle (badge ~v0.49, read-only copy)
+
+📦 **PRs**
+• #400 (follow-up to #399)
+
+---
+`
   }
 ];
 
