@@ -106,7 +106,16 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
           {execError}
         </p>
       )}
-      {execResult && (
+      {execResult && execResult.status === 'failed' && (
+        <p
+          className="text-xs text-red-600 dark:text-red-400"
+          data-testid={`jarvis-improvement-execute-failed-${rec.id}`}
+        >
+          Queued dry-run task {execResult.task_id.slice(0, 8)}… — status: failed
+          {execResult.error ? `: ${execResult.error}` : ''}. No patches applied.
+        </p>
+      )}
+      {execResult && execResult.status !== 'failed' && (
         <p
           className="text-xs text-green-700 dark:text-green-300"
           data-testid={`jarvis-improvement-execute-success-${rec.id}`}

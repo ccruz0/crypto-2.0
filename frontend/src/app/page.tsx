@@ -1240,6 +1240,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.59',
+    date: '2026-08-08',
+    change: 'Fix Improvement Execute false FORBIDDEN on safety footer',
+    details: `🚀 VERSIÓN 0.59 — IMPROVEMENT EXECUTE SAFETY FOOTER
+
+📋 **What shipped**
+• Safety classifier treats coordinated "Do not A, B, or deploy" lists as negated (was matching bare deploy → FORBIDDEN)
+• Improvement Execute objective footer uses separate Do-not sentences
+• Execute card shows failed status + error in red (not green success)
+
+🔧 **Why**
+• Execute on "Improve evidence collectors for deployment_unhealthy" queued task 72f0f556… then immediately failed with "Objective or plan classified as FORBIDDEN" because the dry-run safety clause ended with ", or deploy."
+
+📦 **PRs**
+• #401
+
+---
+`
   }
 ];
 

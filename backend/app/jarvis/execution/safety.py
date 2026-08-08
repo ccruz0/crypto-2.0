@@ -172,11 +172,31 @@ def has_destructive_intent(text: str) -> bool:
     return bool(_matching_patterns(normalized, _FORBIDDEN_PATTERNS, skip_negated=True))
 
 
+# Coordinated prohibition lists: "Do not apply patches, create PRs, or <ACTION>"
+# Require the clause to end with or/nor so "Do not wait, deploy now" stays FORBIDDEN.
+_COORDINATED_LIST_NEGATION_RE = re.compile(
+    r"(?:\bdo\s+not\b|\bdon'?t\b|\bnever\b)\b[\s\S]{0,160}?\b(?:or|nor)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _sentence_prefix_before(text: str, index: int) -> str:
+    """Return text from the start of the current sentence up to index."""
+    prefix = text[:index]
+    last_break = max(prefix.rfind("."), prefix.rfind("!"), prefix.rfind("?"), prefix.rfind("\n"))
+    if last_break >= 0:
+        return prefix[last_break + 1 :]
+    return prefix
+
+
 def _is_negated_match(text: str, match: re.Match[str]) -> bool:
     """True when a dangerous-token match is preceded by negation in the same clause."""
     prefix = text[: match.start()]
     window = prefix[-96:] if len(prefix) > 96 else prefix
-    return bool(_NEGATION_BEFORE_ACTION_RE.search(window))
+    if _NEGATION_BEFORE_ACTION_RE.search(window):
+        return True
+    sentence_prefix = _sentence_prefix_before(text, match.start())
+    return bool(_COORDINATED_LIST_NEGATION_RE.search(sentence_prefix.strip()))
 
 
 def _matching_patterns(

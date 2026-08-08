@@ -139,4 +139,27 @@ describe('JarvisImprovementTab Execute', () => {
       await screen.findByTestId(`jarvis-improvement-execute-error-${sampleRec.id}`),
     ).toHaveTextContent('Jarvis is disabled');
   });
+
+  it('shows failed status and error when queued task fails', async () => {
+    mockExecute.mockResolvedValue({
+      recommendation_id: sampleRec.id,
+      task_id: '72f0f556-fc9b-41c8-8db2-0c2270706fb0',
+      status: 'failed',
+      objective: 'Jarvis improvement recommendation',
+      approval_required: false,
+      approval_status: 'not_required',
+      dry_run: true,
+      error: 'Objective or plan classified as FORBIDDEN',
+      message: 'Dry-run task queued but failed immediately',
+    });
+
+    const user = userEvent.setup();
+    render(<JarvisImprovementTab />);
+    await user.click(await screen.findByTestId(`jarvis-improvement-execute-${sampleRec.id}`));
+
+    expect(
+      await screen.findByTestId(`jarvis-improvement-execute-failed-${sampleRec.id}`),
+    ).toHaveTextContent(/status: failed.*FORBIDDEN/i);
+    expect(screen.queryByTestId(`jarvis-improvement-execute-success-${sampleRec.id}`)).toBeNull();
+  });
 });

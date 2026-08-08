@@ -652,5 +652,6 @@ class JarvisImprovementExecuteResponse(BaseModel):
     approval_required: bool = True
     approval_status: str = "pending"
     dry_run: bool = True
+    error: str | None = None
     message: str = ""
 

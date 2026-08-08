@@ -110,6 +110,10 @@ def test_destructive_objectives_remain_forbidden(objective: str):
         "Inspect recent tasks. Do not create patches. Do not deploy.",
         "Investigate result_validation.py logic. Do not merge. Report only.",
         "Audit planner_agent.py code paths. Do not modify secrets.",
+        "Investigate and propose a gated follow-up only. Do not apply patches, create PRs, or deploy.",
+        "Jarvis improvement recommendation [template-insuff-deployment_unhealthy]: "
+        "Improve evidence collectors for 'deployment_unhealthy' template\n"
+        "Investigate and propose a gated follow-up only. Do not apply patches, create PRs, or deploy.",
     ],
 )
 def test_negated_safety_constraints_are_safe_auto(objective: str):
@@ -120,6 +124,7 @@ def test_negated_safety_constraints_are_safe_auto(objective: str):
 @pytest.mark.parametrize(
     "objective",
     [
+        "Do not wait, deploy now",
         "Deploy to production. Do not deploy backups.",
         "Investigate outage. Do not deploy. Merge to main.",
         "Inspect logs. Do not deploy. Delete production data.",
