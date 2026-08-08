@@ -117,7 +117,13 @@ describe('JarvisApprovalPage Phase A copy', () => {
     expect(await screen.findByTestId('jarvis-approval-reject')).toHaveTextContent('Reject');
     expect(screen.getByTestId('jarvis-approval-advanced')).toBeInTheDocument();
     expect(screen.getByText(/Advanced — Phase-5 gate buttons/i)).toBeInTheDocument();
-    // Collapsed by default when write gates are off — buttons exist in details but not as primary CTA
+    // Collapsed by default when write gates are off — expandable (not locked closed)
+    const advanced = screen.getByTestId('jarvis-approval-advanced');
+    expect(advanced).not.toHaveAttribute('open');
+    await user.click(screen.getByText(/Advanced — Phase-5 gate buttons/i));
+    expect(advanced).toHaveAttribute('open');
+    expect(screen.getByText(/Write flags are off/i)).toBeInTheDocument();
+    // Buttons exist under Advanced but stay disabled as primary CTA remains Reject
     expect(screen.getByRole('button', { name: /Approve sandbox apply/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /Approve PR creation/i })).toBeDisabled();
   });

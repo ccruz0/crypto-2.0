@@ -64,9 +64,9 @@ export default function JarvisOperationalStatus() {
           <Link
             href="/jarvis/approval"
             className="text-xs font-medium text-slate-600 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
-            title="Phase-5 change gates only — dry-run investigations use Waiting on you below"
+            title="Approval Center (Advanced). Dry-run investigations: use Waiting on you below."
           >
-            Advanced: {approvalCount} change-gate item{approvalCount === 1 ? '' : 's'} →
+            Advanced approval queue ({approvalCount}) →
           </Link>
         )}
       </div>

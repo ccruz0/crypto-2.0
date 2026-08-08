@@ -146,7 +146,7 @@ export default function JarvisApprovalPage() {
         <div className="grid gap-6 lg:grid-cols-2">
           <section className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-medium">Change-gate queue</h2>
+              <h2 className="font-medium">Approval queue</h2>
               <button
                 type="button"
                 onClick={() => void loadQueue()}
@@ -155,10 +155,14 @@ export default function JarvisApprovalPage() {
                 Refresh
               </button>
             </div>
+            <p className="mb-3 text-xs text-slate-500">
+              Prefer Ops → Jarvis for dry-run investigations. Items here may include those tasks until
+              LAB/Promote phases land; Phase-5 gate buttons stay under Advanced below.
+            </p>
             {loading && <p className="text-sm text-slate-500">Loading…</p>}
             {error && <p className="text-sm text-red-400">{error}</p>}
             {!loading && queue.length === 0 && (
-              <p className="text-sm text-slate-500">No change tasks awaiting approval.</p>
+              <p className="text-sm text-slate-500">No tasks awaiting approval.</p>
             )}
             <ul className="space-y-3">
               {queue.map((item) => (
@@ -282,7 +286,7 @@ export default function JarvisApprovalPage() {
                 <details
                   className="border-t border-slate-800 pt-3"
                   data-testid="jarvis-approval-advanced"
-                  open={writeGatesOff === false}
+                  defaultOpen={writeGatesOff === false}
                 >
                   <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-slate-400 hover:text-slate-200">
                     Advanced — Phase-5 gate buttons
