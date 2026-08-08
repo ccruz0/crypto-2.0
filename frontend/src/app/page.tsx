@@ -1280,6 +1280,29 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.61',
+    date: '2026-08-08',
+    change: 'Jarvis Phase A: honest Approve investigation copy + Advanced change gates',
+    details: `🚀 VERSIÓN 0.61 — LAB→PROMOTE UX PHASE A (COPY ONLY)
+
+📋 **What shipped**
+• Improvement no longer points dry-run Execute at Approval Center — deep-links Ops → Jarvis only
+• Ops → Jarvis bare "Approve" → **Approve investigation** (continues dry-run plan; not Send to LAB)
+• Single **Waiting on you** list for dry-run investigations awaiting approval
+• Approval Center: soft-redirect banner to Ops → Jarvis; Phase-5 sandbox/PR buttons under **Advanced**; primary Reject stays visible
+• Plain-language note that Send to LAB / Promote arrive in later phases — no fake LAB buttons
+
+🔧 **Why**
+• Multiple Approves/Executes meant different things; Phase A clarifies without enabling new write power
+• Design: docs/architecture/jarvis-lab-promote-ux.md (PR #403)
+
+📦 **PRs**
+• #404 (Phase A; design doc #403)
+
+---
+`
   }
 ];
 

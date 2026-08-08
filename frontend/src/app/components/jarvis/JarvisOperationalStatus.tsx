@@ -63,27 +63,40 @@ export default function JarvisOperationalStatus() {
         {approvalCount > 0 && (
           <Link
             href="/jarvis/approval"
-            className="text-xs font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400"
+            className="text-xs font-medium text-slate-600 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+            title="Approval Center (Advanced). Dry-run investigations: use Waiting on you below."
           >
-            {approvalCount} pending approval{approvalCount === 1 ? '' : 's'} →
+            Advanced approval queue ({approvalCount}) →
           </Link>
         )}
       </div>
 
+      <p className="text-xs text-slate-600 dark:text-slate-400 mb-3 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 px-2 py-1.5">
+        Prefer this tab for investigation approvals (
+        <span className="font-medium">Approve investigation</span>). Approval Center is for advanced
+        Phase-5 sandbox/PR gates. Send to LAB / Promote to production are coming later — not enabled
+        yet.
+      </p>
+
       {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
 
-      <div className="flex flex-wrap gap-2 mb-3">
-        {flags ? (
-          <>
-            <GateBadge enabled={flags.patch_apply_enabled} label="Patch apply" />
-            <GateBadge enabled={flags.pr_creation_enabled} label="PR creation" />
-            <GateBadge enabled={flags.github_write_enabled} label="GitHub write" />
-            <GateBadge enabled={flags.double_approval_required} label="Double approval" />
-          </>
-        ) : (
-          <span className="text-xs text-gray-500">Loading safety gates…</span>
-        )}
-      </div>
+      <details className="mb-3" data-testid="jarvis-ops-advanced-gates">
+        <summary className="cursor-pointer text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
+          Advanced — Phase-5 safety flags
+        </summary>
+        <div className="flex flex-wrap gap-2 mt-2">
+          {flags ? (
+            <>
+              <GateBadge enabled={flags.patch_apply_enabled} label="Patch apply" />
+              <GateBadge enabled={flags.pr_creation_enabled} label="PR creation" />
+              <GateBadge enabled={flags.github_write_enabled} label="GitHub write" />
+              <GateBadge enabled={flags.double_approval_required} label="Double approval" />
+            </>
+          ) : (
+            <span className="text-xs text-gray-500">Loading safety gates…</span>
+          )}
+        </div>
+      </details>
 
       {writeGatesDisabled && (
         <p className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 rounded px-2 py-1.5">

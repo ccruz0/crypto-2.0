@@ -17,7 +17,7 @@ import {
   type JarvisImprovementTrends,
 } from '@/app/api';
 
-/** Deep-link to Ops → Jarvis with optional task pre-selected for Approve. */
+/** Deep-link to Ops → Jarvis with optional task pre-selected for Approve investigation. */
 export function jarvisApproveHref(taskId?: string | null): string {
   const params = new URLSearchParams({ tab: 'jarvis' });
   if (taskId) params.set('task', taskId);
@@ -99,13 +99,13 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
             data-testid={`jarvis-improvement-execute-${rec.id}`}
             onClick={handleExecute}
             disabled={executing}
-            title="Queue a dry-run Jarvis task. Approve later via Ops → Jarvis (or Approval Center). Does not apply patches or deploy."
+            title="Queue a dry-run investigation in Ops → Jarvis. Continues only after you Approve investigation there. Does not Send to LAB, apply patches, or deploy."
             className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
           >
             {executing ? 'Queuing…' : 'Execute'}
           </button>
           <span className="text-[11px] text-gray-400 dark:text-slate-500 text-right max-w-[14rem]">
-            Queues dry-run · Approve via Ops → Jarvis
+            Queues dry-run · Approve investigation in Ops → Jarvis
           </span>
         </div>
       </div>
@@ -138,7 +138,7 @@ function RecommendationCard({ rec, rank }: { rec: JarvisImprovementRecommendatio
               data-testid={`jarvis-improvement-open-approve-${rec.id}`}
               className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
             >
-              Open Jarvis to Approve
+              Approve investigation in Ops → Jarvis
             </Link>
           )}
         </div>
@@ -369,14 +369,14 @@ export default function JarvisImprovementTab() {
         <div>
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">Jarvis Improvement</h2>
           <p className="text-sm text-gray-500 dark:text-slate-400">
-            Self-improvement recommendations from investigation analytics. Use{' '}
+            Suggestions feed from investigation analytics. Use{' '}
             <span className="font-semibold text-indigo-600 dark:text-indigo-300">Execute</span> on a
-            card to queue a dry-run Jarvis task; then{' '}
-            <span className="font-semibold">Ops → Jarvis</span> (or{' '}
-            <Link href="/jarvis/approval" className="underline hover:text-indigo-600">
-              Approval Center
+            card to queue a dry-run investigation; then approve it in{' '}
+            <Link href={jarvisApproveHref()} className="font-semibold underline hover:text-indigo-600">
+              Ops → Jarvis
             </Link>
-            ) to Approve. No patches, PRs, or deploys from this screen.
+            {' '}(<span className="font-medium">Approve investigation</span> — continues the plan only;
+            Send to LAB / Promote come in later phases). No patches, PRs, or deploys from this screen.
           </p>
         </div>
         <button

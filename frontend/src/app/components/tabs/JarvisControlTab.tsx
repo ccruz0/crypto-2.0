@@ -94,7 +94,7 @@ export default function JarvisControlTab() {
     }
   }, []);
 
-  // Deep-link: ?tab=jarvis&task=<id> from Improvement Execute → Approve
+  // Deep-link: ?tab=jarvis&task=<id> from Improvement Execute → Approve investigation
   useEffect(() => {
     if (taskFromUrl) setSelectedId(taskFromUrl);
   }, [taskFromUrl]);
@@ -111,6 +111,16 @@ export default function JarvisControlTab() {
     const id = setInterval(() => refreshDetail(selectedId), POLL_MS);
     return () => clearInterval(id);
   }, [selectedId, refreshDetail]);
+
+  const waitingOnYou = tasks.filter((t) => t.status.toLowerCase() === 'waiting_for_approval');
+
+  // Prefer a Waiting-on-you task when nothing is selected (soft operator focus).
+  useEffect(() => {
+    if (selectedId || taskFromUrl) return;
+    const firstWaiting = tasks.find((t) => t.status.toLowerCase() === 'waiting_for_approval');
+    if (!firstWaiting) return;
+    setSelectedId(firstWaiting.task_id);
+  }, [selectedId, taskFromUrl, tasks]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,6 +168,42 @@ export default function JarvisControlTab() {
       <JarvisOperationalStatus />
 
       <JarvisAgentPanel detail={detail} />
+
+      {waitingOnYou.length > 0 && (
+        <div
+          data-testid="jarvis-waiting-on-you"
+          className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4"
+        >
+          <h2 className="text-lg font-semibold text-amber-900 dark:text-amber-100 mb-1">
+            Waiting on you
+          </h2>
+          <p className="text-xs text-amber-800 dark:text-amber-200/80 mb-3">
+            Dry-run investigations that need your go-ahead to continue the plan. This is not Send to LAB
+            yet (that arrives later). For Phase-5 sandbox/PR gates, use Advanced change gates.
+          </p>
+          <ul className="space-y-2">
+            {waitingOnYou.map((t) => (
+              <li key={t.task_id}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(t.task_id)}
+                  className={`w-full text-left p-2 rounded border text-sm ${
+                    selectedId === t.task_id
+                      ? 'border-amber-600 bg-white dark:bg-slate-900'
+                      : 'border-amber-200 dark:border-amber-800 bg-white/70 dark:bg-slate-900/40'
+                  }`}
+                >
+                  <div className="font-medium truncate">{t.objective}</div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <StatusBadge status={t.status} />
+                    <span className="text-xs text-gray-500">{t.task_id.slice(0, 8)}</span>
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 p-4">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">Submit Task</h2>
@@ -244,8 +290,12 @@ export default function JarvisControlTab() {
         <div className="lg:col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h3 className="font-semibold text-gray-900 dark:text-white">Task execution</h3>
-            <Link href="/jarvis/approval" className="text-xs text-blue-600 hover:underline dark:text-blue-400">
-              Approval center →
+            <Link
+              href="/jarvis/approval"
+              className="text-xs text-slate-500 hover:underline dark:text-slate-400"
+              title="Phase-5 sandbox / PR gates only — not for dry-run investigation approval"
+            >
+              Advanced change gates →
             </Link>
           </div>
           {!detail ? (
@@ -260,13 +310,29 @@ export default function JarvisControlTab() {
               </div>
               <ValidationOutcome validation={detail.review} />
               {detail.status === 'waiting_for_approval' && (
-                <div className="flex gap-2">
-                  <button type="button" onClick={onApprove} className="px-3 py-1 bg-green-600 text-white rounded text-xs">
-                    Approve
-                  </button>
-                  <button type="button" onClick={onReject} className="px-3 py-1 bg-red-600 text-white rounded text-xs">
-                    Reject
-                  </button>
+                <div className="space-y-2">
+                  <p className="text-xs text-amber-800 dark:text-amber-200/90 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1.5">
+                    Approving continues this dry-run investigation plan only. It does not Send to LAB or
+                    promote to production (those arrive in later phases).
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      data-testid="jarvis-approve-investigation"
+                      onClick={onApprove}
+                      className="px-3 py-1 bg-green-600 text-white rounded text-xs"
+                    >
+                      Approve investigation
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="jarvis-reject-task"
+                      onClick={onReject}
+                      className="px-3 py-1 bg-red-600 text-white rounded text-xs"
+                    >
+                      Reject
+                    </button>
+                  </div>
                 </div>
               )}
               <div>
