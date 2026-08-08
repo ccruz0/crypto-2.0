@@ -361,6 +361,9 @@ def get_auto_ml_status() -> dict[str, Any]:
     model_present = path.is_file()
     metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
 
+    dataset_meta = (
+        manifest.get("dataset_meta") if isinstance(manifest.get("dataset_meta"), dict) else {}
+    )
     return {
         "gate_enabled": auto_ml_enabled(),
         "shadow_log": auto_ml_shadow_log(),
@@ -377,6 +380,9 @@ def get_auto_ml_status() -> dict[str, Any]:
         "promoted_at": manifest.get("promoted_at"),
         "promote_reason": manifest.get("promote_reason"),
         "n_fit_rows": manifest.get("n_fit_rows"),
+        "label_source": dataset_meta.get("label_source"),
+        "n_from_trade_outcome": dataset_meta.get("n_from_trade_outcome"),
+        "n_from_alert": dataset_meta.get("n_from_alert"),
         "metrics": {
             "holdout": metrics.get("holdout"),
             "accuracy": metrics.get("accuracy"),

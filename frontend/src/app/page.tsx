@@ -1204,6 +1204,7 @@ const VERSION_HISTORY = [
   {
     version: '0.57',
     date: '2026-08-08',
+<<<<<<< HEAD
     change: 'Jarvis Improvement: Execute button per recommendation',
     details: `🚀 VERSIÓN 0.57 — EXECUTE IMPROVEMENT RECOMMENDATIONS
 
@@ -1217,6 +1218,22 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #399
+=======
+    change: 'Auto ML Phase 1b: train on executed TP/SL (trade_outcomes hybrid)',
+    details: `🚀 VERSIÓN 0.57 — AUTO ML LEARNS FROM EXECUTED FILLS
+
+📋 **What shipped**
+• Dataset builder --label-source alert | trade_outcomes | hybrid
+• Hybrid prefers COMPLETE trade_outcomes (y=1 if pnl_usd>0) over alert-path sim
+• Retrain CLI plumbed; same FEATURE_NAMES (no live-gate schema bump)
+• Runbook Phase 1b ops steps
+
+🔧 **Why**
+• Phase 0 only labeled from OHLCV forward path; user asked for learning from real TP/SL
+
+📦 **PRs**
+• (this PR)
+>>>>>>> ef846abb (feat(auto-ml): Phase 1b — train on executed TP/SL trade_outcomes)
 
 ---
 `

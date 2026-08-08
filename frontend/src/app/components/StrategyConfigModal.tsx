@@ -310,6 +310,22 @@ export default function StrategyConfigModal({
                       <dd>
                         {autoMlStatus.autonomous_promote ? 'autonomous ON' : 'autonomous OFF'}
                       </dd>
+                      <dt>Labels</dt>
+                      <dd
+                        data-testid="auto-ml-label-source"
+                        title={
+                          autoMlStatus.n_from_trade_outcome != null
+                            ? `trade=${autoMlStatus.n_from_trade_outcome} alert=${autoMlStatus.n_from_alert ?? '?'}`
+                            : undefined
+                        }
+                      >
+                        {autoMlStatus.label_source
+                          ? String(autoMlStatus.label_source)
+                          : 'alert (legacy)'}
+                        {autoMlStatus.n_from_trade_outcome != null
+                          ? ` · fills ${autoMlStatus.n_from_trade_outcome}`
+                          : ''}
+                      </dd>
                       <dt>Holdout</dt>
                       <dd>
                         {autoMlStatus.metrics?.roc_auc != null

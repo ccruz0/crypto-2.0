@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Build offline Auto ML training dataset from labeled alerts.
+"""Build offline Auto ML training dataset from labeled alerts and/or trade outcomes.
 
-Reuses Phase-1 alert-quality labeling (OHLCV forward path) and attaches
-feature vectors for the entry classifier.
+Phase 0: alert-path labels (OHLCV forward: dir_acc_1h OR tp_before_sl).
+Phase 1b: COMPLETE trade_outcomes labels (y=1 if pnl_usd > 0) joined to alert
+          context features. Use --label-source hybrid to study executed fills
+          *and* keep alert-path rows when no fill exists.
 
 Does NOT mutate trading_config, enable live ML gate, or write secrets.
 
 Usage:
   python3 scripts/build_auto_ml_dataset.py --demo
-  python3 scripts/build_auto_ml_dataset.py --alerts-json path/to/alerts.json --fixture-candles
   python3 scripts/build_auto_ml_dataset.py --api-url https://dashboard.hilovivo.com --days 30
-  python3 scripts/build_auto_ml_dataset.py --database-url "$DATABASE_URL" --days 30
+  python3 scripts/build_auto_ml_dataset.py --database-url "$DATABASE_URL" --days 90 \\
+      --label-source hybrid
 """
 
 from __future__ import annotations
@@ -29,14 +31,27 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from alert_quality_metrics import DEFAULT_DELTA  # noqa: E402
-from auto_ml_features import FEATURE_NAMES, FEATURE_VERSION, attach_features_and_label  # noqa: E402
+from auto_ml_features import (  # noqa: E402
+    FEATURE_NAMES,
+    FEATURE_VERSION,
+    TRADE_OUTCOME_LABEL_DEF,
+    attach_features_and_label,
+    attach_features_from_trade_outcomes,
+    merge_alert_and_trade_datasets,
+)
 from eval_alert_quality import (  # noqa: E402
-    build_demo_alerts,
     evaluate_alerts,
     load_alerts_from_api,
     load_alerts_from_db,
     load_alerts_from_json,
     normalize_alert,
+)
+
+
+ALERT_LABEL_DEF = "y=1 if dir_acc_1h OR tp_before_sl; else 0 when dir_acc_1h is False"
+HYBRID_LABEL_DEF = (
+    "prefer trade_outcomes COMPLETE (pnl_usd>0); else alert-path "
+    "(dir_acc_1h OR tp_before_sl)"
 )
 
 
@@ -92,6 +107,112 @@ def build_rich_demo_alerts() -> list[dict[str, Any]]:
     return rows
 
 
+def load_complete_outcomes_with_alerts(
+    database_url: str, *, days: int, limit: int = 5000
+) -> list[dict[str, Any]]:
+    """COMPLETE trade_outcomes joined to telegram_messages.context_json (no secrets logged)."""
+    try:
+        from sqlalchemy import create_engine, text
+    except ImportError as e:
+        raise RuntimeError("sqlalchemy required for --label-source trade_outcomes/hybrid") from e
+
+    engine = create_engine(database_url)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    sql = text(
+        """
+        SELECT
+          o.telegram_message_id,
+          o.order_intent_id,
+          o.entry_exchange_order_id,
+          o.exit_exchange_order_id,
+          o.symbol,
+          o.side,
+          o.entry_price,
+          o.exit_price,
+          o.quantity,
+          o.pnl_usd,
+          o.pnl_pct,
+          o.exit_reason,
+          o.label,
+          o.entry_ts,
+          o.exit_ts,
+          o.hold_seconds,
+          m.context_json,
+          m.timestamp AS alert_timestamp,
+          m.message AS alert_message
+        FROM trade_outcomes o
+        INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
+        WHERE o.join_status = 'COMPLETE'
+          AND o.label IS NOT NULL
+          AND o.telegram_message_id IS NOT NULL
+          AND (o.entry_ts IS NULL OR o.entry_ts >= :cutoff)
+        ORDER BY o.entry_ts DESC NULLS LAST
+        LIMIT :lim
+        """
+    )
+    sql_sqlite = text(
+        """
+        SELECT
+          o.telegram_message_id,
+          o.order_intent_id,
+          o.entry_exchange_order_id,
+          o.exit_exchange_order_id,
+          o.symbol,
+          o.side,
+          o.entry_price,
+          o.exit_price,
+          o.quantity,
+          o.pnl_usd,
+          o.pnl_pct,
+          o.exit_reason,
+          o.label,
+          o.entry_ts,
+          o.exit_ts,
+          o.hold_seconds,
+          m.context_json,
+          m.timestamp AS alert_timestamp,
+          m.message AS alert_message
+        FROM trade_outcomes o
+        INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
+        WHERE o.join_status = 'COMPLETE'
+          AND o.label IS NOT NULL
+          AND o.telegram_message_id IS NOT NULL
+          AND (o.entry_ts IS NULL OR o.entry_ts >= :cutoff)
+        ORDER BY o.entry_ts DESC
+        LIMIT :lim
+        """
+    )
+    q = sql_sqlite if engine.dialect.name == "sqlite" else sql
+    rows: list[dict[str, Any]] = []
+    with engine.connect() as conn:
+        for r in conn.execute(q, {"cutoff": cutoff, "lim": limit}):
+            d = dict(r._mapping)
+            # Prefer alert timestamp when entry_ts missing
+            if d.get("entry_ts") is None and d.get("alert_timestamp") is not None:
+                d["entry_ts"] = d["alert_timestamp"]
+            rows.append(d)
+    return rows
+
+
+def _build_alert_dataset(
+    alerts: list[dict[str, Any]], *, fixture: bool, delta: float
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    labeled, summary = evaluate_alerts(alerts, fixture_candles=fixture, delta=delta)
+    raw_by_id: dict[Any, dict[str, Any]] = {}
+    for a in alerts:
+        if a.get("id") is not None:
+            raw_by_id[a["id"]] = a
+    for a in alerts:
+        norm = normalize_alert(a)
+        if norm is None:
+            continue
+        for row in labeled:
+            if row.get("id") == a.get("id") and "context_json" not in row:
+                row["context_json"] = a.get("context_json")
+    dataset = attach_features_and_label(labeled, raw_by_id=raw_by_id)
+    return dataset, summary
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Build Auto ML entry training dataset (offline)")
     src = p.add_mutually_exclusive_group()
@@ -102,6 +223,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--days", type=int, default=30)
     p.add_argument("--delta", type=float, default=DEFAULT_DELTA)
     p.add_argument("--fixture-candles", action="store_true")
+    p.add_argument(
+        "--label-source",
+        choices=("alert", "trade_outcomes", "hybrid"),
+        default="alert",
+        help=(
+            "alert=OHLCV forward labels (Phase 0); "
+            "trade_outcomes=COMPLETE fill PnL only (Phase 1b); "
+            "hybrid=prefer fills, else alert labels"
+        ),
+    )
     p.add_argument(
         "--out",
         type=Path,
@@ -115,47 +246,95 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     fixture = bool(args.fixture_candles or args.demo)
     source = "demo"
+    label_source = args.label_source
 
     if args.demo:
+        if label_source != "alert":
+            print(
+                "--demo only supports --label-source alert "
+                "(use --database-url for trade_outcomes/hybrid).",
+                file=sys.stderr,
+            )
+            return 2
         alerts = build_rich_demo_alerts()
         fixture = True
         source = "demo+fixture"
     elif args.alerts_json:
+        if label_source != "alert":
+            print(
+                "--alerts-json only supports --label-source alert "
+                "(trade labels need --database-url).",
+                file=sys.stderr,
+            )
+            return 2
         alerts = load_alerts_from_json(args.alerts_json)
         source = f"json:{args.alerts_json}"
     elif args.api_url:
+        if label_source != "alert":
+            print(
+                "--api-url only supports --label-source alert "
+                "(trade_outcomes live in the DB — use --database-url).",
+                file=sys.stderr,
+            )
+            return 2
         alerts = load_alerts_from_api(args.api_url, days=args.days, token=args.api_token)
         source = f"api:{args.api_url}"
     elif args.database_url:
-        alerts = load_alerts_from_db(args.database_url, days=args.days)
+        alerts = [] if label_source == "trade_outcomes" else load_alerts_from_db(
+            args.database_url, days=args.days
+        )
         source = "database"
     else:
-        # Fall back to tiny eval demo if nothing passed
         print(
             "No alert source. Use --demo, --alerts-json, --api-url, or --database-url.",
             file=sys.stderr,
         )
         return 2
 
-    labeled, summary = evaluate_alerts(alerts, fixture_candles=fixture, delta=args.delta)
+    summary: dict[str, Any] = {}
+    alert_dataset: list[dict[str, Any]] = []
+    trade_dataset: list[dict[str, Any]] = []
 
-    raw_by_id: dict[Any, dict[str, Any]] = {}
-    for a in alerts:
-        if a.get("id") is not None:
-            raw_by_id[a["id"]] = a
+    if label_source in ("alert", "hybrid") and alerts:
+        alert_dataset, summary = _build_alert_dataset(
+            alerts, fixture=fixture, delta=args.delta
+        )
 
-    # Ensure labeled rows can recover context when id missing
-    for a in alerts:
-        norm = normalize_alert(a)
-        if norm is None:
-            continue
-        for row in labeled:
-            if row.get("id") == a.get("id") and "context_json" not in row:
-                row["context_json"] = a.get("context_json")
+    if label_source in ("trade_outcomes", "hybrid"):
+        if not args.database_url:
+            print(
+                "--label-source trade_outcomes/hybrid requires --database-url "
+                "(or DATABASE_URL).",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            outcomes = load_complete_outcomes_with_alerts(
+                args.database_url, days=args.days
+            )
+        except Exception as exc:
+            print(f"Failed to load trade_outcomes: {exc}", file=sys.stderr)
+            return 2
+        trade_dataset = attach_features_from_trade_outcomes(outcomes)
+        source = f"{source}+trade_outcomes"
 
-    dataset = attach_features_and_label(labeled, raw_by_id=raw_by_id)
+    if label_source == "alert":
+        dataset = alert_dataset
+        label_def = ALERT_LABEL_DEF
+        phase = "ml-a-offline"
+    elif label_source == "trade_outcomes":
+        dataset = trade_dataset
+        label_def = TRADE_OUTCOME_LABEL_DEF
+        phase = "1b-trade-outcomes"
+    else:
+        dataset = merge_alert_and_trade_datasets(alert_dataset, trade_dataset)
+        label_def = HYBRID_LABEL_DEF
+        phase = "1b-hybrid"
+
     pos = sum(1 for r in dataset if r["y"] == 1)
     neg = sum(1 for r in dataset if r["y"] == 0)
+    n_trade = sum(1 for r in dataset if r.get("label_source") == "trade_outcome")
+    n_alert = sum(1 for r in dataset if r.get("label_source") == "alert")
 
     payload = {
         "meta": {
@@ -165,11 +344,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             "fixture_candles": fixture,
             "feature_version": FEATURE_VERSION,
             "feature_names": list(FEATURE_NAMES),
-            "label_def": "y=1 if dir_acc_1h OR tp_before_sl; else 0 when dir_acc_1h is False",
-            "phase": "ml-a-offline",
+            "label_source": label_source,
+            "label_def": label_def,
+            "phase": phase,
             "n_input_alerts": len(alerts),
             "n_labeled_metrics": summary.get("n_labeled"),
+            "n_trade_outcome_rows": len(trade_dataset),
+            "n_alert_path_rows": len(alert_dataset),
             "n_dataset_rows": len(dataset),
+            "n_from_trade_outcome": n_trade,
+            "n_from_alert": n_alert,
             "n_positive": pos,
             "n_negative": neg,
         },
@@ -179,7 +363,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
     print(
-        f"Wrote {len(dataset)} rows ({pos} pos / {neg} neg) → {args.out}",
+        f"Wrote {len(dataset)} rows "
+        f"({pos} pos / {neg} neg; trade={n_trade} alert={n_alert}) → {args.out}",
         file=sys.stderr,
     )
     return 0

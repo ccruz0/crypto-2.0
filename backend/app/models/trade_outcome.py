@@ -15,7 +15,8 @@ class TradeOutcome(Base):
 
     Built offline by ``scripts/build_trade_outcomes.py`` from:
     telegram_messages ← order_intents ← exchange_orders (entry) ← SL/TP children.
-    Not wired to Auto ML promote yet (Phase 1b).
+    Phase 1b: labels feed Auto ML via
+    ``scripts/build_auto_ml_dataset.py --label-source hybrid|trade_outcomes``.
     """
 
     __tablename__ = "trade_outcomes"
