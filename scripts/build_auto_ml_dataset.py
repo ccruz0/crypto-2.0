@@ -238,12 +238,15 @@ def load_complete_fill_alert_ids(
         raise RuntimeError("sqlalchemy required for --label-source hybrid") from e
 
     engine = create_engine(database_url)
+    # Require label IS NOT NULL — same predicate as load_complete_outcomes_with_alerts
+    # so we never suppress alert-path rows when no labeled fill replacement exists.
     sql = text(
         """
         SELECT DISTINCT o.telegram_message_id
         FROM trade_outcomes o
         INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
         WHERE o.join_status = 'COMPLETE'
+          AND o.label IS NOT NULL
           AND o.telegram_message_id IN :ids
           AND m.blocked = false
         """
@@ -254,6 +257,7 @@ def load_complete_fill_alert_ids(
         FROM trade_outcomes o
         INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
         WHERE o.join_status = 'COMPLETE'
+          AND o.label IS NOT NULL
           AND o.telegram_message_id IN :ids
           AND m.blocked = 0
         """
