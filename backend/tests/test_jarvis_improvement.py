@@ -315,6 +315,89 @@ class TestTemplateGapAnalysis:
         assert "template-trigger-order-dedicated" in rec_ids
         assert any(g["gap_type"] == "specialized_trigger_orders" for g in analysis["gaps"])
 
+    def test_scheduled_generic_drivers_close_when_templates_exist(self, improvement_db):
+        """recent_error_logs + database_health close the scheduled-driver gap rec."""
+        _seed_improvement_data(improvement_db)
+        from app.jarvis.analytics.aggregation import fetch_all_investigations
+
+        investigations = fetch_all_investigations()
+        # Historical rows retained template_id=generic for scheduled objectives.
+        investigations.append(
+            {
+                "investigation_id": "sched-err-1",
+                "objective": "Analyze recent error logs for production incidents",
+                "template_id": "generic",
+                "status": "completed",
+                "root_cause": "No unhealthy services detected; deployment health checks passing",
+                "confidence": 80,
+                "category": "api",
+            }
+        )
+        investigations.append(
+            {
+                "investigation_id": "sched-db-1",
+                "objective": "Check database health and recent query errors",
+                "template_id": "generic",
+                "status": "completed",
+                "root_cause": "No unhealthy services detected; deployment health checks passing",
+                "confidence": 80,
+                "category": "database",
+            }
+        )
+        template_metrics = aggregate_template_metrics(investigations)
+        analysis = analyze_template_gaps(investigations, template_metrics)
+        rec_ids = {r["id"] for r in analysis["recommendations"]}
+        assert "template-scheduled-generic-drivers" not in rec_ids
+        assert "recent_error_logs" in analysis["summary"]["known_templates"]
+        assert "database_health" in analysis["summary"]["known_templates"]
+        assert "scheduled_generic_drivers" not in {g["gap_type"] for g in analysis["gaps"]}
+
+    def test_scheduled_generic_drivers_recommend_when_templates_missing(
+        self, improvement_db, monkeypatch
+    ):
+        import app.jarvis.improvement.template_gap_analysis as gap_mod
+
+        monkeypatch.setattr(
+            gap_mod,
+            "_KNOWN_TEMPLATE_IDS",
+            {
+                tid
+                for tid in gap_mod._KNOWN_TEMPLATE_IDS
+                if tid not in ("recent_error_logs", "database_health")
+            },
+        )
+        _seed_improvement_data(improvement_db)
+        from app.jarvis.analytics.aggregation import fetch_all_investigations
+
+        investigations = fetch_all_investigations()
+        investigations.extend(
+            [
+                {
+                    "investigation_id": "sched-err-missing",
+                    "objective": "Analyze recent error logs for production incidents",
+                    "template_id": "generic",
+                    "status": "completed",
+                    "root_cause": "x",
+                    "confidence": 50,
+                    "category": "api",
+                },
+                {
+                    "investigation_id": "sched-db-missing",
+                    "objective": "Check database health and recent query errors",
+                    "template_id": "generic",
+                    "status": "completed",
+                    "root_cause": "y",
+                    "confidence": 50,
+                    "category": "database",
+                },
+            ]
+        )
+        template_metrics = aggregate_template_metrics(investigations)
+        analysis = analyze_template_gaps(investigations, template_metrics)
+        rec_ids = {r["id"] for r in analysis["recommendations"]}
+        assert "template-scheduled-generic-drivers" in rec_ids
+        assert any(g["gap_type"] == "scheduled_generic_drivers" for g in analysis["gaps"])
+
 
 class TestToolEffectiveness:
     def test_identifies_tool_metrics(self, improvement_db):

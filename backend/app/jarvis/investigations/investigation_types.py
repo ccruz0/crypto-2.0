@@ -298,6 +298,92 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         ),
         keywords=("jarvis", "task", "fail"),
     ),
+    # Dedicated templates for former scheduled-generic drivers (Improvement
+    # template-generic-overuse). Must match scheduler objectives exactly so
+    # get_collectors_for_objective no longer falls through to generic.
+    InvestigationTemplate(
+        template_id="recent_error_logs",
+        category="api",
+        pattern=re.compile(
+            r"analyze\s+recent\s+error\s+logs|"
+            r"recent\s+error\s+logs|"
+            r"error\s+log\s+analysis|"
+            r"error\s+logs?\s+for\s+production|"
+            r"production\s+(?:incidents?|errors?).*(?:error\s+)?logs?",
+            re.IGNORECASE,
+        ),
+        title="What do recent error logs show for production incidents?",
+        collectors=(
+            EvidenceCollector(
+                "search_logs",
+                "search_logs",
+                {
+                    "keywords": (
+                        "ERROR",
+                        "Exception",
+                        "Traceback",
+                        "CRITICAL",
+                        "failed",
+                        "incident",
+                    )
+                },
+            ),
+            EvidenceCollector("read_logs", "gather_logs", {"source": "backend-aws"}),
+            EvidenceCollector("inspect_health", "inspect_health", mandatory=False),
+            EvidenceCollector(
+                "search_repository",
+                "search_repository",
+                {"topic": "error_logs"},
+                mandatory=False,
+            ),
+        ),
+        keywords=("error", "logs", "recent", "production", "incident"),
+    ),
+    InvestigationTemplate(
+        template_id="database_health",
+        category="database",
+        pattern=re.compile(
+            r"database\s+health|"
+            r"\bdb\s+health\b|"
+            r"recent\s+query\s+errors|"
+            r"check\s+database|"
+            r"postgres(?:ql)?\s+(?:health|errors?|query)",
+            re.IGNORECASE,
+        ),
+        title="Why is database health degraded?",
+        collectors=(
+            EvidenceCollector(
+                "search_logs",
+                "search_logs",
+                {
+                    "keywords": (
+                        "postgres",
+                        "database",
+                        "sql",
+                        "query",
+                        "OperationalError",
+                        "timeout",
+                        "connection",
+                    )
+                },
+            ),
+            EvidenceCollector("inspect_health", "inspect_health"),
+            EvidenceCollector("inspect_runtime", "inspect_runtime"),
+            EvidenceCollector(
+                "query_database",
+                "count_orders_by_status",
+                {"preset": "count_orders_by_status"},
+                mandatory=False,
+            ),
+            EvidenceCollector(
+                "search_repository",
+                "search_repository",
+                {"topic": "database"},
+                mandatory=False,
+            ),
+        ),
+        keywords=("database", "health", "query", "postgres", "errors"),
+    ),
     InvestigationTemplate(
         template_id="deployment_unhealthy",
         category="deployment",

@@ -60,6 +60,8 @@ _TEMPLATE_DOMAIN: dict[str, InvestigationDomain] = {
     "executed_orders_missing": InvestigationDomain.ORDER_RECONCILIATION,
     "jarvis_task_failing": InvestigationDomain.DEPLOYMENT,
     "deployment_unhealthy": InvestigationDomain.DEPLOYMENT,
+    "recent_error_logs": InvestigationDomain.INFRASTRUCTURE,
+    "database_health": InvestigationDomain.DATABASE,
     "websocket_prices_stale": InvestigationDomain.INFRASTRUCTURE,
 }
 

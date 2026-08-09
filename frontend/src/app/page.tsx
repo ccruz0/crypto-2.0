@@ -1495,7 +1495,7 @@ const VERSION_HISTORY = [
 ---
 `
   },
-    {
+  {
     version: '0.70',
     date: '2026-08-09',
     change: 'Ops hybrid Auto ML retrain + joblib runtime deps',
@@ -1550,6 +1550,28 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #431
+
+---
+`
+  },
+  {
+    version: '0.73',
+    date: '2026-08-09',
+    change: 'Dedicated templates for scheduled error-log and database health checks',
+    details: `🚀 VERSIÓN 0.73 — SCHEDULED GENERIC-DRIVER TEMPLATES
+
+📋 **What shipped**
+• New \`recent_error_logs\` and \`database_health\` investigation templates with targeted log/DB collectors
+• Scheduler \`error_log_analysis\` / \`database_health\` no longer use the generic template
+• Reject deployment-healthy root cause outside \`deployment_unhealthy\` (stops health-PASS polluting other RCs)
+• Gap analysis closes Improvement HIGH \`template-generic-overuse\` / scheduled-driver gap once both templates are in the catalog
+
+🔧 **Why**
+• Next eng fix from Jarvis Improvement after trigger-order template (#413 / v0.67)
+• Prod: 25% of investigations used generic; top keywords recent/health/errors matched two scheduled objectives hard-coded to generic
+
+📦 **PRs**
+• #414
 
 ---
 `
