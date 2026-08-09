@@ -290,6 +290,28 @@ class TestValidationGates:
         )
         assert status == InvestigationStatus.INSUFFICIENT_EVIDENCE
 
+    def test_healthy_deployment_cause_rejected_outside_deployment_template(self):
+        status = validate_investigation_report_fields(
+            root_cause="No unhealthy services detected; deployment health checks passing",
+            evidence=merge_evidence([_db_evidence(), _exchange_evidence()]),
+            confidence=90,
+            recommended_fix="Review error logs",
+            template_id="recent_error_logs",
+            category="api",
+        )
+        assert status == InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    def test_healthy_deployment_cause_allowed_for_deployment_unhealthy(self):
+        status = validate_investigation_report_fields(
+            root_cause="No unhealthy services detected; deployment health checks passing",
+            evidence=merge_evidence([_db_evidence(), _exchange_evidence()]),
+            confidence=90,
+            recommended_fix="No repair needed",
+            template_id="deployment_unhealthy",
+            category="deployment",
+        )
+        assert status == InvestigationStatus.COMPLETED
+
 
 class TestSynthesis:
     def test_final_synthesis_includes_required_sections(self):

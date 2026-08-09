@@ -48,6 +48,16 @@ _GENERIC_ROOT_CAUSE_PHRASES = frozenset(
 )
 
 _RESOLVED_MISMATCH_CAUSE = "No active dashboard/exchange mismatch detected"
+_HEALTHY_DEPLOYMENT_CAUSE = "No unhealthy services detected; deployment health checks passing"
+_DEPLOYMENT_SCOPED_TEMPLATES = frozenset({"deployment_unhealthy"})
+_MISMATCH_SCOPED_TEMPLATES = frozenset(
+    {
+        "dashboard_exchange_mismatch",
+        "open_orders_zero_dashboard",
+        "open_orders_empty",
+        "crypto_com_trigger_orders",
+    }
+)
 
 
 @dataclass
@@ -1204,15 +1214,16 @@ def validate_investigation_report_fields(
         return InvestigationStatus.INSUFFICIENT_EVIDENCE
 
     # Reject mismatch-resolution cause when investigation is not dashboard/mismatch scoped.
+    if root_cause == _RESOLVED_MISMATCH_CAUSE and template_id and template_id not in _MISMATCH_SCOPED_TEMPLATES:
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    # Reject deployment-healthy "all green" cause outside deployment_unhealthy.
+    # inspect_health PASS otherwise pollutes error-log / database / websocket RCs
+    # (seen driving template-generic-overuse false completions).
     if (
-        root_cause == _RESOLVED_MISMATCH_CAUSE
+        root_cause == _HEALTHY_DEPLOYMENT_CAUSE
         and template_id
-        not in (
-            "dashboard_exchange_mismatch",
-            "open_orders_zero_dashboard",
-            "open_orders_empty",
-            "crypto_com_trigger_orders",
-        )
+        and template_id not in _DEPLOYMENT_SCOPED_TEMPLATES
     ):
         return InvestigationStatus.INSUFFICIENT_EVIDENCE
 

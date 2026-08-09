@@ -47,7 +47,7 @@ RECURRING_INVESTIGATION_TEMPLATES: tuple[RecurringInvestigationTemplate, ...] = 
     ),
     RecurringInvestigationTemplate(
         schedule_id="database_health",
-        template_id="generic",
+        template_id="database_health",
         title="Database health",
         objective="Check database health and recent query errors",
         category="database",
@@ -61,7 +61,7 @@ RECURRING_INVESTIGATION_TEMPLATES: tuple[RecurringInvestigationTemplate, ...] = 
     ),
     RecurringInvestigationTemplate(
         schedule_id="error_log_analysis",
-        template_id="generic",
+        template_id="recent_error_logs",
         title="Error log analysis",
         objective="Analyze recent error logs for production incidents",
         category="api",

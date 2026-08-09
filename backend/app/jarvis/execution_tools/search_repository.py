@@ -100,6 +100,22 @@ _TOPIC_QUERIES: dict[str, list[str]] = {
         "deployment_unhealthy",
         "healthcheck",
     ],
+    "database": [
+        "DATABASE_URL",
+        "SessionLocal",
+        "sqlalchemy",
+        "ensure_jarvis",
+        "postgres",
+        "OperationalError",
+    ],
+    "error_logs": [
+        "search_logs",
+        "read_logs",
+        "logging.getLogger",
+        "ERROR",
+        "Traceback",
+        "exception",
+    ],
 }
 
 _DEFAULT_FRAMEWORK_TOPICS: list[str] = ["jarvis", "result_validation", "planner", "repository_agent"]

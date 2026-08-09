@@ -95,6 +95,40 @@ class TestCryptoComTriggerOrdersRouting:
         assert template.template_id == "crypto_com_trigger_orders"
 
 
+class TestScheduledGenericDriverRouting:
+    """Improvement template-generic-overuse: scheduled drivers leave generic."""
+
+    def test_error_log_objective_routes_to_recent_error_logs(self):
+        template = match_investigation_template(
+            "Analyze recent error logs for production incidents"
+        )
+        assert template is not None
+        assert template.template_id == "recent_error_logs"
+        assert template.category == "api"
+        tools = {c.tool for c in template.collectors}
+        assert {"search_logs", "read_logs"} <= tools
+
+    def test_database_health_objective_routes_to_database_health(self):
+        template = match_investigation_template(
+            "Check database health and recent query errors"
+        )
+        assert template is not None
+        assert template.template_id == "database_health"
+        assert template.category == "database"
+        tools = {c.tool for c in template.collectors}
+        assert {"search_logs", "inspect_health", "inspect_runtime"} <= tools
+
+    def test_scheduler_templates_no_longer_use_generic(self):
+        from app.jarvis.investigations.scheduler.templates import (
+            RECURRING_INVESTIGATION_TEMPLATES,
+        )
+
+        by_id = {t.schedule_id: t for t in RECURRING_INVESTIGATION_TEMPLATES}
+        assert by_id["error_log_analysis"].template_id == "recent_error_logs"
+        assert by_id["database_health"].template_id == "database_health"
+        assert all(t.template_id != "generic" for t in RECURRING_INVESTIGATION_TEMPLATES)
+
+
 class TestPortfolioEquityDerivedRouting:
     _OBJECTIVE = "Why is portfolio equity derived instead of exchange-reported?"
 
