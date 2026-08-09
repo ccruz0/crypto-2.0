@@ -156,6 +156,34 @@ class TestSellRealPathProtection:
         )
         mock_protect.assert_called_once()
 
+    def test_sell_add_to_existing_short_protects_when_wallet_down(self):
+        # Prod DOGE_USD 5755600492782582799: Auto/orchestrator skipped SL/TP when a prior
+        # short lot was open and fill-time used position_exists as long-close. Wallet API
+        # down + margin + shorting must still protect short *adds*.
+        svc = SignalMonitorService()
+        mock_protect = self._run_sell(
+            svc,
+            _make_db(),
+            _make_watchlist_item(symbol="DOGE_USD", margin=True),
+            positions=1,
+            shorting=True,
+            wallet_balance=None,
+        )
+        mock_protect.assert_called_once()
+        assert mock_protect.call_args.kwargs["entry_side"] == "SELL"
+
+    def test_sell_add_to_existing_short_protects_when_wallet_negative(self):
+        svc = SignalMonitorService()
+        mock_protect = self._run_sell(
+            svc,
+            _make_db(),
+            _make_watchlist_item(symbol="DOGE_USD", margin=True),
+            positions=2,
+            shorting=True,
+            wallet_balance=-3689.0,
+        )
+        mock_protect.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # PART B — in-memory (symbol, side) cap-race dedup
