@@ -42,7 +42,8 @@ jobs:
             scripts/diag_auto_ml_fill_features.py \
             scripts/auto_ml_features.py \
             scripts/build_auto_ml_dataset.py \
-            scripts/alert_quality_metrics.py
+            scripts/alert_quality_metrics.py \
+            scripts/eval_alert_quality.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER
           test -n "\$CONTAINER"
