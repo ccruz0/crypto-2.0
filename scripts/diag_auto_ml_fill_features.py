@@ -23,6 +23,8 @@ for p in (_SCRIPTS,):
 
 from alert_quality_metrics import parse_context_json, to_utc_ms  # noqa: E402
 from auto_ml_features import (  # noqa: E402
+    _context_has_indicator_keys,
+    _symbol_base,
     enrich_outcomes_with_nearest_signal_context,
     features_from_alert_row,
     features_look_default,
@@ -46,6 +48,100 @@ def _ctx_keys(ctx: dict[str, Any], *, max_keys: int = 40) -> list[str]:
     return keys[:max_keys]
 
 
+def _donor_pool_report(alerts: list[dict[str, Any]]) -> dict[str, Any]:
+    donor_keys: Counter[str] = Counter()
+    with_ind = 0
+    samples: list[dict[str, Any]] = []
+    for a in alerts:
+        ctx = parse_context_json(a.get("context_json"))
+        if _context_has_indicator_keys(ctx):
+            with_ind += 1
+            if len(samples) < 3:
+                samples.append(
+                    {
+                        "id": a.get("id"),
+                        "symbol": a.get("symbol"),
+                        "keys": _ctx_keys(ctx, max_keys=20),
+                        "preview": json.dumps(ctx, default=str)[:300],
+                    }
+                )
+        for k in _ctx_keys(ctx, max_keys=30):
+            donor_keys[k] += 1
+    return {
+        "n_signal_alerts": len(alerts),
+        "n_with_indicator_keys": with_ind,
+        "top_keys": donor_keys.most_common(25),
+        "indicator_samples": samples,
+    }
+
+
+def _match_trials(
+    outcomes: list[dict[str, Any]],
+    alerts: list[dict[str, Any]],
+    *,
+    sample: int = 5,
+    windows_h: tuple[int, ...] = (6, 24, 168),
+) -> list[dict[str, Any]]:
+    """For sample fills, report nearest prior SIGNAL by symbol regardless of RSI keys."""
+    by_base: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for alert in alerts:
+        ts_ms = to_utc_ms(alert.get("timestamp"))
+        if ts_ms is None:
+            continue
+        base = _symbol_base(alert.get("symbol"))
+        if not base:
+            continue
+        by_base.setdefault(base, []).append((int(ts_ms), alert))
+    for base in by_base:
+        by_base[base].sort(key=lambda x: x[0])
+
+    trials: list[dict[str, Any]] = []
+    for oc in outcomes[:sample]:
+        entry_ms = to_utc_ms(oc.get("entry_ts") or oc.get("alert_timestamp"))
+        base = _symbol_base(oc.get("symbol"))
+        row: dict[str, Any] = {
+            "fill_tid": oc.get("telegram_message_id"),
+            "symbol": oc.get("symbol"),
+            "base": base,
+            "entry_ts": str(oc.get("entry_ts") or oc.get("alert_timestamp")),
+            "candidates_same_base": len(by_base.get(base or "", [])),
+            "windows": {},
+        }
+        if entry_ms is None or not base:
+            row["error"] = "missing_entry_or_symbol"
+            trials.append(row)
+            continue
+        priors = [p for p in by_base.get(base, []) if p[0] <= int(entry_ms)]
+        for hours in windows_h:
+            max_skew_ms = hours * 3600 * 1000
+            in_win = [p for p in priors if int(entry_ms) - p[0] <= max_skew_ms]
+            best = in_win[-1] if in_win else None
+            if best is None:
+                row["windows"][f"{hours}h"] = {"n": 0}
+            else:
+                donor = best[1]
+                dctx = parse_context_json(donor.get("context_json"))
+                row["windows"][f"{hours}h"] = {
+                    "n": len(in_win),
+                    "donor_id": donor.get("id"),
+                    "skew_min": round((int(entry_ms) - best[0]) / 60000.0, 1),
+                    "has_indicator_keys": _context_has_indicator_keys(dctx),
+                    "donor_keys": _ctx_keys(dctx, max_keys=15),
+                }
+        # Nearest prior any time
+        if priors:
+            best = priors[-1]
+            dctx = parse_context_json(best[1].get("context_json"))
+            row["nearest_any"] = {
+                "donor_id": best[1].get("id"),
+                "skew_h": round((int(entry_ms) - best[0]) / 3600000.0, 2),
+                "has_indicator_keys": _context_has_indicator_keys(dctx),
+                "donor_keys": _ctx_keys(dctx, max_keys=15),
+            }
+        trials.append(row)
+    return trials
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Diag Auto ML fill feature degradation")
     p.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
@@ -56,12 +152,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("--database-url / DATABASE_URL required", file=sys.stderr)
         return 2
 
-    outcomes = load_complete_outcomes_with_alerts(
+    raw_outcomes = load_complete_outcomes_with_alerts(
         args.database_url, days=args.days, telegram_message_ids=None
     )
     alerts = load_alerts_from_db(args.database_url, days=args.days)
+    donor_pool = _donor_pool_report(alerts)
+    match_trials = _match_trials(raw_outcomes, alerts, sample=args.sample)
     outcomes, enrich_stats = enrich_outcomes_with_nearest_signal_context(
-        outcomes, alerts, max_skew_seconds=6 * 3600
+        raw_outcomes, alerts, max_skew_seconds=6 * 3600
     )
 
     # Without alert = COMPLETE rows missing telegram join target
@@ -153,6 +251,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "complete_total_db": complete_total,
         "complete_no_alert_or_null_label": no_alert,
         "loaded_with_alert_join": len(outcomes),
+        "donor_pool": donor_pool,
+        "match_trials": match_trials,
         "signal_ctx_enrich": enrich_stats,
         "feature_rich": rich,
         "feature_degraded": degraded,
