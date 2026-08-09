@@ -21,12 +21,8 @@ for p in (_SCRIPTS,):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from alert_quality_metrics import parse_context_json  # noqa: E402
-from auto_ml_features import (  # noqa: E402
-    features_from_alert_row,
-    features_look_default,
-    to_utc_ms,
-)
+from alert_quality_metrics import parse_context_json, to_utc_ms  # noqa: E402
+from auto_ml_features import features_from_alert_row, features_look_default  # noqa: E402
 from build_auto_ml_dataset import load_complete_outcomes_with_alerts  # noqa: E402
 
 
