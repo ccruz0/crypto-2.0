@@ -262,6 +262,37 @@ def test_hybrid_keeps_multiple_fills_per_alert():
     assert all(r["label_source"] == "trade_outcome" for r in merged)
 
 
+def test_hybrid_suppresses_alert_when_complete_fill_known_but_omitted():
+    """COMPLETE fill exists in DB but was not attached as a trade row → drop sim."""
+    alert_rows = [
+        {
+            "id": 202,
+            "symbol": "DOT_USD",
+            "side": "BUY",
+            "y": 1,
+            "x": [0.0] * len(FEATURE_NAMES),
+            "label_source": "alert",
+            "features": {},
+        },
+        {
+            "id": 303,
+            "symbol": "ETH_USD",
+            "side": "BUY",
+            "y": 0,
+            "x": [0.0] * len(FEATURE_NAMES),
+            "label_source": "alert",
+            "features": {},
+        },
+    ]
+    # Simulate builder union: complete_ids from DB, trade_rows empty for 202.
+    merged = merge_alert_and_trade_datasets(
+        alert_rows, [], suppress_alert_ids={202}
+    )
+    assert len(merged) == 1
+    assert merged[0]["id"] == 303
+    assert merged[0]["label_source"] == "alert"
+
+
 def test_label_source_meta_trade_outcomes(tmp_path, monkeypatch):
     from build_auto_ml_dataset import main as build_main
 

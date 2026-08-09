@@ -23,7 +23,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS_DIR.parent
@@ -108,100 +108,159 @@ def build_rich_demo_alerts() -> list[dict[str, Any]]:
 
 
 def load_complete_outcomes_with_alerts(
-    database_url: str, *, days: int, limit: int = 5000
+    database_url: str,
+    *,
+    days: int,
+    limit: int = 5000,
+    telegram_message_ids: Optional[Sequence[Any]] = None,
 ) -> list[dict[str, Any]]:
-    """COMPLETE trade_outcomes joined to telegram_messages.context_json (no secrets logged)."""
+    """COMPLETE trade_outcomes joined to non-blocked telegram alert context.
+
+    When ``telegram_message_ids`` is provided (hybrid), load fills for those
+    alert ids only (no global LIMIT) so alert-path rows are not kept when a
+    COMPLETE fill exists but fell outside the days/LIMIT window.
+    """
     try:
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import bindparam, create_engine, text
     except ImportError as e:
         raise RuntimeError("sqlalchemy required for --label-source trade_outcomes/hybrid") from e
 
     engine = create_engine(database_url)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    sql = text(
-        """
-        SELECT
-          o.telegram_message_id,
-          o.order_intent_id,
-          o.entry_exchange_order_id,
-          o.exit_exchange_order_id,
-          o.symbol,
-          o.side,
-          o.entry_price,
-          o.exit_price,
-          o.quantity,
-          o.pnl_usd,
-          o.pnl_pct,
-          o.exit_reason,
-          o.label,
-          o.entry_ts,
-          o.exit_ts,
-          o.hold_seconds,
-          m.context_json,
-          m.timestamp AS alert_timestamp,
-          m.message AS alert_message
-        FROM trade_outcomes o
-        INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
-        WHERE o.join_status = 'COMPLETE'
-          AND o.label IS NOT NULL
-          AND o.telegram_message_id IS NOT NULL
-          AND COALESCE(o.entry_ts, m.timestamp) >= :cutoff
-        ORDER BY COALESCE(o.entry_ts, m.timestamp) DESC NULLS LAST
-        LIMIT :lim
-        """
+    # Distinguish None (days/LIMIT mode) from [] (hybrid with no alerts → no fills).
+    if telegram_message_ids is not None:
+        ids = list(telegram_message_ids)
+        if not ids:
+            return []
+        id_filter = True
+    else:
+        ids = []
+        id_filter = False
+
+    # Match load_alerts_from_db: never train on blocked telegram signals.
+    blocked_pg = "m.blocked = false"
+    blocked_sqlite = "m.blocked = 0"
+    id_clause = "AND o.telegram_message_id IN :ids" if id_filter else ""
+    window_clause = (
+        ""
+        if id_filter
+        else "AND COALESCE(o.entry_ts, m.timestamp) >= :cutoff"
     )
-    sql_sqlite = text(
-        """
-        SELECT
-          o.telegram_message_id,
-          o.order_intent_id,
-          o.entry_exchange_order_id,
-          o.exit_exchange_order_id,
-          o.symbol,
-          o.side,
-          o.entry_price,
-          o.exit_price,
-          o.quantity,
-          o.pnl_usd,
-          o.pnl_pct,
-          o.exit_reason,
-          o.label,
-          o.entry_ts,
-          o.exit_ts,
-          o.hold_seconds,
-          m.context_json,
-          m.timestamp AS alert_timestamp,
-          m.message AS alert_message
-        FROM trade_outcomes o
-        INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
-        WHERE o.join_status = 'COMPLETE'
-          AND o.label IS NOT NULL
-          AND o.telegram_message_id IS NOT NULL
-          AND COALESCE(o.entry_ts, m.timestamp) >= :cutoff
-        ORDER BY COALESCE(o.entry_ts, m.timestamp) DESC
-        LIMIT :lim
-        """
-    )
+    limit_clause = "" if id_filter else "LIMIT :lim"
+    order_nulls = "NULLS LAST" if not id_filter else ""
+
+    def _sql(blocked: str, *, nulls: str = "") -> Any:
+        return text(
+            f"""
+            SELECT
+              o.telegram_message_id,
+              o.order_intent_id,
+              o.entry_exchange_order_id,
+              o.exit_exchange_order_id,
+              o.symbol,
+              o.side,
+              o.entry_price,
+              o.exit_price,
+              o.quantity,
+              o.pnl_usd,
+              o.pnl_pct,
+              o.exit_reason,
+              o.label,
+              o.entry_ts,
+              o.exit_ts,
+              o.hold_seconds,
+              m.context_json,
+              m.timestamp AS alert_timestamp,
+              m.message AS alert_message
+            FROM trade_outcomes o
+            INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
+            WHERE o.join_status = 'COMPLETE'
+              AND o.label IS NOT NULL
+              AND o.telegram_message_id IS NOT NULL
+              AND {blocked}
+              {id_clause}
+              {window_clause}
+            ORDER BY COALESCE(o.entry_ts, m.timestamp) DESC {nulls}
+            {limit_clause}
+            """
+        )
+
+    sql = _sql(blocked_pg, nulls=order_nulls)
+    sql_sqlite = _sql(blocked_sqlite)
+    if id_filter:
+        sql = sql.bindparams(bindparam("ids", expanding=True))
+        sql_sqlite = sql_sqlite.bindparams(bindparam("ids", expanding=True))
+
     q = sql_sqlite if engine.dialect.name == "sqlite" else sql
+    params: dict[str, Any] = {}
+    if id_filter:
+        params["ids"] = ids
+    else:
+        params["cutoff"] = cutoff
+        params["lim"] = limit
+
     rows: list[dict[str, Any]] = []
     with engine.connect() as conn:
-        for r in conn.execute(q, {"cutoff": cutoff, "lim": limit}):
+        for r in conn.execute(q, params):
             d = dict(r._mapping)
             # Prefer alert timestamp when entry_ts missing
             if d.get("entry_ts") is None and d.get("alert_timestamp") is not None:
                 d["entry_ts"] = d["alert_timestamp"]
-            # Belt-and-suspenders: re-apply window after backfill
-            ts = d.get("entry_ts") or d.get("alert_timestamp")
-            if ts is not None:
-                if getattr(ts, "tzinfo", None) is None and isinstance(ts, datetime):
-                    ts = ts.replace(tzinfo=timezone.utc)
-                try:
-                    if ts < cutoff:
-                        continue
-                except TypeError:
-                    pass
+            if not id_filter:
+                # Belt-and-suspenders: re-apply window after backfill
+                ts = d.get("entry_ts") or d.get("alert_timestamp")
+                if ts is not None:
+                    if getattr(ts, "tzinfo", None) is None and isinstance(ts, datetime):
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    try:
+                        if ts < cutoff:
+                            continue
+                    except TypeError:
+                        pass
             rows.append(d)
     return rows
+
+
+def load_complete_fill_alert_ids(
+    database_url: str, *, telegram_message_ids: Sequence[Any]
+) -> set[Any]:
+    """Telegram ids (subset) that have at least one COMPLETE trade_outcome.
+
+    Used by hybrid to suppress alert-path labels even when the fill row is
+    omitted from the feature dataset (degraded features, etc.).
+    """
+    ids = [i for i in telegram_message_ids if i is not None]
+    if not ids:
+        return set()
+    try:
+        from sqlalchemy import bindparam, create_engine, text
+    except ImportError as e:
+        raise RuntimeError("sqlalchemy required for --label-source hybrid") from e
+
+    engine = create_engine(database_url)
+    sql = text(
+        """
+        SELECT DISTINCT o.telegram_message_id
+        FROM trade_outcomes o
+        INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
+        WHERE o.join_status = 'COMPLETE'
+          AND o.telegram_message_id IN :ids
+          AND m.blocked = false
+        """
+    ).bindparams(bindparam("ids", expanding=True))
+    sql_sqlite = text(
+        """
+        SELECT DISTINCT o.telegram_message_id
+        FROM trade_outcomes o
+        INNER JOIN telegram_messages m ON m.id = o.telegram_message_id
+        WHERE o.join_status = 'COMPLETE'
+          AND o.telegram_message_id IN :ids
+          AND m.blocked = 0
+        """
+    ).bindparams(bindparam("ids", expanding=True))
+    q = sql_sqlite if engine.dialect.name == "sqlite" else sql
+    with engine.connect() as conn:
+        return {r[0] for r in conn.execute(q, {"ids": ids})}
 
 
 def _build_alert_dataset(
@@ -318,14 +377,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        alert_ids = [a.get("id") for a in alerts if a.get("id") is not None]
         try:
+            # Hybrid: pull fills for the same alert ids (avoids LIMIT/window miss
+            # that would leave OHLCV sim labels when a COMPLETE fill exists).
             outcomes = load_complete_outcomes_with_alerts(
-                args.database_url, days=args.days
+                args.database_url,
+                days=args.days,
+                telegram_message_ids=alert_ids if label_source == "hybrid" else None,
             )
+            if label_source == "hybrid" and alert_ids:
+                complete_ids = load_complete_fill_alert_ids(
+                    args.database_url, telegram_message_ids=alert_ids
+                )
+            else:
+                complete_ids = set()
         except Exception as exc:
             print(f"Failed to load trade_outcomes: {exc}", file=sys.stderr)
             return 2
         trade_dataset, suppress_alert_ids = attach_features_from_trade_outcomes(outcomes)
+        suppress_alert_ids |= complete_ids
         source = f"{source}+trade_outcomes"
     else:
         suppress_alert_ids = set()
