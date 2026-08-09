@@ -78,13 +78,15 @@ path-guard protected — profile split needs a human-approved override.
 - Frontend build: `cd frontend && npm run build`.
 - Pre-commit hooks (`.pre-commit-config.yaml`) use black/ruff/prettier/eslint and
   `scripts/pre_commit_checks.sh`.
-- **Auto ML offline train** needs extra deps: `pip install -r scripts/requirements-auto-ml.txt`
-  (`joblib` / `scikit-learn`). Dataset builder works without them; `train_auto_entry_model.py`
-  / `retrain_and_promote_auto_entry.py` do not. Phase 1b labels:
+- **Auto ML** needs `joblib` + `scikit-learn` (`scripts/requirements-auto-ml.txt`; also in
+  `backend/requirements.txt` for the runtime image). Dataset builder works without them;
+  train/retrain and live model load do not. Phase 1b:
   `--label-source alert|trade_outcomes|hybrid` (see `docs/runbooks/auto_ml_entry.md`).
   Local DB often has empty `trade_outcomes` — seed or use `--demo` for alert-path only.
-  Prod hybrid retrain is human-gated via workflow
-  `Ops — Auto ML hybrid retrain` (defaults to dry-run; never `--force-promote`).
+  Prod hybrid retrain: workflow **Ops — Auto ML hybrid retrain** (default dry-run;
+  `--write-db` + coverage to `/tmp`; `pip install` Auto ML extras in-container;
+  never `--force-promote`). Live gate `load_error: joblib_missing` means the running
+  backend image predates the joblib dep — redeploy backend after merge.
 
 ### Dashboard tabs (URL)
 The main dashboard keeps `activeTab` in sync with `?tab=` (e.g. `/?tab=watchlist`,
