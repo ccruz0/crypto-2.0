@@ -84,8 +84,9 @@ path-guard protected — profile split needs a human-approved override.
   `--label-source alert|trade_outcomes|hybrid` (see `docs/runbooks/auto_ml_entry.md`).
   Local DB often has empty `trade_outcomes` — seed or use `--demo` for alert-path only.
   Prod hybrid retrain: workflow **Ops — Auto ML hybrid retrain** (default dry-run;
-  `--write-db` + coverage to `/tmp`; `pip install` Auto ML extras in-container;
-  never `--force-promote`). Live gate `load_error: joblib_missing` means the running
+  weekly cron Mon 05:00 UTC is also dry-run only; live promote via
+  `workflow_dispatch` + `dry_run_only=false`; `--write-db` + coverage to `/tmp`;
+  `pip install` Auto ML extras in-container; never `--force-promote`). Live gate `load_error: joblib_missing` means the running
   backend image predates the joblib dep — redeploy backend after merge.
 
 ### Dashboard tabs (URL)
