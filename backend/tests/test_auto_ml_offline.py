@@ -259,15 +259,18 @@ def test_enrich_nearest_signal_context_within_6h():
     assert rows[0]["features"]["rsi"] == pytest.approx(72.0)
 
 
-def test_parse_indicators_from_message_reason_form():
+def test_parse_indicators_spaced_ma_and_volume():
     from alert_quality_metrics import parse_indicators_from_message
 
     got = parse_indicators_from_message(
-        "Auto/Aggressive | ✅ RSI | RSI=28.5, Price=65000, MA50=64000, EMA10=64500, MA200=60000, Vol=1.40x"
+        "SELL SIGNAL: AAVE_USD - MA trend reversal: MA50 90.27 < EMA10 91.33 | "
+        "RSI=92.1 > 70 (overbought) | Volume 2.21x >= 1.0x"
     )
-    assert got["rsi"] == pytest.approx(28.5)
-    assert got["ma50"] == pytest.approx(64000)
-    assert got["volume_ratio"] == pytest.approx(1.4)
+    assert got["rsi"] == pytest.approx(92.1)
+    assert got["ma50"] == pytest.approx(90.27)
+    assert got["ema10"] == pytest.approx(91.33)
+    assert got["volume_ratio"] == pytest.approx(2.21)
+
 
 
 def test_features_from_alert_row_parses_message_when_context_empty():

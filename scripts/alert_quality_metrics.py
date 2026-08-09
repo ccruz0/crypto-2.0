@@ -81,13 +81,14 @@ def parse_indicators_from_message(message: str) -> dict[str, float]:
         return {}
     out: dict[str, float] = {}
     patterns = (
-        ("rsi", r"RSI\s*[=:]\s*([^\s,|]+)"),
-        ("ma50", r"MA50\s*[=:]\s*([^\s,|]+)"),
-        ("ma200", r"MA200\s*[=:]\s*([^\s,|]+)"),
-        ("ema10", r"EMA10\s*[=:]\s*([^\s,|]+)"),
+        ("rsi", r"RSI\s*[=:]\s*([^\s,|<]+)"),
+        # Reason text often uses "MA50 90.27 < EMA10 91.33" (no '=')
+        ("ma50", r"MA50\s*[=:]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)"),
+        ("ma200", r"MA200\s*[=:]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)"),
+        ("ema10", r"EMA10\s*[=:]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)"),
         ("atr", r"ATR(?:14)?\s*[=:]\s*([^\s,|]+)"),
         ("price", r"Price\s*[=:]\s*\$?\s*([^\s,|]+)"),
-        ("volume_ratio", r"Vol(?:ume)?\s*[=:]\s*([^\s,|xX]+)"),
+        ("volume_ratio", r"Vol(?:ume)?\s*[=:]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*x"),
     )
     for key, pat in patterns:
         m = re.search(pat, message, flags=re.IGNORECASE)
