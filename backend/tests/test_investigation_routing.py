@@ -12,17 +12,22 @@ from app.jarvis.investigations.investigation_types import (
 _DASHBOARD_MISMATCH_PHRASES = (
     "Why are my open orders different from Crypto.com?",
     "not all my open orders are there",
-    "missing trigger orders",
     "Crypto.com shows more orders than dashboard",
     "dashboard not matching exchange",
     "orders missing from Crypto.com",
     "Crypto.com shows more orders",
     "dashboard missing orders",
     "not all open orders are there",
-    "trigger orders not showing",
     "open orders not matching",
     "Why does dashboard differ from exchange?",
     "Why was dashboard showing zero orders while exchange had one?",
+)
+
+_TRIGGER_ORDER_PHRASES = (
+    "missing trigger orders",
+    "trigger orders not showing",
+    "Open orders empty due to trigger order 50001",
+    "Crypto.com trigger order API failure",
 )
 
 _REQUIRED_COLLECTORS = frozenset({"reconcile_crypto_com_open_orders", "diagnose_open_orders"})
@@ -60,6 +65,34 @@ class TestDashboardExchangeMismatchRouting:
         tool_names = {c.tool for c in collectors}
         assert "reconcile_crypto_com_open_orders" not in tool_names
         assert "diagnose_open_orders" not in tool_names
+
+
+class TestCryptoComTriggerOrdersRouting:
+    @pytest.mark.parametrize("objective", _TRIGGER_ORDER_PHRASES)
+    def test_phrase_selects_crypto_com_trigger_orders_template(self, objective: str):
+        template = match_investigation_template(objective)
+        assert template is not None
+        assert template.template_id == "crypto_com_trigger_orders"
+        assert template.category == "orders"
+
+    @pytest.mark.parametrize("objective", _TRIGGER_ORDER_PHRASES)
+    def test_phrase_includes_reconcile_diagnose_and_trigger_logs(self, objective: str):
+        category, template_id, collectors = get_collectors_for_objective(objective)
+        assert category == "orders"
+        assert template_id == "crypto_com_trigger_orders"
+        tool_names = {c.tool for c in collectors}
+        assert _REQUIRED_COLLECTORS <= tool_names
+        assert "search_logs" in tool_names
+        log_collector = next(c for c in collectors if c.tool == "search_logs")
+        keywords = set(log_collector.params.get("keywords") or ())
+        assert {"trigger", "50001"} <= keywords
+
+    def test_trigger_signal_wins_over_open_orders_empty(self):
+        template = match_investigation_template(
+            "Open orders empty due to trigger order 50001"
+        )
+        assert template is not None
+        assert template.template_id == "crypto_com_trigger_orders"
 
 
 class TestPortfolioEquityDerivedRouting:

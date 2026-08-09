@@ -86,46 +86,10 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         ),
         keywords=("executed", "filled", "btc", "missing", "trade history"),
     ),
-    InvestigationTemplate(
-        template_id="open_orders_zero_dashboard",
-        category="dashboard",
-        pattern=re.compile(
-            r"open\s+orders?\s+show(?:ing)?\s+0|"
-            r"open\s+orders?\s+(?:show|display)(?:ing)?\s+(?:as\s+)?zero|"
-            r"zero\s+open\s+orders?\s+(?:in|on)\s+(?:the\s+)?dashboard|"
-            r"dashboard.*(?:shows?|display(?:s|ing)?)\s+0\s+open\s+orders?",
-            re.IGNORECASE,
-        ),
-        title="Why do open orders show 0 on the dashboard?",
-        collectors=(
-            EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
-            EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
-            EvidenceCollector("query_database", "count_open_orders", {"preset": "count_open_orders"}),
-            EvidenceCollector("search_logs", "search_logs", {"keywords": ("open orders", "sync", "cache", "50001")}),
-            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
-        ),
-        keywords=("open orders", "zero", "dashboard", "0"),
-    ),
-    InvestigationTemplate(
-        template_id="open_orders_empty",
-        category="orders",
-        pattern=re.compile(
-            r"why\s+are\s+open\s+orders\s+empty|open\s+orders\s+empty|empty\s+open\s+orders",
-            re.IGNORECASE,
-        ),
-        title="Why are open orders empty?",
-        collectors=(
-            EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
-            EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
-            EvidenceCollector("query_database", "count_open_orders", {"preset": "count_open_orders"}),
-            EvidenceCollector("search_logs", "search_logs", {"keywords": ("open orders", "sync", "cache")}, mandatory=False),
-            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
-        ),
-        keywords=("open orders", "empty", "zero"),
-    ),
     # Dedicated Crypto.com trigger/advanced-order template (Improvement rec
-    # template-trigger-order-dedicated). Must precede dashboard_exchange_mismatch
-    # so trigger/50001 objectives are not misrouted to generic mismatch/auth.
+    # template-trigger-order-dedicated). Must precede open_orders_empty,
+    # open_orders_zero_dashboard, and dashboard_exchange_mismatch so
+    # trigger/50001 objectives are not misrouted to weaker collectors.
     InvestigationTemplate(
         template_id="crypto_com_trigger_orders",
         category="orders",
@@ -174,6 +138,43 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
             ),
         ),
         keywords=("trigger", "50001", "crypto.com", "advanced order", "open orders"),
+    ),
+    InvestigationTemplate(
+        template_id="open_orders_zero_dashboard",
+        category="dashboard",
+        pattern=re.compile(
+            r"open\s+orders?\s+show(?:ing)?\s+0|"
+            r"open\s+orders?\s+(?:show|display)(?:ing)?\s+(?:as\s+)?zero|"
+            r"zero\s+open\s+orders?\s+(?:in|on)\s+(?:the\s+)?dashboard|"
+            r"dashboard.*(?:shows?|display(?:s|ing)?)\s+0\s+open\s+orders?",
+            re.IGNORECASE,
+        ),
+        title="Why do open orders show 0 on the dashboard?",
+        collectors=(
+            EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
+            EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
+            EvidenceCollector("query_database", "count_open_orders", {"preset": "count_open_orders"}),
+            EvidenceCollector("search_logs", "search_logs", {"keywords": ("open orders", "sync", "cache", "50001")}),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
+        ),
+        keywords=("open orders", "zero", "dashboard", "0"),
+    ),
+    InvestigationTemplate(
+        template_id="open_orders_empty",
+        category="orders",
+        pattern=re.compile(
+            r"why\s+are\s+open\s+orders\s+empty|open\s+orders\s+empty|empty\s+open\s+orders",
+            re.IGNORECASE,
+        ),
+        title="Why are open orders empty?",
+        collectors=(
+            EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
+            EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
+            EvidenceCollector("query_database", "count_open_orders", {"preset": "count_open_orders"}),
+            EvidenceCollector("search_logs", "search_logs", {"keywords": ("open orders", "sync", "cache")}, mandatory=False),
+            EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
+        ),
+        keywords=("open orders", "empty", "zero"),
     ),
     InvestigationTemplate(
         template_id="dashboard_exchange_mismatch",

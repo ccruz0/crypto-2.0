@@ -393,6 +393,7 @@ class TestTemplateRouting:
             "Crypto.com trigger order 50001 error blocking cache",
             "Investigate trigger_orders_error_code=50001",
             "Advanced order API failure during open-order sync",
+            "Open orders empty due to trigger order 50001",
         ]
         for objective in cases:
             template = match_investigation_template(objective)
