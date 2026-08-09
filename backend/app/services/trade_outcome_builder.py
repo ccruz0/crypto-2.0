@@ -838,5 +838,5 @@ def coverage_report_dict(
         "n_positive": pos,
         "n_negative": neg,
         "exit_reason_counts": by_reason,
-        "note": "Not wired to Auto ML promote (Phase 1b).",
+        "note": "Phase 1b: use scripts/build_auto_ml_dataset.py --label-source hybrid|trade_outcomes.",
     }

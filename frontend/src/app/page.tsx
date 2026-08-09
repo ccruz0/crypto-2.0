@@ -1445,12 +1445,11 @@ const VERSION_HISTORY = [
 • Prod: 55 trigger-related investigations misrouted across mismatch/auth/open_orders/generic templates
 
 📦 **PRs**
-• #410
+• #413
 
 ---
 `
-  }
-
+  },
   {
     version: '0.68',
     date: '2026-08-09',
@@ -1469,6 +1468,29 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #410
+
+---
+`
+  },
+  {
+    version: '0.69',
+    date: '2026-08-09',
+    change: 'Auto ML Phase 1b: train on executed TP/SL (trade_outcomes hybrid)',
+    details: `🚀 VERSIÓN 0.69 — AUTO ML LEARNS FROM EXECUTED FILLS
+
+📋 **What shipped**
+• Dataset builder --label-source alert | trade_outcomes | hybrid
+• Hybrid prefers COMPLETE trade_outcomes (y=1 if pnl_usd>0) over alert-path sim
+• Suppresses alert labels when a COMPLETE fill is dropped (degraded features)
+• Keeps multiple fills per alert (keyed by entry_exchange_order_id)
+• Retrain CLI plumbed; same FEATURE_NAMES (no live-gate schema bump)
+• Runbook Phase 1b ops steps
+
+🔧 **Why**
+• Phase 0 only labeled from OHLCV forward path; user asked for learning from real TP/SL
+
+📦 **PRs**
+• #398
 
 ---
 `
