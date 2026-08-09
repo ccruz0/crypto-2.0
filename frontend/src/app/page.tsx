@@ -1494,6 +1494,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.70',
+    date: '2026-08-09',
+    change: 'Ops hybrid Auto ML retrain + joblib runtime deps',
+    details: `🚀 VERSIÓN 0.70 — HYBRID RETRAIN OPS + JOBLIB IN IMAGE
+
+📋 **What shipped**
+• workflow_dispatch Ops — Auto ML hybrid retrain (SSM; default dry-run; --write-db; pip install Auto ML extras)
+• backend/requirements.txt adds joblib + scikit-learn so live gate can load current.joblib
+
+🔧 **Why**
+• Phase 1b merged (#398) but prod still on alert-trained v4; container lacked joblib (load_error)
+• Ops must write coverage to /tmp (RO /repo) and install ML deps before train
+
+📦 **PRs**
+• #415
+
+---
+`
   }
 
 ];

@@ -78,6 +78,15 @@ path-guard protected — profile split needs a human-approved override.
 - Frontend build: `cd frontend && npm run build`.
 - Pre-commit hooks (`.pre-commit-config.yaml`) use black/ruff/prettier/eslint and
   `scripts/pre_commit_checks.sh`.
+- **Auto ML** needs `joblib` + `scikit-learn` (`scripts/requirements-auto-ml.txt`; also in
+  `backend/requirements.txt` for the runtime image). Dataset builder works without them;
+  train/retrain and live model load do not. Phase 1b:
+  `--label-source alert|trade_outcomes|hybrid` (see `docs/runbooks/auto_ml_entry.md`).
+  Local DB often has empty `trade_outcomes` — seed or use `--demo` for alert-path only.
+  Prod hybrid retrain: workflow **Ops — Auto ML hybrid retrain** (default dry-run;
+  `--write-db` + coverage to `/tmp`; `pip install` Auto ML extras in-container;
+  never `--force-promote`). Live gate `load_error: joblib_missing` means the running
+  backend image predates the joblib dep — redeploy backend after merge.
 
 ### Dashboard tabs (URL)
 The main dashboard keeps `activeTab` in sync with `?tab=` (e.g. `/?tab=watchlist`,
@@ -86,19 +95,13 @@ The main dashboard keeps `activeTab` in sync with `?tab=` (e.g. `/?tab=watchlist
 fall back to Portfolio. Version History is `?tab=version-history` (also the
 header `v{version}` badge).
 
-### GitHub auto-merge on `main` (human repo setting — required once)
-Cloud agents cannot flip repo settings (API 403). Today
-`allow_auto_merge` is **false**, so the “Enable auto-merge” button never works.
-
-**One-time (you):**
-1. Repo **Settings → General → Pull Requests** → check **Allow auto-merge** → Save.
-2. Optional: [ruleset](https://github.com/ccruz0/crypto-2.0/rules/13156283) → under
-   “Require a pull request… → additional settings” turn off conversation
-   resolution (if you see it), or resolve Bugbot threads on each PR.
-3. After `.github/workflows/auto-merge.yml` is on `main`, every non-draft PR
-   gets `gh pr merge --auto --squash` automatically. It still waits for
-   **path-guard** (and will never pass if the PR edits protected files like
-   `crypto_com_trade.py` without an admin bypass).
+### GitHub auto-merge on `main`
+`allow_auto_merge` is **on**; `.github/workflows/auto-merge.yml` enables squash
+auto-merge on non-draft PRs. Ruleset `protect-main-production` still requires
+**path-guard** + **conversation resolution** (Bugbot threads must be resolved).
+The ruleset `update` restriction means bots often cannot finish the merge —
+human squash-merge in the UI may still be required (same pattern as #398/#399).
+Cloud agents cannot edit the ruleset (API 403).
 
 ### Dashboard version history (mandatory on shippable PRs)
 Every user-visible / production-bound change **must** append a new entry to

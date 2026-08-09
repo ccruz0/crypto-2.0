@@ -216,8 +216,10 @@ Requires DB with populated `trade_outcomes` (run Phase 1a builder first if empty
 
 ```bash
 # 1) Refresh COMPLETE outcomes from exchange joins (if needed)
+# On prod, /repo is read-only — write coverage to /tmp and pass --write-db.
 backend/.venv/bin/python scripts/build_trade_outcomes.py \
-  --database-url "$DATABASE_URL" --days 90
+  --database-url "$DATABASE_URL" --days 90 \
+  --write-db --out /tmp/trade-outcomes-coverage.json
 
 # 2) Dataset: prefer realized fills, keep alert labels for open/unmatched
 backend/.venv/bin/python scripts/build_auto_ml_dataset.py \
