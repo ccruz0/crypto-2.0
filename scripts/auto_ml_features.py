@@ -254,6 +254,8 @@ def attach_features_from_trade_outcomes(
     outcomes: Sequence[dict[str, Any]],
     *,
     drop_degraded_features: bool = True,
+    feature_fallback_by_id: Optional[dict[Any, dict[str, Any]]] = None,
+    keep_degraded: bool = False,
 ) -> tuple[list[dict[str, Any]], set[Any]]:
     """Build ML rows from Phase 1a COMPLETE outcomes joined to alert context.
 
@@ -262,12 +264,21 @@ def attach_features_from_trade_outcomes(
       telegram_message_id, context_json (from telegram_messages),
       optional exit_reason / pnl_usd / entry_exchange_order_id.
 
+    When fill-linked ``context_json`` is empty, features look like defaults
+    (RSI=50, zero distances). Options:
+      - ``feature_fallback_by_id``: reuse features from an alert-path row
+        (same telegram id) so hybrid can keep fill labels with the same
+        feature vector the Phase-0 path already used.
+      - ``keep_degraded``: if still degraded (and no usable fallback), emit
+        the fill row anyway (hybrid prefers realized PnL labels over dropping).
+
     Returns (rows, suppress_alert_ids). ``suppress_alert_ids`` are telegram
     message ids that had a COMPLETE outcome but were dropped (e.g. degraded
     features) — hybrid must not keep Phase 0 labels for those alerts.
     """
     out: list[dict[str, Any]] = []
     suppress_alert_ids: set[Any] = set()
+    fallback = feature_fallback_by_id or {}
     for oc in outcomes:
         tid = oc.get("telegram_message_id")
         if tid is None:
@@ -299,9 +310,19 @@ def attach_features_from_trade_outcomes(
             "entry_ts_ms": entry_ts_ms,
         }
         feats = features_from_alert_row(raw, normalized=normalized)
+        x = feature_vector(feats)
         if drop_degraded_features and features_look_default(feats):
-            suppress_alert_ids.add(tid)
-            continue
+            fb = fallback.get(tid)
+            fb_feats = fb.get("features") if isinstance(fb, dict) else None
+            fb_x = fb.get("x") if isinstance(fb, dict) else None
+            if isinstance(fb_feats, dict) and isinstance(fb_x, list) and fb_x:
+                feats = dict(fb_feats)
+                x = list(fb_x)
+            elif keep_degraded:
+                pass  # emit fill label with default features
+            else:
+                suppress_alert_ids.add(tid)
+                continue
         out.append(
             {
                 "id": tid,
@@ -314,7 +335,7 @@ def attach_features_from_trade_outcomes(
                 "pnl_usd": oc.get("pnl_usd"),
                 "entry_exchange_order_id": oc.get("entry_exchange_order_id"),
                 "features": feats,
-                "x": feature_vector(feats),
+                "x": x,
                 "y": y,
                 "label_source": "trade_outcome",
                 "feature_version": FEATURE_VERSION,
