@@ -1575,6 +1575,27 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.74',
+    date: '2026-08-09',
+    change: 'Block margin shorts when exchange disables margin_sell',
+    details: `🚀 VERSIÓN 0.74 — INSTRUMENT MARGIN_SELL GATE FOR SHORTS
+
+📋 **What shipped**
+• \`MarginInfo\` now carries \`margin_buy_enabled\` / \`margin_sell_enabled\` from Crypto.com instruments
+• Auto short-open path requires \`margin_sell_enabled\` (fail-closed) before placing a margin SELL with no position
+• Clear \`INSTRUMENT_SHORT_SELL_DISABLED\` block instead of exchange 608 \`CANNOT_SHORT_SELL_INSTRUMENT\`
+
+🔧 **Why**
+• Morning Telegram (2026-08-08): CRO_USD SELL signal → ORDER FAILED 608 — CRO allows margin buy but not margin sell
+• Prior logic treated \`margin_buy OR margin_sell\` as "margin OK" and attempted short opens
+
+📦 **PRs**
+• #412
+
+---
+`
   }
 
 ];

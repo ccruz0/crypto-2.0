@@ -44,6 +44,7 @@ _REASON_CODE_LABELS = {
     "EXCHANGE_REJECTED": "Rechazado por el exchange",
     "AUTHENTICATION_ERROR": "Error de autenticación",
     "EXCHANGE_ERROR_UNKNOWN": "Error del exchange",
+    "INSTRUMENT_SHORT_SELL_DISABLED": "Instrumento no permite short (margin sell)",
     "RATE_LIMIT": "Rate limit",
     "TIMEOUT": "Timeout",
     "SAFETY_GUARD": "Safety guard",

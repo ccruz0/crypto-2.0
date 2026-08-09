@@ -35,21 +35,26 @@ async def _run_sell(*, trade_on_margin: bool, open_positions: int, env: dict | N
                 "app.core.trading_invariants_week5.validate_trading_decision",
                 side_effect=_validate,
             ):
-                with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
-                    with patch(
-                        "app.services.live_trading_gate.assert_exchange_mutation_allowed",
-                    ):
+                # ETH allows margin sell; keep shorting-flag tests focused on ALLOW_SHORTING.
+                with patch(
+                    "app.services.margin_info_service.instrument_allows_margin_short",
+                    return_value=True,
+                ):
+                    with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
                         with patch(
-                            "app.services.signal_monitor.trade_client.place_market_order",
-                            return_value={"order_id": "dry_sell_1", "status": "FILLED"},
+                            "app.services.live_trading_gate.assert_exchange_mutation_allowed",
                         ):
-                            result = await svc._place_order_from_signal(
-                                db,
-                                "ETH_USDT",
-                                "SELL",
-                                _watchlist(trade_on_margin=trade_on_margin),
-                                3000.0,
-                            )
+                            with patch(
+                                "app.services.signal_monitor.trade_client.place_market_order",
+                                return_value={"order_id": "dry_sell_1", "status": "FILLED"},
+                            ):
+                                result = await svc._place_order_from_signal(
+                                    db,
+                                    "ETH_USDT",
+                                    "SELL",
+                                    _watchlist(trade_on_margin=trade_on_margin),
+                                    3000.0,
+                                )
     return result, captured
 
 
