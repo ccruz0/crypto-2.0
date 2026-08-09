@@ -9368,14 +9368,17 @@ class SignalMonitorService:
             logger.info(f"[{source}] {symbol} {side} Order placed successfully: order_id={order_id}")
 
             entry_side_upper = side.upper()
-            # BUY always needs protection. SELL must re-detect short inventory AFTER fill.
-            # Pre-place ``is_margin_short_entry`` is True only when no bot position exists, so
-            # adding to an existing margin short (prod DOGE_USD 5755600492782582799) skipped
-            # SL/TP entirely while healing is OFF.
+            # BUY always needs protection.
+            # SELL: OR pre-place first-short flag with post-place wallet short detection.
+            # - First margin short: ``is_margin_short_entry`` is True before fill settles
+            #   (wallet may still read flat) — keep that so SL/TP is attempted.
+            # - Short *add* (existing bot short): ``is_margin_short_entry`` is False, so
+            #   wallet < 0 (or margin fallback) must still trigger protection (DOGE
+            #   5755600492782582799).
             if entry_side_upper == "BUY":
                 needs_protection = True
             elif entry_side_upper == "SELL":
-                needs_protection = self._is_short_entry_needing_protection(
+                needs_protection = bool(is_margin_short_entry) or self._is_short_entry_needing_protection(
                     db=db,
                     symbol=symbol,
                     order_id=str(order_id) if order_id else None,
@@ -9603,8 +9606,8 @@ class SignalMonitorService:
         """True when a filled SELL left (or added to) short inventory that needs SL/TP.
 
         Prefer live wallet: negative base balance = short. Flat/long wallet = long-close.
-        When the wallet API is unavailable, fall back to margin+shorting_enabled — including
-        when a bot short lot already exists (adding to a short must still be protected).
+        When the wallet API is unavailable: margin + shorting_enabled, but skip when the
+        bot book is long-only (closing a long must not get short SL/TP).
         """
         wallet_balance = None
         try:
@@ -9653,6 +9656,41 @@ class SignalMonitorService:
                 return False
         except Exception:
             pass
+
+        # Wallet API down: do not treat every margin SELL as a short entry.
+        # Long-only open lots ⇒ long-close. Short lots present or empty book ⇒ protect
+        # (short add / first short).
+        try:
+            from app.models.exchange_order import OrderSideEnum
+            from app.services.expected_take_profit import (
+                _entry_side_for_lot,
+                rebuild_open_lots,
+            )
+
+            base = symbol.split("_")[0] if "_" in symbol else symbol
+            open_lots = rebuild_open_lots(db, base)
+            has_long = any(
+                _entry_side_for_lot(db, lot) == OrderSideEnum.BUY for lot in open_lots
+            )
+            has_short = any(
+                _entry_side_for_lot(db, lot) == OrderSideEnum.SELL for lot in open_lots
+            )
+            if has_long and not has_short:
+                logger.info(
+                    "[SL/TP] SELL %s order %s treated as long-close "
+                    "(wallet unavailable, open lots long-only)",
+                    symbol,
+                    order_id,
+                )
+                return False
+        except Exception as book_err:
+            logger.debug(
+                "[SL/TP] open-lot fallback failed for %s %s: %s",
+                symbol,
+                order_id,
+                book_err,
+            )
+
         logger.info(
             "[SL/TP] SELL %s order %s short-entry via margin fallback "
             "(wallet unavailable; protect open/add short)",
