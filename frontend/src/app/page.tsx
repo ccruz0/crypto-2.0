@@ -1549,7 +1549,7 @@ const VERSION_HISTORY = [
 • Operators should see hybrid training mix and last merit promote without curling the API
 
 📦 **PRs**
-• (this PR)
+• #431
 
 ---
 `
