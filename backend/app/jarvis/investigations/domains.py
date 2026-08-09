@@ -55,6 +55,7 @@ _TEMPLATE_DOMAIN: dict[str, InvestigationDomain] = {
     "portfolio_reconciliation_mismatch": InvestigationDomain.PORTFOLIO_RECONCILIATION,
     "open_orders_empty": InvestigationDomain.OPEN_ORDERS,
     "open_orders_zero_dashboard": InvestigationDomain.OPEN_ORDERS,
+    "crypto_com_trigger_orders": InvestigationDomain.ORDER_RECONCILIATION,
     "dashboard_exchange_mismatch": InvestigationDomain.ORDER_RECONCILIATION,
     "executed_orders_missing": InvestigationDomain.ORDER_RECONCILIATION,
     "jarvis_task_failing": InvestigationDomain.DEPLOYMENT,

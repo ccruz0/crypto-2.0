@@ -1206,7 +1206,13 @@ def validate_investigation_report_fields(
     # Reject mismatch-resolution cause when investigation is not dashboard/mismatch scoped.
     if (
         root_cause == _RESOLVED_MISMATCH_CAUSE
-        and template_id not in ("dashboard_exchange_mismatch", "open_orders_zero_dashboard", "open_orders_empty")
+        and template_id
+        not in (
+            "dashboard_exchange_mismatch",
+            "open_orders_zero_dashboard",
+            "open_orders_empty",
+            "crypto_com_trigger_orders",
+        )
     ):
         return InvestigationStatus.INSUFFICIENT_EVIDENCE
 

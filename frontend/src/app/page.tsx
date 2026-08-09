@@ -1427,6 +1427,28 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.67',
+    date: '2026-08-09',
+    change: 'Dedicated Crypto.com trigger-order investigation template',
+    details: `🚀 VERSIÓN 0.67 — CRYPTO.COM TRIGGER-ORDER TEMPLATE
+
+📋 **What shipped**
+• New \`crypto_com_trigger_orders\` investigation template with mandatory \`diagnose_open_orders\` + \`reconcile_crypto_com_open_orders\` and trigger/50001 log collectors
+• Routes trigger-order / 50001 / advanced-order objectives before \`dashboard_exchange_mismatch\` (closes Improvement HIGH \`template-trigger-order-dedicated\`)
+• Gap analysis suppresses the dedicated-template recommendation once the catalog includes \`crypto_com_trigger_orders\`
+• Repo search for open_orders topic includes trigger_orders / 50001 keywords
+
+🔧 **Why**
+• Next eng fix from Jarvis Improvement after \`deployment_unhealthy\` (#409 / v0.66)
+• Prod: 55 trigger-related investigations misrouted across mismatch/auth/open_orders/generic templates
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 ];
 
