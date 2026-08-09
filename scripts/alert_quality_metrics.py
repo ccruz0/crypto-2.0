@@ -48,6 +48,7 @@ def parse_price_from_message(message: str) -> Optional[float]:
     patterns = (
         r"(?:Entry\s+Price|Price)\s*:\s*\$?\s*([\d,]+(?:\.\d+)?)",
         r"@\s*\$\s*([\d,]+(?:\.\d+)?)",
+        r"Price=([\d,]+(?:\.\d+)?)",
     )
     for pat in patterns:
         m = re.search(pat, message, flags=re.IGNORECASE)
@@ -57,6 +58,45 @@ def parse_price_from_message(message: str) -> Optional[float]:
             except ValueError:
                 continue
     return None
+
+
+def _parse_float_token(raw: str) -> Optional[float]:
+    text = (raw or "").strip().replace(",", "")
+    if not text or text.upper() in ("N/A", "NA", "NONE", "-"):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_indicators_from_message(message: str) -> dict[str, float]:
+    """Pull RSI/MA/ATR/volume from SIGNAL reason text.
+
+    Prod stores these in telegram ``message`` / reason (e.g.
+    ``RSI=28.5, Price=..., MA50=..., EMA10=..., MA200=..., Vol=1.20x``),
+    not in ``context_json``.
+    """
+    if not message:
+        return {}
+    out: dict[str, float] = {}
+    patterns = (
+        ("rsi", r"RSI\s*[=:]\s*([^\s,|]+)"),
+        ("ma50", r"MA50\s*[=:]\s*([^\s,|]+)"),
+        ("ma200", r"MA200\s*[=:]\s*([^\s,|]+)"),
+        ("ema10", r"EMA10\s*[=:]\s*([^\s,|]+)"),
+        ("atr", r"ATR(?:14)?\s*[=:]\s*([^\s,|]+)"),
+        ("price", r"Price\s*[=:]\s*\$?\s*([^\s,|]+)"),
+        ("volume_ratio", r"Vol(?:ume)?\s*[=:]\s*([^\s,|xX]+)"),
+    )
+    for key, pat in patterns:
+        m = re.search(pat, message, flags=re.IGNORECASE)
+        if not m:
+            continue
+        val = _parse_float_token(m.group(1))
+        if val is not None:
+            out[key] = val
+    return out
 
 
 def parse_strategy_from_message(message: str) -> tuple[Optional[str], Optional[str]]:

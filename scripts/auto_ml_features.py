@@ -9,7 +9,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
-from alert_quality_metrics import parse_context_json, to_utc_ms
+from alert_quality_metrics import (  # noqa: E402
+    parse_context_json,
+    parse_indicators_from_message,
+    to_utc_ms,
+)
 
 # Stable feature order — train and inference must match exactly.
 FEATURE_NAMES: tuple[str, ...] = (
@@ -136,7 +140,12 @@ def feature_vector(feats: dict[str, float]) -> list[float]:
 
 def features_from_alert_row(raw: dict[str, Any], *, normalized: Optional[dict[str, Any]] = None) -> dict[str, float]:
     """Extract features from a raw telegram_messages-like row and/or normalize_alert output."""
-    ctx = parse_context_json(raw.get("context_json"))
+    ctx = dict(parse_context_json(raw.get("context_json")))
+    # Prod SIGNAL rows often lack indicator keys in context_json; parse message body.
+    msg = raw.get("message") or raw.get("alert_message") or ""
+    for key, val in parse_indicators_from_message(str(msg)).items():
+        if _ctx_get(ctx, key) is None:
+            ctx[key] = val
     if normalized:
         side = str(normalized.get("side") or "BUY")
         entry = float(normalized.get("entry_price") or 0.0)
@@ -267,6 +276,15 @@ def _context_has_indicator_keys(ctx: dict[str, Any]) -> bool:
     return False
 
 
+def _alert_has_usable_indicators(alert: dict[str, Any]) -> bool:
+    ctx = parse_context_json(alert.get("context_json"))
+    if _context_has_indicator_keys(ctx):
+        return True
+    msg = alert.get("message") or alert.get("alert_message") or ""
+    parsed = parse_indicators_from_message(str(msg))
+    return "rsi" in parsed or "ma50" in parsed or "ema10" in parsed
+
+
 def enrich_outcomes_with_nearest_signal_context(
     outcomes: Sequence[dict[str, Any]],
     signal_alerts: Sequence[dict[str, Any]],
@@ -277,12 +295,12 @@ def enrich_outcomes_with_nearest_signal_context(
 
     Fill-linked telegram rows often store only ``{symbol, order_id, ...}``. Prefer a
     SIGNAL alert with the same base symbol whose timestamp is at or before entry,
-    within ``max_skew_seconds``.
+    within ``max_skew_seconds``. Indicators may live in ``context_json`` or in the
+    message body (``RSI=…, MA50=…``).
     """
     by_base: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for alert in signal_alerts:
-        ctx = parse_context_json(alert.get("context_json"))
-        if not _context_has_indicator_keys(ctx):
+        if not _alert_has_usable_indicators(alert):
             continue
         ts_ms = to_utc_ms(alert.get("timestamp") or alert.get("entry_ts_ms"))
         if ts_ms is None:
@@ -299,8 +317,13 @@ def enrich_outcomes_with_nearest_signal_context(
     for oc in outcomes:
         item = dict(oc)
         stats["checked"] += 1
-        ctx = parse_context_json(item.get("context_json"))
+        ctx = dict(parse_context_json(item.get("context_json")))
+        msg = item.get("alert_message") or item.get("message") or ""
+        for key, val in parse_indicators_from_message(str(msg)).items():
+            if key not in ctx:
+                ctx[key] = val
         if _context_has_indicator_keys(ctx):
+            item["context_json"] = ctx
             stats["already_rich"] += 1
             out.append(item)
             continue
@@ -326,11 +349,17 @@ def enrich_outcomes_with_nearest_signal_context(
             out.append(item)
             continue
         donor = best[1]
-        donor_ctx = parse_context_json(donor.get("context_json"))
+        donor_ctx = dict(parse_context_json(donor.get("context_json")))
+        donor_msg = donor.get("message") or donor.get("alert_message") or ""
+        for key, val in parse_indicators_from_message(str(donor_msg)).items():
+            if key not in donor_ctx:
+                donor_ctx[key] = val
         # Keep order ids if present; overlay indicator keys from SIGNAL.
         merged = dict(ctx)
         merged.update(donor_ctx)
         item["context_json"] = merged
+        if donor_msg and not item.get("alert_message"):
+            item["alert_message"] = donor_msg
         item["signal_context_telegram_id"] = donor.get("id")
         item["signal_context_skew_ms"] = int(entry_ms) - best[0]
         stats["enriched"] += 1
@@ -391,6 +420,7 @@ def attach_features_from_trade_outcomes(
             "context_json": oc.get("context_json") or {},
             "side": side,
             "entry_price": entry_price,
+            "message": oc.get("alert_message") or oc.get("message") or "",
         }
         normalized = {
             "side": side,

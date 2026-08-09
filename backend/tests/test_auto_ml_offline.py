@@ -234,32 +234,56 @@ def test_enrich_nearest_signal_context_within_6h():
             "id": 101,
             "symbol": "DOGE_USDT",
             "timestamp": "2026-07-01T11:00:00+00:00",  # 1h prior
-            "context_json": {
-                "rsi": 72,
-                "ma50": 0.069,
-                "ma200": 0.06,
-                "ema10": 0.0695,
-                "atr": 0.001,
-                "volume_ratio": 1.2,
-                "strategy_index": 70,
-            },
+            "message": (
+                "SELL SIGNAL DOGE_USDT 0.07 Auto/Conservative | "
+                "RSI=72.0, Price=0.07, MA50=0.069, EMA10=0.0695, MA200=0.06"
+            ),
+            "context_json": {"symbol": "DOGE_USDT"},
         },
         {
             "id": 102,
             "symbol": "DOGE_USDT",
             "timestamp": "2026-07-01T04:00:00+00:00",  # 8h prior — outside 6h
-            "context_json": {"rsi": 20, "ma50": 0.05, "ma200": 0.04, "ema10": 0.05, "atr": 0.002},
+            "message": "RSI=20.0, MA50=0.05, MA200=0.04, EMA10=0.05",
+            "context_json": {},
         },
     ]
     enriched, stats = enrich_outcomes_with_nearest_signal_context(
         outcomes, alerts, max_skew_seconds=6 * 3600
     )
     assert stats["enriched"] == 1
-    assert enriched[0]["context_json"]["rsi"] == 72
+    assert enriched[0]["context_json"]["rsi"] == pytest.approx(72.0)
     assert enriched[0]["signal_context_telegram_id"] == 101
     rows, _ = attach_features_from_trade_outcomes(enriched)
     assert len(rows) == 1
     assert rows[0]["features"]["rsi"] == pytest.approx(72.0)
+
+
+def test_parse_indicators_from_message_reason_form():
+    from alert_quality_metrics import parse_indicators_from_message
+
+    got = parse_indicators_from_message(
+        "Auto/Aggressive | ✅ RSI | RSI=28.5, Price=65000, MA50=64000, EMA10=64500, MA200=60000, Vol=1.40x"
+    )
+    assert got["rsi"] == pytest.approx(28.5)
+    assert got["ma50"] == pytest.approx(64000)
+    assert got["volume_ratio"] == pytest.approx(1.4)
+
+
+def test_features_from_alert_row_parses_message_when_context_empty():
+    from auto_ml_features import features_from_alert_row
+
+    feats = features_from_alert_row(
+        {
+            "side": "BUY",
+            "entry_price": 100.0,
+            "context_json": {},
+            "message": "BUY SIGNAL X RSI=33.0, Price=100, MA50=98, EMA10=99, MA200=90",
+        }
+    )
+    assert feats["rsi"] == pytest.approx(33.0)
+    assert feats["ma50_dist"] == pytest.approx(0.02)
+
 
 
 def test_enrich_nearest_signal_skips_when_outside_window():

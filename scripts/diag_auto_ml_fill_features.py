@@ -21,7 +21,7 @@ for p in (_SCRIPTS,):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from alert_quality_metrics import parse_context_json, to_utc_ms  # noqa: E402
+from alert_quality_metrics import parse_context_json, parse_indicators_from_message, to_utc_ms  # noqa: E402
 from auto_ml_features import (  # noqa: E402
     _context_has_indicator_keys,
     _symbol_base,
@@ -49,12 +49,19 @@ def _ctx_keys(ctx: dict[str, Any], *, max_keys: int = 40) -> list[str]:
 
 
 def _donor_pool_report(alerts: list[dict[str, Any]]) -> dict[str, Any]:
+    from auto_ml_features import _alert_has_usable_indicators
+
     donor_keys: Counter[str] = Counter()
     with_ind = 0
+    with_msg_ind = 0
     samples: list[dict[str, Any]] = []
     for a in alerts:
         ctx = parse_context_json(a.get("context_json"))
-        if _context_has_indicator_keys(ctx):
+        msg = str(a.get("message") or "")
+        parsed = parse_indicators_from_message(msg)
+        if parsed:
+            with_msg_ind += 1
+        if _alert_has_usable_indicators(a):
             with_ind += 1
             if len(samples) < 3:
                 samples.append(
@@ -62,14 +69,18 @@ def _donor_pool_report(alerts: list[dict[str, Any]]) -> dict[str, Any]:
                         "id": a.get("id"),
                         "symbol": a.get("symbol"),
                         "keys": _ctx_keys(ctx, max_keys=20),
-                        "preview": json.dumps(ctx, default=str)[:300],
+                        "parsed_from_message": parsed,
+                        "message_preview": msg[:220],
                     }
                 )
         for k in _ctx_keys(ctx, max_keys=30):
             donor_keys[k] += 1
+        for k in parsed:
+            donor_keys[f"msg.{k}"] += 1
     return {
         "n_signal_alerts": len(alerts),
         "n_with_indicator_keys": with_ind,
+        "n_with_message_indicators": with_msg_ind,
         "top_keys": donor_keys.most_common(25),
         "indicator_samples": samples,
     }
