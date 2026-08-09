@@ -1531,7 +1531,7 @@ const VERSION_HISTORY = [
 • Phase 1b hybrid trains better when context keeps entry indicators
 
 📦 **PRs**
-• (this PR)
+• #429
 
 ---
 `
