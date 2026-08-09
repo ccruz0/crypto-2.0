@@ -386,6 +386,35 @@ class TestTemplateRouting:
         container = next(c for c in template.collectors if c.tool == "inspect_container")
         assert container.params.get("service") == ""
 
+    def test_crypto_com_trigger_orders_routes_before_dashboard_mismatch(self):
+        cases = [
+            "Missing trigger orders from Crypto.com sync",
+            "Why are trigger orders not showing on the dashboard?",
+            "Crypto.com trigger order 50001 error blocking cache",
+            "Investigate trigger_orders_error_code=50001",
+            "Advanced order API failure during open-order sync",
+            "Open orders empty due to trigger order 50001",
+        ]
+        for objective in cases:
+            template = match_investigation_template(objective)
+            assert template is not None, objective
+            assert template.template_id == "crypto_com_trigger_orders", objective
+            tools = [c.tool for c in template.collectors]
+            assert "reconcile_crypto_com_open_orders" in tools
+            assert "diagnose_open_orders" in tools
+            assert "search_logs" in tools
+            log_collector = next(c for c in template.collectors if c.tool == "search_logs")
+            keywords = set(log_collector.params.get("keywords") or ())
+            assert "50001" in keywords
+            assert "trigger" in keywords
+
+    def test_general_dashboard_mismatch_still_routes(self):
+        template = match_investigation_template(
+            "Why are BTC orders missing from the dashboard but visible in Crypto.com?"
+        )
+        assert template is not None
+        assert template.template_id == "dashboard_exchange_mismatch"
+
     def test_healthy_deployment_report_completes_with_container_evidence(self):
         container_ev = evidence_from_tool_output(
             {

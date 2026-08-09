@@ -86,6 +86,59 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
         ),
         keywords=("executed", "filled", "btc", "missing", "trade history"),
     ),
+    # Dedicated Crypto.com trigger/advanced-order template (Improvement rec
+    # template-trigger-order-dedicated). Must precede open_orders_empty,
+    # open_orders_zero_dashboard, and dashboard_exchange_mismatch so
+    # trigger/50001 objectives are not misrouted to weaker collectors.
+    InvestigationTemplate(
+        template_id="crypto_com_trigger_orders",
+        category="orders",
+        pattern=re.compile(
+            r"trigger\s*[-_]?\s*orders?\s*(?:api\s*)?(?:fail|error|50001)|"
+            r"trigger\s+order\s+api|"
+            r"trigger_orders_error(?:_code)?|"
+            r"\b50001\b|"
+            r"advanced\s*[-_]?\s*orders?\s*(?:fail|error|sync|api)|"
+            r"missing\s+trigger\s+orders?|"
+            r"trigger\s+orders?\s+not\s+show(?:ing)?|"
+            r"crypto\.?com\s+trigger|"
+            r"trigger.?order.*(?:blocks?\s+cache|cache\s+update)",
+            re.IGNORECASE,
+        ),
+        title="Why are Crypto.com trigger-order failures breaking sync?",
+        collectors=(
+            EvidenceCollector("diagnose_open_orders", "diagnose_open_orders"),
+            EvidenceCollector("reconcile_crypto_com_open_orders", "reconcile_crypto_com_open_orders"),
+            EvidenceCollector(
+                "query_database",
+                "count_open_orders",
+                {"preset": "count_open_orders"},
+                mandatory=False,
+            ),
+            EvidenceCollector(
+                "search_logs",
+                "search_logs",
+                {
+                    "keywords": (
+                        "trigger",
+                        "50001",
+                        "trigger_orders",
+                        "trigger_orders_error",
+                        "advanced",
+                        "open_orders",
+                        "sync",
+                    )
+                },
+            ),
+            EvidenceCollector(
+                "search_repository",
+                "search_repository",
+                {"topic": "open_orders"},
+                mandatory=False,
+            ),
+        ),
+        keywords=("trigger", "50001", "crypto.com", "advanced order", "open orders"),
+    ),
     InvestigationTemplate(
         template_id="open_orders_zero_dashboard",
         category="dashboard",
@@ -137,8 +190,6 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
             r"crypto\.?com\s+shows?\s+(?:more\s+)?orders?|"
             r"dashboard\s+(?:missing\s+orders?|not\s+match(?:ing)?\s+exchange)|"
             r"not\s+all(?:\s+(?:my\s+)?)?open\s+orders?\s+(?:are\s+)?(?:there|showing)|"
-            r"missing\s+trigger\s+orders?|"
-            r"trigger\s+orders?\s+not\s+show(?:ing)?|"
             r"(?:dashboard|exchange|crypto\.?com).*(?:mismatch|different|discrepanc)",
             re.IGNORECASE,
         ),
@@ -156,7 +207,7 @@ INVESTIGATION_TEMPLATES: tuple[InvestigationTemplate, ...] = (
             EvidenceCollector("search_repository", "search_repository", {"topic": "open_orders"}, mandatory=False),
             EvidenceCollector("inspect_health", "inspect_health", mandatory=False),
         ),
-        keywords=("dashboard", "exchange", "mismatch", "reconcile", "crypto.com", "trigger"),
+        keywords=("dashboard", "exchange", "mismatch", "reconcile", "crypto.com"),
     ),
     InvestigationTemplate(
         template_id="portfolio_reconciliation_mismatch",

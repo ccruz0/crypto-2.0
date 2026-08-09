@@ -160,13 +160,19 @@ def analyze_template_gaps(
                 }
             )
 
-    # Trigger-order / Crypto.com specific gap (common production pattern)
-    trigger_pattern = re.compile(r"trigger|50001|crypto\.?com", re.IGNORECASE)
+    # Trigger-order / Crypto.com specific gap (common production pattern).
+    # Closed once crypto_com_trigger_orders exists in the investigation catalog.
+    _TRIGGER_DEDICATED_ID = "crypto_com_trigger_orders"
+    trigger_pattern = re.compile(
+        r"trigger\s*[-_]?\s*orders?|trigger_orders_error|\b50001\b|advanced\s*[-_]?\s*orders?",
+        re.IGNORECASE,
+    )
     trigger_rows = [
-        r for r in investigations
+        r
+        for r in investigations
         if trigger_pattern.search(str(r.get("objective") or "") + " " + str(r.get("root_cause") or ""))
     ]
-    if len(trigger_rows) >= 2:
+    if _TRIGGER_DEDICATED_ID not in _KNOWN_TEMPLATE_IDS and len(trigger_rows) >= 2:
         trigger_templates = Counter(str(r.get("template_id") or "generic") for r in trigger_rows)
         if trigger_templates.get("generic", 0) >= 1 or "open_orders_empty" in trigger_templates:
             gaps.append(

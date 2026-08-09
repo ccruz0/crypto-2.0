@@ -283,7 +283,8 @@ class TestTemplateGapAnalysis:
         assert "generic_overuse" in gap_types or "high_insufficient_evidence" in gap_types
         assert len(analysis["recommendations"]) >= 1
 
-    def test_detects_trigger_order_gap(self, improvement_db):
+    def test_trigger_order_dedicated_template_closes_gap(self, improvement_db):
+        """Once crypto_com_trigger_orders exists, the dedicated-template gap rec is closed."""
         _seed_improvement_data(improvement_db)
         from app.jarvis.analytics.aggregation import fetch_all_investigations
 
@@ -291,7 +292,28 @@ class TestTemplateGapAnalysis:
         template_metrics = aggregate_template_metrics(investigations)
         analysis = analyze_template_gaps(investigations, template_metrics)
         rec_ids = {r["id"] for r in analysis["recommendations"]}
-        assert "template-trigger-order-dedicated" in rec_ids or any("trigger" in r["title"].lower() for r in analysis["recommendations"])
+        assert "template-trigger-order-dedicated" not in rec_ids
+        assert "crypto_com_trigger_orders" in analysis["summary"]["known_templates"]
+        assert "specialized_trigger_orders" not in {g["gap_type"] for g in analysis["gaps"]}
+
+    def test_trigger_order_gap_recommends_when_template_missing(self, improvement_db, monkeypatch):
+        """Regression: gap analysis still surfaces the rec if the template is absent."""
+        import app.jarvis.improvement.template_gap_analysis as gap_mod
+
+        monkeypatch.setattr(
+            gap_mod,
+            "_KNOWN_TEMPLATE_IDS",
+            {tid for tid in gap_mod._KNOWN_TEMPLATE_IDS if tid != "crypto_com_trigger_orders"},
+        )
+        _seed_improvement_data(improvement_db)
+        from app.jarvis.analytics.aggregation import fetch_all_investigations
+
+        investigations = fetch_all_investigations()
+        template_metrics = aggregate_template_metrics(investigations)
+        analysis = analyze_template_gaps(investigations, template_metrics)
+        rec_ids = {r["id"] for r in analysis["recommendations"]}
+        assert "template-trigger-order-dedicated" in rec_ids
+        assert any(g["gap_type"] == "specialized_trigger_orders" for g in analysis["gaps"])
 
 
 class TestToolEffectiveness:

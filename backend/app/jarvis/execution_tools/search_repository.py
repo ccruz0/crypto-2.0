@@ -14,6 +14,9 @@ _TOPIC_QUERIES: dict[str, list[str]] = {
         "/orders/open",
         "OpenOrder",
         "open_orders",
+        "trigger_orders",
+        "get_trigger_orders",
+        "50001",
     ],
     "orders": [
         "routes_orders",
