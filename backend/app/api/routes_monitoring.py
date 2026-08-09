@@ -1214,6 +1214,16 @@ def add_telegram_message(
     from datetime import timedelta
     from app.models.telegram_message import TelegramMessage
     from app.database import SessionLocal
+    from app.utils.signal_indicators import enrich_context_with_signal_indicators
+
+    # Persist RSI/MA parsed from SIGNAL message/reason into context_json so
+    # later decision-trace updates (often order_id only) do not leave fills
+    # without indicator features for Auto ML.
+    context_json = enrich_context_with_signal_indicators(
+        message=message or "",
+        throttle_reason=throttle_reason,
+        context=context_json if isinstance(context_json, dict) else None,
+    )
     
     # Blocked events must always have non-null reason_code and throttle_status
     if blocked:
@@ -1438,7 +1448,11 @@ def update_telegram_message_decision_trace(
             recent_message.decision_type = decision_type
             recent_message.reason_code = reason_code
             recent_message.reason_message = reason_message
-            recent_message.context_json = json.dumps(context_json) if isinstance(context_json, (dict, list)) else context_json
+            # Merge so ORDER_CREATED {order_id} does not wipe RSI/MA from SIGNAL write.
+            from app.utils.signal_indicators import merge_telegram_context
+
+            merged_ctx = merge_telegram_context(recent_message.context_json, context_json)
+            recent_message.context_json = json.dumps(merged_ctx) if merged_ctx else None
             recent_message.exchange_error_snippet = exchange_error_snippet
             recent_message.correlation_id = correlation_id
             db.commit()

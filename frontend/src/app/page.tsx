@@ -1495,7 +1495,7 @@ const VERSION_HISTORY = [
 ---
 `
   },
-  {
+    {
     version: '0.70',
     date: '2026-08-09',
     change: 'Ops hybrid Auto ML retrain + joblib runtime deps',
@@ -1511,6 +1511,27 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #415
+
+---
+`
+  },
+  {
+    version: '0.71',
+    date: '2026-08-09',
+    change: 'Persist RSI/MA into SIGNAL telegram context_json (Auto ML features)',
+    details: `🚀 VERSIÓN 0.71 — SIGNAL CONTEXT INDICATORS FOR AUTO ML
+
+📋 **What shipped**
+• Parse RSI/MA/Volume from SIGNAL message/reason into context_json on persist
+• Decision-trace updates merge context (ORDER_CREATED order_id no longer wipes indicators)
+• Enables future fills to train from rich context without message re-parse only
+
+🔧 **Why**
+• Prod context_json was often {symbol, order_id} after order updates; indicators lived only in message text
+• Phase 1b hybrid trains better when context keeps entry indicators
+
+📦 **PRs**
+• (this PR)
 
 ---
 `

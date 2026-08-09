@@ -223,7 +223,7 @@ Priority is **observe first**. Items below are **planned / optional**, not commi
 | # | Planned item | Why | Status |
 |---|--------------|-----|--------|
 | P1 | Keep Monday dry-run cron; promote only when candidate &gt; live | Safe improve loop | **Active process** |
-| P2 | Persist RSI/MA into `context_json` on **new** SIGNAL alerts | Fixes feature source at write time (backfill still uses message parse) | Not started |
+| P2 | Persist RSI/MA into `context_json` on **new** SIGNAL alerts | Fixes feature source at write time (backfill still uses message parse) | **Shipped** (v0.71) — merge on decision-trace; parse on persist |
 | P3 | Dashboard polish — show hybrid fill counts / last promote clearly | Operators shouldn’t need raw API | Not started (API already has fields) |
 | P4 | Grow trainable fill count organically | More COMPLETE Auto round-trips → stronger fill signal | Ongoing (market/time) |
 
