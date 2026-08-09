@@ -170,6 +170,47 @@ def test_drop_degraded_default_features():
     assert suppress == {101}
 
 
+def test_hybrid_fallback_uses_alert_features_for_degraded_fill():
+    alert_feats = {
+        "rsi": 72.0,
+        "ma50_dist": 0.01,
+        "ma200_dist": 0.02,
+        "ema10_dist": 0.005,
+        "volume_ratio": 1.2,
+        "atr_pct": 0.01,
+        "strategy_index": 0.7,
+        "side_buy": 0.0,
+        "hour_utc_norm": 0.5,
+    }
+    fallback = {
+        101: {
+            "id": 101,
+            "features": alert_feats,
+            "x": [alert_feats[n] for n in FEATURE_NAMES],
+        }
+    }
+    rows, suppress = attach_features_from_trade_outcomes(
+        [_rich_outcome(context_json={}, entry_price=0.07, label=1)],
+        feature_fallback_by_id=fallback,
+    )
+    assert len(rows) == 1
+    assert suppress == set()
+    assert rows[0]["y"] == 1
+    assert rows[0]["label_source"] == "trade_outcome"
+    assert rows[0]["features"]["rsi"] == pytest.approx(72.0)
+
+
+def test_hybrid_keep_degraded_emits_fill_without_fallback():
+    rows, suppress = attach_features_from_trade_outcomes(
+        [_rich_outcome(context_json={}, entry_price=0.07, label=0)],
+        keep_degraded=True,
+    )
+    assert len(rows) == 1
+    assert suppress == set()
+    assert rows[0]["y"] == 0
+    assert rows[0]["label_source"] == "trade_outcome"
+
+
 def test_exit_reason_not_used_as_y():
     # Odd but possible: TP exit with negative pnl → still follow label/pnl, not reason.
     rows, _ = attach_features_from_trade_outcomes(

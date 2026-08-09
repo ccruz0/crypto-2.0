@@ -401,7 +401,31 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception as exc:
             print(f"Failed to load trade_outcomes: {exc}", file=sys.stderr)
             return 2
-        trade_dataset, suppress_alert_ids = attach_features_from_trade_outcomes(outcomes)
+        # Hybrid: empty fill-linked context is common; reuse alert-path features
+        # when available, and keep fill labels even if features stay default
+        # (Phase-0 already trains on those). trade_outcomes-only still drops.
+        fallback_by_id: dict[Any, dict[str, Any]] = {
+            r["id"]: r for r in alert_dataset if r.get("id") is not None
+        }
+        trade_dataset, suppress_alert_ids = attach_features_from_trade_outcomes(
+            outcomes,
+            feature_fallback_by_id=fallback_by_id if label_source == "hybrid" else None,
+            keep_degraded=(label_source == "hybrid"),
+        )
+        n_ctx_empty = 0
+        for o in outcomes:
+            raw_ctx = o.get("context_json")
+            if raw_ctx is None or raw_ctx == {} or raw_ctx == "":
+                n_ctx_empty += 1
+            elif isinstance(raw_ctx, str) and raw_ctx.strip() in ("", "{}", "null"):
+                n_ctx_empty += 1
+        print(
+            "FILL_DIAG "
+            f"loaded={len(outcomes)} attached={len(trade_dataset)} "
+            f"suppress={len(suppress_alert_ids)} complete_ids={len(complete_ids)} "
+            f"alert_fallback={len(fallback_by_id)} ctx_empty={n_ctx_empty}",
+            file=sys.stderr,
+        )
         suppress_alert_ids |= complete_ids
         source = f"{source}+trade_outcomes"
     else:
