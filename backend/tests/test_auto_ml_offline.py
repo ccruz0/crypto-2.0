@@ -19,6 +19,7 @@ from auto_ml_features import (  # noqa: E402
     attach_features_and_label,
     attach_features_from_trade_outcomes,
     derive_label,
+    enrich_outcomes_with_nearest_signal_context,
     extract_features,
     feature_vector,
     merge_alert_and_trade_datasets,
@@ -209,6 +210,82 @@ def test_hybrid_keep_degraded_emits_fill_without_fallback():
     assert suppress == set()
     assert rows[0]["y"] == 0
     assert rows[0]["label_source"] == "trade_outcome"
+
+
+def test_enrich_nearest_signal_context_within_6h():
+    entry_ts = "2026-07-01T12:00:00+00:00"
+    outcomes = [
+        {
+            "telegram_message_id": 900,
+            "symbol": "DOGE_USD",
+            "side": "SELL",
+            "entry_price": 0.07,
+            "entry_ts": entry_ts,
+            "label": 1,
+            "context_json": {
+                "symbol": "DOGE_USD",
+                "order_id": "1",
+                "exchange_order_id": "1",
+            },
+        }
+    ]
+    alerts = [
+        {
+            "id": 101,
+            "symbol": "DOGE_USDT",
+            "timestamp": "2026-07-01T11:00:00+00:00",  # 1h prior
+            "context_json": {
+                "rsi": 72,
+                "ma50": 0.069,
+                "ma200": 0.06,
+                "ema10": 0.0695,
+                "atr": 0.001,
+                "volume_ratio": 1.2,
+                "strategy_index": 70,
+            },
+        },
+        {
+            "id": 102,
+            "symbol": "DOGE_USDT",
+            "timestamp": "2026-07-01T04:00:00+00:00",  # 8h prior — outside 6h
+            "context_json": {"rsi": 20, "ma50": 0.05, "ma200": 0.04, "ema10": 0.05, "atr": 0.002},
+        },
+    ]
+    enriched, stats = enrich_outcomes_with_nearest_signal_context(
+        outcomes, alerts, max_skew_seconds=6 * 3600
+    )
+    assert stats["enriched"] == 1
+    assert enriched[0]["context_json"]["rsi"] == 72
+    assert enriched[0]["signal_context_telegram_id"] == 101
+    rows, _ = attach_features_from_trade_outcomes(enriched)
+    assert len(rows) == 1
+    assert rows[0]["features"]["rsi"] == pytest.approx(72.0)
+
+
+def test_enrich_nearest_signal_skips_when_outside_window():
+    outcomes = [
+        {
+            "telegram_message_id": 901,
+            "symbol": "ETH_USD",
+            "entry_price": 3000.0,
+            "entry_ts": "2026-07-01T12:00:00+00:00",
+            "label": 0,
+            "context_json": {"order_id": "x"},
+        }
+    ]
+    alerts = [
+        {
+            "id": 1,
+            "symbol": "ETH_USD",
+            "timestamp": "2026-07-01T01:00:00+00:00",  # 11h
+            "context_json": {"rsi": 40, "ma50": 2900, "ma200": 2800, "ema10": 2950, "atr": 10},
+        }
+    ]
+    enriched, stats = enrich_outcomes_with_nearest_signal_context(
+        outcomes, alerts, max_skew_seconds=6 * 3600
+    )
+    assert stats["no_match"] == 1
+    assert "rsi" not in (enriched[0].get("context_json") or {})
 
 
 def test_exit_reason_not_used_as_y():

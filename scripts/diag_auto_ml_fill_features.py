@@ -22,8 +22,13 @@ for p in (_SCRIPTS,):
         sys.path.insert(0, str(p))
 
 from alert_quality_metrics import parse_context_json, to_utc_ms  # noqa: E402
-from auto_ml_features import features_from_alert_row, features_look_default  # noqa: E402
+from auto_ml_features import (  # noqa: E402
+    enrich_outcomes_with_nearest_signal_context,
+    features_from_alert_row,
+    features_look_default,
+)
 from build_auto_ml_dataset import load_complete_outcomes_with_alerts  # noqa: E402
+from eval_alert_quality import load_alerts_from_db  # noqa: E402
 
 
 def _f_entry(oc: dict[str, Any]) -> float:
@@ -53,6 +58,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     outcomes = load_complete_outcomes_with_alerts(
         args.database_url, days=args.days, telegram_message_ids=None
+    )
+    alerts = load_alerts_from_db(args.database_url, days=args.days)
+    outcomes, enrich_stats = enrich_outcomes_with_nearest_signal_context(
+        outcomes, alerts, max_skew_seconds=6 * 3600
     )
 
     # Without alert = COMPLETE rows missing telegram join target
@@ -144,6 +153,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "complete_total_db": complete_total,
         "complete_no_alert_or_null_label": no_alert,
         "loaded_with_alert_join": len(outcomes),
+        "signal_ctx_enrich": enrich_stats,
         "feature_rich": rich,
         "feature_degraded": degraded,
         "context_parse_empty": empty_parse,

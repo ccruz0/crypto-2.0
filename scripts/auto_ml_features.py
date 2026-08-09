@@ -250,6 +250,94 @@ def features_look_default(feats: dict[str, float]) -> bool:
     )
 
 
+def _symbol_base(symbol: Any) -> str:
+    s = str(symbol or "").strip().upper()
+    for suf in ("_USDT", "_USD", "USDT", "USD"):
+        if s.endswith(suf) and len(s) > len(suf):
+            return s[: -len(suf)]
+    return s
+
+
+def _context_has_indicator_keys(ctx: dict[str, Any]) -> bool:
+    if not ctx:
+        return False
+    for key in ("rsi", "RSI", "ma50", "MA50", "ma200", "MA200", "ema10", "EMA10", "atr", "ATR"):
+        if _ctx_get(ctx, key) is not None:
+            return True
+    return False
+
+
+def enrich_outcomes_with_nearest_signal_context(
+    outcomes: Sequence[dict[str, Any]],
+    signal_alerts: Sequence[dict[str, Any]],
+    *,
+    max_skew_seconds: int = 6 * 3600,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Copy indicator context from the nearest prior SIGNAL alert (same symbol).
+
+    Fill-linked telegram rows often store only ``{symbol, order_id, ...}``. Prefer a
+    SIGNAL alert with the same base symbol whose timestamp is at or before entry,
+    within ``max_skew_seconds``.
+    """
+    by_base: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for alert in signal_alerts:
+        ctx = parse_context_json(alert.get("context_json"))
+        if not _context_has_indicator_keys(ctx):
+            continue
+        ts_ms = to_utc_ms(alert.get("timestamp") or alert.get("entry_ts_ms"))
+        if ts_ms is None:
+            continue
+        base = _symbol_base(alert.get("symbol"))
+        if not base:
+            continue
+        by_base.setdefault(base, []).append((int(ts_ms), alert))
+    for base in by_base:
+        by_base[base].sort(key=lambda x: x[0])
+
+    stats = {"checked": 0, "already_rich": 0, "enriched": 0, "no_match": 0}
+    out: list[dict[str, Any]] = []
+    for oc in outcomes:
+        item = dict(oc)
+        stats["checked"] += 1
+        ctx = parse_context_json(item.get("context_json"))
+        if _context_has_indicator_keys(ctx):
+            stats["already_rich"] += 1
+            out.append(item)
+            continue
+        entry_ts = item.get("entry_ts") or item.get("alert_timestamp") or item.get("timestamp")
+        entry_ms = to_utc_ms(entry_ts)
+        base = _symbol_base(item.get("symbol"))
+        if entry_ms is None or not base or base not in by_base:
+            stats["no_match"] += 1
+            out.append(item)
+            continue
+        best: Optional[tuple[int, dict[str, Any]]] = None
+        for ts_ms, alert in by_base[base]:
+            if ts_ms > int(entry_ms):
+                break
+            skew = int(entry_ms) - ts_ms
+            if skew > max_skew_seconds * 1000:
+                continue
+            # Prefer later (closer) prior SIGNAL
+            if best is None or ts_ms >= best[0]:
+                best = (ts_ms, alert)
+        if best is None:
+            stats["no_match"] += 1
+            out.append(item)
+            continue
+        donor = best[1]
+        donor_ctx = parse_context_json(donor.get("context_json"))
+        # Keep order ids if present; overlay indicator keys from SIGNAL.
+        merged = dict(ctx)
+        merged.update(donor_ctx)
+        item["context_json"] = merged
+        item["signal_context_telegram_id"] = donor.get("id")
+        item["signal_context_skew_ms"] = int(entry_ms) - best[0]
+        stats["enriched"] += 1
+        out.append(item)
+    return out, stats
+
+
 def attach_features_from_trade_outcomes(
     outcomes: Sequence[dict[str, Any]],
     *,

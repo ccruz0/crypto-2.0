@@ -37,6 +37,7 @@ from auto_ml_features import (  # noqa: E402
     TRADE_OUTCOME_LABEL_DEF,
     attach_features_and_label,
     attach_features_from_trade_outcomes,
+    enrich_outcomes_with_nearest_signal_context,
     merge_alert_and_trade_datasets,
 )
 from eval_alert_quality import (  # noqa: E402
@@ -353,9 +354,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         alerts = load_alerts_from_api(args.api_url, days=args.days, token=args.api_token)
         source = f"api:{args.api_url}"
     elif args.database_url:
-        alerts = [] if label_source == "trade_outcomes" else load_alerts_from_db(
-            args.database_url, days=args.days
-        )
+        # Always load SIGNAL alerts when a DB is available — hybrid uses them for
+        # Phase-0 labels; trade_outcomes/hybrid use them to enrich fill context.
+        alerts = load_alerts_from_db(args.database_url, days=args.days)
         source = "database"
     else:
         print(
@@ -401,6 +402,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception as exc:
             print(f"Failed to load trade_outcomes: {exc}", file=sys.stderr)
             return 2
+        # Fill-linked telegram context is often order-ack only; overlay nearest
+        # prior SIGNAL alert context (6h) before feature attach.
+        outcomes, enrich_stats = enrich_outcomes_with_nearest_signal_context(
+            outcomes, alerts, max_skew_seconds=6 * 3600
+        )
+        print(f"SIGNAL_CTX_ENRICH {enrich_stats}", file=sys.stderr)
         # Hybrid: empty fill-linked context is common; reuse alert-path features
         # when available, and keep fill labels even if features stay default
         # (Phase-0 already trains on those). trade_outcomes-only still drops.
