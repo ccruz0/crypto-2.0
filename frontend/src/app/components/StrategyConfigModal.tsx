@@ -317,25 +317,30 @@ export default function StrategyConfigModal({
                       <dd
                         data-testid="auto-ml-label-source"
                         title={
-                          autoMlStatus.n_from_trade_outcome != null
-                            ? `trade=${autoMlStatus.n_from_trade_outcome} alert=${autoMlStatus.n_from_alert ?? '?'}`
+                          autoMlStatus.n_from_trade_outcome != null ||
+                          autoMlStatus.n_from_alert != null
+                            ? `trade=${autoMlStatus.n_from_trade_outcome ?? '?'} alert=${autoMlStatus.n_from_alert ?? '?'}`
                             : undefined
                         }
                       >
                         {autoMlStatus.label_source
                           ? String(autoMlStatus.label_source)
                           : 'alert (legacy)'}
-                        {autoMlStatus.n_from_trade_outcome != null
-                          ? ` · fills ${autoMlStatus.n_from_trade_outcome}`
+                        {autoMlStatus.n_from_trade_outcome != null ||
+                        autoMlStatus.n_from_alert != null
+                          ? ` · fills ${autoMlStatus.n_from_trade_outcome ?? '—'} / alerts ${autoMlStatus.n_from_alert ?? '—'}`
                           : ''}
                       </dd>
                       <dt>Holdout</dt>
-                      <dd>
+                      <dd data-testid="auto-ml-holdout">
                         {autoMlStatus.metrics?.roc_auc != null
                           ? `auc ${Number(autoMlStatus.metrics.roc_auc).toFixed(3)}`
                           : autoMlStatus.metrics?.accuracy != null
                             ? `acc ${Number(autoMlStatus.metrics.accuracy).toFixed(3)}`
                             : 'n/a'}
+                        {autoMlStatus.n_fit_rows != null
+                          ? ` · n=${autoMlStatus.n_fit_rows}`
+                          : ''}
                       </dd>
                       <dt>Promoted</dt>
                       <dd className="truncate" title={autoMlStatus.promoted_at || undefined}>
@@ -344,6 +349,14 @@ export default function StrategyConfigModal({
                           : autoMlStatus.trained_at
                             ? new Date(autoMlStatus.trained_at).toLocaleString()
                             : 'n/a'}
+                      </dd>
+                      <dt>Reason</dt>
+                      <dd
+                        data-testid="auto-ml-promote-reason"
+                        className="truncate col-span-1"
+                        title={autoMlStatus.promote_reason || undefined}
+                      >
+                        {autoMlStatus.promote_reason || 'n/a'}
                       </dd>
                       {autoMlStatus.load_error ? (
                         <>

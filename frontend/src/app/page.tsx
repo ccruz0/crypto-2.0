@@ -1535,6 +1535,24 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.72',
+    date: '2026-08-09',
+    change: 'Auto ML status panel: fill/alert counts + promote reason',
+    details: `🚀 VERSIÓN 0.72 — AUTO ML STATUS CLARITY
+
+📋 **What shipped**
+• Configure Strategy → Auto ML status shows fills/alerts counts, holdout n, promote_reason
+
+🔧 **Why**
+• Operators should see hybrid training mix and last merit promote without curling the API
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 
 ];
