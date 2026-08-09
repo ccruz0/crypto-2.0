@@ -173,13 +173,86 @@ def main(argv: Optional[list[str]] = None) -> int:
         raw_outcomes, alerts, max_skew_seconds=6 * 3600
     )
 
-    # Without alert = COMPLETE rows missing telegram join target
+    # Without alert / null label COMPLETE rows — dump for ops root-cause.
+    orphan_rows: list[dict[str, Any]] = []
     try:
         from sqlalchemy import create_engine, text
 
         eng = create_engine(args.database_url)
         with eng.connect() as conn:
-            no_alert = conn.execute(
+            complete_total = conn.execute(
+                text("SELECT COUNT(*) FROM trade_outcomes WHERE join_status = 'COMPLETE'")
+            ).scalar()
+            orphan_sql = text(
+                """
+                SELECT
+                  o.id AS trade_outcome_id,
+                  o.telegram_message_id,
+                  o.order_intent_id,
+                  o.entry_exchange_order_id,
+                  o.exit_exchange_order_id,
+                  o.symbol,
+                  o.side,
+                  o.entry_price,
+                  o.exit_price,
+                  o.pnl_usd,
+                  o.label,
+                  o.exit_reason,
+                  o.entry_ts,
+                  o.exit_ts,
+                  o.join_status,
+                  o.source,
+                  o.meta_json,
+                  i.signal_id AS intent_signal_id,
+                  i.status AS intent_status,
+                  i.created_at AS intent_created_at
+                FROM trade_outcomes o
+                LEFT JOIN order_intents i ON i.id = o.order_intent_id
+                WHERE o.join_status = 'COMPLETE'
+                  AND (o.telegram_message_id IS NULL OR o.label IS NULL)
+                ORDER BY o.entry_ts DESC NULLS LAST
+                LIMIT 20
+                """
+            )
+            for r in conn.execute(orphan_sql):
+                d = dict(r._mapping)
+                # Suggest nearest prior SIGNAL by symbol (message has RSI=) for backfill ideas
+                base = _symbol_base(d.get("symbol"))
+                entry_ms = to_utc_ms(d.get("entry_ts"))
+                suggestion = None
+                if base and entry_ms is not None:
+                    best = None
+                    for a in alerts:
+                        if _symbol_base(a.get("symbol")) != base:
+                            continue
+                        ts = to_utc_ms(a.get("timestamp"))
+                        if ts is None or ts > int(entry_ms):
+                            continue
+                        skew = int(entry_ms) - int(ts)
+                        if skew > 24 * 3600 * 1000:
+                            continue
+                        msg = str(a.get("message") or "")
+                        parsed = parse_indicators_from_message(msg)
+                        if "rsi" not in parsed:
+                            continue
+                        if best is None or ts > best[0]:
+                            best = (ts, a, parsed, skew)
+                    if best is not None:
+                        suggestion = {
+                            "telegram_id": best[1].get("id"),
+                            "skew_min": round(best[3] / 60000.0, 1),
+                            "rsi": best[2].get("rsi"),
+                            "message_preview": str(best[1].get("message") or "")[:180],
+                        }
+                d["suggested_signal"] = suggestion
+                # Serialize datetimes
+                for k, v in list(d.items()):
+                    if hasattr(v, "isoformat"):
+                        d[k] = v.isoformat()
+                orphan_rows.append(d)
+            no_alert = len(orphan_rows)
+            # Prefer DB count when orphans exceed LIMIT
+            cnt = conn.execute(
                 text(
                     """
                     SELECT COUNT(*) FROM trade_outcomes
@@ -188,12 +261,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                     """
                 )
             ).scalar()
-            complete_total = conn.execute(
-                text("SELECT COUNT(*) FROM trade_outcomes WHERE join_status = 'COMPLETE'")
-            ).scalar()
+            if cnt is not None:
+                no_alert = cnt
     except Exception as exc:
         no_alert = f"err:{exc}"
         complete_total = None
+        orphan_rows = [{"error": str(exc)}]
 
     degraded = 0
     rich = 0
@@ -261,6 +334,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "days": args.days,
         "complete_total_db": complete_total,
         "complete_no_alert_or_null_label": no_alert,
+        "orphan_complete_rows": orphan_rows,
         "loaded_with_alert_join": len(outcomes),
         "donor_pool": donor_pool,
         "match_trials": match_trials,
