@@ -248,3 +248,15 @@ AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
 
 If `n_from_trade_outcome` is low, widen `--days` or keep hybrid (alert fallback).
 Do **not** `--force-promote` to paper over thin fill labels.
+
+### Ops — scheduled / dispatch hybrid retrain
+
+GitHub Actions workflow **Ops — Auto ML hybrid retrain**:
+
+| Trigger | Promote? | Notes |
+|---------|----------|--------|
+| `schedule` (Mon 05:00 UTC) | **No** — dry-run only | Refreshes `trade_outcomes`, trains candidate, prints `DATASET_META` |
+| `workflow_dispatch` `dry_run_only=true` | No | Same as cron |
+| `workflow_dispatch` `dry_run_only=false` | Merit gate only | Promotes `current.joblib` if holdout metric improves; never `--force-promote` |
+
+Also useful: **Ops — Auto ML fill feature diag** (read-only fill/context diagnostics).

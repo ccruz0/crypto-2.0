@@ -1,10 +1,13 @@
 # Ops: Phase 1b hybrid Auto ML retrain on prod (trade_outcomes + alert fallback).
 # Auth: OIDC via AWS_DEPLOY_ROLE_ARN (same as deploy-backend; static access keys are stale).
-# Human-gated: workflow_dispatch only. Defaults to dry-run (no promote).
-# Live promote: dispatch with dry_run_only=false (still no --force-promote).
+# Schedule: weekly dry-run only (never promotes current.joblib).
+# Live promote: workflow_dispatch with dry_run_only=false (still no --force-promote).
 name: Ops — Auto ML hybrid retrain
 
 on:
+  schedule:
+    # Mondays 05:00 UTC — dry-run only (see job env DRY_RUN).
+    - cron: "0 5 * * 1"
   workflow_dispatch:
     inputs:
       dry_run_only:
@@ -41,8 +44,9 @@ jobs:
       - name: Hybrid retrain on prod host
         env:
           INSTANCE_ID: i-087953603011543c5
-          DRY_RUN: ${{ github.event.inputs.dry_run_only }}
-          DAYS: ${{ github.event.inputs.days }}
+          # Cron is always dry-run; dispatch uses the input (default true).
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.dry_run_only || 'true' }}
+          DAYS: ${{ github.event.inputs.days || '90' }}
         run: |
           set -euo pipefail
           if [ "$DRY_RUN" = "true" ]; then
@@ -52,6 +56,7 @@ jobs:
             PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=true"
             EXTRA_FLAGS=""
           fi
+          echo "event=${{ github.event_name }} DRY_RUN=$DRY_RUN DAYS=$DAYS"
           read -r -d '' REMOTE <<EOF || true
           set -eu
           cd /home/ubuntu/crypto-2.0
@@ -80,7 +85,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Auto ML hybrid retrain dry_run=${DRY_RUN} days=${DAYS}" \
+            --comment "Auto ML hybrid retrain dry_run=${DRY_RUN} days=${DAYS} event=${{ github.event_name }}" \
             --parameters "$PARAMS" \
             --timeout-seconds 1200 \
             --output text \
