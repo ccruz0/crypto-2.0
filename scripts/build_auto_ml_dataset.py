@@ -383,14 +383,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         alert_ids = [a.get("id") for a in alerts if a.get("id") is not None]
         try:
-            # Hybrid: pull fills for the same alert ids (avoids LIMIT/window miss
-            # that would leave OHLCV sim labels when a COMPLETE fill exists).
+            # Always load COMPLETE fills via --days window (not restricted to the
+            # SIGNAL-pattern alert_ids set). Many realized fills link to alerts
+            # that fail that text filter; filtering by alert_ids dropped all 32.
             outcomes = load_complete_outcomes_with_alerts(
                 args.database_url,
                 days=args.days,
-                telegram_message_ids=alert_ids if label_source == "hybrid" else None,
+                telegram_message_ids=None,
             )
             if label_source == "hybrid" and alert_ids:
+                # Drop Phase-0 labels when a labeled COMPLETE exists for that alert.
                 complete_ids = load_complete_fill_alert_ids(
                     args.database_url, telegram_message_ids=alert_ids
                 )
