@@ -62,6 +62,8 @@ jobs:
             scripts/build_trade_outcomes.py \
             scripts/retrain_and_promote_auto_entry.py \
             scripts/train_auto_entry_model.py \
+            scripts/alert_quality_metrics.py \
+            scripts/eval_alert_quality.py \
             scripts/requirements-auto-ml.txt \
             backend/app/services/auto_entry_model.py \
             backend/app/services/auto_entry_promote.py \
