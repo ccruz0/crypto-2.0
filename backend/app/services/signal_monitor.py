@@ -9170,12 +9170,29 @@ class SignalMonitorService:
                 position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
             except Exception:
                 position_exists = False
-            # Shorting: if enabled and coin trades on margin, SELL without position opens a short.
+            # Shorting: if enabled and coin allows margin *sell*, SELL without position opens a short.
             # Spot SELL still requires position (protect manual holdings).
+            # Gate on margin_sell_enabled (not buy|sell OR): CRO_USD has buy=True/sell=False and
+            # Crypto.com rejects short opens with 608 CANNOT_SHORT_SELL_INSTRUMENT.
             if (not position_exists) and user_wants_margin:
                 from app.services.risk_guard import shorting_enabled
+                from app.services.margin_info_service import instrument_allows_margin_short
 
                 if shorting_enabled():
+                    if not instrument_allows_margin_short(symbol):
+                        logger.info(
+                            "INSTRUMENT_SHORT_SELL_DISABLED symbol=%s — exchange margin_sell_enabled=false; "
+                            "blocking margin short open (avoids 608 CANNOT_SHORT_SELL_INSTRUMENT)",
+                            symbol,
+                        )
+                        return {
+                            "error": "INSTRUMENT_SHORT_SELL_DISABLED",
+                            "blocked": True,
+                            "message": (
+                                f"Exchange does not allow margin short sell for {symbol} "
+                                f"(margin_sell_enabled=false)"
+                            ),
+                        }
                     is_margin_short_entry = True
                     position_exists = True
         try:

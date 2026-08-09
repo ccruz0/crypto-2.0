@@ -23,6 +23,10 @@ class MarginInfo:
     max_leverage: Optional[float]  # None if margin not enabled
     instrument_name: str
     cached_at: float
+    # Crypto.com exposes buy/sell independently. CRO_USD is a real case:
+    # margin_buy_enabled=True but margin_sell_enabled=False → short opens hit 608.
+    margin_buy_enabled: bool = False
+    margin_sell_enabled: bool = False
 
 
 class MarginInfoService:
@@ -115,7 +119,8 @@ class MarginInfoService:
         Get margin information for a given symbol.
         
         Returns MarginInfo with:
-        - margin_trading_enabled: bool
+        - margin_trading_enabled: bool (True if buy OR sell margin is enabled)
+        - margin_buy_enabled / margin_sell_enabled: per-side flags from the exchange
         - max_leverage: Optional[float] (None if margin not enabled)
         - instrument_name: str
         - cached_at: float
@@ -176,8 +181,8 @@ class MarginInfoService:
         max_leverage = None
         
         # Check if margin is enabled (either buy or sell)
-        margin_buy_enabled = matching_instrument.get("margin_buy_enabled", False)
-        margin_sell_enabled = matching_instrument.get("margin_sell_enabled", False)
+        margin_buy_enabled = bool(matching_instrument.get("margin_buy_enabled", False))
+        margin_sell_enabled = bool(matching_instrument.get("margin_sell_enabled", False))
         margin_trading_enabled = bool(margin_buy_enabled or margin_sell_enabled)
         
         # Also check legacy field names for compatibility
@@ -186,6 +191,10 @@ class MarginInfoService:
                 margin_trading_enabled = bool(matching_instrument["margin_trading_enabled"])
             elif "margin_trading" in matching_instrument:
                 margin_trading_enabled = bool(matching_instrument["margin_trading"])
+            # Legacy aggregated flag only: treat both sides as enabled when True.
+            if margin_trading_enabled and not (margin_buy_enabled or margin_sell_enabled):
+                margin_buy_enabled = True
+                margin_sell_enabled = True
         
         # Extract max leverage (API returns as string)
         if "max_leverage" in matching_instrument:
@@ -204,13 +213,16 @@ class MarginInfoService:
             margin_trading_enabled=margin_trading_enabled,
             max_leverage=max_leverage,
             instrument_name=resolved_name,
-            cached_at=time.time()
+            cached_at=time.time(),
+            margin_buy_enabled=margin_buy_enabled,
+            margin_sell_enabled=margin_sell_enabled,
         )
         
         self._cache[symbol_upper] = margin_info
         
         logger.info(
             f"✅ Margin info for {symbol_upper}: enabled={margin_trading_enabled}, "
+            f"buy={margin_buy_enabled}, sell={margin_sell_enabled}, "
             f"max_leverage={max_leverage}, instrument={resolved_name}"
         )
         
@@ -247,4 +259,23 @@ def get_margin_info_for_symbol(symbol: str) -> MarginInfo:
     """
     service = get_margin_info_service()
     return service.get_margin_info_for_symbol(symbol)
+
+
+def instrument_allows_margin_short(symbol: str) -> bool:
+    """
+    True only when the exchange explicitly allows margin *sell* (short open).
+
+    Fail-closed: fetch/unknown → False. ``margin_trading_enabled`` alone is not
+    enough (CRO_USD: buy enabled, sell disabled → Crypto.com 608).
+    """
+    try:
+        info = get_margin_info_for_symbol(symbol)
+    except Exception as exc:
+        logger.warning(
+            "instrument_allows_margin_short(%s): margin info fetch failed (%s); denying short",
+            symbol,
+            exc,
+        )
+        return False
+    return bool(getattr(info, "margin_sell_enabled", False))
 

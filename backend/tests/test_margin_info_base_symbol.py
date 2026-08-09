@@ -60,6 +60,8 @@ class TestGetMarginInfoBaseSymbol(unittest.TestCase):
         info = self.svc.get_margin_info_for_symbol("ALGO")
 
         self.assertTrue(info.margin_trading_enabled)
+        self.assertTrue(info.margin_buy_enabled)
+        self.assertTrue(info.margin_sell_enabled)
         self.assertEqual(info.max_leverage, 50.0)
         self.assertEqual(info.instrument_name, "ALGO_USD")
         # Cached under requested key
