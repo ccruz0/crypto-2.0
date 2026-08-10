@@ -1615,6 +1615,9 @@ const VERSION_HISTORY = [
 • Ghost protection alerts: wrong-side BUY covers on long books / SELL covers on short books
 • Ops script + workflow \`fix_algo_protection\` (refuses short SL/TP while ALGO wallet long; long already protected)
 
+📦 **PRs**
+• #434
+
 ⚠️ **Operator note**
 • Do **not** create BUY SL/TP for those ALGO "short" rows while balance stays positive — that would buy into a long book
 • Long ALGO already has SELL-side SL+TP on the exchange; review wrong-side BUY 125 covers if still open
