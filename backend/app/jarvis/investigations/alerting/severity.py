@@ -273,10 +273,31 @@ def _status_severity(report: Any) -> tuple[AlertSeverity, str] | None:
 
 
 def _category_boost(text: str, category: str) -> tuple[AlertSeverity, str] | None:
+    """Escalate only on outage-shaped authoritative text for the category.
+
+    Bare words like ``error`` / ``failed`` / ``cannot`` are too broad: the
+    scheduled ``database_health`` objective is literally
+    \"Check database health and recent query errors\", which previously
+    boosted healthy PASS investigations to CRITICAL ``database_unavailable``.
+    Align with ``_CRITICAL_INFRA_RULES`` wording instead.
+    """
     cat = (category or "").lower()
-    if cat == "exchange" and re.search(r"unreachable|unavailable|cannot|failed|error", text):
+    if cat == "exchange" and re.search(
+        r"exchange(?:\s+\w+){0,5}\s+(?:unreachable|unavailable|not reachable|failed|failing)"
+        r"|cannot reach exchange|exchange connectivity failed"
+        r"|exchange authentication fail",
+        text,
+        re.I,
+    ):
         return AlertSeverity.CRITICAL, "exchange_unreachable"
-    if cat == "database" and re.search(r"unavailable|error|failed|cannot|down", text):
+    if cat == "database" and re.search(
+        r"database(?:\s+\w+){0,3}\s+(?:unavailable|down)"
+        r"|db(?:\s+\w+){0,3}\s+unavailable"
+        r"|cannot connect(?:\s+\w+){0,3}\s+database"
+        r"|database connection failed",
+        text,
+        re.I,
+    ):
         return AlertSeverity.CRITICAL, "database_unavailable"
     if cat == "orders" and _match_rules(text, _TRUE_MISMATCH_RULES):
         return AlertSeverity.CRITICAL, "open_order_inconsistency"

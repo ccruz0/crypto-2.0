@@ -49,7 +49,11 @@ _GENERIC_ROOT_CAUSE_PHRASES = frozenset(
 
 _RESOLVED_MISMATCH_CAUSE = "No active dashboard/exchange mismatch detected"
 _HEALTHY_DEPLOYMENT_CAUSE = "No unhealthy services detected; deployment health checks passing"
+_FILLED_TRADE_HISTORY_CAUSE = (
+    "FILLED orders exist in database but dashboard trade history does not display them"
+)
 _DEPLOYMENT_SCOPED_TEMPLATES = frozenset({"deployment_unhealthy"})
+_TRADE_HISTORY_SCOPED_TEMPLATES = frozenset({"executed_orders_missing"})
 _MISMATCH_SCOPED_TEMPLATES = frozenset(
     {
         "dashboard_exchange_mismatch",
@@ -271,7 +275,7 @@ def build_synthesis(
 # Known production root-cause patterns with matchers.
 _KNOWN_CAUSE_PATTERNS: list[dict[str, Any]] = [
     {
-        "cause": "FILLED orders exist in database but dashboard trade history does not display them",
+        "cause": _FILLED_TRADE_HISTORY_CAUSE,
         "fix": "Verify trade-history API route returns FILLED exchange_orders rows and frontend renders them.",
         "impact": "Executed trades visible in DB or Crypto.com may be absent from dashboard trade history.",
         "verification": [
@@ -1224,6 +1228,17 @@ def validate_investigation_report_fields(
         root_cause == _HEALTHY_DEPLOYMENT_CAUSE
         and template_id
         and template_id not in _DEPLOYMENT_SCOPED_TEMPLATES
+    ):
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    # Reject FILLED/trade-history cause outside executed_orders_missing.
+    # database_health's count_orders_by_status always surfaces FILLED>0 on a live
+    # book, which falsely completes scheduled DB probes and pages Telegram CRITICAL
+    # (via loose category boost on the objective's "query errors" wording).
+    if (
+        root_cause == _FILLED_TRADE_HISTORY_CAUSE
+        and template_id
+        and template_id not in _TRADE_HISTORY_SCOPED_TEMPLATES
     ):
         return InvestigationStatus.INSUFFICIENT_EVIDENCE
 
