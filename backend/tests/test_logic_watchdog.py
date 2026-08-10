@@ -129,6 +129,38 @@ def test_fill_inside_grace_period_is_not_flagged_yet(db):
     assert lw.detect_missing_protection(db, NOW) == []
 
 
+def test_naked_short_flagged_when_wallet_short(db):
+    _order(
+        db,
+        "SHORT1",
+        side=OrderSideEnum.SELL,
+        symbol="ALGO_USD",
+        quantity=1139.0,
+        cumulative_quantity=1139.0,
+        price=0.0876,
+        avg_price=0.0876,
+        cumulative_value=99.78,
+    )
+    found = lw.detect_missing_protection(db, NOW, wallet_by_base={"ALGO": -100.0})
+    assert "MISSING_SL_TP" in _kinds(found)
+
+
+def test_alert_sell_on_net_long_wallet_not_flagged(db):
+    """ALGO case: ALERT SELL without SL/TP while wallet stays long is a long-close ghost."""
+    _order(
+        db,
+        "SELL_LONG_CLOSE",
+        side=OrderSideEnum.SELL,
+        symbol="ALGO_USD",
+        quantity=1139.0,
+        cumulative_quantity=1139.0,
+        price=0.0876,
+        avg_price=0.0876,
+        cumulative_value=99.78,
+    )
+    assert lw.detect_missing_protection(db, NOW, wallet_by_base={"ALGO": 1010.0}) == []
+
+
 # ---------------------------------------------------------------- rule 2 ---
 @pytest.mark.parametrize(
     "body,expected",

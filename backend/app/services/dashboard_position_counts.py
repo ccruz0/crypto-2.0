@@ -162,7 +162,48 @@ def compute_protection_leg_stats(
         qty = abs(_order_qty(order))
         if qty <= _GHOST_MIN_NOTIONAL_HINT:
             continue
-        wallet_qty = abs(float(wallet.get(base, 0.0) or 0.0))
+        wallet_signed = float(wallet.get(base, 0.0) or 0.0)
+        wallet_qty = abs(wallet_signed)
+        side = (getattr(order, "side", None) or "").upper()
+        if isinstance(order, dict):
+            side = (order.get("side") or side or "").upper()
+
+        # Wrong-side protection vs signed wallet (ALGO long book with BUY covers).
+        if wallet_signed > _GHOST_MIN_NOTIONAL_HINT and side == "BUY":
+            oid = getattr(order, "order_id", None) or getattr(
+                order, "exchange_order_id", None
+            )
+            alerts.append(
+                {
+                    "symbol": _order_symbol(order) or base,
+                    "base": base,
+                    "order_id": str(oid) if oid is not None else None,
+                    "order_type": order_type or None,
+                    "side": side or None,
+                    "quantity": qty,
+                    "wallet_qty": wallet_signed,
+                    "reason": "wrong_side_cover_on_long",
+                }
+            )
+            continue
+        if wallet_signed < -_GHOST_MIN_NOTIONAL_HINT and side == "SELL":
+            oid = getattr(order, "order_id", None) or getattr(
+                order, "exchange_order_id", None
+            )
+            alerts.append(
+                {
+                    "symbol": _order_symbol(order) or base,
+                    "base": base,
+                    "order_id": str(oid) if oid is not None else None,
+                    "order_type": order_type or None,
+                    "side": side or None,
+                    "quantity": qty,
+                    "wallet_qty": wallet_signed,
+                    "reason": "wrong_side_cover_on_short",
+                }
+            )
+            continue
+
         if (
             wallet_qty <= _GHOST_MIN_NOTIONAL_HINT
             or qty > wallet_qty * _GHOST_QTY_MULTIPLE
@@ -176,7 +217,7 @@ def compute_protection_leg_stats(
                     "base": base,
                     "order_id": str(oid) if oid is not None else None,
                     "order_type": order_type or None,
-                    "side": (getattr(order, "side", None) or None),
+                    "side": side or (getattr(order, "side", None) or None),
                     "quantity": qty,
                     "wallet_qty": wallet_qty,
                     "reason": (

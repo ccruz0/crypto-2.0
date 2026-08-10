@@ -1596,6 +1596,31 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.75',
+    date: '2026-08-10',
+    change: 'Fix false ALGO short lots + monitor naked shorts',
+    details: `🚀 VERSIÓN 0.75 — FALSE SHORT LOTS / NAKED-SHORT MONITOR
+
+📋 **Root cause (ALGO)**
+• Wallet was net LONG (~+1010) while Portfolio expand listed many ALERT sells as "Lots short"
+• Those sells were long-closes / FIFO ghosts (no short exposure), so fill-time correctly skipped BUY SL/TP
+• Example: 5755600492790117046 SELL 1139 @ 0.0876 flagged \`is_orphan\` without children
+
+✅ **What shipped**
+• Portfolio expand keeps opposite-side lots only when linked SL/TP exists (BTC micros still shown)
+• History \`is_orphan\` no longer flags unprotected SELLs on a net-long wallet
+• Logic watchdog now pages MISSING_SL_TP for live shorts (wallet < 0), not long-closes
+• Ghost protection alerts: wrong-side BUY covers on long books / SELL covers on short books
+• Ops script + workflow \`fix_algo_protection\` (refuses short SL/TP while ALGO wallet long; long already protected)
+
+⚠️ **Operator note**
+• Do **not** create BUY SL/TP for those ALGO "short" rows while balance stays positive — that would buy into a long book
+• Long ALGO already has SELL-side SL+TP on the exchange; review wrong-side BUY 125 covers if still open
+
+---
+`
   }
 
 ];

@@ -523,10 +523,40 @@ export function trimOpenLotsToBalance(
   );
 }
 
+/** Opposite-side micros still waiting on linked SL/TP (live hedge), not long-closes. */
+export function lotHasLinkedProtection(lot: OpenPositionLot): boolean {
+  const order = lot.order;
+  return order.has_linked_tp === true || order.has_linked_sl === true;
+}
+
+function isAlertOriginLot(lot: OpenPositionLot): boolean {
+  const order = lot.order;
+  const origin = (order.execution_origin || '').toUpperCase();
+  if (origin === 'ALERT') return true;
+  const label = (
+    order.type_display ||
+    order.execution_origin_label ||
+    ''
+  ).toLowerCase();
+  return label.includes('alerta');
+}
+
+/**
+ * Keep opposite-side lots when they still have linked SL/TP (BTC micros), or when
+ * they are non-alert residuals (DGB classic MANUAL short). Drop unprotected ALERT
+ * opposite fills on a net-long/net-short wallet — those are long-closes / FIFO
+ * ghosts (ALGO 2026-08: many ALERT sells listed as "Lots short" while wallet
+ * stayed +1010 with no short exposure).
+ */
+export function keepOppositeSideLotForPortfolioDisplay(lot: OpenPositionLot): boolean {
+  if (lotHasLinkedProtection(lot)) return true;
+  return !isAlertOriginLot(lot);
+}
+
 /**
  * Portfolio expand display: trim same-side inventory to |balance| for P&L vs
- * wallet, but keep opposite-side open lots in full (e.g. long BTC balance must
- * still list micro SHORT alerts waiting on SL/TP).
+ * wallet, and selectively keep opposite-side lots (see
+ * {@link keepOppositeSideLotForPortfolioDisplay}).
  */
 export function selectOpenLotsForPortfolioDisplay(
   lots: OpenPositionLot[],
@@ -537,12 +567,17 @@ export function selectOpenLotsForPortfolioDisplay(
 
   let selected: OpenPositionLot[];
   if (balance > QTY_EPS) {
-    selected = [...trimOpenLotsToBalance(longs, balance), ...shorts];
+    const oppositeShorts = shorts.filter(keepOppositeSideLotForPortfolioDisplay);
+    selected = [...trimOpenLotsToBalance(longs, balance), ...oppositeShorts];
   } else if (balance < -QTY_EPS) {
-    selected = [...longs, ...trimOpenLotsToBalance(shorts, balance)];
+    const oppositeLongs = longs.filter(keepOppositeSideLotForPortfolioDisplay);
+    selected = [...oppositeLongs, ...trimOpenLotsToBalance(shorts, balance)];
   } else {
-    // Flat wallet: still surface any rebuilt open entries (protected micros).
-    selected = [...longs, ...shorts];
+    // Flat wallet: prefer lots with protection or non-alert residuals.
+    const preferred = [...longs, ...shorts].filter(
+      (lot) => lotHasLinkedProtection(lot) || !isAlertOriginLot(lot)
+    );
+    selected = preferred.length > 0 ? preferred : [...longs, ...shorts];
   }
 
   return selected.sort(

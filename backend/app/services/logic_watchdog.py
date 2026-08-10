@@ -244,11 +244,48 @@ SUSPECTS_NOTIFY = [
 ]
 
 
-def detect_missing_protection(db, now: datetime) -> list[dict]:
+def _base_symbol(symbol: Optional[str]) -> str:
+    sym = (symbol or "").upper().strip()
+    if not sym:
+        return ""
+    return sym.split("_")[0] if "_" in sym else sym
+
+
+def _load_wallet_by_base() -> dict[str, float]:
+    """Best-effort signed wallet map for short-vs-long-close classification."""
+    try:
+        from app.services.brokers.crypto_com_trade import trade_client
+        from app.services.dashboard_position_counts import wallet_balances_by_base
+
+        summary = trade_client.get_account_summary()
+        accounts = summary.get("accounts") or []
+        rows = []
+        for acc in accounts:
+            if not isinstance(acc, dict):
+                continue
+            cur = acc.get("currency") or acc.get("instrument_name") or acc.get("asset")
+            if not cur:
+                continue
+            bal = acc.get("balance")
+            if bal is None:
+                bal = acc.get("quantity") or acc.get("available") or 0
+            rows.append({"currency": str(cur).split("_")[0], "balance": bal})
+        return wallet_balances_by_base(rows)
+    except Exception as err:
+        logger.debug("[WATCHDOG] wallet load failed: %s", err)
+        return {}
+
+
+def detect_missing_protection(
+    db,
+    now: datetime,
+    wallet_by_base: Optional[dict[str, float]] = None,
+) -> list[dict]:
     findings: list[dict] = []
     grace = timedelta(minutes=GRACE_MINUTES())
     window_start = now - timedelta(hours=WINDOW_HOURS())
     cutoff = now - grace
+    wallets = wallet_by_base if wallet_by_base is not None else _load_wallet_by_base()
 
     entries = (
         db.query(ExchangeOrder)
@@ -263,8 +300,16 @@ def detect_missing_protection(db, now: datetime) -> list[dict]:
     for entry in entries:
         if _role_of(entry) is not None:
             continue  # this IS an SL/TP leg, not an entry
-        if entry.side != OrderSideEnum.BUY:
-            continue  # v1 covers LONG entries; SELL entries are usually exits
+        if entry.side == OrderSideEnum.BUY:
+            pass  # long entries always eligible
+        elif entry.side == OrderSideEnum.SELL:
+            # Live shorts only (wallet < 0). Net-long ALERT sells are long-closes.
+            base = _base_symbol(entry.symbol)
+            bal = wallets.get(base)
+            if bal is None or float(bal) >= 0:
+                continue
+        else:
+            continue
         usd = _position_usd(entry)
         if usd < MIN_POSITION_USD():
             continue  # dust
@@ -287,6 +332,7 @@ def detect_missing_protection(db, now: datetime) -> list[dict]:
             "entry_price": _entry_price(entry),
             "filled_qty": _filled_qty(entry),
             "position_usd": round(usd, 2),
+            "wallet_balance": wallets.get(_base_symbol(entry.symbol)),
             "filled_at": filled_at.isoformat() if filled_at else None,
             "children": [
                 {
@@ -344,6 +390,7 @@ def detect_missing_protection(db, now: datetime) -> list[dict]:
                     f"({entry.symbol}, {_filled_qty(entry)} @ ${_entry_price(entry)}, "
                     f"~${usd:,.2f}) se llenó hace {age_min} min y sigue "
                     f"<b>sin {' ni '.join(sorted(missing))}</b>.\n"
+                    f"Side={entry.side}; wallet_base={evidence.get('wallet_balance')}. "
                     f"La posición está expuesta: no hay orden de salida registrada en la BD."
                 ),
                 evidence=evidence,

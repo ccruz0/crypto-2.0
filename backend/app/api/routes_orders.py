@@ -2190,6 +2190,24 @@ def get_order_history(
                 elif protection_order.order_role == "STOP_LOSS":
                     parents_with_sl.add(parent_id)
 
+        # Signed wallet by base — used to avoid orphan-flagging long-closes.
+        wallet_by_base: dict = {}
+        try:
+            from app.models.exchange_balance import ExchangeBalance
+
+            for row in db.query(ExchangeBalance).all():
+                cur = (getattr(row, "asset", None) or "").upper()
+                if not cur:
+                    continue
+                base = cur.split("_")[0]
+                try:
+                    bal = float(getattr(row, "total", None) or 0)
+                except (TypeError, ValueError):
+                    continue
+                wallet_by_base[base] = bal
+        except Exception as wallet_err:
+            logger.debug("order history wallet map unavailable: %s", wallet_err)
+
         for order in all_orders:
             # Get creation time (prefer exchange_create_time, fallback to created_at)
             create_time = order.exchange_create_time or order.created_at
@@ -2223,6 +2241,13 @@ def get_order_history(
             has_linked_tp = order.exchange_order_id in parents_with_tp if is_entry else None
             has_linked_sl = order.exchange_order_id in parents_with_sl if is_entry else None
             is_orphan = bool(is_entry and not has_linked_tp and not has_linked_sl)
+            # Net-long wallet: unprotected SELL "entries" are long-closes / FIFO
+            # ghosts (ALGO), not naked shorts — do not flag as orphan.
+            if is_orphan and order.side == OrderSideEnum.SELL:
+                base = (order.symbol or "").split("_")[0].upper()
+                bal = wallet_by_base.get(base)
+                if bal is not None and float(bal) >= 0:
+                    is_orphan = False
 
             oid = order.exchange_order_id
             execution_origin = resolve_execution_origin(
