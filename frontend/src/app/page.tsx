@@ -1610,7 +1610,7 @@ const VERSION_HISTORY = [
 
 ✅ **What shipped**
 • Portfolio expand keeps opposite-side lots only when linked SL/TP exists (BTC micros still shown)
-• History \`is_orphan\` no longer flags unprotected SELLs on a net-long wallet
+• Executed Orders hides false \`Huérfano\` on net-long SELLs (long-closes)
 • Logic watchdog now pages MISSING_SL_TP for live shorts (wallet < 0), not long-closes
 • Ghost protection alerts: wrong-side BUY covers on long books / SELL covers on short books
 • Ops script + workflow \`fix_algo_protection\` (refuses short SL/TP while ALGO wallet long; long already protected)
@@ -6035,6 +6035,14 @@ function resolveDecisionIndexColor(value: number): string {
                 }
               }}
               topCoins={topCoins}
+              walletByBase={Object.fromEntries(
+                (portfolio?.assets || []).map((a) => [
+                  String(a.coin || '')
+                    .split('_')[0]
+                    .toUpperCase(),
+                  Number(a.balance ?? 0),
+                ])
+              )}
               onNavigateToExpectedTP={(symbol, orderId) => {
                 setExpectedTPDeepLink({ symbol, orderId });
                 setActiveTab('expected-take-profit');

@@ -130,6 +130,28 @@ export function getAssetBaseSymbol(coin: string | null | undefined): string {
   return String(coin).split('_')[0].toUpperCase();
 }
 
+/**
+ * Whether to show the "Huérfano" badge for a filled entry.
+ * Net-long wallets: unprotected ALERT SELLs are long-closes, not naked shorts
+ * (ALGO 2026-08) — suppress the badge when wallet base >= 0.
+ */
+export function shouldShowOrphanBadge(
+  order: OpenOrder,
+  walletByBase?: Record<string, number> | null
+): boolean {
+  if (!order.is_orphan) return false;
+  const side = (order.side || '').toUpperCase();
+  if (side !== 'SELL') return true;
+  if (!walletByBase) return true;
+  const base = getAssetBaseSymbol(order.instrument_name);
+  if (!base) return true;
+  const bal = walletByBase[base];
+  if (typeof bal === 'number' && Number.isFinite(bal) && bal >= 0) {
+    return false;
+  }
+  return true;
+}
+
 export function resolveInstrumentName(coin: string, topCoins?: TopCoin[]): string | null {
   const upper = coin.toUpperCase();
   if (upper.includes('_')) return upper;

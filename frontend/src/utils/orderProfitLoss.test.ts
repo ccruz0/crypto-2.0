@@ -17,6 +17,7 @@ import {
   rebuildOpenLots,
   resolveCurrentPrice,
   selectOpenLotsForPortfolioDisplay,
+  shouldShowOrphanBadge,
   trimOpenLotsToBalance,
 } from './orderProfitLoss';
 import type { TopCoin } from '@/app/api';
@@ -523,6 +524,20 @@ describe('rebuildOpenLots / open-position filter', () => {
       'algo-prot-sell',
     ]);
     expect(lots.some((l) => l.order.order_id === 'algo-naked-sell')).toBe(false);
+  });
+
+  it('suppresses Huérfano badge for SELL orphans on a net-long wallet', () => {
+    const orphanSell = makeOrder({
+      order_id: 'algo-orphan',
+      side: 'SELL',
+      instrument_name: 'ALGO_USD',
+      is_orphan: true,
+      has_linked_tp: false,
+      has_linked_sl: false,
+    });
+    expect(shouldShowOrphanBadge(orphanSell, { ALGO: 1010 })).toBe(false);
+    expect(shouldShowOrphanBadge(orphanSell, { ALGO: -50 })).toBe(true);
+    expect(shouldShowOrphanBadge(orphanSell, {})).toBe(true);
   });
 
   it('keeps opposite-side open longs when wallet balance is short', () => {
