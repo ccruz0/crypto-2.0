@@ -1682,7 +1682,7 @@ const VERSION_HISTORY = [
 • Operators wanted in-dashboard visibility and one-click cleanup instead of only GitHub Actions / ops scripts
 
 📦 **PRs**
-• (this PR)
+• #438
 
 ---
 `
