@@ -17,6 +17,7 @@ import {
   isClosedExecutedEntryOrder,
   isFilledEntryOrder,
   resolveCurrentPrice,
+  shouldShowOrphanBadge,
 } from '@/utils/orderProfitLoss';
 
 type SortField =
@@ -75,6 +76,8 @@ interface ExecutedOrdersTabProps {
   onNavigateToExpectedTP?: (symbol: string, orderId: string) => void;
   /** Mark prices for unrealized P/L (same source as Portfolio / Watchlist). */
   topCoins?: TopCoin[];
+  /** Signed wallet by base — suppresses false Huérfano on net-long SELLs. */
+  walletByBase?: Record<string, number>;
 }
 
 export default function ExecutedOrdersTab({
@@ -84,6 +87,7 @@ export default function ExecutedOrdersTab({
   onToggleHideCancelled,
   onNavigateToExpectedTP,
   topCoins = [],
+  walletByBase = {},
 }: ExecutedOrdersTabProps) {
   const {
     executedOrders,
@@ -686,7 +690,7 @@ export default function ExecutedOrdersTab({
                     <td className="px-6 py-4 whitespace-nowrap text-sm">
                       {isFilledEntryOrder(order) ? (
                         <div className="flex flex-wrap items-center gap-2">
-                          {order.is_orphan && (
+                          {shouldShowOrphanBadge(order, walletByBase) && (
                             <span
                               className="px-2 py-1 rounded text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
                               title="Sin TP ni SL vinculados"

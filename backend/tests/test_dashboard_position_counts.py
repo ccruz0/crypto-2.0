@@ -65,6 +65,40 @@ def test_ghost_tp_when_qty_exceeds_wallet():
     assert not any(a["order_id"] == "tp-ok" for a in alerts)
 
 
+def test_ghost_wrong_side_cover_on_long():
+    """BUY protection on a net-long wallet is wrong-side (ALGO cover ghost)."""
+    orders = [
+        SimpleNamespace(
+            order_type="STOP_LIMIT",
+            status="PENDING",
+            base_symbol="ALGO",
+            symbol="ALGO_USD",
+            quantity=125.0,
+            order_id="sl-buy-cover",
+            order_role="STOP_LOSS",
+            side="BUY",
+        ),
+        SimpleNamespace(
+            order_type="TAKE_PROFIT_LIMIT",
+            status="PENDING",
+            base_symbol="ALGO",
+            symbol="ALGO_USD",
+            quantity=1149.0,
+            order_id="tp-sell-long",
+            order_role="TAKE_PROFIT",
+            side="SELL",
+        ),
+    ]
+    _tp, _prot, alerts = compute_protection_leg_stats(
+        orders, [{"currency": "ALGO", "balance": 1010.0}]
+    )
+    assert any(
+        a["order_id"] == "sl-buy-cover" and a["reason"] == "wrong_side_cover_on_long"
+        for a in alerts
+    )
+    assert not any(a["order_id"] == "tp-sell-long" for a in alerts)
+
+
 def test_ghost_when_no_wallet():
     orders = [
         SimpleNamespace(

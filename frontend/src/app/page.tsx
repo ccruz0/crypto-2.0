@@ -1604,15 +1604,43 @@ const VERSION_HISTORY = [
     details: `🚀 VERSIÓN 0.75 — DATABASE_HEALTH FALSE-CRITICAL TELEGRAM SPAM
 
 📋 **What shipped**
-• Reject FILLED/trade-history root cause outside `executed_orders_missing` (mirrors deployment-healthy scoping from #414)
-• Tighten database/exchange category-boost regexes so scheduled objective wording ("recent query errors") cannot escalate to CRITICAL `database_unavailable`
+• Reject FILLED/trade-history root cause outside \`executed_orders_missing\` (mirrors deployment-healthy scoping from #414)
+• Tighten database/exchange category-boost regexes so scheduled objective wording ("recent query errors") cannot escalate to CRITICAL \`database_unavailable\`
 
 🔧 **Why**
-• Morning Telegram (2026-08-09→10): recurring CRITICAL `database_health` alerts while health=PASS / global_status=PASS
-• `count_orders_by_status` always shows FILLED>0 → wrong trade-history RC at confidence ≥70 → loose "error" category boost → Telegram CRITICAL
+• Morning Telegram (2026-08-09→10): recurring CRITICAL \`database_health\` alerts while health=PASS / global_status=PASS
+• \`count_orders_by_status\` always shows FILLED>0 → wrong trade-history RC at confidence ≥70 → loose "error" category boost → Telegram CRITICAL
 
 📦 **PRs**
 • #433
+
+---
+`
+  },
+  {
+    version: '0.76',
+    date: '2026-08-11',
+    change: 'Fix false ALGO short lots + monitor naked shorts',
+    details: `🚀 VERSIÓN 0.76 — FALSE SHORT LOTS / NAKED-SHORT MONITOR
+
+📋 **Root cause (ALGO)**
+• Wallet was net LONG (~+1010) while Portfolio expand listed many ALERT sells as "Lots short"
+• Those sells were long-closes / FIFO ghosts (no short exposure), so fill-time correctly skipped BUY SL/TP
+• Example: 5755600492790117046 SELL 1139 @ 0.0876 flagged \`is_orphan\` without children
+
+✅ **What shipped**
+• Portfolio expand keeps opposite-side lots only when linked SL/TP exists (BTC micros still shown)
+• Executed Orders hides false \`Huérfano\` on net-long SELLs (long-closes)
+• Logic watchdog now pages MISSING_SL_TP for live shorts (wallet < 0), not long-closes
+• Ghost protection alerts: wrong-side BUY covers on long books / SELL covers on short books
+• Ops script + workflow \`fix_algo_protection\` (refuses short SL/TP while ALGO wallet long; long already protected)
+
+📦 **PRs**
+• #434
+
+⚠️ **Operator note**
+• Do **not** create BUY SL/TP for those ALGO "short" rows while balance stays positive — that would buy into a long book
+• Long ALGO already has SELL-side SL+TP on the exchange; review wrong-side BUY 125 covers if still open
 
 ---
 `
@@ -1627,7 +1655,7 @@ const VERSION_HISTORY = [
 • Hourly / SL/TP Check audit finds FILLED entry parents missing ACTIVE SL/TP even when wallet-sum coverage looks 100%
 • SL/TP Check Create prefers parent fill qty for naked_parent rows (wallet-gap rows keep uncovered_qty)
 • Expected TP keeps direction-aligned naked fills visible when protected lots already cover the wallet (SL/TP failed / missing)
-• Ops script + workflow: recreate 0.0052 BUY SL/TP for ETH_USDT parent `5755600492671134850`
+• Ops script + workflow: recreate 0.0052 BUY SL/TP for ETH_USDT parent \`5755600492671134850\`
 
 🔧 **Why**
 • ETH ALERT SELL 0.0052 @ 1914.8 never got children; later recreate used wallet gap ~0.010 and REJECTED
@@ -6050,6 +6078,14 @@ function resolveDecisionIndexColor(value: number): string {
                 }
               }}
               topCoins={topCoins}
+              walletByBase={Object.fromEntries(
+                (portfolio?.assets || []).map((a) => [
+                  String(a.coin || '')
+                    .split('_')[0]
+                    .toUpperCase(),
+                  Number(a.balance ?? 0),
+                ])
+              )}
               onNavigateToExpectedTP={(symbol, orderId) => {
                 setExpectedTPDeepLink({ symbol, orderId });
                 setActiveTab('expected-take-profit');

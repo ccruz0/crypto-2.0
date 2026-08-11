@@ -17,6 +17,7 @@ import {
   rebuildOpenLots,
   resolveCurrentPrice,
   selectOpenLotsForPortfolioDisplay,
+  shouldShowOrphanBadge,
   trimOpenLotsToBalance,
 } from './orderProfitLoss';
 import type { TopCoin } from '@/app/api';
@@ -473,6 +474,70 @@ describe('rebuildOpenLots / open-position filter', () => {
     );
     expect(viaAsset.filter((l) => l.side === 'SELL')).toHaveLength(2);
     expect(viaAsset.filter((l) => l.side === 'BUY')).toHaveLength(1);
+  });
+
+  it('drops unprotected opposite shorts on a net-long wallet (ALGO false shorts)', () => {
+    const longAlert = makeOrder({
+      order_id: 'algo-long',
+      side: 'BUY',
+      quantity: '1010',
+      price: '0.09',
+      instrument_name: 'ALGO_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      has_linked_sl: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const nakedShort = makeOrder({
+      order_id: 'algo-naked-sell',
+      side: 'SELL',
+      quantity: '1139',
+      price: '0.0876',
+      instrument_name: 'ALGO_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: false,
+      has_linked_sl: false,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const protectedShort = makeOrder({
+      order_id: 'algo-prot-sell',
+      side: 'SELL',
+      quantity: '125',
+      price: '0.08',
+      instrument_name: 'ALGO_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      has_linked_sl: true,
+      create_time: 3_000,
+      update_time: 3_000,
+    });
+
+    const lots = getOpenPositionLotsForAsset(
+      [longAlert, nakedShort, protectedShort],
+      'ALGO',
+      1010
+    );
+    expect(lots.map((l) => l.order.order_id).sort()).toEqual([
+      'algo-long',
+      'algo-prot-sell',
+    ]);
+    expect(lots.some((l) => l.order.order_id === 'algo-naked-sell')).toBe(false);
+  });
+
+  it('suppresses Huérfano badge for SELL orphans on a net-long wallet', () => {
+    const orphanSell = makeOrder({
+      order_id: 'algo-orphan',
+      side: 'SELL',
+      instrument_name: 'ALGO_USD',
+      is_orphan: true,
+      has_linked_tp: false,
+      has_linked_sl: false,
+    });
+    expect(shouldShowOrphanBadge(orphanSell, { ALGO: 1010 })).toBe(false);
+    expect(shouldShowOrphanBadge(orphanSell, { ALGO: -50 })).toBe(true);
+    expect(shouldShowOrphanBadge(orphanSell, {})).toBe(true);
   });
 
   it('keeps opposite-side open longs when wallet balance is short', () => {
