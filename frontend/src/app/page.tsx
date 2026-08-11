@@ -1600,6 +1600,7 @@ const VERSION_HISTORY = [
   {
     version: '0.75',
     date: '2026-08-10',
+<<<<<<< HEAD
     change: 'Fix false ALGO short lots + monitor naked shorts',
     details: `🚀 VERSIÓN 0.75 — FALSE SHORT LOTS / NAKED-SHORT MONITOR
 
@@ -1621,6 +1622,21 @@ const VERSION_HISTORY = [
 ⚠️ **Operator note**
 • Do **not** create BUY SL/TP for those ALGO "short" rows while balance stays positive — that would buy into a long book
 • Long ALGO already has SELL-side SL+TP on the exchange; review wrong-side BUY 125 covers if still open
+=======
+    change: 'Stop false CRITICAL Jarvis alerts from healthy database_health probes',
+    details: `🚀 VERSIÓN 0.75 — DATABASE_HEALTH FALSE-CRITICAL TELEGRAM SPAM
+
+📋 **What shipped**
+• Reject FILLED/trade-history root cause outside \`executed_orders_missing\` (mirrors deployment-healthy scoping from #414)
+• Tighten database/exchange category-boost regexes so scheduled objective wording ("recent query errors") cannot escalate to CRITICAL \`database_unavailable\`
+
+🔧 **Why**
+• Morning Telegram (2026-08-09→10): recurring CRITICAL \`database_health\` alerts while health=PASS / global_status=PASS
+• \`count_orders_by_status\` always shows FILLED>0 → wrong trade-history RC at confidence ≥70 → loose "error" category boost → Telegram CRITICAL
+
+📦 **PRs**
+• (this PR)
+>>>>>>> origin/main
 
 ---
 `
