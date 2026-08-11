@@ -1742,7 +1742,7 @@ const VERSION_HISTORY = [
 • Operators saw naked shorts on Expected TP but had no one-click path to the actionable Create report
 
 📦 **PRs**
-• (this PR)
+• #441
 
 ---
 `
