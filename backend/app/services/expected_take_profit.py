@@ -302,13 +302,14 @@ def _align_open_lots_to_wallet(
         for lot in pinable_naked:
             kept.append(_clone_open_lot(lot))
 
-        if pinable_naked:
-            naked_qty = sum((lot.lot_qty for lot in pinable_naked), Decimal("0"))
-            if protected_qty + naked_qty > wallet_abs:
-                was_trimmed = True
+        naked_qty = sum((lot.lot_qty for lot in pinable_naked), Decimal("0"))
+        if pinable_naked and protected_qty + naked_qty > wallet_abs:
+            was_trimmed = True
 
         if excess_unprotected:
-            remaining_capacity = max(Decimal("0"), wallet_abs - protected_qty)
+            remaining_capacity = max(
+                Decimal("0"), wallet_abs - protected_qty - naked_qty
+            )
             if remaining_capacity > 0:
                 extra, extra_trimmed = _trim_lots_to_wallet_qty(
                     excess_unprotected, remaining_capacity, sort_key=_trim_sort_key

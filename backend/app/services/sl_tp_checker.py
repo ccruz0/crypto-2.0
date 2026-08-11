@@ -523,6 +523,10 @@ def _iter_naked_entry_parents(
     Wallet-sum coverage can look 100% while an older micro fill still has no
     children (prod ETH_USDT 5755600492671134850 — 0.0052 SELL, 2026-08-05).
     Broader than half-protected: includes fully naked parents, not only SL-only.
+
+    Prefers parents still present as open lots (no age cutoff) so the audit does
+    not go silent after ``lookback_hours``. Lookback scan is a fallback for
+    recent fills not yet reflected in FIFO open lots.
     """
     from datetime import timedelta
 
@@ -537,6 +541,57 @@ def _iter_naked_entry_parents(
     if not variants:
         return []
 
+    side_u = (entry_side or "").strip().upper()
+    max_n = max(1, int(max_parents))
+
+    def _is_naked(parent: ExchangeOrder) -> bool:
+        pid = (parent.exchange_order_id or "").strip()
+        if not pid:
+            return False
+        role = (getattr(parent, "order_role", None) or "").strip().upper()
+        if role == FLATTEN_CLOSE_ROLE or role in NON_ENTRY_ROLES:
+            return False
+        if has_complete_sl_tp_protection(db, pid):
+            return False
+        if has_filled_sl_tp_protection(db, pid):
+            return False
+        has_sl = get_active_protection_order(db, pid, "STOP_LOSS") is not None
+        has_tp = get_active_protection_order(db, pid, "TAKE_PROFIT") is not None
+        return not (has_sl and has_tp)
+
+    naked: List[ExchangeOrder] = []
+    seen: set = set()
+
+    # 1) Open-lot parents — durable across lookback expiry.
+    try:
+        from app.services.expected_take_profit import rebuild_open_lots
+
+        for lot in rebuild_open_lots(db, symbol) or []:
+            pid = (getattr(lot, "buy_order_id", None) or "").strip()
+            if not pid or pid in seen:
+                continue
+            parent = (
+                db.query(ExchangeOrder)
+                .filter(ExchangeOrder.exchange_order_id == pid)
+                .first()
+            )
+            if parent is None:
+                continue
+            pside = parent.side.value if hasattr(parent.side, "value") else str(parent.side)
+            if side_u in ("BUY", "SELL") and (pside or "").upper() != side_u:
+                continue
+            if not _is_naked(parent):
+                continue
+            naked.append(parent)
+            seen.add(pid)
+            if len(naked) >= max_n:
+                return naked
+    except Exception as open_lot_err:
+        logger.debug(
+            "Naked-entry open-lot seed failed for %s: %s", symbol, open_lot_err
+        )
+
+    # 2) Lookback FILLED scan — catch recent fills not yet in open lots.
     q = (
         db.query(ExchangeOrder)
         .filter(
@@ -548,7 +603,6 @@ def _iter_naked_entry_parents(
             | (~ExchangeOrder.order_role.in_(list(NON_ENTRY_ROLES)))
         )
     )
-    side_u = (entry_side or "").strip().upper()
     if side_u == "BUY":
         q = q.filter(ExchangeOrder.side == OrderSideEnum.BUY)
     elif side_u == "SELL":
@@ -563,25 +617,15 @@ def _iter_naked_entry_parents(
             | (ExchangeOrder.exchange_create_time >= cutoff)
         )
 
-    parents = q.order_by(ExchangeOrder.exchange_create_time.desc()).all()
-    naked: List[ExchangeOrder] = []
-    for parent in parents:
+    for parent in q.order_by(ExchangeOrder.exchange_create_time.desc()).all():
         pid = (parent.exchange_order_id or "").strip()
-        if not pid:
+        if not pid or pid in seen:
             continue
-        role = (getattr(parent, "order_role", None) or "").strip().upper()
-        if role == FLATTEN_CLOSE_ROLE:
-            continue
-        if has_complete_sl_tp_protection(db, pid):
-            continue
-        if has_filled_sl_tp_protection(db, pid):
-            continue
-        has_sl = get_active_protection_order(db, pid, "STOP_LOSS") is not None
-        has_tp = get_active_protection_order(db, pid, "TAKE_PROFIT") is not None
-        if has_sl and has_tp:
+        if not _is_naked(parent):
             continue
         naked.append(parent)
-        if len(naked) >= max(1, int(max_parents)):
+        seen.add(pid)
+        if len(naked) >= max_n:
             break
     return naked
 

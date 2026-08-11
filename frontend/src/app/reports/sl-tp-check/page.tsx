@@ -18,6 +18,7 @@ interface MissingPosition {
   entry_price?: number | null;
   current_price?: number | null;
   uncovered_qty?: number | null;
+  naked_parent?: boolean;
 }
 
 interface SlTpCheckReport {
@@ -139,12 +140,12 @@ export default function SlTpCheckReportPage() {
   }, [fetchReport]);
 
   const createQuantityFor = (pos: MissingPosition): number | undefined => {
-    // Parent-targeted Create must size to the linked entry lot. Preferring
-    // uncovered_qty (wallet gap) oversized micros — e.g. ETH 0.0052 fill became
-    // ~0.010 and REJECTED on recreate. Use uncovered only when no parent qty.
+    // Naked-parent rows are sized to the fill (uncovered_qty == parent lot).
+    // Wallet-gap rows must keep uncovered_qty — enrich may attach a dust/stale
+    // latest entry id whose quantity is much smaller than the wallet gap.
     const entryQty = pos.quantity != null ? Number(pos.quantity) : NaN;
     const uncovered = pos.uncovered_qty != null ? Number(pos.uncovered_qty) : NaN;
-    if (pos.order_id && Number.isFinite(entryQty) && entryQty > 0) return entryQty;
+    if (pos.naked_parent && Number.isFinite(entryQty) && entryQty > 0) return entryQty;
     if (Number.isFinite(uncovered) && uncovered > 0) return uncovered;
     if (Number.isFinite(entryQty) && entryQty > 0) return entryQty;
     return undefined;
