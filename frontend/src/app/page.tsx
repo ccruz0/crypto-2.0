@@ -1613,7 +1613,7 @@ const VERSION_HISTORY = [
 • Wallet coverage hid the naked micro from Expected TP / hourly read-only audit
 
 📦 **PRs**
-• (this PR)
+• #435
 
 ---
 `
