@@ -174,13 +174,6 @@ function InnerSlTpCheckReportPage() {
     return rows;
   }, [positions, focusSymbols, needTpOnly]);
 
-  const focusInReport = useMemo(() => {
-    if (focusSymbols.size === 0) return [] as string[];
-    return displayPositions
-      .filter((p) => focusSymbols.has((p.symbol || '').toUpperCase()))
-      .map((p) => p.symbol);
-  }, [displayPositions, focusSymbols]);
-
   const focusMissingFromReport = useMemo(() => {
     if (focusSymbols.size === 0) return [] as string[];
     const present = new Set(
