@@ -1706,6 +1706,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.80',
+    date: '2026-08-11',
+    change: 'Hide Huérfano on closed/netted fills (ALGO)',
+    details: `🚀 VERSIÓN 0.80 — HUÉRFANO ONLY FOR OPEN LOTS
+
+📋 **What shipped**
+• Executed Orders \`Huérfano\` only when the fill still has remaining open-lot exposure
+• Closed/FIFO-netted fills (e.g. ALGO 1139/1149) no longer look like unprotected open risk when Expected TP shows 100% coverage on the live short
+• Keeps prior net-long SELL suppress + tooltip clarifies "still in open lots"
+
+🔧 **Why**
+• \`is_orphan\` is DB parent-link only; historical alert fills without children stayed badged even after they left the wallet-aligned open set
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 
 
