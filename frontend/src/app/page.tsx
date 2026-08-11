@@ -1686,6 +1686,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.79',
+    date: '2026-08-11',
+    change: 'Ghost Monitoring: fix Not Found vs empty inconsistency',
+    details: `🚀 VERSIÓN 0.79 — GHOST BOX CONSISTENT WITH EXPECTED TP
+
+📋 **What shipped**
+• Monitoring Ghost box no longer shows "No ghost orders" under a red Not Found error
+• If monitoring API is 404 (backend still deploying), fall back to dashboard-state \`ghost_protection_alerts\` (same list as Expected TP banner)
+• Clearer error copy when the dedicated endpoint is missing
+
+🔧 **Why**
+• After #438 frontend shipped before backend: box showed Not Found + empty, while Expected TP still listed 16 ghosts
+
+📦 **PRs**
+• #439
+
+---
+`
   }
 
 
