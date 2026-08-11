@@ -1804,6 +1804,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.85',
+    date: '2026-08-11',
+    change: 'Portfolio: Crear SL/TP or Limpiar dust on open lots',
+    details: `🚀 VERSIÓN 0.85 — PORTFOLIO LOT ACTIONS
+
+📋 **What shipped**
+• Expanded Portfolio lots gain an Acción column: Crear SL/TP (≥ $5 unprotected) or Limpiar dust (under $5 market flatten)
+• USDT/USD margin rows stay non-actionable; dust clean confirms before market close
+• \`orders/quick\` routed via internal-api proxy (same auth path as create-protection-smart)
+
+🔧 **Why**
+• Operators needed Create TP/SL and dust cleanup from Cartera without jumping to Expected TP / report
+
+📦 **PRs**
+• #445
+
+---
+`
   }
 
 

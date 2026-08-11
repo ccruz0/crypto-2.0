@@ -10,6 +10,11 @@ describe('internalApiProxy', () => {
     expect(isInternalApiProxyPath('/orders/create-protection-smart')).toBe(true);
   });
 
+  it('allows orders/quick path (portfolio dust flatten)', () => {
+    expect(isInternalApiProxyPath('orders/quick')).toBe(true);
+    expect(isInternalApiProxyPath('/orders/quick')).toBe(true);
+  });
+
   it('rejects unknown paths', () => {
     expect(isInternalApiProxyPath('orders/cancel')).toBe(false);
     expect(isInternalApiProxyPath('admin/test-telegram')).toBe(false);

@@ -1413,6 +1413,28 @@ export interface QuickOrderResponse {
 
 export async function quickOrder(request: QuickOrderRequest): Promise<QuickOrderResponse> {
   try {
+    // Production backend requires ATP_API_KEY; browser cannot hold that secret.
+    if (shouldUseInternalApiProxy()) {
+      const response = await fetch('/internal-api/orders/quick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        let detail = `HTTP error! status: ${response.status}`;
+        try {
+          const errJson = await response.json();
+          detail = errJson.detail || errJson.message || detail;
+        } catch {
+          const errText = await response.text();
+          if (errText) detail = errText;
+        }
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      }
+      return response.json() as Promise<QuickOrderResponse>;
+    }
+
     const data = await fetchAPI<QuickOrderResponse>('/orders/quick', {
       method: 'POST',
       body: JSON.stringify(request)
