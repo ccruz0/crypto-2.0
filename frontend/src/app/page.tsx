@@ -1781,7 +1781,7 @@ const VERSION_HISTORY = [
 • Naked-short deep-link hid SL-only missing rows and contradicted the count
 
 📦 **PRs**
-• (this PR)
+• #443
 
 ---
 `
