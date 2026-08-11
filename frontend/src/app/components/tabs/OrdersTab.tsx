@@ -217,7 +217,14 @@ export default function OrdersTab({
           (SL/TP qty ≫ wallet or no wallet): {ghostPreview.bases}.
           {' '}
           These are <em>not</em> counted in Watchlist/Portfolio Positions N/limit.
-          Review Trigger Orders below or Expected Take Profit.
+          {' '}
+          <a
+            href="/?tab=monitoring"
+            className="font-semibold underline hover:no-underline"
+            data-testid="orders-ghost-banner-monitoring-link"
+          >
+            Clean in Monitoring →
+          </a>
         </div>
       )}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-4">

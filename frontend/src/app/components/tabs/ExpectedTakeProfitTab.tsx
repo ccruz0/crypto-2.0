@@ -383,12 +383,28 @@ export default function ExpectedTakeProfitTab({
           <strong>{ghostPreview.total} ghost/orphan protection leg(s)</strong>
           {' '}
           vs wallet ({ghostPreview.bases}). Qty far exceeds |wallet| or wallet is empty — cancel stale SL/TP on the exchange.
+          {' '}
+          <a
+            href="/?tab=monitoring"
+            className="font-semibold underline hover:no-underline"
+            data-testid="ghost-banner-monitoring-link"
+          >
+            Clean in Monitoring →
+          </a>
         </div>
       )}
       {nakedShortSymbols.length > 0 && (
         <div className="mb-4 rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-700 px-4 py-3 text-sm text-amber-950 dark:text-amber-100">
           <strong>Naked short (0 TP coverage):</strong>{' '}
           {nakedShortSymbols.join(', ')}. Short wallet exposure has no matching take-profit coverage — create TP or close the short.
+          {' '}
+          <a
+            href={`/reports/sl-tp-check?symbols=${encodeURIComponent(nakedShortSymbols.join(','))}&need=tp`}
+            className="font-semibold underline hover:no-underline"
+            data-testid="naked-short-sl-tp-report-link"
+          >
+            Open SL/TP Check report →
+          </a>
         </div>
       )}
 

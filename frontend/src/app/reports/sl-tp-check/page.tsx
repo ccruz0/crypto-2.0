@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { createProtectionSmart } from '@/app/api';
 import { getApiUrl } from '@/lib/environment';
 
@@ -56,7 +57,19 @@ function formatTimestamp(ts: string | null | undefined): string {
   }
 }
 
-export default function SlTpCheckReportPage() {
+function InnerSlTpCheckReportPage() {
+  const searchParams = useSearchParams();
+  const focusSymbols = useMemo(() => {
+    const raw = searchParams.get('symbols') || '';
+    return new Set(
+      raw
+        .split(',')
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean)
+    );
+  }, [searchParams]);
+  const needTpOnly = (searchParams.get('need') || '').toLowerCase() === 'tp';
+
   const [report, setReport] = useState<SlTpCheckReport | null>(null);
   const [storedAt, setStoredAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -272,6 +285,27 @@ export default function SlTpCheckReportPage() {
 
   const positions = Array.isArray(report?.positions_missing) ? report!.positions_missing! : [];
 
+  const displayPositions = useMemo(() => {
+    let rows = [...positions];
+    if (needTpOnly) {
+      rows = rows.filter((p) => !p.has_tp);
+    }
+    if (focusSymbols.size > 0) {
+      rows.sort((a, b) => {
+        const aFocus = focusSymbols.has((a.symbol || '').toUpperCase()) ? 0 : 1;
+        const bFocus = focusSymbols.has((b.symbol || '').toUpperCase()) ? 0 : 1;
+        if (aFocus !== bFocus) return aFocus - bFocus;
+        return (a.symbol || '').localeCompare(b.symbol || '');
+      });
+    }
+    return rows;
+  }, [positions, focusSymbols, needTpOnly]);
+
+  const focusList = useMemo(
+    () => Array.from(focusSymbols).sort().join(', '),
+    [focusSymbols]
+  );
+
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -290,11 +324,27 @@ export default function SlTpCheckReportPage() {
             >
               Refresh
             </button>
+            <a href="/?tab=expected-take-profit" className="text-blue-600 hover:text-blue-800 underline">
+              ← Expected TP
+            </a>
             <a href="/" className="text-blue-600 hover:text-blue-800 underline">
-              ← Back to Dashboard
+              Dashboard
             </a>
           </div>
         </div>
+
+        {focusSymbols.size > 0 && (
+          <div
+            className="mb-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+            data-testid="sl-tp-focus-banner"
+          >
+            <strong>Focused from Expected TP naked-short banner:</strong>{' '}
+            {focusList}
+            {needTpOnly ? ' (preferring rows missing TP).' : '.'}
+            {' '}
+            Use <strong>Create TP</strong> on matching rows, or Refresh to re-scan.
+          </div>
+        )}
 
         <div className="bg-white rounded-lg shadow mb-6 p-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
@@ -339,9 +389,14 @@ export default function SlTpCheckReportPage() {
               Separate Create SL / Create TP actions call the same create-protection-smart path as Expected TP.
             </p>
           </div>
-          {positions.length === 0 ? (
+          {displayPositions.length === 0 ? (
             <div className="p-8 text-center text-gray-500">
               No positions missing SL/TP in the latest check.
+              {focusSymbols.size > 0 && (
+                <div className="mt-2 text-sm">
+                  Focus symbols may already be covered, or need a Refresh to re-scan.
+                </div>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -361,15 +416,26 @@ export default function SlTpCheckReportPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
-                  {positions.map((pos) => {
+                  {displayPositions.map((pos) => {
                     const needSl = !pos.has_sl;
                     const needTp = !pos.has_tp;
                     const slKey = `${pos.order_id || pos.symbol}:sl`;
                     const tpKey = `${pos.order_id || pos.symbol}:tp`;
                     const busy = creatingKey != null;
+                    const isFocus = focusSymbols.has((pos.symbol || '').toUpperCase());
                     return (
-                      <tr key={`${pos.symbol}-${pos.order_id || 'no-order'}`} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm font-medium text-gray-900">{pos.symbol}</td>
+                      <tr
+                        key={`${pos.symbol}-${pos.order_id || 'no-order'}`}
+                        className={isFocus ? 'bg-amber-50 hover:bg-amber-100/80' : 'hover:bg-gray-50'}
+                      >
+                        <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                          {pos.symbol}
+                          {isFocus && (
+                            <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-800 font-semibold">
+                              focus
+                            </span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-sm text-gray-700">{pos.side || '—'}</td>
                         <td className="px-4 py-3 text-sm text-gray-700">{formatNumber(pos.balance)}</td>
                         <td className="px-4 py-3 text-sm text-gray-700">{formatNumber(pos.uncovered_qty)}</td>
@@ -457,3 +523,18 @@ export default function SlTpCheckReportPage() {
     </div>
   );
 }
+
+export default function SlTpCheckReportPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-50 py-8">
+          <div className="max-w-6xl mx-auto px-4 text-gray-500">Loading SL/TP Check report…</div>
+        </div>
+      }
+    >
+      <InnerSlTpCheckReportPage />
+    </Suspense>
+  );
+}
+
