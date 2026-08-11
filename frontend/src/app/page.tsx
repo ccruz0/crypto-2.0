@@ -1666,6 +1666,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.78',
+    date: '2026-08-11',
+    change: 'Monitoring: Ghost orders box + Clean button',
+    details: `🚀 VERSIÓN 0.78 — GHOST ORDERS IN MONITORING
+
+📋 **What shipped**
+• Monitoring tab box lists all ghost/orphan SL/TP legs (wrong-side, qty ≫ wallet, no wallet)
+• Clean button cancels those legs on the exchange (confirm dialog; same rules as Expected TP red banner)
+• API: GET /monitoring/ghost-protection-alerts + POST /monitoring/ghost-protection-alerts/clean
+
+🔧 **Why**
+• Operators wanted in-dashboard visibility and one-click cleanup instead of only GitHub Actions / ops scripts
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 
 
