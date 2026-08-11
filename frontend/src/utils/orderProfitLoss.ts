@@ -132,14 +132,21 @@ export function getAssetBaseSymbol(coin: string | null | undefined): string {
 
 /**
  * Whether to show the "Huérfano" badge for a filled entry.
- * Net-long wallets: unprotected ALERT SELLs are long-closes, not naked shorts
- * (ALGO 2026-08) — suppress the badge when wallet base >= 0.
+ * - Only for fills that still have remaining open-lot exposure (not FIFO-closed).
+ * - Net-long wallets: unprotected ALERT SELLs are long-closes, not naked shorts
+ *   (ALGO 2026-08) — suppress the badge when wallet base >= 0.
  */
 export function shouldShowOrphanBadge(
   order: OpenOrder,
-  walletByBase?: Record<string, number> | null
+  walletByBase?: Record<string, number> | null,
+  openLotsByOrderId?: Map<string, unknown> | null
 ): boolean {
   if (!order.is_orphan) return false;
+  // Historical fills with no linked TP/SL but already closed/netted are not open risk.
+  if (openLotsByOrderId) {
+    const oid = order.order_id;
+    if (!oid || !openLotsByOrderId.has(oid)) return false;
+  }
   const side = (order.side || '').toUpperCase();
   if (side !== 'SELL') return true;
   if (!walletByBase) return true;

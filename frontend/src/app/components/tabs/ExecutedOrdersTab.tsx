@@ -690,10 +690,10 @@ export default function ExecutedOrdersTab({
                     <td className="px-6 py-4 whitespace-nowrap text-sm">
                       {isFilledEntryOrder(order) ? (
                         <div className="flex flex-wrap items-center gap-2">
-                          {shouldShowOrphanBadge(order, walletByBase) && (
+                          {shouldShowOrphanBadge(order, walletByBase, openLotsByOrderId) && (
                             <span
                               className="px-2 py-1 rounded text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-                              title="Sin TP ni SL vinculados"
+                              title="Open fill without linked TP/SL (still in open lots)"
                             >
                               Huérfano
                             </span>

@@ -535,9 +535,50 @@ describe('rebuildOpenLots / open-position filter', () => {
       has_linked_tp: false,
       has_linked_sl: false,
     });
-    expect(shouldShowOrphanBadge(orphanSell, { ALGO: 1010 })).toBe(false);
-    expect(shouldShowOrphanBadge(orphanSell, { ALGO: -50 })).toBe(true);
-    expect(shouldShowOrphanBadge(orphanSell, {})).toBe(true);
+    const openLots = new Map([['algo-orphan', { remainingQty: 50 }]]);
+    expect(shouldShowOrphanBadge(orphanSell, { ALGO: 1010 }, openLots)).toBe(false);
+    expect(shouldShowOrphanBadge(orphanSell, { ALGO: -50 }, openLots)).toBe(true);
+    expect(shouldShowOrphanBadge(orphanSell, {}, openLots)).toBe(true);
+  });
+
+  it('suppresses Huérfano when orphan fill is no longer in open lots', () => {
+    const closedOrphan = makeOrder({
+      order_id: 'algo-closed-orphan',
+      side: 'SELL',
+      instrument_name: 'ALGO_USD',
+      is_orphan: true,
+      quantity: '1139',
+    });
+    const otherOpen = new Map([['algo-other-lot', { remainingQty: 117 }]]);
+    // Wallet still short from other lots — but this fill is not open exposure.
+    expect(shouldShowOrphanBadge(closedOrphan, { ALGO: -186 }, otherOpen)).toBe(false);
+    expect(shouldShowOrphanBadge(closedOrphan, { ALGO: -186 }, new Map())).toBe(false);
+    // Still open without protection → show.
+    expect(
+      shouldShowOrphanBadge(
+        closedOrphan,
+        { ALGO: -186 },
+        new Map([['algo-closed-orphan', { remainingQty: 1139 }]])
+      )
+    ).toBe(true);
+  });
+
+  it('suppresses Huérfano BUY orphans that are not in open lots', () => {
+    const buyOrphan = makeOrder({
+      order_id: 'algo-buy-orphan',
+      side: 'BUY',
+      instrument_name: 'ALGO_USD',
+      is_orphan: true,
+      quantity: '1149',
+    });
+    expect(shouldShowOrphanBadge(buyOrphan, { ALGO: -186 }, new Map())).toBe(false);
+    expect(
+      shouldShowOrphanBadge(
+        buyOrphan,
+        { ALGO: 100 },
+        new Map([['algo-buy-orphan', { remainingQty: 50 }]])
+      )
+    ).toBe(true);
   });
 
   it('keeps opposite-side open longs when wallet balance is short', () => {
