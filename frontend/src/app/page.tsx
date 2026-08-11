@@ -1702,7 +1702,7 @@ const VERSION_HISTORY = [
 • After #438 frontend shipped before backend: box showed Not Found + empty, while Expected TP still listed 16 ghosts
 
 📦 **PRs**
-• (this PR)
+• #439
 
 ---
 `
