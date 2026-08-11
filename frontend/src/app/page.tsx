@@ -1761,7 +1761,7 @@ const VERSION_HISTORY = [
 • v0.81 added focus-symbol memos after \`if (loading) return\`, causing a client-side exception
 
 📦 **PRs**
-• (this PR)
+• #442
 
 ---
 `
