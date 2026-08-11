@@ -696,7 +696,7 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
         } else if (endpoint.includes('/monitoring/workflows')) {
           timeoutMs = 150000; // 150s (2.5 minutes) for workflows - may need time for file system operations and initialization
         } else if (endpoint.includes('/monitoring/ghost-protection-alerts')) {
-          timeoutMs = 120000; // 120s — list/clean may hit exchange + cancel many legs
+          timeoutMs = 300000; // 300s — sequential cancel can take minutes for large ghost batches
         } else if (endpoint.includes('/health/system')) {
           timeoutMs = 15000; // 15s for system health - backend uses short DB timeout; fail fast so UI can show retry
         }
@@ -856,7 +856,7 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
           } else if (endpoint.includes('/monitoring/workflows')) {
             timeoutSeconds = 150; // 150s for workflows (matches timeoutMs)
           } else if (endpoint.includes('/monitoring/ghost-protection-alerts')) {
-            timeoutSeconds = 120;
+            timeoutSeconds = 300;
           }
           logRequestIssue(
             endpoint,
@@ -2729,6 +2729,9 @@ export interface GhostProtectionCleanResponse {
   skipped: number;
   by_base?: Record<string, number> | null;
   results: GhostProtectionCleanResult[];
+  sync_status?: string | null;
+  data_verified?: boolean;
+  error?: string;
 }
 
 export async function getGhostProtectionAlerts(): Promise<GhostProtectionAlertsResponse> {
@@ -2743,6 +2746,7 @@ export async function cleanGhostProtectionAlerts(options?: {
   dry_run?: boolean;
   order_ids?: string[];
   bases?: string[];
+  allow_stale?: boolean;
 }): Promise<GhostProtectionCleanResponse> {
   return fetchAPI<GhostProtectionCleanResponse>('/monitoring/ghost-protection-alerts/clean', {
     method: 'POST',
@@ -2751,6 +2755,7 @@ export async function cleanGhostProtectionAlerts(options?: {
       dry_run: options?.dry_run ?? true,
       order_ids: options?.order_ids,
       bases: options?.bases,
+      allow_stale: options?.allow_stale ?? false,
     }),
   });
 }

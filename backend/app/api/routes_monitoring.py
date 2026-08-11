@@ -2835,6 +2835,7 @@ class GhostProtectionCleanRequest(BaseModel):
     dry_run: bool = True
     order_ids: Optional[List[str]] = None
     bases: Optional[List[str]] = None
+    allow_stale: bool = False
 
 
 @router.get("/monitoring/ghost-protection-alerts")
@@ -2863,25 +2864,31 @@ def get_ghost_protection_alerts(
 
 @router.post("/monitoring/ghost-protection-alerts/clean")
 def clean_ghost_protection_alerts_endpoint(
-    body: Optional[GhostProtectionCleanRequest] = None,
+    body: GhostProtectionCleanRequest = Body(default_factory=GhostProtectionCleanRequest),
     db: Session = Depends(get_db),
 ):
     """
     Cancel ghost/orphan protection legs (or dry-run).
 
     Only cancels orders currently flagged by the same rules as the Expected TP
-    banner. Pass ``dry_run=false`` to cancel on the exchange.
+    banner. Pass ``dry_run=false`` to cancel on the exchange. Live cancel refuses
+    stale/unverified open-orders sync unless ``allow_stale=true``.
     """
     try:
         from app.services.ghost_protection import clean_ghost_protection_alerts
 
-        req = body or GhostProtectionCleanRequest()
-        return clean_ghost_protection_alerts(
+        result = clean_ghost_protection_alerts(
             db,
-            dry_run=bool(req.dry_run),
-            order_ids=req.order_ids,
-            bases=req.bases,
+            dry_run=bool(body.dry_run),
+            order_ids=body.order_ids,
+            bases=body.bases,
+            allow_stale=bool(body.allow_stale),
         )
+        if result.get("error") and not body.dry_run and result.get("cancelled", 0) == 0:
+            raise HTTPException(status_code=409, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception("Failed to clean ghost protection alerts")
         raise HTTPException(status_code=500, detail=str(e))

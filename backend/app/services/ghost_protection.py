@@ -116,6 +116,8 @@ def list_ghost_protection_alerts(
         "alerts": alerts,
         "open_orders_count": len(orders),
         "sync_status": getattr(resolved, "sync_status", None),
+        "data_verified": bool(getattr(resolved, "data_verified", False)),
+        "source": getattr(resolved, "source", None),
     }
 
 
@@ -126,10 +128,38 @@ def clean_ghost_protection_alerts(
     order_ids: Optional[Iterable[str]] = None,
     bases: Optional[Iterable[str]] = None,
     balances: Optional[List[dict]] = None,
+    allow_stale: bool = False,
 ) -> Dict[str, Any]:
-    """Cancel ghost protection legs (or dry-run). Only cancels currently flagged ghosts."""
+    """Cancel ghost protection legs (or dry-run). Only cancels currently flagged ghosts.
+
+    Live cancel requires a verified open-orders sync (``sync_status=ok``) unless
+    ``allow_stale=True``. Cancel uses the direct exchange API (same as the ops
+    ghost-cancel script) so cleanup works even when DB LIVE_TRADING is off.
+    """
     listed = list_ghost_protection_alerts(db, bases=bases, balances=balances)
     alerts: List[dict] = list(listed.get("alerts") or [])
+    sync_status = listed.get("sync_status")
+    data_verified = bool(listed.get("data_verified"))
+
+    if not dry_run and not allow_stale:
+        if sync_status != "ok" or not data_verified:
+            return {
+                "ok": False,
+                "dry_run": False,
+                "count": len(alerts),
+                "cancelled": 0,
+                "failed": 0,
+                "skipped": 0,
+                "by_base": listed.get("by_base"),
+                "results": [],
+                "sync_status": sync_status,
+                "data_verified": data_verified,
+                "error": (
+                    "Refusing live cancel: open-orders sync is not verified "
+                    f"(sync_status={sync_status!r}, data_verified={data_verified}). "
+                    "Refresh Monitoring and retry, or pass allow_stale=true."
+                ),
+            }
 
     id_set: Optional[Set[str]] = None
     if order_ids is not None:
@@ -214,4 +244,6 @@ def clean_ghost_protection_alerts(
         "skipped": skipped,
         "by_base": listed.get("by_base") if order_ids is None else None,
         "results": results,
+        "sync_status": sync_status,
+        "data_verified": data_verified,
     }

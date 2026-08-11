@@ -384,6 +384,9 @@ export default function MonitoringPanel({
     if (ghostCleaning) return;
     const count = ghostAlerts.length;
     if (count === 0) return;
+    const orderIds = ghostAlerts
+      .map((a) => (a.order_id || '').trim())
+      .filter(Boolean);
     const confirmed = window.confirm(
       `Cancel ${count} ghost protection order(s) on the exchange?\n\n` +
         'This removes wrong-side / oversized / no-wallet SL/TP legs (Expected TP red banner).'
@@ -393,11 +396,16 @@ export default function MonitoringPanel({
     try {
       setGhostCleaning(true);
       setGhostCleanMessage(null);
-      const result = await cleanGhostProtectionAlerts({ dry_run: false });
+      const result = await cleanGhostProtectionAlerts({
+        dry_run: false,
+        order_ids: orderIds.length ? orderIds : undefined,
+      });
       const msg =
         `Cleaned: ${result.cancelled} cancelled, ${result.failed} failed, ` +
         `${result.skipped} skipped (of ${result.count}).`;
-      setGhostCleanMessage(msg);
+      setGhostCleanMessage(
+        result.failed > 0 || result.ok === false ? `Clean failed: ${msg}` : msg
+      );
       await fetchGhostAlerts();
       setTimeout(() => {
         fetchData();
@@ -409,7 +417,7 @@ export default function MonitoringPanel({
     } finally {
       setGhostCleaning(false);
     }
-  }, [ghostCleaning, ghostAlerts.length, fetchGhostAlerts, fetchData]);
+  }, [ghostCleaning, ghostAlerts, fetchGhostAlerts, fetchData]);
 
   const handleRunWorkflow = useCallback(async (workflowId: string) => {
     // Note: workflows must be in dependency array, but we check it inside the function
@@ -1361,7 +1369,8 @@ export default function MonitoringPanel({
           {ghostCleanMessage && (
             <div
               className={`mb-3 text-sm px-3 py-2 rounded border ${
-                ghostCleanMessage.startsWith('Clean failed')
+                ghostCleanMessage.startsWith('Clean failed') ||
+                /,\s*[1-9]\d*\s+failed/.test(ghostCleanMessage)
                   ? 'bg-red-50 border-red-200 text-red-800'
                   : 'bg-green-50 border-green-200 text-green-800'
               }`}
