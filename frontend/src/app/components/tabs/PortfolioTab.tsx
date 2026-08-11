@@ -4,7 +4,14 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { getOrderHistory, OpenOrder, PortfolioAsset, TopCoin } from '@/app/api';
+import {
+  createProtectionSmart,
+  getOrderHistory,
+  OpenOrder,
+  PortfolioAsset,
+  quickOrder,
+  TopCoin,
+} from '@/app/api';
 import { formatNumber, formatDateTime } from '@/utils/formatting';
 import { sideBadgeClass, sideLabelEs } from '@/utils/tradeSideLabels';
 import {
@@ -20,6 +27,16 @@ import {
   type OpenPositionLot,
   type OrderProfitLoss,
 } from '@/utils/orderProfitLoss';
+import {
+  dustCloseSide,
+  isStableOrFiatAsset,
+  lotNeedsProtection,
+  lotNotionalUsd,
+  portfolioLotActionKind,
+  protectionCreateLabel,
+  resolveLotInstrument,
+  PORTFOLIO_DUST_MIN_USD,
+} from '@/utils/portfolioLotActions';
 import { logger } from '@/utils/logger';
 import PnLPanel from '@/app/components/PnLPanel';
 
@@ -82,6 +99,8 @@ export default function PortfolioTab({
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [expandedCoins, setExpandedCoins] = useState<Set<string>>(new Set());
   const [tradeCache, setTradeCache] = useState<Record<string, TradeCacheEntry>>({});
+  const [actionBusyKey, setActionBusyKey] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const perCoinLimit =
     typeof maxOpenOrdersPerCoin === 'number' && maxOpenOrdersPerCoin > 0
@@ -210,6 +229,94 @@ export default function PortfolioTab({
     [loadTradesForAsset, tradeCache]
   );
 
+  const handleCreateLotProtection = useCallback(
+    async (
+      lot: OpenPositionLot,
+      assetCoin: string,
+      opts: { create_sl: boolean; create_tp: boolean }
+    ) => {
+      const orderId = lot.order.order_id;
+      if (!orderId) return;
+      const key = `${orderId}:prot`;
+      setActionBusyKey(key);
+      setActionMessage(null);
+      try {
+        const result = await createProtectionSmart({
+          order_id: orderId,
+          create_sl: opts.create_sl,
+          create_tp: opts.create_tp,
+          quantity: lot.remainingQty,
+        });
+        const created = (result.created || []).map((c) => c.role).join(', ');
+        if (result.ok && (result.created || []).length > 0) {
+          setActionMessage(`${assetCoin}: created ${created}`);
+        } else if (result.ok) {
+          setActionMessage(
+            `${assetCoin}: ${result.message || 'Protection already exists — no new orders placed.'}`
+          );
+        } else {
+          setActionMessage(
+            `${assetCoin}: failed — ${result.message || 'no orders created'}`
+          );
+        }
+        await loadTradesForAsset(assetCoin);
+        await onRefreshPortfolio();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setActionMessage(`${assetCoin}: ${msg}`);
+      } finally {
+        setActionBusyKey(null);
+      }
+    },
+    [loadTradesForAsset, onRefreshPortfolio]
+  );
+
+  const handleCleanDustLot = useCallback(
+    async (lot: OpenPositionLot, assetCoin: string, markPrice: number | null) => {
+      const orderId = lot.order.order_id || 'lot';
+      const key = `${orderId}:dust`;
+      const notional = lotNotionalUsd(lot, markPrice);
+      const instrument =
+        resolveLotInstrument(lot, resolveInstrumentName(assetCoin, topCoins)) ||
+        `${assetCoin.toUpperCase()}_USD`;
+      const side = dustCloseSide(lot);
+      const price =
+        markPrice && markPrice > 0 ? markPrice : getOrderPrice(lot.order);
+      if (!(price > 0) || notional <= 0) {
+        setActionMessage(`${assetCoin}: cannot clean dust — missing mark price`);
+        return;
+      }
+      const ok = window.confirm(
+        `¿Limpiar dust ${assetCoin} (~$${notional.toFixed(2)})?\n` +
+          `Market ${side} ${formatNumber(lot.remainingQty)} on ${instrument} to flatten residue under $${PORTFOLIO_DUST_MIN_USD}.`
+      );
+      if (!ok) return;
+      setActionBusyKey(key);
+      setActionMessage(null);
+      try {
+        const result = await quickOrder({
+          symbol: instrument,
+          side,
+          price,
+          amount_usd: Math.max(notional, 0.01),
+          use_margin: true,
+        });
+        setActionMessage(
+          `${assetCoin}: dust ${result.dry_run ? 'dry-run ' : ''}flatten ${side} ` +
+            `${formatNumber(result.qty)} (${result.order_id || 'ok'})`
+        );
+        await loadTradesForAsset(assetCoin);
+        await onRefreshPortfolio();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setActionMessage(`${assetCoin}: dust clean failed — ${msg}`);
+      } finally {
+        setActionBusyKey(null);
+      }
+    },
+    [loadTradesForAsset, onRefreshPortfolio, topCoins]
+  );
+
   // Sort assets
   const sortedAssets = useMemo(() => {
     if (!portfolio?.assets || portfolio.assets.length === 0) return [];
@@ -264,7 +371,8 @@ export default function PortfolioTab({
 
   const renderLotRows = (
     lots: OpenPositionLot[],
-    currentPrice: number | null
+    currentPrice: number | null,
+    assetCoin: string
   ) =>
     lots.map((lot) => {
       const order = lot.order;
@@ -285,6 +393,15 @@ export default function PortfolioTab({
           ? 'P&L no realizado del short abierto vs precio actual'
           : 'P&L no realizado del long abierto vs precio actual';
       const rowKey = `${order.order_id || 'order'}-${lot.side}-${qty}`;
+      const actionKind = portfolioLotActionKind(lot, {
+        assetCoin,
+        markPrice: currentPrice,
+      });
+      const { needSl, needTp } = lotNeedsProtection(lot);
+      const protKey = `${order.order_id || ''}:prot`;
+      const dustKey = `${order.order_id || ''}:dust`;
+      const busy = actionBusyKey != null;
+      const notional = lotNotionalUsd(lot, currentPrice);
 
       return (
         <tr key={rowKey} className="border-t border-gray-200 dark:border-gray-700">
@@ -343,11 +460,63 @@ export default function PortfolioTab({
               <span className="text-gray-400">—</span>
             )}
           </td>
+          <td className="px-3 py-2 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
+            {actionKind === 'create_protection' ? (
+              <button
+                type="button"
+                data-testid="portfolio-create-protection"
+                disabled={busy}
+                title={`Crear protección faltante (notional ~$${notional.toFixed(2)} ≥ $${PORTFOLIO_DUST_MIN_USD})`}
+                onClick={() =>
+                  void handleCreateLotProtection(lot, assetCoin, {
+                    create_sl: needSl,
+                    create_tp: needTp,
+                  })
+                }
+                className={`px-2 py-1 rounded text-[11px] font-semibold ${
+                  actionBusyKey === protKey
+                    ? 'bg-gray-300 text-gray-500 cursor-wait'
+                    : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                }`}
+              >
+                {actionBusyKey === protKey
+                  ? 'Creando…'
+                  : protectionCreateLabel(needSl, needTp)}
+              </button>
+            ) : actionKind === 'clean_dust' ? (
+              <button
+                type="button"
+                data-testid="portfolio-clean-dust"
+                disabled={busy}
+                title={`Residuo < $${PORTFOLIO_DUST_MIN_USD} — cerrar con market (no crear SL/TP)`}
+                onClick={() => void handleCleanDustLot(lot, assetCoin, currentPrice)}
+                className={`px-2 py-1 rounded text-[11px] font-semibold ${
+                  actionBusyKey === dustKey
+                    ? 'bg-gray-300 text-gray-500 cursor-wait'
+                    : 'bg-slate-600 text-white hover:bg-slate-700'
+                }`}
+              >
+                {actionBusyKey === dustKey ? 'Limpiando…' : 'Limpiar dust'}
+              </button>
+            ) : (
+              <span className="text-gray-400 text-[11px]">
+                {isStableOrFiatAsset(assetCoin)
+                  ? 'margen'
+                  : needSl || needTp
+                    ? '—'
+                    : 'OK'}
+              </span>
+            )}
+          </td>
         </tr>
       );
     });
 
-  const renderLotsTable = (lots: OpenPositionLot[], currentPrice: number | null) => (
+  const renderLotsTable = (
+    lots: OpenPositionLot[],
+    currentPrice: number | null,
+    assetCoin: string
+  ) => (
     <table className="min-w-full text-xs">
       <thead>
         <tr className="text-gray-500 dark:text-gray-400">
@@ -368,9 +537,10 @@ export default function PortfolioTab({
           </th>
           <th className="px-3 py-1 text-left font-medium">P&amp;L %</th>
           <th className="px-3 py-1 text-left font-medium">Beneficio neto</th>
+          <th className="px-3 py-1 text-right font-medium">Acción</th>
         </tr>
       </thead>
-      <tbody>{renderLotRows(lots, currentPrice)}</tbody>
+      <tbody>{renderLotRows(lots, currentPrice, assetCoin)}</tbody>
     </table>
   );
 
@@ -424,7 +594,7 @@ export default function PortfolioTab({
     const showSections = longLots.length > 0 && shortLots.length > 0;
 
     if (!showSections) {
-      return renderLotsTable(openLots, currentPrice);
+      return renderLotsTable(openLots, currentPrice, assetCoin);
     }
 
     return (
@@ -433,13 +603,13 @@ export default function PortfolioTab({
           <div className="px-3 mb-1 text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
             Lots long ({longLots.length})
           </div>
-          {renderLotsTable(longLots, currentPrice)}
+          {renderLotsTable(longLots, currentPrice, assetCoin)}
         </div>
         <div>
           <div className="px-3 mb-1 text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
             Lots short ({shortLots.length})
           </div>
-          {renderLotsTable(shortLots, currentPrice)}
+          {renderLotsTable(shortLots, currentPrice, assetCoin)}
         </div>
       </div>
     );
@@ -774,6 +944,21 @@ export default function PortfolioTab({
                                   <span className="ml-2 font-normal normal-case text-gray-400">(actualizando...)</span>
                                 )}
                               </div>
+                              <p className="mb-2 text-[11px] text-gray-500 dark:text-gray-400 normal-case tracking-normal font-normal">
+                                ≥ ${PORTFOLIO_DUST_MIN_USD}: Crear SL/TP · bajo ${PORTFOLIO_DUST_MIN_USD}: Limpiar dust (market). USDT/USD = margen, sin acción.
+                              </p>
+                              {actionMessage && (
+                                <div
+                                  className={`mb-2 rounded border px-3 py-2 text-xs ${
+                                    actionMessage.toLowerCase().includes('fail')
+                                      ? 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-100'
+                                      : 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100'
+                                  }`}
+                                  data-testid="portfolio-lot-action-message"
+                                >
+                                  {actionMessage}
+                                </div>
+                              )}
                               {renderTradeSection(asset)}
                               {cache?.error && (
                                 <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">

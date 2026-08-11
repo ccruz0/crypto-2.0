@@ -7,6 +7,7 @@
 export const INTERNAL_API_PROXY_PATHS = new Set([
   'orders/create-protection-smart',
   'orders/create-sl-tp-with-details',
+  'orders/quick',
 ]);
 
 export function isInternalApiProxyPath(path: string): boolean {
