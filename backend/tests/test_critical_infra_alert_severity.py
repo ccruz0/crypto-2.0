@@ -105,7 +105,7 @@ class TestDatabaseInfrastructureCritical:
         [
             ("Database unavailable", "Database unavailable"),
             ("Primary database is down", "Database down — connection pool exhausted"),
-            ("Health check failed", "Database connection failed"),
+            ("Cannot connect to database", "Database connection failed"),
         ],
     )
     def test_database_outage_classifies_critical(self, summary, root_cause):
@@ -130,6 +130,48 @@ class TestDatabaseInfrastructureCritical:
         assert result is not None
         assert result.severity == AlertSeverity.CRITICAL
         assert result.alert_type == "database_unavailable"
+
+    def test_scheduled_database_health_objective_wording_is_not_critical(self):
+        """\"recent query errors\" in the scheduled objective must not boost CRITICAL.
+
+        Production Telegram spam (2026-08-09): database_health COMPLETED with
+        health=PASS + canned FILLED/trade-history RC, then category boost matched
+        bare \"error\" in the objective and paged CRITICAL database_unavailable.
+        """
+        report = _fake_report(
+            objective="Check database health and recent query errors",
+            category="database",
+            template_id="database_health",
+            summary=(
+                "Check database health and recent query errors\n"
+                "- Health check status=pass; global_status=PASS\n"
+                "Likely cause: FILLED orders exist in database but dashboard "
+                "trade history does not display them"
+            ),
+            root_cause=(
+                "FILLED orders exist in database but dashboard trade history "
+                "does not display them"
+            ),
+            impact="Executed trades may be absent from dashboard trade history.",
+            evidence=[
+                {
+                    "source": "runtime",
+                    "reference": "inspect_health",
+                    "detail": "Health check status=pass; global_status=PASS",
+                    "confidence": "high",
+                },
+                {
+                    "source": "logs",
+                    "reference": "search_logs",
+                    "detail": "No log matches for keywords=('postgres', 'database'); match_count=0",
+                    "confidence": "low",
+                },
+            ],
+        )
+        result = classify_investigation_report(report, source="database_health")
+        assert result is not None
+        assert result.alert_type != "database_unavailable"
+        assert result.severity != AlertSeverity.CRITICAL
 
 
 class TestB01932RegressionStillInfo:

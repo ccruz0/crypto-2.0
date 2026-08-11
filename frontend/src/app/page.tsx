@@ -1599,15 +1599,35 @@ const VERSION_HISTORY = [
   },
   {
     version: '0.75',
+    date: '2026-08-10',
+    change: 'Stop false CRITICAL Jarvis alerts from healthy database_health probes',
+    details: `🚀 VERSIÓN 0.75 — DATABASE_HEALTH FALSE-CRITICAL TELEGRAM SPAM
+
+📋 **What shipped**
+• Reject FILLED/trade-history root cause outside `executed_orders_missing` (mirrors deployment-healthy scoping from #414)
+• Tighten database/exchange category-boost regexes so scheduled objective wording ("recent query errors") cannot escalate to CRITICAL `database_unavailable`
+
+🔧 **Why**
+• Morning Telegram (2026-08-09→10): recurring CRITICAL `database_health` alerts while health=PASS / global_status=PASS
+• `count_orders_by_status` always shows FILLED>0 → wrong trade-history RC at confidence ≥70 → loose "error" category boost → Telegram CRITICAL
+
+📦 **PRs**
+• #433
+
+---
+`
+  },
+  {
+    version: '0.77',
     date: '2026-08-11',
     change: 'Surface naked micro entry parents + parent-qty SL/TP recreate',
-    details: `🚀 VERSIÓN 0.75 — NAKED MICRO SL/TP AUDIT + ETH RECREATE
+    details: `🚀 VERSIÓN 0.77 — NAKED MICRO SL/TP AUDIT + ETH RECREATE
 
 📋 **What shipped**
 • Hourly / SL/TP Check audit finds FILLED entry parents missing ACTIVE SL/TP even when wallet-sum coverage looks 100%
-• SL/TP Check Create prefers linked parent fill qty over wallet \`uncovered_qty\` (stops ~2× oversized recreates)
+• SL/TP Check Create prefers parent fill qty for naked_parent rows (wallet-gap rows keep uncovered_qty)
 • Expected TP keeps direction-aligned naked fills visible when protected lots already cover the wallet (SL/TP failed / missing)
-• Ops script + workflow: recreate 0.0052 BUY SL/TP for ETH_USDT parent \`5755600492671134850\`
+• Ops script + workflow: recreate 0.0052 BUY SL/TP for ETH_USDT parent `5755600492671134850`
 
 🔧 **Why**
 • ETH ALERT SELL 0.0052 @ 1914.8 never got children; later recreate used wallet gap ~0.010 and REJECTED
@@ -1619,6 +1639,7 @@ const VERSION_HISTORY = [
 ---
 `
   }
+
 
 ];
 
