@@ -6,10 +6,13 @@ import {
   getSignalThrottleState,
   getWorkflows,
   restartBackend,
+  getGhostProtectionAlerts,
+  cleanGhostProtectionAlerts,
   MonitoringSummary,
   SignalThrottleEntry,
   TelegramMessage,
   Workflow,
+  GhostProtectionAlert,
 } from '@/lib/api';
 import { getApiUrl } from '@/lib/environment';
 
@@ -223,6 +226,11 @@ export default function MonitoringPanel({
   const [workflowsLastUpdate, setWorkflowsLastUpdate] = useState<Date | null>(null); // For "Updated Xs ago" label
   const workflowsFetchControllerRef = useRef<AbortController | null>(null); // Guard against overlapping polls
   const [restarting, setRestarting] = useState(false);
+  const [ghostAlerts, setGhostAlerts] = useState<GhostProtectionAlert[]>([]);
+  const [ghostLoading, setGhostLoading] = useState(true);
+  const [ghostError, setGhostError] = useState<string | null>(null);
+  const [ghostCleaning, setGhostCleaning] = useState(false);
+  const [ghostCleanMessage, setGhostCleanMessage] = useState<string | null>(null);
   const [refreshingSignals, setRefreshingSignals] = useState(false); // Track when signals are being recalculated
   const [signalsLastCalculated, setSignalsLastCalculated] = useState<Date | null>(null); // Track when signals were last calculated
   const [isFetching, setIsFetching] = useState(false); // Guard against overlapping fetches
@@ -358,6 +366,63 @@ export default function MonitoringPanel({
     }
   }, [restarting, fetchData]);
 
+  const fetchGhostAlerts = useCallback(async () => {
+    try {
+      setGhostError(null);
+      const response = await getGhostProtectionAlerts();
+      setGhostAlerts(response.alerts || []);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      setGhostError(errorMsg);
+      console.error('Failed to fetch ghost protection alerts:', err);
+    } finally {
+      setGhostLoading(false);
+    }
+  }, []);
+
+  const handleCleanGhostOrders = useCallback(async () => {
+    if (ghostCleaning) return;
+    const count = ghostAlerts.length;
+    if (count === 0) return;
+    const orderIds = ghostAlerts
+      .map((a) => (a.order_id || '').trim())
+      .filter(Boolean);
+    const confirmed = window.confirm(
+      `Cancel ${count} ghost protection order(s) on the exchange?\n\n` +
+        'This removes wrong-side / oversized / no-wallet SL/TP legs (Expected TP red banner).'
+    );
+    if (!confirmed) return;
+
+    try {
+      setGhostCleaning(true);
+      setGhostCleanMessage(null);
+      const result = await cleanGhostProtectionAlerts({
+        dry_run: false,
+        order_ids: orderIds.length ? orderIds : undefined,
+      });
+      const nothingCancelled =
+        result.cancelled === 0 && orderIds.length > 0 && !result.dry_run;
+      const failedRun =
+        result.failed > 0 || result.ok === false || nothingCancelled;
+      const msg =
+        `Cleaned: ${result.cancelled} cancelled, ${result.failed} failed, ` +
+        `${result.skipped} skipped (of ${result.count}` +
+        (result.error ? `; ${result.error}` : '') +
+        ').';
+      setGhostCleanMessage(failedRun ? `Clean failed: ${msg}` : msg);
+      await fetchGhostAlerts();
+      setTimeout(() => {
+        fetchData();
+      }, 1000);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      setGhostCleanMessage(`Clean failed: ${errorMsg}`);
+      console.error('Failed to clean ghost protection alerts:', err);
+    } finally {
+      setGhostCleaning(false);
+    }
+  }, [ghostCleaning, ghostAlerts, fetchGhostAlerts, fetchData]);
+
   const handleRunWorkflow = useCallback(async (workflowId: string) => {
     // Note: workflows must be in dependency array, but we check it inside the function
     try {
@@ -420,6 +485,7 @@ export default function MonitoringPanel({
     fetchData();
     fetchThrottle();
     fetchWorkflows(true); // Initial load
+    fetchGhostAlerts();
 
     // Auto-refresh monitoring summary every 15 seconds
     pollingIntervalRef.current = setInterval(() => {
@@ -432,6 +498,7 @@ export default function MonitoringPanel({
     const interval = setInterval(() => {
       fetchThrottle();
       fetchWorkflows(false);
+      fetchGhostAlerts();
     }, refreshInterval);
 
     return () => {
@@ -448,7 +515,7 @@ export default function MonitoringPanel({
         workflowsFetchControllerRef.current.abort();
       }
     };
-  }, [fetchData, fetchThrottle, fetchWorkflows, refreshInterval]);
+  }, [fetchData, fetchThrottle, fetchWorkflows, fetchGhostAlerts, refreshInterval]);
 
   // Filter telegram messages by coin/symbol - must be called before any conditional logic
   // Ensure telegramMessages is always an array and coinFilter is always a string
@@ -1263,6 +1330,105 @@ export default function MonitoringPanel({
           >
             {restarting || monitoringData.backend_restart_status === 'restarting' ? 'Restarting...' : 'Restart Backend'}
           </button>
+        </div>
+      </div>
+
+      {/* Ghost / orphan protection orders */}
+      <div
+        className="bg-white rounded-lg shadow border border-amber-200 mb-6"
+        data-testid="ghost-protection-orders-box"
+      >
+        <div className="p-4 border-b border-amber-200 flex flex-wrap items-center justify-between gap-3 bg-amber-50/60">
+          <div>
+            <h3 className="text-lg font-semibold text-amber-900">Ghost orders</h3>
+            <p className="text-xs text-amber-800/80 mt-0.5">
+              Open SL/TP legs that are wrong-side vs wallet, qty ≫ wallet, or no wallet
+              (same rules as the Expected TP red banner).
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setGhostLoading(true);
+                void fetchGhostAlerts();
+              }}
+              disabled={ghostLoading || ghostCleaning}
+              className="px-3 py-1.5 text-xs bg-white border border-amber-300 text-amber-900 rounded hover:bg-amber-50 disabled:opacity-50"
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCleanGhostOrders()}
+              disabled={ghostCleaning || ghostLoading || ghostAlerts.length === 0}
+              className="px-3 py-1.5 text-xs bg-amber-700 text-white rounded hover:bg-amber-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="ghost-protection-clean-button"
+            >
+              {ghostCleaning ? 'Cleaning…' : `Clean${ghostAlerts.length ? ` (${ghostAlerts.length})` : ''}`}
+            </button>
+          </div>
+        </div>
+        <div className="p-4">
+          {ghostCleanMessage && (
+            <div
+              className={`mb-3 text-sm px-3 py-2 rounded border ${
+                ghostCleanMessage.startsWith('Clean failed') ||
+                /,\s*[1-9]\d*\s+failed/.test(ghostCleanMessage)
+                  ? 'bg-red-50 border-red-200 text-red-800'
+                  : 'bg-green-50 border-green-200 text-green-800'
+              }`}
+            >
+              {ghostCleanMessage}
+            </div>
+          )}
+          {ghostError && (
+            <div className="mb-3 text-sm px-3 py-2 rounded border bg-red-50 border-red-200 text-red-800">
+              {ghostError}
+            </div>
+          )}
+          {ghostLoading ? (
+            <div className="text-sm text-gray-500">Loading ghost orders…</div>
+          ) : ghostAlerts.length === 0 ? (
+            <div className="text-sm text-gray-600">No ghost protection orders found.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Side</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Qty</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Wallet</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reason</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Order ID</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {ghostAlerts.map((alert, idx) => (
+                    <tr key={`${alert.order_id || 'noid'}-${idx}`} className="hover:bg-amber-50/40">
+                      <td className="px-3 py-2 text-sm font-medium text-gray-900">
+                        {alert.symbol || alert.base || '—'}
+                      </td>
+                      <td className="px-3 py-2 text-sm text-gray-700">{alert.side || '—'}</td>
+                      <td className="px-3 py-2 text-sm text-gray-700">{alert.order_type || '—'}</td>
+                      <td className="px-3 py-2 text-sm text-gray-700">
+                        {alert.quantity != null ? Number(alert.quantity).toPrecision(6) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-sm text-gray-700">
+                        {alert.wallet_qty != null ? Number(alert.wallet_qty).toPrecision(6) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-sm text-amber-900">{alert.reason || '—'}</td>
+                      <td className="px-3 py-2 text-xs font-mono text-gray-600 break-all">
+                        {alert.order_id || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 

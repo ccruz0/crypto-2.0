@@ -2829,6 +2829,71 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
         from fastapi import HTTPException
         raise HTTPException(status_code=501, detail=f"Manual execution of workflow '{workflow_id}' is not yet implemented")
 
+class GhostProtectionCleanRequest(BaseModel):
+    """Cancel ghost/orphan SL/TP legs flagged vs wallet (Expected TP red banner)."""
+
+    dry_run: bool = True
+    order_ids: Optional[List[str]] = None
+    bases: Optional[List[str]] = None
+    allow_stale: bool = False
+
+
+@router.get("/monitoring/ghost-protection-alerts")
+def get_ghost_protection_alerts(
+    bases: Optional[str] = Query(
+        None,
+        description="Optional comma-separated base currencies (e.g. ALGO,SUI)",
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    List open SL/TP legs that look like ghosts vs wallet
+    (wrong-side cover, qty ≫ wallet, or empty wallet).
+    """
+    try:
+        from app.services.ghost_protection import list_ghost_protection_alerts
+
+        base_list = None
+        if bases:
+            base_list = [b.strip() for b in bases.split(",") if b.strip()]
+        return list_ghost_protection_alerts(db, bases=base_list)
+    except Exception as e:
+        log.exception("Failed to list ghost protection alerts")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/monitoring/ghost-protection-alerts/clean")
+def clean_ghost_protection_alerts_endpoint(
+    body: GhostProtectionCleanRequest = Body(default_factory=GhostProtectionCleanRequest),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel ghost/orphan protection legs (or dry-run).
+
+    Only cancels orders currently flagged by the same rules as the Expected TP
+    banner. Pass ``dry_run=false`` to cancel on the exchange. Live cancel refuses
+    stale/unverified open-orders sync unless ``allow_stale=true``.
+    """
+    try:
+        from app.services.ghost_protection import clean_ghost_protection_alerts
+
+        result = clean_ghost_protection_alerts(
+            db,
+            dry_run=bool(body.dry_run),
+            order_ids=body.order_ids,
+            bases=body.bases,
+            allow_stale=bool(body.allow_stale),
+        )
+        if result.get("error") and not body.dry_run and result.get("cancelled", 0) == 0:
+            raise HTTPException(status_code=409, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Failed to clean ghost protection alerts")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/monitoring/backend/restart")
 async def restart_backend():
     """

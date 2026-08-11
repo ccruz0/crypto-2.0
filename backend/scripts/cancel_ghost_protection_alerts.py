@@ -2,7 +2,7 @@
 """
 Cancel ghost/orphan protection legs flagged by dashboard Expected TP banner.
 
-Uses the same rules as ``compute_protection_leg_stats``:
+Uses ``app.services.ghost_protection`` (same rules as Monitoring Clean button):
   - wrong_side_cover_on_long  (BUY SL/TP while wallet > 0)
   - wrong_side_cover_on_short (SELL SL/TP while wallet < 0)
   - qty_exceeds_wallet / no_wallet
@@ -18,35 +18,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import create_db_session
-from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-from app.services.brokers.crypto_com_trade import trade_client
-from app.services.dashboard_position_counts import compute_protection_leg_stats
-from app.services.open_orders_resolver import resolve_open_orders
-from scripts.cancel_duplicate_sl_tp import cancel_order_on_exchange
+from app.services.ghost_protection import clean_ghost_protection_alerts
 
 DEFAULT_BASES = ("ALGO", "SUI", "APT", "AAVE")
-
-
-def _balances_from_account_summary() -> List[dict]:
-    summary = trade_client.get_account_summary() or {}
-    out: List[dict] = []
-    for account in summary.get("accounts") or []:
-        currency = (account.get("currency") or account.get("instrument_name") or "").upper()
-        if not currency:
-            continue
-        raw = account.get("quantity", account.get("balance", "0"))
-        try:
-            bal = float(raw or 0)
-        except (TypeError, ValueError):
-            bal = 0.0
-        out.append({"currency": currency, "balance": bal, "asset": currency})
-    return out
 
 
 def main() -> int:
@@ -66,83 +44,53 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    bases: Optional[Set[str]] = None
+    bases = None
     if not args.all_bases:
-        bases = {b.strip().upper() for b in args.bases.split(",") if b.strip()}
+        bases = [b.strip().upper() for b in args.bases.split(",") if b.strip()]
 
     db = create_db_session()
-    cancelled = 0
-    failed = 0
-    skipped = 0
     try:
-        balances = _balances_from_account_summary()
-        resolved = resolve_open_orders(db)
-        orders = list(resolved.orders or [])
-        _tp, _prot, alerts = compute_protection_leg_stats(orders, balances)
-
-        if bases is not None:
-            alerts = [a for a in alerts if (a.get("base") or "").upper() in bases]
-
+        result = clean_ghost_protection_alerts(
+            db,
+            dry_run=not args.live,
+            bases=bases,
+        )
+        if result.get("error"):
+            print(f"ERROR {result['error']}")
+            return 2
         print(
             f"mode={'LIVE' if args.live else 'DRY-RUN'} "
-            f"open_orders={len(orders)} ghost_alerts={len(alerts)} "
-            f"bases={sorted(bases) if bases else 'ALL'}"
+            f"ghost_alerts={result.get('count', 0)} "
+            f"bases={sorted(bases) if bases else 'ALL'} "
+            f"sync={result.get('sync_status')} "
+            f"wallet={result.get('wallet_source')}"
         )
-        if not alerts:
+        if not result.get("count"):
             print("OK no matching ghost/orphan protection legs")
             return 0
 
-        by_base: Dict[str, int] = {}
-        for a in alerts:
-            b = (a.get("base") or "?").upper()
-            by_base[b] = by_base.get(b, 0) + 1
-        print("by_base=" + ",".join(f"{k}x{v}" for k, v in sorted(by_base.items())))
-
-        for alert in alerts:
-            oid = (alert.get("order_id") or "").strip()
-            sym = alert.get("symbol")
-            reason = alert.get("reason")
-            side = alert.get("side")
-            qty = alert.get("quantity")
-            wallet = alert.get("wallet_qty")
-            ot = alert.get("order_type")
+        by_base = result.get("by_base") or {}
+        if by_base:
             print(
-                f"{'CANCEL' if args.live else 'DRY'} {oid} {sym} {side} {ot} "
-                f"qty={qty} wallet={wallet} reason={reason}"
+                "by_base="
+                + ",".join(f"{k}x{v}" for k, v in sorted(by_base.items()))
             )
-            if not oid:
-                print("  SKIP missing order_id")
-                skipped += 1
-                continue
-            if not args.live:
-                continue
-            try:
-                result = cancel_order_on_exchange(oid, order_type=ot)
-                if isinstance(result, dict) and result.get("error"):
-                    print(f"  FAIL: {result.get('error')}")
-                    failed += 1
-                    continue
-                row = (
-                    db.query(ExchangeOrder)
-                    .filter(ExchangeOrder.exchange_order_id == oid)
-                    .first()
-                )
-                if row is not None:
-                    row.status = OrderStatusEnum.CANCELLED
-                    row.exchange_update_time = datetime.now(timezone.utc)
-                    db.commit()
-                cancelled += 1
-                print("  OK")
-            except Exception as exc:
-                print(f"  FAIL: {exc}")
-                failed += 1
-                db.rollback()
+
+        for entry in result.get("results") or []:
+            print(
+                f"{entry.get('status')} {entry.get('order_id')} "
+                f"{entry.get('symbol')} {entry.get('side')} {entry.get('order_type')} "
+                f"qty={entry.get('quantity')} wallet={entry.get('wallet_qty')} "
+                f"reason={entry.get('reason')}"
+                + (f" err={entry.get('error')}" if entry.get("error") else "")
+            )
 
         print(
-            f"=== SUMMARY cancelled={cancelled} failed={failed} "
-            f"skipped={skipped} dry={not args.live} ==="
+            f"=== SUMMARY cancelled={result.get('cancelled')} "
+            f"failed={result.get('failed')} skipped={result.get('skipped')} "
+            f"dry={result.get('dry_run')} ==="
         )
-        if args.live and failed:
+        if args.live and (result.get("failed") or not result.get("ok", True)):
             return 2
         return 0
     finally:

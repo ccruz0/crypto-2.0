@@ -695,6 +695,8 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
           timeoutMs = 30000; // 30s for adding custom coins (database operations)
         } else if (endpoint.includes('/monitoring/workflows')) {
           timeoutMs = 150000; // 150s (2.5 minutes) for workflows - may need time for file system operations and initialization
+        } else if (endpoint.includes('/monitoring/ghost-protection-alerts')) {
+          timeoutMs = 300000; // 300s — sequential cancel can take minutes for large ghost batches
         } else if (endpoint.includes('/health/system')) {
           timeoutMs = 15000; // 15s for system health - backend uses short DB timeout; fail fast so UI can show retry
         }
@@ -853,6 +855,8 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
             timeoutSeconds = 30; // 30s for adding custom coins (matches timeoutMs)
           } else if (endpoint.includes('/monitoring/workflows')) {
             timeoutSeconds = 150; // 150s for workflows (matches timeoutMs)
+          } else if (endpoint.includes('/monitoring/ghost-protection-alerts')) {
+            timeoutSeconds = 300;
           }
           logRequestIssue(
             endpoint,
@@ -2681,6 +2685,79 @@ export async function restartBackend(): Promise<RestartBackendResponse> {
     );
     throw error;
   }
+}
+
+export interface GhostProtectionAlert {
+  symbol?: string | null;
+  base?: string | null;
+  order_id?: string | null;
+  order_type?: string | null;
+  side?: string | null;
+  quantity?: number | null;
+  wallet_qty?: number | null;
+  reason?: string | null;
+}
+
+export interface GhostProtectionAlertsResponse {
+  ok: boolean;
+  count: number;
+  by_base?: Record<string, number>;
+  alerts: GhostProtectionAlert[];
+  open_orders_count?: number;
+  sync_status?: unknown;
+}
+
+export interface GhostProtectionCleanResult {
+  order_id?: string | null;
+  symbol?: string | null;
+  base?: string | null;
+  side?: string | null;
+  order_type?: string | null;
+  quantity?: number | null;
+  wallet_qty?: number | null;
+  reason?: string | null;
+  status: string;
+  error?: string | null;
+}
+
+export interface GhostProtectionCleanResponse {
+  ok: boolean;
+  dry_run: boolean;
+  count: number;
+  cancelled: number;
+  failed: number;
+  skipped: number;
+  by_base?: Record<string, number> | null;
+  results: GhostProtectionCleanResult[];
+  sync_status?: string | null;
+  data_verified?: boolean;
+  error?: string;
+}
+
+export async function getGhostProtectionAlerts(): Promise<GhostProtectionAlertsResponse> {
+  const cacheBust = `?_ts=${Date.now()}`;
+  return fetchAPI<GhostProtectionAlertsResponse>(
+    `/monitoring/ghost-protection-alerts${cacheBust}`,
+    { cache: 'no-store' }
+  );
+}
+
+export async function cleanGhostProtectionAlerts(options?: {
+  dry_run?: boolean;
+  order_ids?: string[];
+  bases?: string[];
+  allow_stale?: boolean;
+}): Promise<GhostProtectionCleanResponse> {
+  return fetchAPI<GhostProtectionCleanResponse>('/monitoring/ghost-protection-alerts/clean', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dry_run: options?.dry_run ?? true,
+      order_ids: options?.order_ids,
+      bases: options?.bases,
+      allow_stale: options?.allow_stale ?? false,
+    }),
+  });
 }
 
 export interface SystemHealth {
