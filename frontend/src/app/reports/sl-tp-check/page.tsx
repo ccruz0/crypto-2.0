@@ -152,6 +152,29 @@ function InnerSlTpCheckReportPage() {
     fetchReport();
   }, [fetchReport]);
 
+  const positions = Array.isArray(report?.positions_missing) ? report.positions_missing : [];
+
+  const displayPositions = useMemo(() => {
+    let rows = [...positions];
+    if (needTpOnly) {
+      rows = rows.filter((p) => !p.has_tp);
+    }
+    if (focusSymbols.size > 0) {
+      rows.sort((a, b) => {
+        const aFocus = focusSymbols.has((a.symbol || '').toUpperCase()) ? 0 : 1;
+        const bFocus = focusSymbols.has((b.symbol || '').toUpperCase()) ? 0 : 1;
+        if (aFocus !== bFocus) return aFocus - bFocus;
+        return (a.symbol || '').localeCompare(b.symbol || '');
+      });
+    }
+    return rows;
+  }, [positions, focusSymbols, needTpOnly]);
+
+  const focusList = useMemo(
+    () => Array.from(focusSymbols).sort().join(', '),
+    [focusSymbols]
+  );
+
   const createQuantityFor = (pos: MissingPosition): number | undefined => {
     // Naked-parent rows are sized to the fill (uncovered_qty == parent lot).
     // Wallet-gap rows must keep uncovered_qty — enrich may attach a dust/stale
@@ -282,29 +305,6 @@ function InnerSlTpCheckReportPage() {
       </div>
     );
   }
-
-  const positions = Array.isArray(report?.positions_missing) ? report!.positions_missing! : [];
-
-  const displayPositions = useMemo(() => {
-    let rows = [...positions];
-    if (needTpOnly) {
-      rows = rows.filter((p) => !p.has_tp);
-    }
-    if (focusSymbols.size > 0) {
-      rows.sort((a, b) => {
-        const aFocus = focusSymbols.has((a.symbol || '').toUpperCase()) ? 0 : 1;
-        const bFocus = focusSymbols.has((b.symbol || '').toUpperCase()) ? 0 : 1;
-        if (aFocus !== bFocus) return aFocus - bFocus;
-        return (a.symbol || '').localeCompare(b.symbol || '');
-      });
-    }
-    return rows;
-  }, [positions, focusSymbols, needTpOnly]);
-
-  const focusList = useMemo(
-    () => Array.from(focusSymbols).sort().join(', '),
-    [focusSymbols]
-  );
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
