@@ -1746,6 +1746,25 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.82',
+    date: '2026-08-11',
+    change: 'Fix SL/TP Check report client crash (hooks order)',
+    details: `🚀 VERSIÓN 0.82 — SL/TP REPORT PAGE CRASH FIX
+
+📋 **What shipped**
+• Move \`useMemo\` hooks above early returns on \`/reports/sl-tp-check\` (React hooks order)
+• Restores Open SL/TP Check report link from Expected TP naked-short banner
+
+🔧 **Why**
+• v0.81 added focus-symbol memos after \`if (loading) return\`, causing a client-side exception
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 
 
