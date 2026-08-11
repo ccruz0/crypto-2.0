@@ -1785,6 +1785,25 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.84',
+    date: '2026-08-11',
+    change: 'Expected TP: naked-short banner ignores sub-$5 dust',
+    details: `🚀 VERSIÓN 0.84 — NAKED SHORT BANNER DUST FLOOR
+
+📋 **What shipped**
+• Amber naked-short banner / SL/TP report deep-link only for shorts with ≥ $5 notional (same floor as SL/TP checker)
+• Sub-$5 uncovered shorts keep a quiet "dust residue" row badge instead of a false alarm
+
+🔧 **Why**
+• HBAR/AAVE/DOT/SOL residual shorts (~$0.14–$0.80) showed as naked short and linked to a report that correctly skips dust
+
+📦 **PRs**
+• #444
+
+---
+`
   }
 
 
