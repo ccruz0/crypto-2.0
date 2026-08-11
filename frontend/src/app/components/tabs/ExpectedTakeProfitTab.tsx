@@ -24,6 +24,11 @@ import {
   tpFillProximityToneClass,
 } from '@/utils/tpFillProximity';
 import { hasSisterBook, sisterInstrument } from '@/utils/sisterBooks';
+import {
+  NAKED_SHORT_MIN_POSITION_USD,
+  isDustNakedShort,
+  isNakedShort,
+} from '@/utils/expectedTakeProfit';
 
 type SortField =
   | 'symbol'
@@ -40,17 +45,6 @@ type SortDirection = 'asc' | 'desc';
 
 const TP_PROXIMITY_TOOLTIP =
   'TP fill proximity: price progress from entry toward the TP. 100% = mark at or beyond the TP price (near fill). Not quantity coverage.';
-
-function isNakedShort(item: ExpectedTPSummaryItem): boolean {
-  const side = (item.position_side || '').toUpperCase();
-  const walletShort =
-    typeof item.wallet_balance === 'number' && item.wallet_balance < -1e-12;
-  const isShort = side === 'SHORT' || walletShort;
-  if (!isShort) return false;
-  const net = Math.abs(Number(item.net_qty) || 0);
-  if (net <= 0) return false;
-  return (Number(item.covered_qty) || 0) <= 0;
-}
 
 interface ExpectedTakeProfitTabProps {
   expectedTPSummary: ExpectedTPSummaryItem[];
@@ -396,7 +390,7 @@ export default function ExpectedTakeProfitTab({
       {nakedShortSymbols.length > 0 && (
         <div className="mb-4 rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-700 px-4 py-3 text-sm text-amber-950 dark:text-amber-100">
           <strong>Naked short (0 TP coverage):</strong>{' '}
-          {nakedShortSymbols.join(', ')}. Short wallet exposure has no matching take-profit coverage — create TP or close the short.
+          {nakedShortSymbols.join(', ')}. Material short exposure (≥ ${NAKED_SHORT_MIN_POSITION_USD} notional) has no matching take-profit — create TP or close the short. Dust residue under ${NAKED_SHORT_MIN_POSITION_USD} is omitted (same floor as the SL/TP checker).
           {' '}
           <a
             href={`/reports/sl-tp-check?symbols=${encodeURIComponent(nakedShortSymbols.join(','))}&need=tp`}
@@ -592,9 +586,18 @@ export default function ExpectedTakeProfitTab({
                       {isNakedShort(item) && (
                         <span
                           className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"
-                          title="Short exposure has covered_qty = 0 (no matching take-profit coverage)"
+                          title={`Short exposure ≥ $${NAKED_SHORT_MIN_POSITION_USD} has covered_qty = 0 (no matching take-profit coverage)`}
                         >
                           naked short (0 TP)
+                        </span>
+                      )}
+                      {isDustNakedShort(item) && (
+                        <span
+                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                          title={`Sub-$${NAKED_SHORT_MIN_POSITION_USD} short residue with no TP — ignored by SL/TP checker dust floor; usually safe to ignore or flatten`}
+                          data-testid="dust-naked-short-badge"
+                        >
+                          dust residue (0 TP)
                         </span>
                       )}
                       {item.wallet_qty_warning === 'lots_exceed_wallet' && (
