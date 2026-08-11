@@ -428,7 +428,12 @@ export default function MonitoringPanel({
         fetchData();
       }, 1000);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      const status = (err as Error & { status?: number })?.status;
+      const raw = err instanceof Error ? err.message : 'Unknown error';
+      const errorMsg =
+        status === 404 || raw === 'Not Found'
+          ? 'Clean API not available yet (backend still deploying). Retry after backend deploy finishes.'
+          : raw;
       setGhostCleanMessage(`Clean failed: ${errorMsg}`);
       console.error('Failed to clean ghost protection alerts:', err);
     } finally {
