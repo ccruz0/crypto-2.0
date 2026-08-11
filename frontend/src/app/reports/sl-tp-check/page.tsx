@@ -155,25 +155,48 @@ function InnerSlTpCheckReportPage() {
   const positions = Array.isArray(report?.positions_missing) ? report.positions_missing : [];
 
   const displayPositions = useMemo(() => {
-    let rows = [...positions];
-    if (needTpOnly) {
-      rows = rows.filter((p) => !p.has_tp);
-    }
-    if (focusSymbols.size > 0) {
-      rows.sort((a, b) => {
+    // Prefer missing-TP / focus rows first, but never hide other unprotected rows
+    // (need=tp used to filter them out → "Missing: 1" with an empty table).
+    const rows = [...positions];
+    rows.sort((a, b) => {
+      if (needTpOnly) {
+        const aNeedTp = a.has_tp ? 1 : 0;
+        const bNeedTp = b.has_tp ? 1 : 0;
+        if (aNeedTp !== bNeedTp) return aNeedTp - bNeedTp;
+      }
+      if (focusSymbols.size > 0) {
         const aFocus = focusSymbols.has((a.symbol || '').toUpperCase()) ? 0 : 1;
         const bFocus = focusSymbols.has((b.symbol || '').toUpperCase()) ? 0 : 1;
         if (aFocus !== bFocus) return aFocus - bFocus;
-        return (a.symbol || '').localeCompare(b.symbol || '');
-      });
-    }
+      }
+      return (a.symbol || '').localeCompare(b.symbol || '');
+    });
     return rows;
   }, [positions, focusSymbols, needTpOnly]);
+
+  const focusInReport = useMemo(() => {
+    if (focusSymbols.size === 0) return [] as string[];
+    return displayPositions
+      .filter((p) => focusSymbols.has((p.symbol || '').toUpperCase()))
+      .map((p) => p.symbol);
+  }, [displayPositions, focusSymbols]);
+
+  const focusMissingFromReport = useMemo(() => {
+    if (focusSymbols.size === 0) return [] as string[];
+    const present = new Set(
+      positions.map((p) => (p.symbol || '').toUpperCase())
+    );
+    return Array.from(focusSymbols)
+      .filter((s) => !present.has(s))
+      .sort();
+  }, [positions, focusSymbols]);
 
   const focusList = useMemo(
     () => Array.from(focusSymbols).sort().join(', '),
     [focusSymbols]
   );
+
+  const missingShown = displayPositions.length;
 
   const createQuantityFor = (pos: MissingPosition): number | undefined => {
     // Naked-parent rows are sized to the fill (uncovered_qty == parent lot).
@@ -340,9 +363,17 @@ function InnerSlTpCheckReportPage() {
           >
             <strong>Focused from Expected TP naked-short banner:</strong>{' '}
             {focusList}
-            {needTpOnly ? ' (preferring rows missing TP).' : '.'}
+            {needTpOnly ? ' (missing-TP rows sorted first).' : '.'}
             {' '}
             Use <strong>Create TP</strong> on matching rows, or Refresh to re-scan.
+            {focusMissingFromReport.length > 0 && (
+              <div className="mt-2 text-amber-900">
+                Not in this scan&apos;s missing list:{' '}
+                <strong>{focusMissingFromReport.join(', ')}</strong>
+                {' — '}
+                Expected TP 0% coverage can differ from the SL/TP checker; Refresh or create TP from Expected TP Details.
+              </div>
+            )}
           </div>
         )}
 
@@ -359,7 +390,13 @@ function InnerSlTpCheckReportPage() {
           </div>
           <div>
             <div className="text-xs uppercase text-gray-500">Missing protection</div>
-            <div className="text-2xl font-bold text-gray-900">{report?.missing_count ?? positions.length}</div>
+            <div className="text-2xl font-bold text-gray-900">{missingShown}</div>
+            {typeof report?.missing_count === 'number' &&
+              report.missing_count !== missingShown && (
+                <div className="text-xs text-gray-500 mt-0.5">
+                  report count {report.missing_count}
+                </div>
+              )}
           </div>
         </div>
 
@@ -391,10 +428,13 @@ function InnerSlTpCheckReportPage() {
           </div>
           {displayPositions.length === 0 ? (
             <div className="p-8 text-center text-gray-500">
-              No positions missing SL/TP in the latest check.
+              No unprotected positions in the latest check.
               {focusSymbols.size > 0 && (
-                <div className="mt-2 text-sm">
-                  Focus symbols may already be covered, or need a Refresh to re-scan.
+                <div className="mt-2 text-sm text-gray-600">
+                  Focus symbols ({focusList}) are not flagged by the SL/TP checker
+                  {focusMissingFromReport.length > 0
+                    ? ' — they may still show as naked short on Expected TP until Refresh or manual TP create.'
+                    : '.'}
                 </div>
               )}
             </div>

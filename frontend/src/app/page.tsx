@@ -1765,6 +1765,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.83',
+    date: '2026-08-11',
+    change: 'SL/TP report: consistent missing count vs table',
+    details: `🚀 VERSIÓN 0.83 — SL/TP REPORT MESSAGE CONSISTENCY
+
+📋 **What shipped**
+• Stop filtering away non-TP rows when \`need=tp\` (was: Missing 1 + empty table)
+• Summary "Missing protection" matches rows shown
+• Banner lists focus symbols absent from the checker scan
+
+🔧 **Why**
+• Naked-short deep-link hid SL-only missing rows and contradicted the count
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 
 
