@@ -510,6 +510,128 @@ def _iter_half_protected_entry_parents(
     return half
 
 
+def _iter_naked_entry_parents(
+    db: Session,
+    symbol: str,
+    *,
+    entry_side: Optional[str] = None,
+    lookback_hours: float = 168.0,
+    max_parents: int = 25,
+) -> List[ExchangeOrder]:
+    """FILLED entry parents missing ACTIVE SL and/or ACTIVE TP.
+
+    Wallet-sum coverage can look 100% while an older micro fill still has no
+    children (prod ETH_USDT 5755600492671134850 — 0.0052 SELL, 2026-08-05).
+    Broader than half-protected: includes fully naked parents, not only SL-only.
+    """
+    from datetime import timedelta
+
+    from app.services.sl_tp_protection import (
+        get_active_protection_order,
+        has_complete_sl_tp_protection,
+        has_filled_sl_tp_protection,
+    )
+    from app.utils.filled_entry_order import FLATTEN_CLOSE_ROLE, NON_ENTRY_ROLES
+
+    variants = _entry_symbol_variants(symbol)
+    if not variants:
+        return []
+
+    q = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.symbol.in_(variants),
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+        )
+        .filter(
+            (ExchangeOrder.order_role.is_(None))
+            | (~ExchangeOrder.order_role.in_(list(NON_ENTRY_ROLES)))
+        )
+    )
+    side_u = (entry_side or "").strip().upper()
+    if side_u == "BUY":
+        q = q.filter(ExchangeOrder.side == OrderSideEnum.BUY)
+    elif side_u == "SELL":
+        q = q.filter(ExchangeOrder.side == OrderSideEnum.SELL)
+    else:
+        q = q.filter(ExchangeOrder.side.in_([OrderSideEnum.BUY, OrderSideEnum.SELL]))
+
+    if lookback_hours and lookback_hours > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=float(lookback_hours))
+        q = q.filter(
+            (ExchangeOrder.exchange_update_time >= cutoff)
+            | (ExchangeOrder.exchange_create_time >= cutoff)
+        )
+
+    parents = q.order_by(ExchangeOrder.exchange_create_time.desc()).all()
+    naked: List[ExchangeOrder] = []
+    for parent in parents:
+        pid = (parent.exchange_order_id or "").strip()
+        if not pid:
+            continue
+        role = (getattr(parent, "order_role", None) or "").strip().upper()
+        if role == FLATTEN_CLOSE_ROLE:
+            continue
+        if has_complete_sl_tp_protection(db, pid):
+            continue
+        if has_filled_sl_tp_protection(db, pid):
+            continue
+        has_sl = get_active_protection_order(db, pid, "STOP_LOSS") is not None
+        has_tp = get_active_protection_order(db, pid, "TAKE_PROFIT") is not None
+        if has_sl and has_tp:
+            continue
+        naked.append(parent)
+        if len(naked) >= max(1, int(max_parents)):
+            break
+    return naked
+
+
+def _naked_parent_report_row(
+    db: Session,
+    parent: ExchangeOrder,
+    *,
+    symbol: str,
+    currency: str,
+    balance: float,
+    skip_reminder: bool,
+    watchlist_item: Optional[WatchlistItem],
+    current_price: Optional[float],
+) -> Dict:
+    """Build a SL/TP-check row sized to the parent lot (not wallet uncovered gap)."""
+    from app.services.sl_tp_protection import get_active_protection_order
+
+    pid = (parent.exchange_order_id or "").strip()
+    side_val = getattr(parent, "side", None)
+    side = side_val.value if hasattr(side_val, "value") else str(side_val or "")
+    qty = _parent_lot_qty(parent) or 0.0
+    has_sl = get_active_protection_order(db, pid, "STOP_LOSS") is not None
+    has_tp = get_active_protection_order(db, pid, "TAKE_PROFIT") is not None
+    sl_price = watchlist_item.sl_price if watchlist_item else None
+    tp_price = watchlist_item.tp_price if watchlist_item else None
+    return {
+        "symbol": symbol,
+        "currency": currency,
+        "balance": balance,
+        "has_sl": has_sl,
+        "has_tp": has_tp,
+        "sl_price": sl_price,
+        "tp_price": tp_price,
+        "skip_reminder": skip_reminder,
+        "watchlist_item": watchlist_item,
+        "side": side.upper() if side else None,
+        "current_price": current_price,
+        # Size Create to this parent fill — do not use wallet uncovered gap.
+        "uncovered_qty": qty,
+        "sl_covered_qty": qty if has_sl else 0.0,
+        "tp_covered_qty": qty if has_tp else 0.0,
+        "order_id": pid,
+        "entry_order_id": pid,
+        "quantity": qty,
+        "entry_price": _order_entry_price(parent),
+        "naked_parent": True,
+    }
+
+
 def _heal_half_protected_tp_parents(
     db: Session,
     symbol: str,
@@ -1374,6 +1496,7 @@ class SLTPCheckerService:
                 
                 # Always include unprotected positions for auto-create (even if reminder skipped).
                 # skip_reminder only suppresses Telegram nudge buttons, not protection.
+                wallet_row = None
                 if not has_sl or not has_tp:
                     # Get SL/TP prices from watchlist if available
                     sl_price = watchlist_item.sl_price if watchlist_item else None
@@ -1385,7 +1508,7 @@ class SLTPCheckerService:
                     if current_price is None:
                         current_price = _fetch_mark_price(symbol)
 
-                    positions_missing_sl_tp.append({
+                    wallet_row = {
                         'symbol': symbol,
                         'currency': currency,
                         'balance': position['balance'],
@@ -1402,17 +1525,79 @@ class SLTPCheckerService:
                         'uncovered_qty': max(sl_gap, tp_gap),
                         'sl_covered_qty': sl_covered_qty,
                         'tp_covered_qty': tp_covered_qty,
-                    })
+                    }
+
+                # Even when wallet-sum SL/TP looks complete, surface FILLED entry
+                # parents that still lack ACTIVE children (naked micros). Prefer
+                # parent rows over the wallet aggregate so Create sizes to the fill.
+                naked_rows: List[Dict] = []
+                try:
+                    entry_side = position.get("side") or (
+                        "BUY" if float(position.get("balance") or 0) >= 0 else "SELL"
+                    )
+                    naked_parents = _iter_naked_entry_parents(
+                        db, symbol, entry_side=str(entry_side)
+                    )
+                    seen_parent_ids = set()
+                    for parent in naked_parents:
+                        pid = (parent.exchange_order_id or "").strip()
+                        if not pid or pid in seen_parent_ids:
+                            continue
+                        parent_qty = _parent_lot_qty(parent) or 0.0
+                        entry_px = _order_entry_price(parent)
+                        mark = position.get("mark_price")
+                        if mark is None:
+                            mark = _fetch_mark_price(symbol)
+                        # Skip sub-dollar dust parents; ETH 0.0052 @ ~1900 is ~$10.
+                        notional = parent_qty * float(entry_px or mark or 0.0)
+                        if parent_qty <= 0 or notional < 1.0:
+                            continue
+                        row = _naked_parent_report_row(
+                            db,
+                            parent,
+                            symbol=symbol,
+                            currency=currency,
+                            balance=float(position.get("balance") or 0.0),
+                            skip_reminder=skip_reminder,
+                            watchlist_item=watchlist_item,
+                            current_price=mark,
+                        )
+                        naked_rows.append(row)
+                        seen_parent_ids.add(pid)
+                        logger.warning(
+                            "Naked entry parent %s on %s qty=%s (wallet has_sl=%s has_tp=%s)",
+                            pid,
+                            symbol,
+                            parent_qty,
+                            has_sl,
+                            has_tp,
+                        )
+                except Exception as naked_err:
+                    logger.warning(
+                        "Naked-entry parent scan failed for %s: %s",
+                        symbol,
+                        naked_err,
+                        exc_info=True,
+                    )
+
+                if naked_rows:
+                    positions_missing_sl_tp.extend(naked_rows)
+                elif wallet_row is not None:
+                    positions_missing_sl_tp.append(wallet_row)
             
             logger.info(f"Found {len(positions_missing_sl_tp)} positions missing SL/TP")
             
             # Check for OCO-related issues
             oco_issues = self._check_oco_issues(db)
+            naked_count = sum(
+                1 for p in positions_missing_sl_tp if p.get("naked_parent")
+            )
             
             return {
                 'positions_missing_sl_tp': positions_missing_sl_tp,
                 'total_positions': len(open_positions),
                 'oco_issues': oco_issues,
+                'naked_entry_parent_count': naked_count,
                 'checked_at': datetime.utcnow()
             }
             

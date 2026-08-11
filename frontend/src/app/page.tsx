@@ -1596,6 +1596,27 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.75',
+    date: '2026-08-11',
+    change: 'Surface naked micro entry parents + parent-qty SL/TP recreate',
+    details: `🚀 VERSIÓN 0.75 — NAKED MICRO SL/TP AUDIT + ETH RECREATE
+
+📋 **What shipped**
+• Hourly / SL/TP Check audit finds FILLED entry parents missing ACTIVE SL/TP even when wallet-sum coverage looks 100%
+• SL/TP Check Create prefers linked parent fill qty over wallet \`uncovered_qty\` (stops ~2× oversized recreates)
+• Ops script + workflow: recreate 0.0052 BUY SL/TP for ETH_USDT parent \`5755600492671134850\`
+
+🔧 **Why**
+• ETH ALERT SELL 0.0052 @ 1914.8 never got children; later recreate used wallet gap ~0.010 and REJECTED
+• Wallet coverage hid the naked micro from Expected TP / hourly read-only audit
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 
 ];

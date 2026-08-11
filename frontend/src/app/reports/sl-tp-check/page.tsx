@@ -139,10 +139,12 @@ export default function SlTpCheckReportPage() {
   }, [fetchReport]);
 
   const createQuantityFor = (pos: MissingPosition): number | undefined => {
-    // Scanner marks missing by wallet uncovered qty; prefer that over the linked
-    // entry lot (often a recent dust fill) so Create matches what the report checks.
-    const uncovered = pos.uncovered_qty != null ? Number(pos.uncovered_qty) : NaN;
+    // Parent-targeted Create must size to the linked entry lot. Preferring
+    // uncovered_qty (wallet gap) oversized micros — e.g. ETH 0.0052 fill became
+    // ~0.010 and REJECTED on recreate. Use uncovered only when no parent qty.
     const entryQty = pos.quantity != null ? Number(pos.quantity) : NaN;
+    const uncovered = pos.uncovered_qty != null ? Number(pos.uncovered_qty) : NaN;
+    if (pos.order_id && Number.isFinite(entryQty) && entryQty > 0) return entryQty;
     if (Number.isFinite(uncovered) && uncovered > 0) return uncovered;
     if (Number.isFinite(entryQty) && entryQty > 0) return entryQty;
     return undefined;

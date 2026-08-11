@@ -1,6 +1,7 @@
 """Tests for indicator formatting and always-on SL/TP ensure."""
 
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from app.utils.indicator_format import format_indicator_value
@@ -440,6 +441,96 @@ class TestHalfProtectedMultilotHeal(unittest.TestCase):
             )
 
         self.assertEqual([p.exchange_order_id for p in half], ["parent-old"])
+
+    def test_iter_naked_includes_fully_naked_micro_parent(self):
+        from app.services.sl_tp_checker import _iter_naked_entry_parents
+
+        naked = MagicMock(spec=ExchangeOrder)
+        naked.exchange_order_id = "5755600492671134850"
+        naked.symbol = "ETH_USDT"
+        naked.side = OrderSideEnum.SELL
+        naked.status = OrderStatusEnum.FILLED
+        naked.order_role = None
+        naked.quantity = 0.0052
+        naked.cumulative_quantity = 0.0052
+        naked.avg_price = 1914.8
+        naked.exchange_create_time = datetime.now(timezone.utc)
+        naked.exchange_update_time = naked.exchange_create_time
+
+        covered = MagicMock(spec=ExchangeOrder)
+        covered.exchange_order_id = "parent-covered"
+        covered.symbol = "ETH_USDT"
+        covered.side = OrderSideEnum.SELL
+        covered.status = OrderStatusEnum.FILLED
+        covered.order_role = None
+        covered.exchange_create_time = naked.exchange_create_time
+        covered.exchange_update_time = naked.exchange_update_time
+
+        db = MagicMock()
+        query = MagicMock()
+        db.query.return_value = query
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.all.return_value = [covered, naked]
+
+        def _active(_db, parent_id, role):
+            if parent_id == "parent-covered":
+                return MagicMock()
+            return None
+
+        def _complete(_db, parent_id):
+            return parent_id == "parent-covered"
+
+        with patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            side_effect=_active,
+        ), patch(
+            "app.services.sl_tp_protection.has_complete_sl_tp_protection",
+            side_effect=_complete,
+        ), patch(
+            "app.services.sl_tp_protection.has_filled_sl_tp_protection",
+            return_value=False,
+        ):
+            found = _iter_naked_entry_parents(
+                db, "ETH_USDT", entry_side="SELL", lookback_hours=0
+            )
+            self.assertEqual(
+                [p.exchange_order_id for p in found],
+                ["5755600492671134850"],
+            )
+
+    def test_naked_parent_report_row_sizes_to_parent_not_wallet(self):
+        from app.services.sl_tp_checker import _naked_parent_report_row
+
+        parent = MagicMock(spec=ExchangeOrder)
+        parent.exchange_order_id = "5755600492671134850"
+        parent.side = OrderSideEnum.SELL
+        parent.cumulative_quantity = 0.0052
+        parent.quantity = 0.0052
+        parent.avg_price = 1914.8
+        parent.price = 1914.8
+
+        db = MagicMock()
+        with patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            return_value=None,
+        ):
+            row = _naked_parent_report_row(
+                db,
+                parent,
+                symbol="ETH_USDT",
+                currency="ETH",
+                balance=-0.124,
+                skip_reminder=False,
+                watchlist_item=None,
+                current_price=1900.0,
+            )
+        self.assertTrue(row["naked_parent"])
+        self.assertEqual(row["order_id"], "5755600492671134850")
+        self.assertAlmostEqual(row["quantity"], 0.0052)
+        self.assertAlmostEqual(row["uncovered_qty"], 0.0052)
+        self.assertFalse(row["has_sl"])
+        self.assertFalse(row["has_tp"])
 
     @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=91.43)
     def test_heal_calls_native_oco_per_half_protected_parent(self, _mock_mark):
