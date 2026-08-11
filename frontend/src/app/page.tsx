@@ -1722,7 +1722,7 @@ const VERSION_HISTORY = [
 • \`is_orphan\` is DB parent-link only; historical alert fills without children stayed badged even after they left the wallet-aligned open set
 
 📦 **PRs**
-• (this PR)
+• #440
 
 ---
 `
