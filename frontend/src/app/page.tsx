@@ -1726,6 +1726,26 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.81',
+    date: '2026-08-11',
+    change: 'Action links from Expected TP banners to SL/TP report + Monitoring',
+    details: `🚀 VERSIÓN 0.81 — BANNER → ACTION REPORT
+
+📋 **What shipped**
+• Naked-short banner links to \`/reports/sl-tp-check?symbols=…&need=tp\` with Create TP actions
+• Ghost banner links to Monitoring Clean box
+• SL/TP Check report highlights focus symbols from the banner
+
+🔧 **Why**
+• Operators saw naked shorts on Expected TP but had no one-click path to the actionable Create report
+
+📦 **PRs**
+• #441
+
+---
+`
   }
 
 
