@@ -1606,11 +1606,12 @@ const VERSION_HISTORY = [
 📋 **What shipped**
 • Hourly / SL/TP Check audit finds FILLED entry parents missing ACTIVE SL/TP even when wallet-sum coverage looks 100%
 • SL/TP Check Create prefers linked parent fill qty over wallet \`uncovered_qty\` (stops ~2× oversized recreates)
+• Expected TP keeps direction-aligned naked fills visible when protected lots already cover the wallet (SL/TP failed / missing)
 • Ops script + workflow: recreate 0.0052 BUY SL/TP for ETH_USDT parent \`5755600492671134850\`
 
 🔧 **Why**
 • ETH ALERT SELL 0.0052 @ 1914.8 never got children; later recreate used wallet gap ~0.010 and REJECTED
-• Wallet coverage hid the naked micro from Expected TP / hourly read-only audit
+• Wallet-align trim hid the naked micro from Expected TP while hourly audit only saw wallet-sum coverage
 
 📦 **PRs**
 • #435

@@ -515,3 +515,75 @@ def test_same_side_unprotected_usdt_does_not_hide_protected_usd(db_session):
     usd_row = next(e for e in details["entry_orders"] if e["order_id"] == buy_usd.exchange_order_id)
     assert usd_row["stop_loss"] is not None
     assert usd_row["take_profits"]
+
+
+def test_naked_micro_short_visible_when_protected_covers_wallet(db_session):
+    """ETH-like: protected shorts cover |wallet|; naked micro with failed SL/TP stays visible."""
+    t_prot = datetime(2026, 8, 4, tzinfo=timezone.utc)
+    t_naked = datetime(2026, 8, 5, 17, 54, tzinfo=timezone.utc)
+
+    protected = _add_order(
+        db_session,
+        exchange_order_id="eth-protected-short",
+        symbol="ETH_USDT",
+        side=OrderSideEnum.SELL,
+        price="1900",
+        quantity="0.124",
+        exchange_create_time=t_prot,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="eth-protected-tp",
+        symbol="ETH_USDT",
+        side=OrderSideEnum.BUY,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="1800",
+        quantity="0.124",
+        cumulative_quantity="0",
+        parent_order_id=protected.exchange_order_id,
+        exchange_create_time=t_prot,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="eth-protected-sl",
+        symbol="ETH_USDT",
+        side=OrderSideEnum.BUY,
+        order_type="STOP_LOSS_LIMIT",
+        order_role="STOP_LOSS",
+        status=OrderStatusEnum.ACTIVE,
+        price="2100",
+        quantity="0.124",
+        cumulative_quantity="0",
+        parent_order_id=protected.exchange_order_id,
+        exchange_create_time=t_prot,
+    )
+    naked = _add_order(
+        db_session,
+        exchange_order_id="5755600492671134850",
+        symbol="ETH_USDT",
+        side=OrderSideEnum.SELL,
+        price="1914.8",
+        quantity="0.0052",
+        exchange_create_time=t_naked,
+    )
+
+    wallet = -0.124
+    details = get_expected_take_profit_details(
+        db_session,
+        "ETH_USDT",
+        current_price=1900.0,
+        portfolio_balance=wallet,
+    )
+    entry_ids = {entry["order_id"] for entry in details["entry_orders"]}
+    assert protected.exchange_order_id in entry_ids
+    assert naked.exchange_order_id in entry_ids, (
+        "Naked micro with missing SL/TP must stay visible in Expected TP"
+    )
+    naked_row = next(e for e in details["entry_orders"] if e["order_id"] == naked.exchange_order_id)
+    assert naked_row["take_profits"] == []
+    assert naked_row["stop_loss"] is None
+    # Wallet truth stays the exchange balance (not inflated by the pinned micro).
+    assert details["net_qty"] == pytest.approx(abs(wallet), rel=1e-6)
+    assert details.get("wallet_qty_warning") == "lots_exceed_wallet"
