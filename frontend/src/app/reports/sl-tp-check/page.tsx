@@ -18,6 +18,7 @@ interface MissingPosition {
   entry_price?: number | null;
   current_price?: number | null;
   uncovered_qty?: number | null;
+  naked_parent?: boolean;
 }
 
 interface SlTpCheckReport {
@@ -139,10 +140,12 @@ export default function SlTpCheckReportPage() {
   }, [fetchReport]);
 
   const createQuantityFor = (pos: MissingPosition): number | undefined => {
-    // Scanner marks missing by wallet uncovered qty; prefer that over the linked
-    // entry lot (often a recent dust fill) so Create matches what the report checks.
-    const uncovered = pos.uncovered_qty != null ? Number(pos.uncovered_qty) : NaN;
+    // Naked-parent rows are sized to the fill (uncovered_qty == parent lot).
+    // Wallet-gap rows must keep uncovered_qty — enrich may attach a dust/stale
+    // latest entry id whose quantity is much smaller than the wallet gap.
     const entryQty = pos.quantity != null ? Number(pos.quantity) : NaN;
+    const uncovered = pos.uncovered_qty != null ? Number(pos.uncovered_qty) : NaN;
+    if (pos.naked_parent && Number.isFinite(entryQty) && entryQty > 0) return entryQty;
     if (Number.isFinite(uncovered) && uncovered > 0) return uncovered;
     if (Number.isFinite(entryQty) && entryQty > 0) return entryQty;
     return undefined;

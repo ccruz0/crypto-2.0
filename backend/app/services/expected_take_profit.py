@@ -215,6 +215,20 @@ def _protected_entry_ids_for_lots(db: Session, open_lots: List[OpenLot]) -> set:
     return protected
 
 
+def _lot_aligns_wallet_direction(
+    db: Session,
+    lot: OpenLot,
+    wallet_balance: Decimal,
+) -> bool:
+    """True when the lot's entry side matches the wallet sign."""
+    side = _entry_side_for_lot(db, lot)
+    if wallet_balance > 0:
+        return side == OrderSideEnum.BUY
+    if wallet_balance < 0:
+        return side == OrderSideEnum.SELL
+    return True
+
+
 def _align_open_lots_to_wallet(
     db: Session,
     open_lots: List[OpenLot],
@@ -226,9 +240,13 @@ def _align_open_lots_to_wallet(
     (MIXED hedges and same-side sister books). That keeps a protected BTC_USD
     fill visible when an older oversized BTC_USDT lot would otherwise absorb
     the whole wallet on oldest-first trim, and keeps ALGO-style MIXED longs
-    visible against a short wallet residue. Unprotected excess is still
-    trimmed toward |wallet|; when pinned protected qty exceeds |wallet|,
-    callers scale pair shares so reported net still matches the wallet.
+    visible against a short wallet residue.
+
+    Direction-aligned unprotected lots with ``lot_qty <= |wallet|`` are also
+    pinned so executed fills whose SL/TP failed (or never created) stay visible
+    in Expected TP when protected sister lots already cover the wallet
+    (prod ETH_USDT 5755600492671134850). Oversized unprotected ghosts
+    (e.g. 1.5 BTC vs dust wallet) still yield to protected inventory.
 
     Returns (aligned_lots, warning) where warning is one of:
     ghost_short_vs_long, ghost_long_vs_short, lots_exceed_wallet, or None.
@@ -245,12 +263,7 @@ def _align_open_lots_to_wallet(
     # Prefer lots that match wallet direction so a short wallet does not keep
     # oldest long lots and flip the reported side (DOGE inflate regression).
     def _trim_sort_key(lot: OpenLot):
-        side = _entry_side_for_lot(db, lot)
-        aligns = (
-            (wallet_balance > 0 and side == OrderSideEnum.BUY)
-            or (wallet_balance < 0 and side == OrderSideEnum.SELL)
-            or wallet_balance == 0
-        )
+        aligns = _lot_aligns_wallet_direction(db, lot, wallet_balance)
         return (
             0 if aligns else 1,
             lot.buy_time or datetime.min.replace(tzinfo=timezone.utc),
@@ -267,16 +280,39 @@ def _align_open_lots_to_wallet(
     ]
 
     if protected_lots:
-        # Pin protected inventory (MIXED or same-side); only trim unprotected.
+        # Pin protected inventory (MIXED or same-side); only trim oversized
+        # unprotected ghosts. Keep direction-aligned naked micros visible.
         kept = [_clone_open_lot(lot) for lot in protected_lots]
         protected_qty = sum((lot.lot_qty for lot in kept), Decimal("0"))
         was_trimmed = protected_qty > wallet_abs
 
-        if unprotected_lots:
-            remaining_capacity = max(Decimal("0"), wallet_abs - protected_qty)
+        pinable_naked: List[OpenLot] = []
+        excess_unprotected: List[OpenLot] = []
+        for lot in unprotected_lots:
+            qty = Decimal(str(lot.lot_qty or 0))
+            if (
+                qty > 0
+                and qty <= wallet_abs
+                and _lot_aligns_wallet_direction(db, lot, wallet_balance)
+            ):
+                pinable_naked.append(lot)
+            else:
+                excess_unprotected.append(lot)
+
+        for lot in pinable_naked:
+            kept.append(_clone_open_lot(lot))
+
+        naked_qty = sum((lot.lot_qty for lot in pinable_naked), Decimal("0"))
+        if pinable_naked and protected_qty + naked_qty > wallet_abs:
+            was_trimmed = True
+
+        if excess_unprotected:
+            remaining_capacity = max(
+                Decimal("0"), wallet_abs - protected_qty - naked_qty
+            )
             if remaining_capacity > 0:
                 extra, extra_trimmed = _trim_lots_to_wallet_qty(
-                    unprotected_lots, remaining_capacity, sort_key=_trim_sort_key
+                    excess_unprotected, remaining_capacity, sort_key=_trim_sort_key
                 )
                 kept.extend(extra)
                 was_trimmed = was_trimmed or extra_trimmed

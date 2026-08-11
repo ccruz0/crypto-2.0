@@ -1,0 +1,90 @@
+# Ops: recreate 0.0052 BUY SL+TP for ETH_USDT naked micro parent
+# 5755600492671134850. Requires repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+name: Ops — fix ETH naked micro SL/TP
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run_only:
+        description: "If true, only dry-run (no exchange orders)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      git_ref:
+        description: "Git ref on EC2 to checkout script from (use PR branch before merge)"
+        required: false
+        default: "cursor/eth-naked-micro-sltp-fix-df75"
+
+permissions:
+  contents: read
+
+jobs:
+  fix-eth-naked-micro-sltp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-southeast-1
+
+      - name: Fix ETH naked micro SL/TP on prod
+        env:
+          INSTANCE_ID: i-087953603011543c5
+          DRY_RUN: ${{ github.event.inputs.dry_run_only }}
+          GIT_REF: ${{ github.event.inputs.git_ref }}
+        run: |
+          set -euo pipefail
+          LIVE_FLAG=""
+          if [ "$DRY_RUN" != "true" ]; then
+            LIVE_FLAG="--live"
+          fi
+          REF="${GIT_REF:-main}"
+          read -r -d '' REMOTE <<EOF || true
+          set -eu
+          cd /home/ubuntu/crypto-2.0
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin "$REF"
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q "origin/$REF" -- \
+            backend/scripts/fix_eth_naked_micro_sltp.py
+          CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
+          echo CONTAINER=\$CONTAINER
+          test -n "\$CONTAINER"
+          docker exec "\$CONTAINER" python3 /repo/backend/scripts/fix_eth_naked_micro_sltp.py ${LIVE_FLAG}
+          EOF
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "fix ETH naked micro SL/TP dry_run=${DRY_RUN} ref=${REF}" \
+            --parameters "$PARAMS" \
+            --timeout-seconds 600 \
+            --output text \
+            --query "Command.CommandId")
+          echo "CommandId=$COMMAND_ID"
+          for i in $(seq 1 80); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "Status" --output text 2>/dev/null || echo InProgress)
+            echo "status=$STATUS ($i)"
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 5
+          done
+          echo "===== STDOUT ====="
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" --output text || true
+          echo "===== STDERR ====="
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardErrorContent" --output text || true
+          test "$STATUS" = "Success"

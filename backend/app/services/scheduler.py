@@ -408,26 +408,45 @@ class TradingScheduler:
                 if not healing:
                     audit = sl_tp_checker_service.check_positions_for_sl_tp(db)
                     positions_missing = audit.get("positions_missing_sl_tp") or []
+                    naked_n = int(audit.get("naked_entry_parent_count") or 0)
+                    if not naked_n:
+                        naked_n = sum(
+                            1
+                            for p in positions_missing
+                            if isinstance(p, dict) and p.get("naked_parent")
+                        )
                     if positions_missing:
                         logger.warning(
-                            "Hourly SL/TP read-only audit: %s unprotected position(s): %s",
+                            "Hourly SL/TP read-only audit: %s unprotected row(s) "
+                            "(naked_parents=%s): %s",
                             len(positions_missing),
+                            naked_n,
                             [p.get("symbol") for p in positions_missing[:10]],
                         )
                         try:
                             lines = [
                                 "🔍 <b>HOURLY SL/TP AUDIT (read-only)</b>\n\n",
-                                f"⚠️ {len(positions_missing)} open position(s) missing SL and/or TP.\n",
-                                "Background healing is disabled — no orders were created or cancelled.\n\n",
+                                f"⚠️ {len(positions_missing)} open position/parent row(s) missing SL and/or TP",
                             ]
+                            if naked_n:
+                                lines.append(
+                                    f" (incl. {naked_n} naked entry parent(s) "
+                                    "hidden by wallet-sum coverage)"
+                                )
+                            lines.append(
+                                ".\nBackground healing is disabled — no orders were created or cancelled.\n\n",
+                            )
                             for pos in positions_missing[:5]:
                                 missing = []
                                 if not pos.get("has_sl"):
                                     missing.append("SL")
                                 if not pos.get("has_tp"):
                                     missing.append("TP")
+                                label = pos.get("symbol")
+                                if pos.get("naked_parent") and pos.get("order_id"):
+                                    label = f"{label} parent={pos.get('order_id')}"
                                 lines.append(
-                                    f"• {pos.get('symbol')}: missing {'+'.join(missing) or '?'}\n"
+                                    f"• {label}: missing {'+'.join(missing) or '?'}\n"
                                 )
                             if len(positions_missing) > 5:
                                 lines.append(f"  ... and {len(positions_missing) - 5} more\n")
