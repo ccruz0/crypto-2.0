@@ -1820,7 +1820,7 @@ const VERSION_HISTORY = [
 • Operators needed Create TP/SL and dust cleanup from Cartera without jumping to Expected TP / report
 
 📦 **PRs**
-• (this PR)
+• #445
 
 ---
 `
