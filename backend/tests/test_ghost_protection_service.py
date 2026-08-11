@@ -27,20 +27,16 @@ def _tp_order(**kwargs):
 def test_list_ghost_protection_alerts_filters_wrong_side():
     orders = [_tp_order()]
     balances = [{"currency": "ALGO", "balance": 400.0}]
-    resolved = SimpleNamespace(orders=orders, sync_status="ok")
+    resolved = SimpleNamespace(
+        orders=orders, sync_status="ok", data_verified=True, source="crypto_com_api"
+    )
 
-    with (
-        patch(
-            "app.services.ghost_protection.resolve_open_orders",
-            return_value=resolved,
-        ),
-        patch(
-            "app.services.ghost_protection.balances_from_account_summary",
-            return_value=balances,
-        ),
+    with patch(
+        "app.services.ghost_protection.resolve_open_orders",
+        return_value=resolved,
     ):
         db = MagicMock()
-        result = list_ghost_protection_alerts(db)
+        result = list_ghost_protection_alerts(db, balances=balances)
 
     assert result["ok"] is True
     assert result["count"] == 1
@@ -200,6 +196,36 @@ def test_clean_live_refuses_stale_sync():
     assert result["ok"] is False
     assert result["cancelled"] == 0
     assert "Refusing live cancel" in (result.get("error") or "")
+
+
+def test_clean_live_allows_ok_db_fallback():
+    orders = [_tp_order()]
+    balances = [{"currency": "ALGO", "balance": 400.0}]
+    resolved = SimpleNamespace(
+        orders=orders,
+        sync_status="ok_db_fallback",
+        data_verified=True,
+        source="database_fallback",
+    )
+
+    with (
+        patch(
+            "app.services.ghost_protection.resolve_open_orders",
+            return_value=resolved,
+        ),
+        patch(
+            "app.services.ghost_protection.cancel_protection_order_on_exchange",
+            return_value={},
+        ) as cancel_mock,
+    ):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+        result = clean_ghost_protection_alerts(
+            db, dry_run=False, balances=balances
+        )
+
+    cancel_mock.assert_called_once()
+    assert result["cancelled"] == 1
 
 
 def test_clean_live_allow_stale_overrides_gate():

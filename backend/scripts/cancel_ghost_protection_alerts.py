@@ -55,10 +55,15 @@ def main() -> int:
             dry_run=not args.live,
             bases=bases,
         )
+        if result.get("error"):
+            print(f"ERROR {result['error']}")
+            return 2
         print(
             f"mode={'LIVE' if args.live else 'DRY-RUN'} "
             f"ghost_alerts={result.get('count', 0)} "
-            f"bases={sorted(bases) if bases else 'ALL'}"
+            f"bases={sorted(bases) if bases else 'ALL'} "
+            f"sync={result.get('sync_status')} "
+            f"wallet={result.get('wallet_source')}"
         )
         if not result.get("count"):
             print("OK no matching ghost/orphan protection legs")
@@ -85,7 +90,7 @@ def main() -> int:
             f"failed={result.get('failed')} skipped={result.get('skipped')} "
             f"dry={result.get('dry_run')} ==="
         )
-        if args.live and result.get("failed"):
+        if args.live and (result.get("failed") or not result.get("ok", True)):
             return 2
         return 0
     finally:

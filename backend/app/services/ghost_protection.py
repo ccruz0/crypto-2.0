@@ -43,6 +43,24 @@ def balances_from_account_summary() -> List[dict]:
     return out
 
 
+def balances_for_ghost_check(db: Session) -> tuple[List[dict], str]:
+    """Prefer portfolio-cache balances (same source as Expected TP banner), else live summary."""
+    try:
+        from app.services.portfolio_cache import get_portfolio_summary
+
+        summary = get_portfolio_summary(db) or {}
+        balances = list(summary.get("balances") or [])
+        if balances:
+            return balances, "portfolio_cache"
+    except Exception as exc:
+        log.warning("portfolio_cache balances unavailable for ghost check: %s", exc)
+    return balances_from_account_summary(), "account_summary"
+
+
+# Live cancel allowed when open-orders sync is verified (cache hit or DB fallback).
+_LIVE_SYNC_OK = frozenset({"ok", "ok_db_fallback"})
+
+
 def cancel_protection_order_on_exchange(
     order_id: str, *, order_type: Optional[str] = None
 ) -> dict:
@@ -94,7 +112,11 @@ def list_ghost_protection_alerts(
     balances: Optional[List[dict]] = None,
 ) -> Dict[str, Any]:
     """Return ghost/orphan protection alerts from live open orders + wallet."""
-    bal = balances if balances is not None else balances_from_account_summary()
+    wallet_source = "caller"
+    if balances is not None:
+        bal = balances
+    else:
+        bal, wallet_source = balances_for_ghost_check(db)
     resolved = resolve_open_orders(db)
     orders = list(resolved.orders or [])
     _tp, _prot, alerts = compute_protection_leg_stats(orders, bal)
@@ -118,6 +140,7 @@ def list_ghost_protection_alerts(
         "sync_status": getattr(resolved, "sync_status", None),
         "data_verified": bool(getattr(resolved, "data_verified", False)),
         "source": getattr(resolved, "source", None),
+        "wallet_source": wallet_source,
     }
 
 
@@ -132,9 +155,9 @@ def clean_ghost_protection_alerts(
 ) -> Dict[str, Any]:
     """Cancel ghost protection legs (or dry-run). Only cancels currently flagged ghosts.
 
-    Live cancel requires a verified open-orders sync (``sync_status=ok``) unless
-    ``allow_stale=True``. Cancel uses the direct exchange API (same as the ops
-    ghost-cancel script) so cleanup works even when DB LIVE_TRADING is off.
+    Live cancel requires a verified open-orders sync (``ok`` / ``ok_db_fallback``)
+    unless ``allow_stale=True``. Cancel uses the direct exchange API (same as the
+    ops ghost-cancel script) so cleanup works even when DB LIVE_TRADING is off.
     """
     listed = list_ghost_protection_alerts(db, bases=bases, balances=balances)
     alerts: List[dict] = list(listed.get("alerts") or [])
@@ -142,7 +165,7 @@ def clean_ghost_protection_alerts(
     data_verified = bool(listed.get("data_verified"))
 
     if not dry_run and not allow_stale:
-        if sync_status != "ok" or not data_verified:
+        if sync_status not in _LIVE_SYNC_OK or not data_verified:
             return {
                 "ok": False,
                 "dry_run": False,
@@ -154,6 +177,7 @@ def clean_ghost_protection_alerts(
                 "results": [],
                 "sync_status": sync_status,
                 "data_verified": data_verified,
+                "wallet_source": listed.get("wallet_source"),
                 "error": (
                     "Refusing live cancel: open-orders sync is not verified "
                     f"(sync_status={sync_status!r}, data_verified={data_verified}). "
@@ -246,4 +270,5 @@ def clean_ghost_protection_alerts(
         "results": results,
         "sync_status": sync_status,
         "data_verified": data_verified,
+        "wallet_source": listed.get("wallet_source"),
     }

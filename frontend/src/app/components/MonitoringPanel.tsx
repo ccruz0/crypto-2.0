@@ -400,12 +400,16 @@ export default function MonitoringPanel({
         dry_run: false,
         order_ids: orderIds.length ? orderIds : undefined,
       });
+      const nothingCancelled =
+        result.cancelled === 0 && orderIds.length > 0 && !result.dry_run;
+      const failedRun =
+        result.failed > 0 || result.ok === false || nothingCancelled;
       const msg =
         `Cleaned: ${result.cancelled} cancelled, ${result.failed} failed, ` +
-        `${result.skipped} skipped (of ${result.count}).`;
-      setGhostCleanMessage(
-        result.failed > 0 || result.ok === false ? `Clean failed: ${msg}` : msg
-      );
+        `${result.skipped} skipped (of ${result.count}` +
+        (result.error ? `; ${result.error}` : '') +
+        ').';
+      setGhostCleanMessage(failedRun ? `Clean failed: ${msg}` : msg);
       await fetchGhostAlerts();
       setTimeout(() => {
         fetchData();
