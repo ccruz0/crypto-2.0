@@ -1800,7 +1800,7 @@ const VERSION_HISTORY = [
 • HBAR/AAVE/DOT/SOL residual shorts (~$0.14–$0.80) showed as naked short and linked to a report that correctly skips dust
 
 📦 **PRs**
-• (this PR)
+• #444
 
 ---
 `
