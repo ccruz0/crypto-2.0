@@ -229,6 +229,7 @@ export default function MonitoringPanel({
   const [ghostAlerts, setGhostAlerts] = useState<GhostProtectionAlert[]>([]);
   const [ghostLoading, setGhostLoading] = useState(true);
   const [ghostError, setGhostError] = useState<string | null>(null);
+  const [ghostWarning, setGhostWarning] = useState<string | null>(null);
   const [ghostCleaning, setGhostCleaning] = useState(false);
   const [ghostCleanMessage, setGhostCleanMessage] = useState<string | null>(null);
   const [refreshingSignals, setRefreshingSignals] = useState(false); // Track when signals are being recalculated
@@ -369,11 +370,23 @@ export default function MonitoringPanel({
   const fetchGhostAlerts = useCallback(async () => {
     try {
       setGhostError(null);
+      setGhostWarning(null);
       const response = await getGhostProtectionAlerts();
       setGhostAlerts(response.alerts || []);
+      if (response.warning) {
+        setGhostWarning(response.warning);
+      }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      const status = (err as Error & { status?: number })?.status;
+      const raw = err instanceof Error ? err.message : 'Unknown error';
+      const errorMsg =
+        status === 404
+          ? 'Ghost API not available yet (backend still deploying). Expected TP may still show ghosts.'
+          : raw === 'Not Found'
+            ? 'Ghost API returned Not Found — backend may still be deploying.'
+            : raw;
       setGhostError(errorMsg);
+      setGhostAlerts([]);
       console.error('Failed to fetch ghost protection alerts:', err);
     } finally {
       setGhostLoading(false);
@@ -1387,9 +1400,14 @@ export default function MonitoringPanel({
               {ghostError}
             </div>
           )}
+          {!ghostError && ghostWarning && (
+            <div className="mb-3 text-sm px-3 py-2 rounded border bg-amber-50 border-amber-200 text-amber-900">
+              {ghostWarning}
+            </div>
+          )}
           {ghostLoading ? (
             <div className="text-sm text-gray-500">Loading ghost orders…</div>
-          ) : ghostAlerts.length === 0 ? (
+          ) : ghostError ? null : ghostAlerts.length === 0 ? (
             <div className="text-sm text-gray-600">No ghost protection orders found.</div>
           ) : (
             <div className="overflow-x-auto">

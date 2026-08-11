@@ -474,14 +474,14 @@ export interface DashboardOrder {
 
 /** Protective SL/TP leg whose qty disagrees with wallet (orphan / ghost). */
 export interface GhostProtectionAlert {
-  symbol: string;
-  base: string;
+  symbol?: string | null;
+  base?: string | null;
   order_id?: string | null;
   order_type?: string | null;
   side?: string | null;
-  quantity: number;
-  wallet_qty: number;
-  reason: 'no_wallet' | 'qty_exceeds_wallet' | string;
+  quantity?: number | null;
+  wallet_qty?: number | null;
+  reason?: 'no_wallet' | 'qty_exceeds_wallet' | string | null;
 }
 
 export interface DashboardState {
@@ -2687,17 +2687,6 @@ export async function restartBackend(): Promise<RestartBackendResponse> {
   }
 }
 
-export interface GhostProtectionAlert {
-  symbol?: string | null;
-  base?: string | null;
-  order_id?: string | null;
-  order_type?: string | null;
-  side?: string | null;
-  quantity?: number | null;
-  wallet_qty?: number | null;
-  reason?: string | null;
-}
-
 export interface GhostProtectionAlertsResponse {
   ok: boolean;
   count: number;
@@ -2705,6 +2694,11 @@ export interface GhostProtectionAlertsResponse {
   alerts: GhostProtectionAlert[];
   open_orders_count?: number;
   sync_status?: unknown;
+  data_verified?: boolean;
+  wallet_source?: string;
+  /** Where the list came from (monitoring API vs Expected TP dashboard state). */
+  source?: 'monitoring' | 'dashboard_state';
+  warning?: string;
 }
 
 export interface GhostProtectionCleanResult {
@@ -2734,12 +2728,47 @@ export interface GhostProtectionCleanResponse {
   error?: string;
 }
 
+function _ghostAlertsFromDashboardState(
+  alerts: GhostProtectionAlert[] | undefined
+): GhostProtectionAlertsResponse {
+  const list = Array.isArray(alerts) ? alerts : [];
+  const by_base: Record<string, number> = {};
+  for (const a of list) {
+    const b = (a.base || a.symbol || '?').toString().toUpperCase();
+    by_base[b] = (by_base[b] || 0) + 1;
+  }
+  return {
+    ok: true,
+    count: list.length,
+    by_base,
+    alerts: list,
+    source: 'dashboard_state',
+    warning:
+      'Showing ghosts from Expected TP / dashboard state (monitoring endpoint unavailable).',
+  };
+}
+
 export async function getGhostProtectionAlerts(): Promise<GhostProtectionAlertsResponse> {
   const cacheBust = `?_ts=${Date.now()}`;
-  return fetchAPI<GhostProtectionAlertsResponse>(
-    `/monitoring/ghost-protection-alerts${cacheBust}`,
-    { cache: 'no-store' }
-  );
+  try {
+    const data = await fetchAPI<GhostProtectionAlertsResponse>(
+      `/monitoring/ghost-protection-alerts${cacheBust}`,
+      { cache: 'no-store' }
+    );
+    return { ...data, source: data.source || 'monitoring' };
+  } catch (error) {
+    const status = (error as Error & { status?: number })?.status;
+    // Frontend can deploy before backend: fall back to the same list Expected TP uses.
+    if (status === 404 || status === 501 || status === 502 || status === 503) {
+      try {
+        const state = await getDashboardState();
+        return _ghostAlertsFromDashboardState(state.ghost_protection_alerts);
+      } catch (fallbackErr) {
+        console.error('Ghost alerts dashboard-state fallback failed:', fallbackErr);
+      }
+    }
+    throw error;
+  }
 }
 
 export async function cleanGhostProtectionAlerts(options?: {
