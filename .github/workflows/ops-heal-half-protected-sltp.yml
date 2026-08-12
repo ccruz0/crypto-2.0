@@ -1,23 +1,19 @@
-# Ops: repair current SL-only (half-protected) parents + undercovered ETH/ALGO.
-# Uses recover_missing_tps.py with --cancel-sl-first on prod via SSM.
+# Ops: repair SL-only (half-protected) parents via ensure_missing_protection on prod.
 # Auth: OIDC via AWS_DEPLOY_ROLE_ARN (same as deploy-backend; static access keys are stale).
+# Requires backend image with SLTP_HALF_PROTECTED_HEAL_ENABLED path (#451+).
 name: Ops — heal half-protected SL/TP
 
 on:
   workflow_dispatch:
     inputs:
       dry_run_only:
-        description: "If true, only dry-run (no exchange writes)"
+        description: "If true, only dry-run (LIVE_TRADING forced false for heal)"
         required: false
         default: "true"
         type: choice
         options:
           - "true"
           - "false"
-      symbols:
-        description: "Space-separated symbols (default ETH_USDT ETH_USD ALGO_USD)"
-        required: false
-        default: "ETH_USDT ETH_USD ALGO_USD"
 
 permissions:
   id-token: write
@@ -40,28 +36,43 @@ jobs:
         env:
           INSTANCE_ID: i-087953603011543c5
           DRY_RUN: ${{ github.event.inputs.dry_run_only }}
-          SYMBOLS: ${{ github.event.inputs.symbols }}
         run: |
           set -euo pipefail
-          LIVE_FLAG=""
-          if [ "$DRY_RUN" != "true" ]; then
-            LIVE_FLAG="--live"
-          fi
-          read -r -d '' REMOTE <<EOF || true
+          # Build remote script carefully: AWS-RunShellScript uses /bin/sh.
+          # Avoid nested heredocs; write a temp .py then docker exec it.
+          REMOTE=$(cat <<EOF
           set -eu
-          cd /home/ubuntu/crypto-2.0
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- \
-            backend/scripts/recover_missing_tps.py \
-            backend/app/services/sl_tp_protection.py \
-            backend/app/services/sl_tp_checker.py \
-            backend/app/services/tp_sl_order_creator.py \
-            backend/app/utils/sl_trigger_guard.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
-          echo CONTAINER=\$CONTAINER
+          echo CONTAINER=\$CONTAINER DRY_RUN=${DRY_RUN}
           test -n "\$CONTAINER"
-          docker exec "\$CONTAINER" python3 /repo/backend/scripts/recover_missing_tps.py \
-            ${LIVE_FLAG} --cancel-sl-first ${SYMBOLS}
+          cat > /tmp/ops_half_protected_heal.py <<'PY'
+          import json, os
+          from app.database import SessionLocal
+          from app.services.sl_tp_checker import sl_tp_checker_service
+
+          dry = os.environ.get("OPS_DRY_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
+          if dry:
+              os.environ["LIVE_TRADING"] = "false"
+          db = SessionLocal()
+          try:
+              result = sl_tp_checker_service.ensure_missing_protection(db)
+              summary = {
+                  "dry_run": dry,
+                  "half_protected_heal_only": result.get("half_protected_heal_only"),
+                  "healing_disabled": result.get("healing_disabled"),
+                  "created_n": len(result.get("created") or []),
+                  "failed_n": len(result.get("failed") or []),
+                  "skipped_n": len(result.get("skipped") or []),
+                  "still_missing_n": len(result.get("still_missing") or []),
+                  "created": (result.get("created") or [])[:40],
+                  "failed": (result.get("failed") or [])[:40],
+              }
+              print(json.dumps(summary, default=str, indent=2))
+          finally:
+              db.close()
+          PY
+          docker cp /tmp/ops_half_protected_heal.py "\$CONTAINER":/tmp/ops_half_protected_heal.py
+          docker exec -e OPS_DRY_RUN=${DRY_RUN} "\$CONTAINER" python3 /tmp/ops_half_protected_heal.py
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
