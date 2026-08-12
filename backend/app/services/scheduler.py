@@ -383,17 +383,25 @@ class TradingScheduler:
         await asyncio.to_thread(self.check_telegram_commands_sync)
     
     def check_hourly_sl_tp_missed_sync(self):
-        """Hourly SL/TP audit.
+        """Hourly SL/TP audit / scoped heal.
 
-        When ``SLTP_HEALING_ENABLED`` is false (default): read-only scan + alert.
-        When enabled: legacy ensure/backfill (position heal + 3h fill backfill).
+        - ``SLTP_HEALING_ENABLED=true``: legacy full ensure + 3h fill backfill
+        - Else if ``SLTP_HALF_PROTECTED_HEAL_ENABLED`` (default true): repair
+          SL-without-TP parents only, then alert on anything still missing
+        - Else: read-only scan + alert
         """
-        from app.services.sl_tp_protection import is_sltp_healing_enabled
+        from app.services.sl_tp_protection import (
+            is_sltp_half_protected_heal_enabled,
+            is_sltp_healing_enabled,
+        )
 
         healing = is_sltp_healing_enabled()
+        half_heal = is_sltp_half_protected_heal_enabled()
         logger.info(
-            "Checking for open positions / FILLED orders missing SL/TP (hourly, healing=%s)...",
+            "Checking for open positions / FILLED orders missing SL/TP "
+            "(hourly, healing=%s half_protected_heal=%s)...",
             healing,
+            half_heal,
         )
         
         try:
@@ -406,36 +414,76 @@ class TradingScheduler:
             db = SessionLocal()
             try:
                 if not healing:
-                    audit = sl_tp_checker_service.check_positions_for_sl_tp(db)
-                    positions_missing = audit.get("positions_missing_sl_tp") or []
-                    naked_n = int(audit.get("naked_entry_parent_count") or 0)
-                    if not naked_n:
+                    ensure_result = None
+                    if half_heal:
+                        ensure_result = sl_tp_checker_service.ensure_missing_protection(db)
+                        created_n = len(ensure_result.get("created") or [])
+                        failed_n = len(ensure_result.get("failed") or [])
+                        if created_n or failed_n:
+                            logger.info(
+                                "Hourly half-protected heal: created=%s failed=%s",
+                                created_n,
+                                failed_n,
+                            )
+                        positions_missing = ensure_result.get("still_missing") or []
                         naked_n = sum(
                             1
                             for p in positions_missing
                             if isinstance(p, dict) and p.get("naked_parent")
                         )
+                    else:
+                        audit = sl_tp_checker_service.check_positions_for_sl_tp(db)
+                        positions_missing = audit.get("positions_missing_sl_tp") or []
+                        naked_n = int(audit.get("naked_entry_parent_count") or 0)
+                        if not naked_n:
+                            naked_n = sum(
+                                1
+                                for p in positions_missing
+                                if isinstance(p, dict) and p.get("naked_parent")
+                            )
                     if positions_missing:
                         logger.warning(
-                            "Hourly SL/TP read-only audit: %s unprotected row(s) "
-                            "(naked_parents=%s): %s",
+                            "Hourly SL/TP audit: %s unprotected row(s) "
+                            "(naked_parents=%s half_heal=%s): %s",
                             len(positions_missing),
                             naked_n,
+                            half_heal,
                             [p.get("symbol") for p in positions_missing[:10]],
                         )
                         try:
-                            lines = [
-                                "🔍 <b>HOURLY SL/TP AUDIT (read-only)</b>\n\n",
-                                f"⚠️ {len(positions_missing)} open position/parent row(s) missing SL and/or TP",
-                            ]
+                            if half_heal:
+                                lines = [
+                                    "🔍 <b>HOURLY SL/TP AUDIT</b>\n\n",
+                                    "Half-protected heal ran (SL-only → OCO/dual). "
+                                    "Full wallet invent-heal remains OFF.\n",
+                                ]
+                                healed_n = len((ensure_result or {}).get("created") or [])
+                                if healed_n:
+                                    lines.append(
+                                        f"✅ Healed {healed_n} half-protected parent(s) this hour.\n"
+                                    )
+                                lines.append(
+                                    f"\n⚠️ {len(positions_missing)} open position/parent "
+                                    "row(s) still missing SL and/or TP"
+                                )
+                            else:
+                                lines = [
+                                    "🔍 <b>HOURLY SL/TP AUDIT (read-only)</b>\n\n",
+                                    f"⚠️ {len(positions_missing)} open position/parent "
+                                    "row(s) missing SL and/or TP",
+                                ]
                             if naked_n:
                                 lines.append(
                                     f" (incl. {naked_n} naked entry parent(s) "
                                     "hidden by wallet-sum coverage)"
                                 )
-                            lines.append(
-                                ".\nBackground healing is disabled — no orders were created or cancelled.\n\n",
-                            )
+                            if half_heal:
+                                lines.append(".\n\n")
+                            else:
+                                lines.append(
+                                    ".\nBackground healing is disabled — no orders were "
+                                    "created or cancelled.\n\n",
+                                )
                             for pos in positions_missing[:5]:
                                 missing = []
                                 if not pos.get("has_sl"):
@@ -459,8 +507,17 @@ class TradingScheduler:
                             )
                     else:
                         logger.info(
-                            "✅ Hourly SL/TP read-only audit: all open positions protected"
+                            "✅ Hourly SL/TP audit: all open positions protected"
                         )
+                        if ensure_result and (ensure_result.get("created") or []):
+                            try:
+                                telegram_notifier.send_message(
+                                    "✅ <b>HOURLY SL/TP HEAL</b>\n\n"
+                                    f"Repaired {len(ensure_result.get('created') or [])} "
+                                    "half-protected parent(s). Book looks covered."
+                                )
+                            except Exception:
+                                pass
                     from app.api.routes_monitoring import record_workflow_execution
                     record_workflow_execution("hourly_sl_tp_check", "success", None)
                     return

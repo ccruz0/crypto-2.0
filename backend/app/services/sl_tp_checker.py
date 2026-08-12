@@ -408,13 +408,19 @@ def _protection_create_qty(
     Linking a full-wallet leg to a partial parent (e.g. TP 1.893 on a 0.3 fill)
     oversizes coverage and duplicates sister-book lot TPs.
     Short wallets are negative — size with abs(wallet).
+
+    When wallet is unknown/flat (0) but a parent lot exists, size to the parent
+    lot — half-protected heal may not have a fresh wallet snapshot yet, and the
+    live SL already proves inventory for that lot.
     """
     wallet = abs(float(position_balance or 0.0))
-    if wallet <= 0:
-        return 0.0
     parent_qty = _parent_lot_qty(parent_order)
     if parent_qty is not None and parent_qty > 0:
+        if wallet <= 0:
+            return parent_qty
         return min(parent_qty, wallet)
+    if wallet <= 0:
+        return 0.0
     return wallet
 
 
@@ -508,6 +514,47 @@ def _iter_half_protected_entry_parents(
             continue
         half.append(parent)
     return half
+
+
+def _symbols_with_half_protected_parents(db: Session, *, limit: int = 80) -> List[str]:
+    """Distinct symbols that currently have at least one SL-only entry parent."""
+    from app.services.sl_tp_protection import (
+        ACTIVE_PROTECTION_STATUSES,
+        get_active_protection_order,
+    )
+
+    # Candidate parents: FILLED entries that own an active STOP_LOSS child.
+    sl_parents = (
+        db.query(ExchangeOrder.parent_order_id, ExchangeOrder.symbol)
+        .filter(
+            ExchangeOrder.order_role == "STOP_LOSS",
+            ExchangeOrder.status.in_(ACTIVE_PROTECTION_STATUSES),
+            ExchangeOrder.parent_order_id.isnot(None),
+        )
+        .limit(500)
+        .all()
+    )
+    symbols: List[str] = []
+    seen = set()
+    for parent_id, sl_symbol in sl_parents:
+        pid = (parent_id or "").strip()
+        if not pid:
+            continue
+        if get_active_protection_order(db, pid, "TAKE_PROFIT") is not None:
+            continue
+        parent = (
+            db.query(ExchangeOrder)
+            .filter(ExchangeOrder.exchange_order_id == pid)
+            .first()
+        )
+        symbol = (parent.symbol if parent else None) or sl_symbol
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+        if len(symbols) >= limit:
+            break
+    return symbols
 
 
 def _iter_naked_entry_parents(
@@ -820,11 +867,26 @@ def _heal_half_protected_tp_parents(
                 )
                 continue
 
-            # Margin / OCO-off: cancel-SL-first dual create via shared impl.
+            # Margin / OCO-off: cancel live SL first so dual recreate cannot leave
+            # another REJECTED TP beside a qty-locking SL (ETH_USDT accumulation).
             if dry_run:
                 skipped.append({"parent_order_id": pid, "reason": "dry_run_margin"})
                 continue
             from app.services.exchange_sync import ExchangeSyncService
+            from app.services.tp_sl_order_creator import cancel_protection_leg_on_exchange
+
+            if existing_sl is not None:
+                if not cancel_protection_leg_on_exchange(
+                    db, existing_sl, source=source
+                ):
+                    failed.append(
+                        {
+                            "parent_order_id": pid,
+                            "error": "cancel_sl_before_margin_heal_failed",
+                        }
+                    )
+                    continue
+                existing_sl = None
 
             impl = ExchangeSyncService()._create_sl_tp_impl(
                 db=db,
@@ -1694,14 +1756,23 @@ class SLTPCheckerService:
         """
         Create missing SL and/or TP for open positions when healing is enabled.
 
-        When ``SLTP_HEALING_ENABLED`` is false (default), this is read-only: it
-        reports unprotected positions but does not mutate orders on the exchange.
+        When ``SLTP_HEALING_ENABLED`` is false (default):
+        - If ``SLTP_HALF_PROTECTED_HEAL_ENABLED`` is true (default): repair only
+          SL-without-TP parents (cancel-SL-first / native OCO). No full-wallet
+          invent-protection for naked bags.
+        - Otherwise read-only audit.
         """
-        from app.services.sl_tp_protection import is_sltp_healing_enabled
+        from app.services.sl_tp_protection import (
+            is_sltp_half_protected_heal_enabled,
+            is_sltp_healing_enabled,
+        )
 
         result = self.check_positions_for_sl_tp(db)
-        if not is_sltp_healing_enabled():
-            positions_missing = result.get("positions_missing_sl_tp", [])
+        positions_missing = result.get("positions_missing_sl_tp", [])
+        full_healing = is_sltp_healing_enabled()
+        half_heal = is_sltp_half_protected_heal_enabled()
+
+        if not full_healing and not half_heal:
             logger.info(
                 "SL/TP healing disabled — read-only scan: %s unprotected position(s)",
                 len(positions_missing),
@@ -1719,7 +1790,90 @@ class SLTPCheckerService:
                 "healing_disabled": True,
             }
 
-        positions_missing = result.get("positions_missing_sl_tp", [])
+        if not full_healing and half_heal:
+            # Scoped path: only multilot SL-only → complete SL+TP. Never invent
+            # brand-new protection for fully naked wallet rows / naked parents.
+            created: List[Dict] = []
+            failed: List[Dict] = []
+            skipped: List[Dict] = []
+            healed_parents: List[Dict] = []
+            symbols_seen = set()
+
+            def _heal_symbol(symbol: str, pos: Optional[Dict] = None) -> None:
+                if not symbol or symbol in symbols_seen:
+                    return
+                symbols_seen.add(symbol)
+                payload = pos or {
+                    "symbol": symbol,
+                    "balance": 0.0,
+                    "watchlist_item": None,
+                }
+                try:
+                    multilot = self._ensure_multilot_tp_heal(db, payload)
+                except Exception as multilot_exc:
+                    logger.error(
+                        "Half-protected TP heal failed for %s: %s",
+                        symbol,
+                        multilot_exc,
+                        exc_info=True,
+                    )
+                    failed.append(
+                        {
+                            "symbol": symbol,
+                            "error": f"half_protected_heal: {multilot_exc}",
+                        }
+                    )
+                    return
+                for item in multilot.get("healed") or []:
+                    healed_parents.append({"symbol": symbol, **item})
+                    created.append(
+                        {
+                            "symbol": symbol,
+                            "sl_order_id": item.get("sl_order_id"),
+                            "tp_order_id": item.get("tp_order_id"),
+                            "parent_order_id": item.get("parent_order_id"),
+                            "source": "half_protected_heal",
+                        }
+                    )
+                for item in multilot.get("failed") or []:
+                    failed.append({"symbol": symbol, **item})
+                for item in multilot.get("skipped") or []:
+                    skipped.append({"symbol": symbol, **item})
+
+            for pos in positions_missing:
+                symbol = pos.get("symbol")
+                if not symbol:
+                    continue
+                # Prefer wallet / undercover rows; still heal when only naked
+                # parents are listed (wallet may look covered while lots are SL-only).
+                _heal_symbol(symbol, pos)
+
+            for symbol in _symbols_with_half_protected_parents(db):
+                _heal_symbol(symbol)
+
+            still_missing = self.check_positions_for_sl_tp(db).get(
+                "positions_missing_sl_tp", []
+            )
+            logger.info(
+                "Half-protected SL/TP heal: created=%s failed=%s still_missing=%s",
+                len(created),
+                len(failed),
+                len(still_missing),
+            )
+            return {
+                "checked_at": result.get("checked_at"),
+                "total_positions": result.get("total_positions", 0),
+                "oco_issues": result.get("oco_issues", {}),
+                "created": created,
+                "failed": failed,
+                "skipped": skipped,
+                "still_missing": still_missing,
+                "positions_missing_sl_tp": still_missing,
+                "healed_parents": healed_parents,
+                "healing_disabled": False,
+                "half_protected_heal_only": True,
+            }
+
         created: List[Dict] = []
         failed: List[Dict] = []
         skipped: List[Dict] = []

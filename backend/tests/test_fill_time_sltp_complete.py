@@ -147,7 +147,15 @@ class TestCreateRetriesAndTpGap:
              patch("app.services.signal_monitor.time.sleep"), \
              patch("app.services.signal_monitor.SLTP_CREATE_MAX_ATTEMPTS", 3), \
              patch("app.services.signal_monitor.SLTP_CREATE_RETRY_DELAY_SECONDS", 0), \
-             patch.object(svc, "_telegram_send_enabled", return_value=False):
+             patch.object(svc, "_telegram_send_enabled", return_value=False), \
+             patch(
+                 "app.services.tp_sl_order_creator.resolve_sltp_margin_context",
+                 return_value=(False, None),
+             ), \
+             patch(
+                 "app.services.sl_tp_protection.get_active_protection_order",
+                 return_value=None,
+             ):
             mock_tc.normalize_quantity_safe_with_fallback.return_value = ("0.05", {})
             mock_sync._create_sl_tp_for_filled_order.return_value = _sltp_sl_only()
             result = svc._create_protection_after_entry_fill(
@@ -159,7 +167,8 @@ class TestCreateRetriesAndTpGap:
                 estimated_price=2000.0,
                 source="test",
             )
-        assert mock_sync._create_sl_tp_for_filled_order.call_count == 3
+        # 3 create attempts + 1 cancel-SL-first recovery call
+        assert mock_sync._create_sl_tp_for_filled_order.call_count == 4
         mock_flat.assert_not_called()
         assert result["sl_result"]["order_id"] == "sl-1"
         assert not result["tp_result"].get("order_id")

@@ -1,0 +1,90 @@
+# Ops: repair current SL-only (half-protected) parents + undercovered ETH/ALGO.
+# Uses recover_missing_tps.py with --cancel-sl-first on prod via SSM.
+# Requires repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+name: Ops — heal half-protected SL/TP
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run_only:
+        description: "If true, only dry-run (no exchange writes)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      symbols:
+        description: "Space-separated symbols (default ETH_USDT ETH_USD ALGO_USD)"
+        required: false
+        default: "ETH_USDT ETH_USD ALGO_USD"
+
+permissions:
+  contents: read
+
+jobs:
+  heal-half-protected:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-southeast-1
+
+      - name: Heal half-protected SL/TP on prod
+        env:
+          INSTANCE_ID: i-087953603011543c5
+          DRY_RUN: ${{ github.event.inputs.dry_run_only }}
+          SYMBOLS: ${{ github.event.inputs.symbols }}
+        run: |
+          set -euo pipefail
+          LIVE_FLAG=""
+          if [ "$DRY_RUN" != "true" ]; then
+            LIVE_FLAG="--live"
+          fi
+          read -r -d '' REMOTE <<EOF || true
+          set -eu
+          cd /home/ubuntu/crypto-2.0
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin main
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- \
+            backend/scripts/recover_missing_tps.py \
+            backend/app/services/sl_tp_protection.py \
+            backend/app/services/sl_tp_checker.py \
+            backend/app/services/tp_sl_order_creator.py \
+            backend/app/utils/sl_trigger_guard.py
+          CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
+          echo CONTAINER=\$CONTAINER
+          test -n "\$CONTAINER"
+          docker exec "\$CONTAINER" python3 /repo/backend/scripts/recover_missing_tps.py \
+            ${LIVE_FLAG} --cancel-sl-first ${SYMBOLS}
+          EOF
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "heal half-protected SL/TP dry_run=${DRY_RUN}" \
+            --parameters "$PARAMS" \
+            --timeout-seconds 900 \
+            --output text \
+            --query "Command.CommandId")
+          echo "CommandId=$COMMAND_ID"
+          for i in $(seq 1 100); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "Status" --output text 2>/dev/null || echo InProgress)
+            echo "status=$STATUS ($i)"
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 5
+          done
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "[Status,StandardOutputContent,StandardErrorContent]" \
+            --output text
+          test "$STATUS" = "Success"

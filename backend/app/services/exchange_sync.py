@@ -4298,13 +4298,33 @@ class ExchangeSyncService:
                     skip_tp_creation = True
                     skip_tp_reason = "sl_qty_locked_cancel_failed"
             elif active_sl and is_margin:
-                logger.info(
-                    "[SLTP_MARGIN_DUAL] parent=%s symbol=%s placing TP alongside "
-                    "live SL %s (margin allows dual resting triggers)",
-                    order_id,
-                    symbol,
-                    active_sl.exchange_order_id,
+                # Prefer cancel-SL-first even on margin when we already know a prior
+                # TP reject left this parent half-protected — dual resting can still
+                # reject (ETH_USDT). Fresh entries still try dual first below.
+                from app.services.sl_tp_protection import has_rejected_protection_order
+
+                prior_tp_reject = has_rejected_protection_order(
+                    db, order_id, "TAKE_PROFIT"
                 )
+                if prior_tp_reject:
+                    logger.info(
+                        "[SLTP_MARGIN_DUAL] parent=%s symbol=%s prior TP REJECTED — "
+                        "cancel-SL-first before TP retry sl=%s",
+                        order_id,
+                        symbol,
+                        active_sl.exchange_order_id,
+                    )
+                    if _cancel_sl_for_balance_recovery(active_sl):
+                        active_sl = None
+                        existing_sl = None
+                else:
+                    logger.info(
+                        "[SLTP_MARGIN_DUAL] parent=%s symbol=%s placing TP alongside "
+                        "live SL %s (margin allows dual resting triggers)",
+                        order_id,
+                        symbol,
+                        active_sl.exchange_order_id,
+                    )
             if not skip_tp_creation:
                 logger.info(
                     "[SLTP_DUAL_ORDER] parent=%s symbol=%s placing TP before SL (avoid balance lock)",
@@ -4317,14 +4337,20 @@ class ExchangeSyncService:
                 if (
                     not tp_ok
                     and active_sl
-                    and is_insufficient_acc_balance_error(tp_result.get("error"))
+                    and (
+                        is_insufficient_acc_balance_error(tp_result.get("error"))
+                        or is_margin
+                    )
                 ):
-                    # Defensive: SL may have reappeared / cancel race.
+                    # Defensive: SL may have reappeared / cancel race. On margin,
+                    # also cancel-SL-first for non-balance TP failures so we do not
+                    # accumulate SL-only lots.
                     logger.warning(
-                        "[SLTP_BALANCE_RECOVERY] TP still locked after proactive path "
-                        "parent=%s symbol=%s — retry cancel-SL-first",
+                        "[SLTP_BALANCE_RECOVERY] TP failed with live SL "
+                        "parent=%s symbol=%s err=%s — retry cancel-SL-first",
                         order_id,
                         symbol,
+                        tp_result.get("error"),
                     )
                     if _cancel_sl_for_balance_recovery(active_sl):
                         active_sl = None

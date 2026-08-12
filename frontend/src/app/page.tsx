@@ -1845,8 +1845,29 @@ const VERSION_HISTORY = [
 
 ---
 `
-  }
+  },
+  {
+    version: '0.87',
+    date: '2026-08-12',
+    change: 'SL/TP: hourly half-protected heal (SL-only → OCO/dual)',
+    details: `🚀 VERSIÓN 0.87 — HALF-PROTECTED SL/TP HEAL
 
+📋 **What shipped**
+• \`SLTP_HALF_PROTECTED_HEAL_ENABLED\` default ON: hourly job repairs SL-without-TP parents via cancel-SL-first + spot native OCO / margin dual
+• Full \`SLTP_HEALING_ENABLED\` stays OFF (no invent-protection for naked wallets)
+• Margin no longer terminal-skips REJECTED TP backfill when cancel-SL-first heal is available
+• Fill-time TP-gap recovery cancels live margin SL before recreate
+
+🔧 **Why**
+• ETH_USDT accumulated 13 SL vs 5 TP because fill-time TP rejects left SL-only lots and hourly audit was read-only
+• Permanent fix without re-enabling broad background invent-heal (#329)
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
 
 ];
 
