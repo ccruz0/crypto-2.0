@@ -70,8 +70,9 @@ jobs:
           test -n "\$CONTAINER"
           docker exec "\$CONTAINER" python3 /repo/backend/scripts/ops_heal_half_protected_sltp.py ${LIVE_FLAG} ${SYMBOLS_FLAG}
           EOF
-          # executionTimeout is AWS-RunShellScript String (not StringList); array form fails the invoke.
-          PARAMS=$(jq -n --arg cmd "$REMOTE" --arg t "1800" '{commands: [$cmd], executionTimeout: $t}')
+          # Do not set Parameters.executionTimeout: AWS CLI requires a StringList and
+          # document defaults are already 3600s. Rely on --timeout-seconds below.
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
