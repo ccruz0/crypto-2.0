@@ -1841,7 +1841,7 @@ const VERSION_HISTORY = [
 • Plain cancel returned OK but left TP/SL triggers live (spot detail None → wrong endpoint). Ops had to force advanced cancel during DOGE protection normalize.
 
 📦 **PRs**
-• (this PR)
+• #450
 
 ---
 `
