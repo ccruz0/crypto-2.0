@@ -23,8 +23,31 @@ def is_sltp_healing_enabled() -> bool:
 
     Business rule: alert → fill → SL+TP once at fill time only. Healing is OFF by default.
     Set ``SLTP_HEALING_ENABLED=true`` to restore legacy reconciliation loops (rollback).
+
+    Prefer ``SLTP_HALF_PROTECTED_HEAL_ENABLED`` (default on) for the safe scoped path that
+    only repairs SL-without-TP parents via cancel-SL-first / native OCO.
     """
     return os.getenv("SLTP_HEALING_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def is_sltp_half_protected_heal_enabled() -> bool:
+    """Hourly repair of SL-only (half-protected) entry parents.
+
+    Default ON. Does **not** invent protection for fully naked wallets or create
+    duplicate legs when wallet-sum coverage already exists — only cancels a live
+    standalone SL and recreates SL+TP together (spot native OCO / margin dual).
+
+    Set ``SLTP_HALF_PROTECTED_HEAL_ENABLED=false`` to disable (audit-only).
+    Full ``SLTP_HEALING_ENABLED`` still implies this path.
+    """
+    if is_sltp_healing_enabled():
+        return True
+    return os.getenv("SLTP_HALF_PROTECTED_HEAL_ENABLED", "true").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -315,45 +338,49 @@ def should_skip_rejected_tp_backfill(
     parent_order_id: str,
     *,
     allow_spot_oco_heal: bool = True,
+    allow_margin_cancel_sl_heal: bool = True,
     symbol: Optional[str] = None,
 ) -> bool:
     """Skip endless TP retries when SL is live but TP was already REJECTED.
 
-    When spot native OCO heal is enabled (default), do NOT skip — the caller
-    should cancel the standalone SL and recreate both legs as one OCO.
-    Margin positions still skip (native OCO is spot-only).
+    When a cancel-SL-first heal path is available, do NOT skip:
+    - Spot: native OCO recreate (``allow_spot_oco_heal``, default on)
+    - Margin: dual-leg recreate after cancelling the live SL
+      (``allow_margin_cancel_sl_heal``, default on) — leaving SL-only forever
+      was the ETH_USDT 13-SL/5-TP accumulation mode.
     """
     has_sl = get_active_protection_order(db, parent_order_id, "STOP_LOSS") is not None
     if not has_sl:
         return False
     if not has_rejected_protection_order(db, parent_order_id, "TAKE_PROFIT"):
         return False
-    if allow_spot_oco_heal:
-        try:
-            from app.services.tp_sl_order_creator import (
-                is_native_oco_enabled,
-                resolve_sltp_margin_context,
-            )
+    if not allow_spot_oco_heal and not allow_margin_cancel_sl_heal:
+        return True
+    try:
+        from app.services.tp_sl_order_creator import (
+            is_native_oco_enabled,
+            resolve_sltp_margin_context,
+        )
 
-            if is_native_oco_enabled():
-                sym = symbol
-                if not sym:
-                    parent = (
-                        db.query(ExchangeOrder)
-                        .filter(ExchangeOrder.exchange_order_id == parent_order_id)
-                        .first()
-                    )
-                    sym = parent.symbol if parent else None
-                if sym:
-                    is_margin, _ = resolve_sltp_margin_context(db, sym)
-                    if not is_margin:
-                        return False
-                else:
-                    # Unknown symbol: prefer heal path over terminal skip.
-                    return False
-        except Exception:
-            pass
-    return True
+        sym = symbol
+        if not sym:
+            parent = (
+                db.query(ExchangeOrder)
+                .filter(ExchangeOrder.exchange_order_id == parent_order_id)
+                .first()
+            )
+            sym = parent.symbol if parent else None
+        if not sym:
+            # Unknown symbol: prefer heal path over terminal skip.
+            return False
+        is_margin, _ = resolve_sltp_margin_context(db, sym)
+        if is_margin:
+            return not allow_margin_cancel_sl_heal
+        if allow_spot_oco_heal and is_native_oco_enabled():
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def wallet_balance_matches_entry_side(

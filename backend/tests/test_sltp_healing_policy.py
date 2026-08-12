@@ -37,10 +37,54 @@ def test_sync_backfill_blocked_when_healing_disabled(monkeypatch):
 
 @patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
 @patch.object(SLTPCheckerService, "_create_protection_order")
-def test_ensure_missing_protection_read_only_when_healing_disabled(
+@patch.object(SLTPCheckerService, "_ensure_multilot_tp_heal")
+def test_ensure_missing_protection_half_protected_heal_when_full_healing_off(
+    mock_multilot, mock_create, mock_check, monkeypatch
+):
+    """Full healing OFF + half-protected ON → heal SL-only parents, no invent-create."""
+    monkeypatch.delenv("SLTP_HEALING_ENABLED", raising=False)
+    monkeypatch.delenv("SLTP_HALF_PROTECTED_HEAL_ENABLED", raising=False)
+    svc = SLTPCheckerService()
+    mock_check.return_value = {
+        "positions_missing_sl_tp": [
+            {"symbol": "ETH_USDT", "has_sl": True, "has_tp": False, "balance": -0.05},
+        ],
+        "total_positions": 1,
+        "oco_issues": {},
+        "checked_at": None,
+    }
+    mock_multilot.return_value = {
+        "healed": [
+            {
+                "parent_order_id": "p1",
+                "sl_order_id": "sl-new",
+                "tp_order_id": "tp-new",
+            }
+        ],
+        "failed": [],
+        "skipped": [],
+        "parents": 1,
+    }
+    with patch(
+        "app.services.sl_tp_checker._symbols_with_half_protected_parents",
+        return_value=[],
+    ):
+        result = svc.ensure_missing_protection(MagicMock())
+    mock_create.assert_not_called()
+    mock_multilot.assert_called()
+    assert result.get("half_protected_heal_only") is True
+    assert result.get("healing_disabled") is False
+    assert len(result["created"]) == 1
+    assert result["created"][0]["tp_order_id"] == "tp-new"
+
+
+@patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+@patch.object(SLTPCheckerService, "_create_protection_order")
+def test_ensure_missing_protection_read_only_when_all_healing_disabled(
     mock_create, mock_check, monkeypatch
 ):
     monkeypatch.delenv("SLTP_HEALING_ENABLED", raising=False)
+    monkeypatch.setenv("SLTP_HALF_PROTECTED_HEAL_ENABLED", "false")
     svc = SLTPCheckerService()
     mock_check.return_value = {
         "positions_missing_sl_tp": [
@@ -55,6 +99,46 @@ def test_ensure_missing_protection_read_only_when_healing_disabled(
     assert result["healing_disabled"] is True
     assert result["created"] == []
     assert len(result["still_missing"]) == 1
+
+
+def test_half_protected_heal_enabled_by_default(monkeypatch):
+    from app.services.sl_tp_protection import is_sltp_half_protected_heal_enabled
+
+    monkeypatch.delenv("SLTP_HEALING_ENABLED", raising=False)
+    monkeypatch.delenv("SLTP_HALF_PROTECTED_HEAL_ENABLED", raising=False)
+    assert is_sltp_half_protected_heal_enabled() is True
+
+
+@patch.object(SLTPCheckerService, "check_positions_for_sl_tp")
+@patch.object(SLTPCheckerService, "_create_protection_order")
+def test_ensure_missing_protection_read_only_when_healing_disabled(
+    mock_create, mock_check, monkeypatch
+):
+    # Backward-compat name: with half-heal default ON this no longer stays read-only.
+    # Keep asserting invent-create is never called when only half-heal runs.
+    monkeypatch.delenv("SLTP_HEALING_ENABLED", raising=False)
+    monkeypatch.delenv("SLTP_HALF_PROTECTED_HEAL_ENABLED", raising=False)
+    svc = SLTPCheckerService()
+    mock_check.return_value = {
+        "positions_missing_sl_tp": [
+            {"symbol": "BTC_USD", "has_sl": True, "has_tp": False, "balance": 0.01},
+        ],
+        "total_positions": 1,
+        "oco_issues": {},
+        "checked_at": None,
+    }
+    with patch.object(
+        SLTPCheckerService,
+        "_ensure_multilot_tp_heal",
+        return_value={"healed": [], "failed": [], "skipped": [], "parents": 0},
+    ), patch(
+        "app.services.sl_tp_checker._symbols_with_half_protected_parents",
+        return_value=[],
+    ):
+        result = svc.ensure_missing_protection(MagicMock())
+    mock_create.assert_not_called()
+    assert result.get("half_protected_heal_only") is True
+    assert result["created"] == []
 
 
 def test_half_protected_backfill_requires_healing_enabled(monkeypatch):

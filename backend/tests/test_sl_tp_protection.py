@@ -159,7 +159,7 @@ class TestSlTpProtectionHelpers(unittest.TestCase):
             )
         )
 
-    def test_skip_rejected_tp_backfill_when_sl_active(self):
+    def test_skip_rejected_tp_backfill_when_both_heals_disabled(self):
         db = MagicMock()
         sl = ExchangeOrder(exchange_order_id="sl-1", order_role="STOP_LOSS", status=OrderStatusEnum.ACTIVE)
         with patch(
@@ -168,11 +168,32 @@ class TestSlTpProtectionHelpers(unittest.TestCase):
         ), patch(
             "app.services.sl_tp_protection.has_rejected_protection_order",
             return_value=True,
-        ), patch(
-            "app.services.tp_sl_order_creator.is_native_oco_enabled",
-            return_value=False,
         ):
-            self.assertTrue(should_skip_rejected_tp_backfill(db, "parent-1"))
+            self.assertTrue(
+                should_skip_rejected_tp_backfill(
+                    db,
+                    "parent-1",
+                    allow_spot_oco_heal=False,
+                    allow_margin_cancel_sl_heal=False,
+                )
+            )
+
+    def test_do_not_skip_rejected_tp_when_margin_cancel_sl_heal_enabled(self):
+        db = MagicMock()
+        parent = ExchangeOrder(exchange_order_id="parent-1", symbol="ETH_USDT")
+        sl = ExchangeOrder(exchange_order_id="sl-1", order_role="STOP_LOSS", status=OrderStatusEnum.ACTIVE)
+        db.query.return_value.filter.return_value.first.return_value = parent
+        with patch(
+            "app.services.sl_tp_protection.get_active_protection_order",
+            return_value=sl,
+        ), patch(
+            "app.services.sl_tp_protection.has_rejected_protection_order",
+            return_value=True,
+        ), patch(
+            "app.services.tp_sl_order_creator.resolve_sltp_margin_context",
+            return_value=(True, 5.0),
+        ):
+            self.assertFalse(should_skip_rejected_tp_backfill(db, "parent-1"))
 
     def test_do_not_skip_rejected_tp_when_spot_oco_heal_enabled(self):
         db = MagicMock()

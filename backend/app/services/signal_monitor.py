@@ -9995,10 +9995,11 @@ class SignalMonitorService:
             return creation_result
 
         if not self._protection_confirms_take_profit(creation_result):
-            # SL is live — do not flatten — but log critically; healing will NOT backfill.
+            # SL is live — do not flatten. One cancel-SL-first recovery so we do
+            # not leave SL-only debt for the hourly half-protected healer.
             logger.error(
                 "❌ [SLTP_FAILED] TP missing after fill-time retries for %s %s order %s "
-                "(SL present; position under-covered TP; healing_disabled). result=%s",
+                "(SL present; attempting cancel-SL-first recovery). result=%s",
                 entry_side_upper,
                 symbol,
                 order_id,
@@ -10010,17 +10011,66 @@ class SignalMonitorService:
                 },
             )
             try:
-                if FAILSAFE_ON_SLTP_ERROR and self._telegram_send_enabled():
-                    telegram_notifier.send_message(
-                        f"🚨 <b>CRITICAL: TP CREATION FAILED (fill-time)</b>\n\n"
-                        f"📊 Symbol: <b>{symbol}</b>\n"
-                        f"📋 Entry: {entry_side_upper} {order_id}\n"
-                        f"💵 Filled: ${float(executed_avg_price or 0):.8f} qty={normalized_qty}\n"
-                        f"⚠️ SL is live but TP is missing. Healing is OFF — cover TP manually "
-                        f"or re-run create protection for this parent."
+                # Spot: _create_sl_tp_for_filled_order → ensure_spot_oco_protection
+                # already cancels standalone SL. Margin dual does not — cancel first
+                # so we do not accumulate REJECTED TPs beside a live SL.
+                from app.services.sl_tp_protection import get_active_protection_order
+                from app.services.tp_sl_order_creator import (
+                    cancel_protection_leg_on_exchange,
+                    resolve_sltp_margin_context,
+                )
+
+                is_margin_pos, _ = resolve_sltp_margin_context(db, symbol)
+                live_sl = get_active_protection_order(db, str(order_id), "STOP_LOSS")
+                if is_margin_pos and live_sl is not None:
+                    if not cancel_protection_leg_on_exchange(
+                        db, live_sl, source=f"{source}_tp_gap_recovery"
+                    ):
+                        logger.error(
+                            "[SLTP_TP_GAP_RECOVER] margin cancel SL failed parent=%s sl=%s",
+                            order_id,
+                            live_sl.exchange_order_id,
+                        )
+                recovery = exchange_sync_service._create_sl_tp_for_filled_order(
+                    db=db,
+                    symbol=symbol,
+                    side=entry_side_upper,
+                    filled_price=float(executed_avg_price),
+                    filled_qty=normalized_qty,
+                    order_id=str(order_id),
+                    source=f"{source}_tp_gap_recovery",
+                    skip_gate=True,
+                )
+                if self._protection_confirms_complete(recovery):
+                    logger.info(
+                        "✅ [SLTP_OK] Cancel-SL-first recovery completed SL+TP for %s %s order %s",
+                        entry_side_upper,
+                        symbol,
+                        order_id,
                     )
-            except Exception as alert_err:
-                logger.warning("Failed to send TP-missing Telegram for %s: %s", order_id, alert_err)
+                    return recovery
+                creation_result = recovery or creation_result
+            except Exception as recovery_err:
+                logger.error(
+                    "❌ [SLTP_FAILED] Cancel-SL-first TP recovery raised for %s %s: %s",
+                    symbol,
+                    order_id,
+                    recovery_err,
+                    exc_info=True,
+                )
+            if not self._protection_confirms_take_profit(creation_result):
+                try:
+                    if FAILSAFE_ON_SLTP_ERROR and self._telegram_send_enabled():
+                        telegram_notifier.send_message(
+                            f"🚨 <b>CRITICAL: TP CREATION FAILED (fill-time)</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"📋 Entry: {entry_side_upper} {order_id}\n"
+                            f"💵 Filled: ${float(executed_avg_price or 0):.8f} qty={normalized_qty}\n"
+                            f"⚠️ SL is live but TP is missing after cancel-SL-first recovery. "
+                            f"Hourly half-protected heal will retry."
+                        )
+                except Exception as alert_err:
+                    logger.warning("Failed to send TP-missing Telegram for %s: %s", order_id, alert_err)
 
         return creation_result
 
