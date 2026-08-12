@@ -33,6 +33,11 @@ def main() -> int:
     )
     parser.add_argument("--live", action="store_true", help="Cancel on exchange")
     parser.add_argument(
+        "--allow-stale",
+        action="store_true",
+        help="Allow live cancel when open-orders sync_status is stale_cache_db_fallback",
+    )
+    parser.add_argument(
         "--bases",
         default=",".join(DEFAULT_BASES),
         help=f"Comma-separated base currencies (default {','.join(DEFAULT_BASES)})",
@@ -54,6 +59,7 @@ def main() -> int:
             db,
             dry_run=not args.live,
             bases=bases,
+            allow_stale=bool(args.allow_stale),
         )
         if result.get("error"):
             print(f"ERROR {result['error']}")

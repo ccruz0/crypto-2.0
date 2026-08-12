@@ -49,8 +49,12 @@ jobs:
         run: |
           set -euo pipefail
           LIVE_FLAG=""
+          STALE_FLAG=""
           if [ "$DRY_RUN" != "true" ]; then
             LIVE_FLAG="--live"
+            # Prod open-orders sync often reports stale_cache_db_fallback even when
+            # data_verified=true; ops needs an explicit override for live cancels.
+            STALE_FLAG="--allow-stale"
           fi
           REF="${GIT_REF:-main}"
           BASES_FLAG="--bases ${BASES:-ALGO,SUI,APT,AAVE}"
@@ -61,11 +65,12 @@ jobs:
           sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q "origin/$REF" -- \
             backend/scripts/cancel_ghost_protection_alerts.py \
             backend/scripts/cancel_duplicate_sl_tp.py \
-            backend/app/services/dashboard_position_counts.py
+            backend/app/services/dashboard_position_counts.py \
+            backend/app/services/ghost_protection.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER REF=$REF
           test -n "\$CONTAINER"
-          docker exec "\$CONTAINER" python3 /repo/backend/scripts/cancel_ghost_protection_alerts.py ${LIVE_FLAG} ${BASES_FLAG}
+          docker exec "\$CONTAINER" python3 /repo/backend/scripts/cancel_ghost_protection_alerts.py ${LIVE_FLAG} ${STALE_FLAG} ${BASES_FLAG}
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
