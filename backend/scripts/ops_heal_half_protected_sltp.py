@@ -87,7 +87,6 @@ def _heal_symbols_scoped(db, symbols: List[str]) -> Dict[str, Any]:
             watchlist_by_symbol[sym] = pos.get("watchlist_item")
 
     # Always attempt requested symbols (balance lookup above; parent side from order).
-    _ = _symbols_with_half_protected_parents  # imported for parity with hourly path
     targets = sorted(want)
 
     for symbol in targets:
