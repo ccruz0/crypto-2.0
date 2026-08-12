@@ -123,6 +123,17 @@ echo "$out" | grep -q "deploy in progress" \
 rm -f "$marker"
 rm -rf "$tmp_log"
 
+# Disk reclaim helper: threshold high so reclaim is skipped on normal CI disks
+out="$(GITHUB_APP_CUTOVER_DISK_RECLAIM_PCT=101 reclaim_disk_for_cutover_heal "$SCRIPT_DIR/../.." 2>&1)" || true
+echo "$out" | grep -q "reclaim if >=" \
+  && assert_eq "disk_reclaim_skips_when_under_threshold" "ok" "ok" \
+  || assert_eq "disk_reclaim_skips_when_under_threshold" "ok" "missing"
+# Force reclaim path (threshold 0) but do not require docker success
+out="$(GITHUB_APP_CUTOVER_DISK_RECLAIM_PCT=0 reclaim_disk_for_cutover_heal "$SCRIPT_DIR/../.." 2>&1)" || true
+echo "$out" | grep -q "disk critically full" \
+  && assert_eq "disk_reclaim_runs_when_over_threshold" "ok" "ok" \
+  || assert_eq "disk_reclaim_runs_when_over_threshold" "ok" "missing"
+
 echo
 echo "Results: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

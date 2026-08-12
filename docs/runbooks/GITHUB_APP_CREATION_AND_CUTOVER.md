@@ -483,10 +483,15 @@ bash scripts/aws/uninstall_github_app_cutover_cron.sh
 | `AUTH` | GitHub App cutover or live mint broken (`auth_mode` known and wrong, or mint failed while backend reachable) | `verify_github_app_cutover_ready.sh` + SSM / container env |
 | `OTHER` | Unclassified monitor failure | Rerun monitor + inspect `logs/github_app_monitor_latest.log` |
 
-**Auto-heal (TRANSIENT):** enabled by default (`GITHUB_APP_CUTOVER_AUTO_HEAL=1`). Calls
-`scripts/aws/ensure_stack_up.sh` (never `compose down`), then restarts `backend-aws` if
-`/ping_fast` is still down. Skips when a fresh deploy marker is present or within
-cooldown (`GITHUB_APP_CUTOVER_AUTO_HEAL_COOLDOWN_S`, default 900s). Does **not** rewrite
+**Auto-heal (TRANSIENT):** enabled by default (`GITHUB_APP_CUTOVER_AUTO_HEAL=1`). Order:
+1. If root disk ≥ `GITHUB_APP_CUTOVER_DISK_RECLAIM_PCT` (default 90%): run
+   `infra/cleanup_disk.sh` + `predeploy_disk_guard.sh` (volume-safe; no named-volume prune).
+2. `scripts/aws/ensure_stack_up.sh` (never `compose down`).
+3. Restart `backend-aws` if `/ping_fast` is still down; on `no space left on device`,
+   reclaim again and retry restart.
+
+Skips when a fresh deploy marker is present or within cooldown
+(`GITHUB_APP_CUTOVER_AUTO_HEAL_COOLDOWN_S`, default 900s). Does **not** rewrite
 SSM / GitHub App secrets.
 
 Override recheck delay with `TRANSIENT_RECHECK_S` (default `90`) or `AUTO_HEAL_RECHECK_S`

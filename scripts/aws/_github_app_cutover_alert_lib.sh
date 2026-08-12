@@ -94,8 +94,49 @@ classify_failure() {
   fi
 }
 
+# Disk used % on / (digits only). Empty on failure.
+_cutover_disk_pct() {
+  df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}'
+}
+
+# Volume-safe disk reclaim when root is critically full (no named-volume prune).
+# Uses infra/cleanup_disk.sh + predeploy_disk_guard when available.
+# Never prints secrets. Best-effort; always returns 0.
+reclaim_disk_for_cutover_heal() {
+  local root_dir="${1:-.}"
+  local threshold="${GITHUB_APP_CUTOVER_DISK_RECLAIM_PCT:-90}"
+  local pct
+
+  pct="$(_cutover_disk_pct)"
+  pct="${pct//[^0-9]/}"
+  [[ -z "$pct" ]] && pct=100
+
+  echo "auto-heal: disk_used=${pct}% (reclaim if >= ${threshold}%)"
+  if [[ "$pct" -lt "$threshold" ]]; then
+    return 0
+  fi
+
+  echo "auto-heal: disk critically full — reclaiming (volume-safe; no compose down)"
+  if [[ -x "$root_dir/infra/cleanup_disk.sh" ]]; then
+    bash "$root_dir/infra/cleanup_disk.sh" || true
+  fi
+  if [[ -x "$root_dir/scripts/aws/predeploy_disk_guard.sh" ]]; then
+    # Force Tier 2 unused-image prune by setting a high MIN_FREE_GB floor.
+    MIN_FREE_GB="${GITHUB_APP_CUTOVER_MIN_FREE_GB:-4}" \
+      bash "$root_dir/scripts/aws/predeploy_disk_guard.sh" || true
+  else
+    docker builder prune -af 2>/dev/null || true
+    docker image prune -af 2>/dev/null || true
+    sudo find /var/lib/docker/containers/ -name "*-json.log" -type f \
+      -exec truncate -s 0 {} \; 2>/dev/null || true
+    sudo journalctl --vacuum-time=3d 2>/dev/null || true
+  fi
+  echo "auto-heal: disk after reclaim=$(_cutover_disk_pct)%"
+  return 0
+}
+
 # Safe infra recovery for TRANSIENT cutover monitor failures.
-# Uses ensure_stack_up (never compose down) + targeted restart if still unhealthy.
+# Order: disk reclaim (if full) → ensure_stack_up → targeted restart.
 # Respects deploy marker and cooldown. Never prints secrets.
 # Returns 0 if ping_fast is OK after attempt, 1 otherwise.
 attempt_cutover_infra_auto_heal() {
@@ -108,13 +149,19 @@ attempt_cutover_infra_auto_heal() {
   local marker_ttl="${ATP_DEPLOY_MARKER_TTL_SECS:-1800}"
   local ping_url="${GITHUB_APP_CUTOVER_HEAL_PING_URL:-http://127.0.0.1:8002/ping_fast}"
   local now last elapsed epoch age
+  local restart_err=""
 
   if [[ "$enabled" != "1" ]]; then
     echo "auto-heal skipped: GITHUB_APP_CUTOVER_AUTO_HEAL=$enabled"
     return 1
   fi
 
-  mkdir -p "$log_dir"
+  mkdir -p "$log_dir" 2>/dev/null || true
+  # If logs dir cannot be created (disk full), continue with /tmp cooldown.
+  if [[ ! -d "$log_dir" ]]; then
+    log_dir="/tmp"
+    cooldown_file="/tmp/github_app_cutover_auto_heal_last"
+  fi
 
   if [[ -f "$marker" ]]; then
     now="$(date +%s)"
@@ -147,8 +194,11 @@ attempt_cutover_infra_auto_heal() {
     fi
   fi
 
-  date +%s >"$cooldown_file"
-  echo "auto-heal: starting infra recovery (ensure_stack_up + targeted restart if needed)"
+  date +%s >"$cooldown_file" 2>/dev/null || true
+  echo "auto-heal: starting infra recovery (disk reclaim → ensure_stack_up → restart)"
+
+  # Disk full makes compose up / restart fail with "no space left on device".
+  reclaim_disk_for_cutover_heal "$root_dir"
 
   if [[ -x "$root_dir/scripts/aws/ensure_stack_up.sh" ]]; then
     # Shorter wait for hourly monitor context (overrideable).
@@ -165,15 +215,26 @@ attempt_cutover_infra_auto_heal() {
   fi
 
   echo "auto-heal: ping still failing — restarting backend-aws"
-  (
+  restart_err="$(
     cd "$root_dir" || exit 1
     if [[ -x scripts/aws/prod_compose.sh ]]; then
-      bash scripts/aws/prod_compose.sh restart backend-aws || \
-        docker compose --profile aws restart backend-aws || true
+      bash scripts/aws/prod_compose.sh restart backend-aws 2>&1 || \
+        docker compose --profile aws restart backend-aws 2>&1 || true
     else
-      docker compose --profile aws restart backend-aws || true
+      docker compose --profile aws restart backend-aws 2>&1 || true
     fi
-  )
+  )" || true
+  if [[ -n "$restart_err" ]]; then
+    echo "$restart_err" | tail -20 | sed 's/^/  /'
+  fi
+  if echo "$restart_err" | grep -qi 'no space left on device'; then
+    echo "auto-heal: restart hit ENOSPC — reclaiming disk again then retry restart"
+    reclaim_disk_for_cutover_heal "$root_dir"
+    (
+      cd "$root_dir" || exit 1
+      docker compose --profile aws restart backend-aws 2>&1 || true
+    ) | tail -10 | sed 's/^/  /' || true
+  fi
 
   local i
   for i in $(seq 1 24); do
@@ -184,7 +245,7 @@ attempt_cutover_infra_auto_heal() {
     sleep 5
   done
 
-  echo "auto-heal: still unhealthy after recovery attempt"
+  echo "auto-heal: still unhealthy after recovery attempt (disk=$(_cutover_disk_pct)%)"
   return 1
 }
 
@@ -194,10 +255,13 @@ remedy_for_class() {
     TRANSIENT)
       cat <<'EOF'
 Containers were restarting or not ready (or backend down made auth_mode look unknown).
-Auto-heal already tried ensure_stack_up / backend-aws restart when enabled.
-If this persists: check HostSwapHigh / docker restarts, then:
+Auto-heal already tried disk reclaim + ensure_stack_up / backend-aws restart when enabled.
+If this persists — especially "no space left on device":
+  df -h /
+  bash infra/cleanup_disk.sh
+  bash scripts/aws/predeploy_disk_guard.sh
   bash scripts/aws/ensure_stack_up.sh
-  docker compose --profile aws ps
+  docker compose --profile aws restart backend-aws
   docker compose --profile aws logs backend-aws --tail=80
 EOF
       ;;
