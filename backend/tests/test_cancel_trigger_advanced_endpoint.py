@@ -131,3 +131,47 @@ def test_cancel_rejects_nonzero_exchange_code():
                                 out = client.cancel_order("missing-1", dry_run=False)
     assert out.get("error")
     assert out.get("code") == 10004
+
+
+def test_cancel_proxy_empty_body_is_not_false_ok():
+    """_call_proxy returns {} on errors — must not mark CANCELLED."""
+    client = _live_client()
+    with patch("app.services.brokers.crypto_com_trade.require_aws_or_skip", return_value=None):
+        with patch.object(client, "_resolve_actual_dry_run", return_value=False):
+            with patch("app.services.live_trading_gate.require_mutation_allowed_for_broker"):
+                with patch.object(
+                    client,
+                    "_get_order_detail_summary",
+                    return_value={"type": "STOP_LIMIT"},
+                ):
+                    with patch.object(client, "_call_proxy", return_value={}) as proxy:
+                        client.use_proxy = True
+                        out = client.cancel_order(
+                            "sl-1", order_type="STOP_LIMIT", dry_run=False
+                        )
+    proxy.assert_called_once()
+    assert out.get("error")
+    assert "empty" in str(out.get("error")).lower()
+
+
+def test_cancel_proxy_success_with_result():
+    client = _live_client()
+    with patch("app.services.brokers.crypto_com_trade.require_aws_or_skip", return_value=None):
+        with patch.object(client, "_resolve_actual_dry_run", return_value=False):
+            with patch("app.services.live_trading_gate.require_mutation_allowed_for_broker"):
+                with patch.object(
+                    client,
+                    "_get_order_detail_summary",
+                    return_value={"type": "TAKE_PROFIT_LIMIT"},
+                ):
+                    with patch.object(
+                        client,
+                        "_call_proxy",
+                        return_value={"code": 0, "result": {"order_id": "tp-2"}},
+                    ):
+                        client.use_proxy = True
+                        out = client.cancel_order(
+                            "tp-2", order_type="TAKE_PROFIT_LIMIT", dry_run=False
+                        )
+    assert "error" not in out
+    assert out.get("order_id") == "tp-2"

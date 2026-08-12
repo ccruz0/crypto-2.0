@@ -4947,11 +4947,19 @@ class CryptoComTradeClient:
         logger.info(f"Live: cancel_order - {order_id} (method={method})")
 
         def _normalize_cancel_response(raw: Any) -> dict:
-            """Treat non-zero exchange codes as hard failures (no false OK)."""
+            """Treat non-success / empty exchange bodies as hard failures (no false OK).
+
+            Proxy ``_call_proxy`` returns ``{}`` on exceptions; that must not look like
+            a successful cancel. Require an explicit success signal: ``code`` 0,
+            a ``result`` key, or an unwrapped body with ``order_id``/``status``.
+            """
             if not isinstance(raw, dict):
                 return {"error": "Failed to cancel order: unexpected response"}
             if raw.get("skipped"):
                 return {"order_id": order_id, **raw}
+            if not raw:
+                logger.error("Cancel order %s failed: empty response", order_id)
+                return {"error": "Failed to cancel order: empty response"}
             code = raw.get("code")
             if code not in (0, None, "0"):
                 msg = raw.get("message") or raw.get("error") or f"cancel failed code={code}"
@@ -4961,9 +4969,27 @@ class CryptoComTradeClient:
                 return {"error": str(raw.get("error")), "code": code}
             if "result" in raw:
                 result_body = raw.get("result")
-                return result_body if isinstance(result_body, dict) else {"order_id": order_id}
+                if isinstance(result_body, dict):
+                    return result_body
+                # Non-dict / null result only counts when exchange sent code 0.
+                if code in (0, "0"):
+                    return {"order_id": order_id}
+                logger.error(
+                    "Cancel order %s failed: missing result body (code=%s)", order_id, code
+                )
+                return {"error": "Failed to cancel order: empty result"}
+            # Explicit code 0 without a result wrapper.
+            if code in (0, "0"):
+                return {"order_id": order_id}
             # Unwrapped success body (proxy may already strip code/result).
-            return raw
+            if raw.get("order_id") or raw.get("status"):
+                return raw
+            logger.error(
+                "Cancel order %s failed: ambiguous response keys=%s",
+                order_id,
+                sorted(raw.keys()),
+            )
+            return {"error": "Failed to cancel order: unexpected response"}
         
         # Use proxy if enabled
         if self.use_proxy:
