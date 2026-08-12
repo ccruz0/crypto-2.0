@@ -471,7 +471,7 @@ bash scripts/aws/uninstall_github_app_cutover_cron.sh
 | Event | Telegram |
 |-------|----------|
 | Monitor **FAIL** (AUTH / OTHER) | Immediate alert with severity, failure list, and remedy |
-| Monitor **FAIL** (TRANSIENT only) | Wait ~90s and recheck once; alert only if still failing |
+| Monitor **FAIL** (TRANSIENT only) | Auto-heal (`ensure_stack_up` + `backend-aws` restart if needed), wait, recheck; alert only if still failing. On recovery, one “auto-healed” notice. |
 | Monitor **PASS** | Success heartbeat at most once every **12 hours** |
 | After **2026-06-12 08:18 UTC** with **PASS** | One-time PAT-removal-ready message (marker: `logs/github_app_pat_removal_ready_alert_sent`) |
 
@@ -479,11 +479,18 @@ bash scripts/aws/uninstall_github_app_cutover_cron.sh
 
 | Severity | Meaning | Default remedy |
 |----------|---------|----------------|
-| `TRANSIENT` | Cutover OK (`auth_mode=github_app`, mint OK) but containers/probes not ready | Recheck; if persists, inspect docker restarts / HostSwapHigh |
-| `AUTH` | GitHub App cutover or live mint broken | `verify_github_app_cutover_ready.sh` + SSM / container env |
+| `TRANSIENT` | Containers/probes not ready, **or** `auth_mode=unknown` because the backend is down (infra cascade — not a real GitHub App break) | Auto-heal + recheck; if persists: `ensure_stack_up.sh` / HostSwapHigh |
+| `AUTH` | GitHub App cutover or live mint broken (`auth_mode` known and wrong, or mint failed while backend reachable) | `verify_github_app_cutover_ready.sh` + SSM / container env |
 | `OTHER` | Unclassified monitor failure | Rerun monitor + inspect `logs/github_app_monitor_latest.log` |
 
-Override recheck delay with `TRANSIENT_RECHECK_S` (default `90`).
+**Auto-heal (TRANSIENT):** enabled by default (`GITHUB_APP_CUTOVER_AUTO_HEAL=1`). Calls
+`scripts/aws/ensure_stack_up.sh` (never `compose down`), then restarts `backend-aws` if
+`/ping_fast` is still down. Skips when a fresh deploy marker is present or within
+cooldown (`GITHUB_APP_CUTOVER_AUTO_HEAL_COOLDOWN_S`, default 900s). Does **not** rewrite
+SSM / GitHub App secrets.
+
+Override recheck delay with `TRANSIENT_RECHECK_S` (default `90`) or `AUTO_HEAL_RECHECK_S`
+(default `30` after a successful ping recovery).
 Successful hourly runs do not spam Telegram; only the 12-hour heartbeat (during
 the observation window) and the one-time PAT-removal-ready message are sent on success.
 

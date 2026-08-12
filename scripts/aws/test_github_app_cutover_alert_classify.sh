@@ -72,6 +72,57 @@ else
   assert_eq "new_patterns_skip_diagnostics" "no_match" "no_match"
 fi
 
+# --- 2026-08-12 ATP Control false AUTH (backend down → auth_mode unknown) ---
+SAMPLE_DOWN=$(cat <<'EOF'
+== Summary ==
+Failures:
+  - backend-aws unhealthy
+  - backend-aws-canary unhealthy
+  - backend-aws /api/health/ready not ready
+  - backend-aws-canary /api/health/ready not ready
+  - auth_mode is not github_app (got unknown)
+  - CUTOVER_READY is not YES (got NO)
+  - live token mint not confirmed
+EXCHANGE_CREDENTIAL_WARNINGS=NO
+GITHUB_APP_CUTOVER_HEALTH=FAIL
+EOF
+)
+down_fails="$(extract_monitor_failures "$SAMPLE_DOWN")"
+sev="$(classify_failure "unknown" "NO" "no" "$down_fails")"
+assert_eq "classify_backend_down_unknown_as_transient" "TRANSIENT" "$sev"
+
+# Empty failure list + unknown auth → TRANSIENT (infra; monitor parse incomplete)
+sev="$(classify_failure "unknown" "NO" "no" "")"
+assert_eq "classify_unknown_empty_failures_transient" "TRANSIENT" "$sev"
+
+# Real AUTH: auth_mode none with healthy-looking cutover flags still AUTH
+sev="$(classify_failure "none" "NO" "no" $'auth_mode is not github_app (got none)\nCUTOVER_READY is not YES (got NO)')"
+assert_eq "classify_auth_mode_none_is_auth" "AUTH" "$sev"
+
+# Real AUTH: github_app env present but mint failed while auth_mode known
+sev="$(classify_failure "github_app" "NO" "no" $'CUTOVER_READY is not YES (got NO)\nlive token mint not confirmed')"
+assert_eq "classify_mint_fail_with_known_mode_auth" "AUTH" "$sev"
+
+# Auto-heal disabled path
+tmp_log="$(mktemp -d)"
+out="$(GITHUB_APP_CUTOVER_AUTO_HEAL=0 attempt_cutover_infra_auto_heal "$SCRIPT_DIR/../.." "$tmp_log" "$tmp_log/cooldown" 2>&1)" || true
+echo "$out" | grep -q "auto-heal skipped: GITHUB_APP_CUTOVER_AUTO_HEAL=0" \
+  && assert_eq "auto_heal_disabled" "skipped" "skipped" \
+  || assert_eq "auto_heal_disabled" "skipped" "not_skipped"
+rm -rf "$tmp_log"
+
+# Deploy marker blocks auto-heal
+tmp_log="$(mktemp -d)"
+marker="$(mktemp)"
+echo "epoch=$(date +%s)" >"$marker"
+out="$(ATP_DEPLOY_MARKER="$marker" GITHUB_APP_CUTOVER_AUTO_HEAL=1 \
+  attempt_cutover_infra_auto_heal "$SCRIPT_DIR/../.." "$tmp_log" "$tmp_log/cooldown" 2>&1)" || true
+echo "$out" | grep -q "deploy in progress" \
+  && assert_eq "auto_heal_blocked_by_deploy_marker" "blocked" "blocked" \
+  || assert_eq "auto_heal_blocked_by_deploy_marker" "blocked" "not_blocked"
+rm -f "$marker"
+rm -rf "$tmp_log"
+
 echo
 echo "Results: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

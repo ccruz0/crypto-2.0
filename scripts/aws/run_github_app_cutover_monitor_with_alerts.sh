@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Run GitHub App cutover monitor, write logs, and send Telegram alerts on failure.
-# Transient restart blips (health=starting) are rechecked once before paging.
-# Success heartbeats at most once every 12 hours. Never prints secret values.
+# Transient / infra failures (health=starting, unhealthy, backend down → auth_mode
+# unknown) trigger safe auto-heal (ensure_stack_up + backend-aws restart) then a
+# recheck before paging. Success heartbeats at most once every 12 hours.
+# Never prints secret values.
+#
+# Env:
+#   GITHUB_APP_CUTOVER_AUTO_HEAL=0     disable auto-heal (default 1)
+#   GITHUB_APP_CUTOVER_AUTO_HEAL_COOLDOWN_S  cooldown between heals (default 900)
+#   TRANSIENT_RECHECK_S / AUTO_HEAL_RECHECK_S
 #
 # Usage (from repo root or via cron):
 #   bash scripts/aws/run_github_app_cutover_monitor_with_alerts.sh
@@ -24,6 +31,9 @@ PAT_REMOVAL_ALERT_MARKER="$LOG_DIR/github_app_pat_removal_ready_alert_sent"
 OBSERVATION_END_UTC="2026-06-12 08:18:00"
 HEARTBEAT_INTERVAL_S=$((12 * 60 * 60))
 TRANSIENT_RECHECK_S="${TRANSIENT_RECHECK_S:-90}"
+# After infra auto-heal, wait this long before recheck (backend warm-up).
+AUTO_HEAL_RECHECK_S="${AUTO_HEAL_RECHECK_S:-30}"
+AUTO_HEAL_COOLDOWN_FILE="$LOG_DIR/github_app_cutover_auto_heal_last"
 
 mkdir -p "$LOG_DIR"
 
@@ -121,21 +131,44 @@ echo "parsed live_token_mint=${MINT_OK}"
 if [[ "$FAIL" == "yes" ]]; then
   SEVERITY="$(classify_failure "$AUTH_MODE" "$CUTOVER" "$MINT_OK" "$MONITOR_FAILURES")"
   echo "classified severity: $SEVERITY"
+  AUTO_HEAL_NOTE="not attempted"
 
-  # Transient restart blip: wait and recheck once before paging.
+  # Transient / infra: try safe auto-heal, then recheck before paging.
   if [[ "$SEVERITY" == "TRANSIENT" ]]; then
-    echo "Transient failure detected; rechecking in ${TRANSIENT_RECHECK_S}s..."
-    sleep "$TRANSIENT_RECHECK_S"
+    echo "Transient/infra failure detected; attempting auto-heal then recheck..."
+    if attempt_cutover_infra_auto_heal "$ROOT_DIR" "$LOG_DIR" "$AUTO_HEAL_COOLDOWN_FILE"; then
+      AUTO_HEAL_NOTE="attempted — ping_fast recovered"
+      echo "Auto-heal reported recovery; waiting ${AUTO_HEAL_RECHECK_S}s before recheck..."
+      sleep "$AUTO_HEAL_RECHECK_S"
+    else
+      AUTO_HEAL_NOTE="attempted or skipped — ping not confirmed"
+      echo "Auto-heal did not confirm recovery; waiting ${TRANSIENT_RECHECK_S}s before recheck..."
+      sleep "$TRANSIENT_RECHECK_S"
+    fi
+
     RECHECK_NOW="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     RECHECK_OUT=""
     RECHECK_EXIT=0
     RECHECK_OUT="$(bash scripts/aws/monitor_github_app_cutover.sh 2>&1)" || RECHECK_EXIT=$?
-    append_monitor_log "$RECHECK_NOW (transient recheck)" "$RECHECK_OUT"
+    append_monitor_log "$RECHECK_NOW (transient recheck after auto-heal)" "$RECHECK_OUT"
 
     parse_monitor_fields "$RECHECK_OUT"
     if [[ "$HEALTH" == "PASS" && "$CUTOVER" == "YES" && "$AUTH_MODE" == "github_app" ]]; then
       echo "Transient recheck PASS — suppressing Telegram alert."
       echo "Monitor failure reasons (initial, cleared): ${FAIL_REASONS[*]}"
+      recovered_msg="$(cat <<EOF
+✅ ATP GitHub App Cutover auto-healed
+
+Time UTC: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+Previous: TRANSIENT (backend/probes not ready)
+Auto-heal: $AUTO_HEAL_NOTE
+Now: auth_mode=github_app CUTOVER_READY=YES HEALTH=PASS
+EOF
+)"
+      # Only notify recovery if we actually ran a heal path (avoid spam on blips).
+      if [[ "$AUTO_HEAL_NOTE" == attempted* ]]; then
+        send_telegram "$recovered_msg" || true
+      fi
       exit 0
     fi
 
@@ -166,6 +199,7 @@ auth_mode: ${AUTH_MODE:-unknown}
 CUTOVER_READY: ${CUTOVER:-unknown}
 GITHUB_APP_CUTOVER_HEALTH: ${HEALTH:-unknown}
 live_token_mint: ${MINT_OK}
+auto_heal: ${AUTO_HEAL_NOTE}
 
 Investigation (failures):
 $FAILURES_BLOCK
