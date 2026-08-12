@@ -1824,6 +1824,27 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+  {
+    version: '0.86',
+    date: '2026-08-12',
+    change: 'Cancel API: advanced endpoint for TP/SL trigger orders',
+    details: `🚀 VERSIÓN 0.86 — TRIGGER ORDER CANCEL FIX
+
+📋 **What shipped**
+• \`POST /orders/cancel\` resolves \`order_type\` from request or DB (role→STOP_LIMIT/TAKE_PROFIT_LIMIT) and passes it to the broker
+• Broker falls back to advanced get-order-detail when spot detail is empty, then cancels via \`private/advanced/cancel-order\`
+• Non-zero Crypto.com cancel codes are treated as failures (no false OK)
+• cancel-sl-tp / find-orphaned cancel paths also pass \`order_type\`
+
+🔧 **Why**
+• Plain cancel returned OK but left TP/SL triggers live (spot detail None → wrong endpoint). Ops had to force advanced cancel during DOGE protection normalize.
+
+📦 **PRs**
+• (this PR)
+
+---
+`
   }
 
 
