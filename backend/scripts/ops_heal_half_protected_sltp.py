@@ -41,7 +41,6 @@ def _git_sha() -> str:
         except OSError:
             continue
     return "unknown"
-<<<<<<< HEAD
 
 
 def _append_multilot(
@@ -87,7 +86,6 @@ def _heal_symbols_scoped(db, symbols: List[str]) -> Dict[str, Any]:
         if pos.get("watchlist_item") is not None:
             watchlist_by_symbol[sym] = pos.get("watchlist_item")
 
-    # Always attempt requested symbols (balance lookup above; parent side from order).
     targets = sorted(want)
 
     for symbol in targets:
@@ -108,7 +106,12 @@ def _heal_symbols_scoped(db, symbols: List[str]) -> Dict[str, Any]:
 
     still_missing = [
         p
-        for p in (sl_tp_checker_service.check_positions_for_sl_tp(db).get("positions_missing_sl_tp") or [])
+        for p in (
+            sl_tp_checker_service.check_positions_for_sl_tp(db).get(
+                "positions_missing_sl_tp"
+            )
+            or []
+        )
         if (p.get("symbol") or "").upper() in want
     ]
     return {
@@ -120,8 +123,6 @@ def _heal_symbols_scoped(db, symbols: List[str]) -> Dict[str, Any]:
         "half_protected_heal_only": True,
         "symbols_filter": sorted(want),
     }
-=======
->>>>>>> origin/main
 
 
 def main() -> int:
@@ -140,7 +141,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # ensure_missing_protection uses LIVE_TRADING to choose dry_run.
     if args.live:
         os.environ["LIVE_TRADING"] = "true"
     else:
