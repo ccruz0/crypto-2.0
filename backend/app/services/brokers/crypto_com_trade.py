@@ -4909,8 +4909,31 @@ class CryptoComTradeClient:
         # Conditional/trigger orders (STOP_LIMIT/TAKE_PROFIT_LIMIT/STOP_LOSS/TAKE_PROFIT) and OTO/OTOCO
         # orders are created via the Advanced Order Management API and must be cancelled via the advanced
         # endpoint. Everything else (MARKET/LIMIT) uses the standard cancel endpoint.
-        detail = self._get_order_detail_summary(order_id)
+        #
+        # Spot ``private/get-order-detail`` returns empty for TP/SL trigger ids (e.g. 73817...),
+        # so without ``order_type`` we used to call ``private/cancel-order``, which can return
+        # HTTP 200 / empty result while the trigger order stays live. Fall back to advanced detail.
+        detail = self._get_order_detail_summary(order_id, order_type=order_type)
         detail_type = (detail or {}).get("type") if isinstance(detail, dict) else None
+        if (
+            not detail_type
+            and not _is_conditional_order_type(order_type)
+            and not self._is_advanced_oto_order(detail)
+        ):
+            adv = self.get_advanced_order_detail(order_id)
+            adv_res = (adv or {}).get("result") if isinstance(adv, dict) else None
+            if isinstance(adv_res, dict) and adv_res:
+                detail = {
+                    "type": adv_res.get("type") or adv_res.get("order_type"),
+                    "instrument_name": adv_res.get("instrument_name"),
+                    "status": adv_res.get("status"),
+                    "side": adv_res.get("side"),
+                    "contingency_type": adv_res.get("contingency_type")
+                    or adv_res.get("contingencyType"),
+                    "list_id": adv_res.get("list_id") or adv_res.get("listId"),
+                    "leg_id": adv_res.get("leg_id") or adv_res.get("legId"),
+                }
+                detail_type = detail.get("type")
         if (
             self._is_advanced_oto_order(detail)
             or _is_conditional_order_type(order_type)
@@ -4922,6 +4945,51 @@ class CryptoComTradeClient:
         params = {"order_id": order_id}
         
         logger.info(f"Live: cancel_order - {order_id} (method={method})")
+
+        def _normalize_cancel_response(raw: Any) -> dict:
+            """Treat non-success / empty exchange bodies as hard failures (no false OK).
+
+            Proxy ``_call_proxy`` returns ``{}`` on exceptions; that must not look like
+            a successful cancel. Require an explicit success signal: ``code`` 0,
+            a ``result`` key, or an unwrapped body with ``order_id``/``status``.
+            """
+            if not isinstance(raw, dict):
+                return {"error": "Failed to cancel order: unexpected response"}
+            if raw.get("skipped"):
+                return {"order_id": order_id, **raw}
+            if not raw:
+                logger.error("Cancel order %s failed: empty response", order_id)
+                return {"error": "Failed to cancel order: empty response"}
+            code = raw.get("code")
+            if code not in (0, None, "0"):
+                msg = raw.get("message") or raw.get("error") or f"cancel failed code={code}"
+                logger.error("Cancel order %s failed: code=%s message=%s", order_id, code, msg)
+                return {"error": str(msg), "code": code}
+            if "error" in raw and raw.get("error"):
+                return {"error": str(raw.get("error")), "code": code}
+            if "result" in raw:
+                result_body = raw.get("result")
+                if isinstance(result_body, dict):
+                    return result_body
+                # Non-dict / null result only counts when exchange sent code 0.
+                if code in (0, "0"):
+                    return {"order_id": order_id}
+                logger.error(
+                    "Cancel order %s failed: missing result body (code=%s)", order_id, code
+                )
+                return {"error": "Failed to cancel order: empty result"}
+            # Explicit code 0 without a result wrapper.
+            if code in (0, "0"):
+                return {"order_id": order_id}
+            # Unwrapped success body (proxy may already strip code/result).
+            if raw.get("order_id") or raw.get("status"):
+                return raw
+            logger.error(
+                "Cancel order %s failed: ambiguous response keys=%s",
+                order_id,
+                sorted(raw.keys()),
+            )
+            return {"error": "Failed to cancel order: unexpected response"}
         
         # Use proxy if enabled
         if self.use_proxy:
@@ -4936,22 +5004,16 @@ class CryptoComTradeClient:
                     if _should_failover(401):
                         fr = self._fallback_cancel_order(order_id)
                         if fr.status_code == 200:
-                            data = fr.json()
-                            return data.get("result", data)
+                            return _normalize_cancel_response(fr.json())
                     raise RuntimeError("Failed to cancel order - no fallback available")
-                
-                if "result" in result:
-                    return result["result"]
-                else:
-                    logger.error(f"Unexpected proxy response: {result}")
-                    return {"error": "Failed to cancel order via proxy"}
+
+                return _normalize_cancel_response(result)
             except requests_exceptions.RequestException as e:
                 logger.warning(f"Proxy error: {e} - attempting failover to TRADE_BOT")
                 if _should_failover(None, e):
                     fr = self._fallback_cancel_order(order_id)
                     if fr.status_code == 200:
-                        data = fr.json()
-                        return data.get("result", data)
+                        return _normalize_cancel_response(fr.json())
                 raise
         
         # Direct API call
@@ -4972,11 +5034,11 @@ class CryptoComTradeClient:
             
             response.raise_for_status()
             result = response.json()
-            
-            logger.info(f"Successfully cancelled order")
+            normalized = _normalize_cancel_response(result)
+            if "error" not in normalized:
+                logger.info("Successfully cancelled order %s via %s", order_id, method)
             logger.debug(f"Response: {result}")
-            
-            return result.get("result", {})
+            return normalized
             
         except requests_exceptions.RequestException as e:
             logger.error(f"Network error cancelling order: {e}")

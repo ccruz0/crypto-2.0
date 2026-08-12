@@ -43,6 +43,8 @@ class CancelOrderRequest(BaseModel):
     exchange: str
     order_id: Optional[str] = None
     client_oid: Optional[str] = None
+    # Required for Crypto.com TP/SL trigger cancels when spot get-order-detail is empty.
+    order_type: Optional[str] = None
 
 
 class QuickOrderRequest(BaseModel):
@@ -57,6 +59,25 @@ def _ensure_exchange(exchange: str):
     """Validate that exchange is supported"""
     if exchange != "CRYPTO_COM":
         raise HTTPException(status_code=400, detail="Only CRYPTO_COM supported")
+
+
+def _order_type_for_cancel(
+    *,
+    order_type: Optional[str] = None,
+    order_role: Optional[str] = None,
+) -> Optional[str]:
+    """Map DB/request type+role so advanced cancel is used for trigger legs."""
+    ot = (order_type or "").strip().upper()
+    if ot in {"STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
+        return ot
+    if ot in {"LIMIT", "LIMIT_MAKER", "MARKET"}:
+        return ot
+    role = (order_role or "").strip().upper()
+    if role == "STOP_LOSS":
+        return "STOP_LIMIT"
+    if role == "TAKE_PROFIT":
+        return "TAKE_PROFIT_LIMIT"
+    return ot or None
 
 
 def _should_disable_auth() -> bool:
@@ -248,8 +269,20 @@ def cancel_order(
     order_id = request.order_id or request.client_oid
     if order_id is None:
         raise HTTPException(status_code=400, detail="order_id or client_oid required")
+
+    # Prefer explicit request type; else DB type/role so TP/SL use advanced cancel.
+    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+
+    db_order = db.query(ExchangeOrder).filter(
+        ExchangeOrder.exchange_order_id == order_id
+    ).first()
+    cancel_type = _order_type_for_cancel(
+        order_type=request.order_type or (db_order.order_type if db_order else None),
+        order_role=(db_order.order_role if db_order else None),
+    )
+
     try:
-        result = trade_client.cancel_order(order_id)
+        result = trade_client.cancel_order(order_id, order_type=cancel_type)
         
         logger.debug(f"Response: {redact_secrets(result)}")
         
@@ -264,13 +297,7 @@ def cancel_order(
         # Send Telegram notification for cancelled order (only if successful)
         try:
             from app.services.telegram_notifier import telegram_notifier
-            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
             from datetime import datetime, timezone
-            
-            # Try to get order details from database
-            db_order = db.query(ExchangeOrder).filter(
-                ExchangeOrder.exchange_order_id == order_id
-            ).first()
             
             if db_order:
                 # Update status to CANCELLED if found in DB
@@ -315,6 +342,7 @@ def cancel_order(
             "ok": True,
             "exchange": "CRYPTO_COM",
             "canceled_id": order_id,
+            "order_type": cancel_type,
             "result": result
         }
     except HTTPException:
@@ -431,7 +459,11 @@ def cancel_sl_tp_orders(
                 
                 logger.info(f"Cancelling {order_role} order {order_id} for {symbol_upper} (from {order_info['source']})")
                 
-                result = trade_client.cancel_order(order_id)
+                cancel_type = _order_type_for_cancel(
+                    order_type=order_info.get("order_type"),
+                    order_role=order_info.get("order_role"),
+                )
+                result = trade_client.cancel_order(order_id, order_type=cancel_type)
                 
                 # Check if cancellation was successful
                 if "error" in result:
@@ -1798,8 +1830,12 @@ def find_orphaned_orders(
             for order_info in orphaned_orders:
                 order_id = order_info["order_id"]
                 try:
-                    # Try to cancel on exchange
-                    result = trade_client.cancel_order(order_id)
+                    # Try to cancel on exchange (pass type so TP/SL use advanced cancel)
+                    cancel_type = _order_type_for_cancel(
+                        order_type=order_info.get("order_type") or order_info.get("type"),
+                        order_role=order_info.get("order_role"),
+                    )
+                    result = trade_client.cancel_order(order_id, order_type=cancel_type)
                     
                     if "error" not in result:
                         # Update database
