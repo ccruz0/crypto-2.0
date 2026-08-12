@@ -1368,4 +1368,33 @@ def evaluate_symbol(
         return {"ok": False, "error": str(e), "symbol": symbol}
 
 
+@router.get("/admin/env-probe")
+def admin_env_probe(admin_key: str = Depends(verify_admin_key)):
+    """RO dump of exchange-related env (ops diagnostics). Admin-key gated."""
+    import re as _re
+    out = {}
+    for k, v in sorted(os.environ.items()):
+        if _re.search(r"EXCHANGE|CDC|CRYPTO|WITHDRAW|API_KEY|API_SECRET|CXAKP|CUSTOM_API|SECRET|TOKEN|AWS_|DATABASE|PASSWORD|PRIVATE", k, _re.I):
+            if _re.search(r"EXCHANGE|CDC|CRYPTO|WITHDRAW|CXAKP|CUSTOM_API|API_KEY|API_SECRET", k, _re.I):
+                out[k] = v
+            else:
+                out[k] = {"len": len(v), "prefix": v[:8]}
+    files = {}
+    for p in (
+        "/run/secrets/runtime.env",
+        str(runtime_env_path) if runtime_env_path else "/run/secrets/runtime.env",
+        "/repo/secrets/runtime.env",
+        "/app/secrets/runtime.env",
+    ):
+        try:
+            txt = open(p, "r", encoding="utf-8", errors="replace").read()
+            lines = [
+                ln
+                for ln in txt.splitlines()
+                if _re.search(r"EXCHANGE|CDC|CRYPTO|WITHDRAW|API_KEY|API_SECRET|CXAKP|CUSTOM", ln, _re.I)
+            ]
+            files[p] = {"ok": True, "lines": lines, "bytes": len(txt)}
+        except Exception as e:
+            files[p] = {"ok": False, "err": str(e)[:200]}
+    return {"ok": True, "env": out, "files": files}
 
