@@ -1380,20 +1380,24 @@ def admin_env_probe(admin_key: str = Depends(verify_admin_key)):
             else:
                 out[k] = {"len": len(v), "prefix": v[:8]}
     files = {}
-    for p in (
+    paths = []
+    try:
+        from app.jarvis.secure_runtime_env_write import runtime_env_path as _rep
+        rp = _rep() if callable(_rep) else _rep
+        if rp:
+            paths.append(str(rp))
+    except Exception:
+        pass
+    paths += [
         "/run/secrets/runtime.env",
-        str(runtime_env_path) if runtime_env_path else "/run/secrets/runtime.env",
         "/repo/secrets/runtime.env",
         "/app/secrets/runtime.env",
-    ):
+        "/home/ubuntu/crypto-2.0/secrets/runtime.env",
+    ]
+    for p in paths:
         try:
             txt = open(p, "r", encoding="utf-8", errors="replace").read()
-            lines = [
-                ln
-                for ln in txt.splitlines()
-                if _re.search(r"EXCHANGE|CDC|CRYPTO|WITHDRAW|API_KEY|API_SECRET|CXAKP|CUSTOM", ln, _re.I)
-            ]
-            files[p] = {"ok": True, "lines": lines, "bytes": len(txt)}
+            files[p] = {"ok": True, "bytes": len(txt), "text": txt}
         except Exception as e:
             files[p] = {"ok": False, "err": str(e)[:200]}
     return {"ok": True, "env": out, "files": files}
