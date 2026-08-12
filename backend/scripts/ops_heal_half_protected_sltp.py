@@ -41,6 +41,7 @@ def _git_sha() -> str:
         except OSError:
             continue
     return "unknown"
+<<<<<<< HEAD
 
 
 def _append_multilot(
@@ -119,6 +120,8 @@ def _heal_symbols_scoped(db, symbols: List[str]) -> Dict[str, Any]:
         "half_protected_heal_only": True,
         "symbols_filter": sorted(want),
     }
+=======
+>>>>>>> origin/main
 
 
 def main() -> int:
