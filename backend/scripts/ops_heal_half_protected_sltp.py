@@ -16,10 +16,29 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Prefer image code (/app) over bind-mounted /repo, which often lags the deployed
+# image and made ops dry-runs report healing_disabled after #451.
+if os.path.isdir("/app/app"):
+    sys.path.insert(0, "/app")
+else:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import SessionLocal
 from app.services.sl_tp_checker import sl_tp_checker_service
+from app.services.sl_tp_protection import (
+    is_sltp_half_protected_heal_enabled,
+    is_sltp_healing_enabled,
+)
+
+
+def _git_sha() -> str:
+    for path in ("/app/.git_sha", "/repo/.git/HEAD"):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read().strip()[:40]
+        except OSError:
+            continue
+    return "unknown"
 
 
 def main() -> int:
@@ -44,6 +63,9 @@ def main() -> int:
         result = sl_tp_checker_service.ensure_missing_protection(db)
         summary = {
             "dry_run": not args.live,
+            "git_sha": _git_sha(),
+            "full_healing_enabled": is_sltp_healing_enabled(),
+            "half_protected_heal_enabled": is_sltp_half_protected_heal_enabled(),
             "half_protected_heal_only": result.get("half_protected_heal_only"),
             "healing_disabled": result.get("healing_disabled"),
             "created_n": len(result.get("created") or []),
