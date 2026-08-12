@@ -14,6 +14,10 @@ on:
         options:
           - "true"
           - "false"
+      git_ref:
+        description: "Git ref on EC2 to checkout script from"
+        required: false
+        default: "main"
 
 permissions:
   id-token: write
@@ -36,43 +40,25 @@ jobs:
         env:
           INSTANCE_ID: i-087953603011543c5
           DRY_RUN: ${{ github.event.inputs.dry_run_only }}
+          GIT_REF: ${{ github.event.inputs.git_ref }}
         run: |
           set -euo pipefail
-          # Build remote script carefully: AWS-RunShellScript uses /bin/sh.
-          # Avoid nested heredocs; write a temp .py then docker exec it.
-          REMOTE=$(cat <<EOF
+          LIVE_FLAG=""
+          if [ "$DRY_RUN" != "true" ]; then
+            LIVE_FLAG="--live"
+          fi
+          REF="${GIT_REF:-main}"
+          # Use read+heredoc (not $(cat <<EOF)): nested ) in Python broke command substitution (#453).
+          read -r -d '' REMOTE <<EOF || true
           set -eu
+          cd /home/ubuntu/crypto-2.0
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin "$REF"
+          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q "origin/$REF" -- \
+            backend/scripts/ops_heal_half_protected_sltp.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
-          echo CONTAINER=\$CONTAINER DRY_RUN=${DRY_RUN}
+          echo CONTAINER=\$CONTAINER REF=$REF DRY_RUN=${DRY_RUN}
           test -n "\$CONTAINER"
-          cat > /tmp/ops_half_protected_heal.py <<'PY'
-          import json, os
-          from app.database import SessionLocal
-          from app.services.sl_tp_checker import sl_tp_checker_service
-
-          dry = os.environ.get("OPS_DRY_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
-          if dry:
-              os.environ["LIVE_TRADING"] = "false"
-          db = SessionLocal()
-          try:
-              result = sl_tp_checker_service.ensure_missing_protection(db)
-              summary = {
-                  "dry_run": dry,
-                  "half_protected_heal_only": result.get("half_protected_heal_only"),
-                  "healing_disabled": result.get("healing_disabled"),
-                  "created_n": len(result.get("created") or []),
-                  "failed_n": len(result.get("failed") or []),
-                  "skipped_n": len(result.get("skipped") or []),
-                  "still_missing_n": len(result.get("still_missing") or []),
-                  "created": (result.get("created") or [])[:40],
-                  "failed": (result.get("failed") or [])[:40],
-              }
-              print(json.dumps(summary, default=str, indent=2))
-          finally:
-              db.close()
-          PY
-          docker cp /tmp/ops_half_protected_heal.py "\$CONTAINER":/tmp/ops_half_protected_heal.py
-          docker exec -e OPS_DRY_RUN=${DRY_RUN} "\$CONTAINER" python3 /tmp/ops_half_protected_heal.py
+          docker exec "\$CONTAINER" python3 /repo/backend/scripts/ops_heal_half_protected_sltp.py ${LIVE_FLAG}
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
@@ -93,9 +79,14 @@ jobs:
             case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
             sleep 5
           done
+          echo "===== STDOUT ====="
           aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID" \
-            --query "[Status,StandardOutputContent,StandardErrorContent]" \
-            --output text
+            --query "StandardOutputContent" --output text || true
+          echo "===== STDERR ====="
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardErrorContent" --output text || true
           test "$STATUS" = "Success"
