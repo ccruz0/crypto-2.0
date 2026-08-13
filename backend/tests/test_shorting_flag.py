@@ -40,15 +40,16 @@ async def _run_sell(*, trade_on_margin: bool, open_positions: int, env: dict | N
                     "app.services.margin_info_service.instrument_allows_margin_short",
                     return_value=True,
                 ):
-                    with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
-                        with patch(
-                            "app.services.live_trading_gate.assert_exchange_mutation_allowed",
-                        ):
+                    with patch.object(svc, "_signed_wallet_base_balance", return_value=None):
+                        with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
                             with patch(
-                                "app.services.signal_monitor.trade_client.place_market_order",
-                                return_value={"order_id": "dry_sell_1", "status": "FILLED"},
+                                "app.services.live_trading_gate.assert_exchange_mutation_allowed",
                             ):
-                                result = await svc._place_order_from_signal(
+                                with patch(
+                                    "app.services.signal_monitor.trade_client.place_market_order",
+                                    return_value={"order_id": "dry_sell_1", "status": "FILLED"},
+                                ):
+                                    result = await svc._place_order_from_signal(
                                     db,
                                     "ETH_USDT",
                                     "SELL",

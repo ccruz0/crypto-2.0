@@ -14,6 +14,7 @@ _GUARDRAIL_FAMILY_CODES = frozenset(
         ReasonCode.SYSTEM_CORE_MA200.value,
         ReasonCode.SYSTEM_CORE_MAX_TRADE_USD.value,
         ReasonCode.SYSTEM_CORE_DAILY_DRAWDOWN.value,
+        ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value,
     }
 )
 
@@ -54,6 +55,16 @@ def humanize_guardrail_reason(
         return f"🚫 {action} no ejecutada: RSI fuera del rango permitido."
     if "system_core_ma200" in r or r.startswith("system_core_ma200"):
         return f"🚫 {action} no ejecutada: el precio no cumple el filtro vs MA200."
+    if (
+        "instrument_short_sell" in r
+        or "margin_sell_enabled" in r
+        or "margin short sell" in r
+    ):
+        return (
+            f"🚫 {action} no ejecutada: {base} tiene Margin YES en watchlist, "
+            f"pero el exchange no permite abrir SHORT (margen long sí). "
+            f"No había long que cerrar."
+        )
     if "max_orders_per_symbol_per_day" in r or "orders_today" in r:
         return f"🚫 {action} no ejecutada: {base} alcanzó el máximo de órdenes de hoy."
     return f"🚫 {action} no ejecutada: {reason}"

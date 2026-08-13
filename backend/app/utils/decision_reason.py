@@ -182,6 +182,9 @@ _REASON_CODE_ES_LABELS = {
     ReasonCode.GUARDRAIL_BLOCKED.value: "Bloqueado por guardrail",
     ReasonCode.BELOW_MIN_ORDER_SIZE.value: "Cantidad bajo el mínimo del exchange",
     ReasonCode.MIN_NOTIONAL_NOT_MET.value: "Notional mínimo no cumplido",
+    ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value: (
+        "Watchlist Margin YES; el exchange no permite SHORT"
+    ),
 }
 
 
@@ -277,6 +280,21 @@ def classify_exchange_error(error_msg: str) -> str:
         return ReasonCode.GUARDRAIL_BLOCKED.value
 
     error_upper = error_msg.upper()
+
+    # Already-canonical reason codes from pre-trade gates (must beat substring rules).
+    compact = error_msg.strip()
+    if compact in {member.value for member in ReasonCode}:
+        return compact
+
+    # CRO_USD 2026-08-13: "margin short sell" was mislabeled INSUFFICIENT_FUNDS
+    # because the generic MARGIN substring rule ran first.
+    if (
+        "INSTRUMENT_SHORT_SELL" in error_upper
+        or "CANNOT_SHORT_SELL" in error_upper
+        or "MARGIN SHORT SELL" in error_upper
+        or "MARGIN_SELL_ENABLED=FALSE" in error_upper.replace(" ", "")
+    ):
+        return ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value
 
     # Authentication errors (word-boundary style; avoid matching "401" inside bot tokens/URLs)
     if "AUTHENTICATION" in error_upper or "40101" in error_upper or "40103" in error_upper:

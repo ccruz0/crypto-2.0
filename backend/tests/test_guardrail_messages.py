@@ -81,6 +81,20 @@ def test_fallback_unknown_reason():
     assert raw in msg
 
 
+def test_instrument_short_sell_disabled_does_not_sound_like_watchlist_off():
+    msg = humanize_guardrail_reason(
+        "Watchlist Margin YES is on for CRO_USD, but Crypto.com does not "
+        "allow opening a SHORT (margin_sell_enabled=false).",
+        "CRO_USD",
+        side="SELL",
+    )
+    assert "Venta" in msg
+    assert "CRO" in msg
+    assert "Margin YES" in msg
+    assert "SHORT" in msg
+    assert "watchlist" in msg.lower()
+
+
 def test_order_failed_telegram_guardrail_includes_technical_detail():
     section, stored = order_failed_telegram_error_section(
         "system_core_one_active_trade_per_coin",
