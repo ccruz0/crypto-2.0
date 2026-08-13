@@ -12,6 +12,7 @@ import {
 } from '@/app/api';
 import { logger } from '@/utils/logger';
 import { normalizeSymbolKey } from '@/utils/formatting';
+import { watchlistButtonOn, watchlistFlagsFromCoins } from '@/utils/watchlistToggleState';
 
 export interface UseWatchlistReturn {
   watchlistItems: WatchlistItem[];
@@ -61,23 +62,23 @@ export function useWatchlist(): UseWatchlistReturn {
       const data = await getTopCoins();
       logger.info('📊 getTopCoins response:', data);
       let fetchedCoins: TopCoin[] = data.coins || [];
-      
-      // Update coinTradeStatus from backend data
-      const backendTradeStatus: Record<string, boolean> = {};
-      fetchedCoins.forEach(coin => {
-        if (coin.instrument_name && coin.trade_enabled !== undefined && coin.trade_enabled !== null) {
-          backendTradeStatus[normalizeSymbolKey(coin.instrument_name)] = coin.trade_enabled;
-        }
-      });
-      if (Object.keys(backendTradeStatus).length > 0) {
-        setCoinTradeStatus(prev => ({ ...prev, ...backendTradeStatus }));
+
+      const flags = watchlistFlagsFromCoins(fetchedCoins);
+      if (!preserveLocalChanges) {
+        if (Object.keys(flags.trade).length > 0) setCoinTradeStatus(flags.trade);
+        if (Object.keys(flags.alert).length > 0) setCoinAlertStatus(flags.alert);
+        if (Object.keys(flags.buyAlert).length > 0) setCoinBuyAlertStatus(flags.buyAlert);
+        if (Object.keys(flags.sellAlert).length > 0) setCoinSellAlertStatus(flags.sellAlert);
       }
-      
+
       if (filterTradeYes !== undefined) {
-        // Use backendTradeStatus for filtering since it's the fresh data from backend
         const filteredCoins = fetchedCoins.filter(coin => {
           const symbolKey = normalizeSymbolKey(coin.instrument_name);
-          const isTradeYes = backendTradeStatus[symbolKey] === true;
+          const isTradeYes = watchlistButtonOn(
+            flags.trade,
+            symbolKey,
+            coin.trade_enabled,
+          );
           return filterTradeYes ? isTradeYes : !isTradeYes;
         });
         logger.info(`📊 Filtered to ${filterType}: ${filteredCoins.length} coins`);

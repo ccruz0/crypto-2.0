@@ -29,7 +29,8 @@ import SystemHealthPanel from '@/components/SystemHealth';
 import { getSystemHealth } from '@/lib/api';
 import { palette } from '@/theme/palette';
 import { logger } from '@/utils/logger';
-import { watchlistFlagsFromCoins } from '@/utils/watchlistToggleState';
+import { watchlistButtonOn, watchlistFlagsFromCoins } from '@/utils/watchlistToggleState';
+import { dedupeWatchlistCoins } from '@/utils/watchlistCoins';
 import {
   DEFAULT_TRADING_LIMITS,
   parseTradingLimits,
@@ -1941,6 +1942,33 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.91',
+    date: '2026-08-13',
+    change: 'Watchlist shows every DB coin; Alert M follows watchlist_items',
+    details: `🚀 VERSIÓN 0.91 — ALL WATCHLIST ROWS = DB
+
+📋 **What shipped**
+• Stop collapsing BTC/ETH USD vs USDT as "duplicates" — ETH_USD and BTC_USDT are separate \`watchlist_items\` rows
+• Trade / Margin / Alert M/B/S keep using the API row when overlay has no key (v0.90), and this frontend ship retriggers the cancelled v0.90 deploy
+• Sort, Trade YES/NO filter, and signal queues use the same DB fallback so they cannot disagree with the buttons
+• Optimistic Alert OFF keeps an explicit false overlay (does not delete the key)
+
+🔧 **Why**
+• Live v0.89 Watchlist (2026-08-13): 18 of 29 DB rows disagreed with the UI
+• Alert M was gray/OFF on every visible coin while \`alert_enabled=true\` in the API
+• ETH_USD (Trade YES, $1000, margin YES) and BTC_USDT (alerts on) were hidden
+• AKT_USD Trade/Margin were NO in the UI while the API was YES
+• v0.90 (#465) was merged but its frontend deploy was cancelled, so prod stayed on v0.89
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+---
+`
+  },
 
 ];
 
@@ -2176,12 +2204,8 @@ function DashboardPageContent() {
       value: boolean
     ) => {
       setter(prev => {
-        const updated = { ...prev };
-        if (value) {
-          updated[symbolKey] = value;
-        } else {
-          delete updated[symbolKey];
-        }
+        // Keep explicit false so watchlistButtonOn does not fall back to DB YES.
+        const updated = { ...prev, [symbolKey]: value };
         try {
           localStorage.setItem(storageKey, JSON.stringify(updated));
         } catch (err) {
@@ -2826,8 +2850,16 @@ function DashboardPageContent() {
 
     const coinsCopy = [...topCoins];
     coinsCopy.sort((a, b) => {
-      const aTradeEnabled = coinTradeStatus[normalizeSymbolKey(a.instrument_name)] || false;
-      const bTradeEnabled = coinTradeStatus[normalizeSymbolKey(b.instrument_name)] || false;
+      const aTradeEnabled = watchlistButtonOn(
+        coinTradeStatus,
+        normalizeSymbolKey(a.instrument_name),
+        a.trade_enabled,
+      );
+      const bTradeEnabled = watchlistButtonOn(
+        coinTradeStatus,
+        normalizeSymbolKey(b.instrument_name),
+        b.trade_enabled,
+      );
 
       if (aTradeEnabled && !bTradeEnabled) return -1;
       if (!aTradeEnabled && bTradeEnabled) return 1;
@@ -5051,14 +5083,22 @@ function resolveDecisionIndexColor(value: number): string {
 
     const fastSymbolSet = new Set(
       coins
-        .filter((coin) => coin.instrument_name && coinTradeStatus[normalizeSymbolKey(coin.instrument_name)] === true)
+        .filter((coin) => coin.instrument_name && watchlistButtonOn(
+          coinTradeStatus,
+          normalizeSymbolKey(coin.instrument_name),
+          coin.trade_enabled,
+        ))
         .map((coin) => coin.instrument_name)
         .filter((symbol): symbol is string => Boolean(symbol))
     );
     const fastSymbols = Array.from(fastSymbolSet);
     const slowSymbolSet = new Set(
       coins
-        .filter((coin) => coin.instrument_name && coinTradeStatus[normalizeSymbolKey(coin.instrument_name)] !== true)
+        .filter((coin) => coin.instrument_name && !watchlistButtonOn(
+          coinTradeStatus,
+          normalizeSymbolKey(coin.instrument_name),
+          coin.trade_enabled,
+        ))
         .map((coin) => coin.instrument_name)
         .filter((symbol): symbol is string => Boolean(symbol))
     );
@@ -5121,42 +5161,10 @@ function resolveDecisionIndexColor(value: number): string {
   }, []);
 
   const removeDuplicates = useCallback((coins: TopCoin[]) => {
-    const seen = new Set<string>();
-    const cleaned = coins.filter(coin => {
-      const key = coin.instrument_name.toLowerCase();
-      if (seen.has(key)) {
-        logger.info(`🔄 Removing duplicate: ${coin.instrument_name}`);
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-    
-    // Also remove coins that are too similar (e.g., BTC_USD and BTC_USDT) for major bases only
-    const dedupeByQuoteBases = new Set(['BTC', 'ETH']);
-    const finalCoins: TopCoin[] = [];
-    for (const coin of cleaned) {
-      const [base, quote] = coin.instrument_name.split('_');
-      const shouldCheckSimilar = base ? dedupeByQuoteBases.has(base.toUpperCase()) : false;
-      const isDuplicate = finalCoins.some(existing => {
-        const [existingBase, existingQuote] = existing.instrument_name.split('_');
-        if (!shouldCheckSimilar) {
-          return false;
-        }
-        return existingBase === base && 
-               (existingQuote === quote || 
-                (existingQuote === 'USDT' && quote === 'USD') ||
-                (existingQuote === 'USD' && quote === 'USDT'));
-      });
-      
-      if (isDuplicate) {
-        logger.info(`🔄 Removing similar coin: ${coin.instrument_name} (similar to existing)`);
-      } else {
-        finalCoins.push(coin);
-      }
+    const finalCoins = dedupeWatchlistCoins(coins);
+    if (finalCoins.length !== coins.length) {
+      logger.info(`✅ Duplicate removal: ${coins.length} → ${finalCoins.length} coins`);
     }
-    
-    logger.info(`✅ Duplicate removal: ${coins.length} → ${finalCoins.length} coins`);
     return finalCoins;
   }, []);
 
@@ -5177,7 +5185,11 @@ function resolveDecisionIndexColor(value: number): string {
       // Filter coins by Trade YES/NO status if specified
       if (filterTradeYes !== undefined) {
         const filteredCoins = fetchedCoins.filter(coin => {
-          const isTradeYes = coinTradeStatus[normalizeSymbolKey(coin.instrument_name)] === true;
+          const isTradeYes = watchlistButtonOn(
+            coinTradeStatus,
+            normalizeSymbolKey(coin.instrument_name),
+            coin.trade_enabled,
+          );
           return filterTradeYes ? isTradeYes : !isTradeYes;
         });
         logger.info(`📊 Filtered to ${filterType}: ${filteredCoins.length} coins`);
