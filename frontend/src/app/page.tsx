@@ -29,6 +29,7 @@ import SystemHealthPanel from '@/components/SystemHealth';
 import { getSystemHealth } from '@/lib/api';
 import { palette } from '@/theme/palette';
 import { logger } from '@/utils/logger';
+import { watchlistFlagsFromCoins } from '@/utils/watchlistToggleState';
 import {
   DEFAULT_TRADING_LIMITS,
   parseTradingLimits,
@@ -1861,6 +1862,28 @@ const VERSION_HISTORY = [
 🔧 **Why**
 • ETH_USDT accumulated 13 SL vs 5 TP because fill-time TP rejects left SL-only lots and hourly audit was read-only
 • Permanent fix without re-enabling broad background invent-heal (#329)
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
+  {
+    version: '0.89',
+    date: '2026-08-13',
+    change: 'Watchlist Trade/Margin/Alert buttons follow the database',
+    details: `🚀 VERSIÓN 0.89 — WATCHLIST BUTTONS = DB
+
+📋 **What shipped**
+• Trade, Margin, and Alert (M/B/S) buttons read \`watchlist_items\` via the API row, not localStorage
+• Overlay state is only for in-flight clicks; missing overlay no longer shows NO when DB is YES
+• Dashboard load replaces button maps from DB instead of merging stale browser cache
+• Row/toggle \`data-testid\` + \`aria-pressed\` so UI can be checked against the API
+
+🔧 **Why**
+• 2026-08-13: Watchlist Margin was green while Telegram looked like margin was off — browser cache / empty overlay hid the DB value
+• \`v0.88\` reserved for CRO long-close (#464)
 
 📦 **PRs**
 • (this PR)
@@ -5221,24 +5244,30 @@ function resolveDecisionIndexColor(value: number): string {
       updateTopCoins(cleanedCoins, symbolsToUpdate);
       logger.info(`✅ updateTopCoins called with ${cleanedCoins.length} coins${symbolsToUpdate ? ` (${symbolsToUpdate.length} filtered)` : ''}`);
       
-      // Initialize alert status from backend data to keep frontend and backend in sync
-      const buyAlertStatusFromBackend: Record<string, boolean> = {};
-      const sellAlertStatusFromBackend: Record<string, boolean> = {};
-      cleanedCoins.forEach(coin => {
-        if (coin.instrument_name && coin.buy_alert_enabled !== undefined) {
-          buyAlertStatusFromBackend[coin.instrument_name] = coin.buy_alert_enabled;
+      // Initialize ALL watchlist buttons from the DB-backed top-coins payload.
+      // Keys are uppercase so they match WatchlistTab normalizeSymbolKey lookups.
+      const flags = watchlistFlagsFromCoins(cleanedCoins);
+      if (!preserveLocalChanges) {
+        if (Object.keys(flags.trade).length > 0) {
+          setCoinTradeStatus(flags.trade);
         }
-        if (coin.instrument_name && coin.sell_alert_enabled !== undefined) {
-          sellAlertStatusFromBackend[coin.instrument_name] = coin.sell_alert_enabled;
+        if (Object.keys(flags.margin).length > 0) {
+          setCoinMarginStatus(flags.margin);
         }
-      });
-      if (Object.keys(buyAlertStatusFromBackend).length > 0) {
-        setCoinBuyAlertStatus(prev => ({ ...prev, ...buyAlertStatusFromBackend }));
-        logger.info('✅ Initialized buy_alert_enabled from backend:', Object.keys(buyAlertStatusFromBackend).length, 'coins');
-      }
-      if (Object.keys(sellAlertStatusFromBackend).length > 0) {
-        setCoinSellAlertStatus(prev => ({ ...prev, ...sellAlertStatusFromBackend }));
-        logger.info('✅ Initialized sell_alert_enabled from backend:', Object.keys(sellAlertStatusFromBackend).length, 'coins');
+        if (Object.keys(flags.alert).length > 0) {
+          setCoinAlertStatus(flags.alert);
+        }
+        if (Object.keys(flags.buyAlert).length > 0) {
+          setCoinBuyAlertStatus(flags.buyAlert);
+        }
+        if (Object.keys(flags.sellAlert).length > 0) {
+          setCoinSellAlertStatus(flags.sellAlert);
+        }
+        logger.info(
+          '✅ Watchlist buttons hydrated from DB/top-coins:',
+          Object.keys(flags.trade).length,
+          'coins',
+        );
       }
       
       // CRITICAL DEBUG: Verify LDO_USD after updateTopCoins
@@ -5291,10 +5320,11 @@ function resolveDecisionIndexColor(value: number): string {
         // NOTE: Backend values will take priority when they arrive
         try {
           const localAmounts = localStorage.getItem('watchlist_amounts');
-          const localTradeStatus = localStorage.getItem('watchlist_trade_status');
-          const localAlertStatus = localStorage.getItem('watchlist_alert_status');
           const localSLPercent = localStorage.getItem('watchlist_sl_percent');
           const localTPPercent = localStorage.getItem('watchlist_tp_percent');
+          
+          // Amounts / SL% / TP% may use localStorage as a short-lived cache.
+          // Trade / Margin / Alert buttons must NOT — those come from watchlist_items.
           
           // Load from localStorage as temporary initial state
           // Backend values will override these when they arrive
@@ -5317,18 +5347,6 @@ function resolveDecisionIndexColor(value: number): string {
                 ...cleanedAmounts
               }));
             }
-          }
-          if (localTradeStatus) {
-            setCoinTradeStatus(prev => ({
-              ...prev,
-              ...(JSON.parse(localTradeStatus) as Record<string, boolean>)
-            }));
-          }
-          if (localAlertStatus) {
-            setCoinAlertStatus(prev => ({
-              ...prev,
-              ...(JSON.parse(localAlertStatus) as Record<string, boolean>)
-            }));
           }
           if (localSLPercent) {
             setCoinSLPercent(prev => ({
@@ -5407,29 +5425,23 @@ function resolveDecisionIndexColor(value: number): string {
               }
             });
 
-            // Set trade status from backend (after processing all items)
+            // Set button flags from watchlist_items (replace overlay — DB is source of truth)
             if (Object.keys(backendTradeStatus).length > 0) {
-              setCoinTradeStatus(prev => {
-                const updated = { ...prev, ...backendTradeStatus };
-                logger.info('✅ Initialized trade_enabled from backend:', Object.keys(backendTradeStatus).length, 'coins');
-                logger.info('📊 Backend trade status keys:', Object.keys(backendTradeStatus));
-                logger.info('📊 Sample trade status values:', Object.entries(backendTradeStatus).slice(0, 5));
-                // Debug: Check LTC specifically
-                if (backendTradeStatus['LTC_USDT'] !== undefined || backendTradeStatus['LTC'] !== undefined) {
-                  logger.info('🔍 LTC trade status from backend:', {
-                    'LTC_USDT': backendTradeStatus['LTC_USDT'],
-                    'LTC': backendTradeStatus['LTC'],
-                    'All LTC keys': Object.keys(backendTradeStatus).filter(k => k.includes('LTC'))
-                  });
-                }
-                return updated;
-              });
+              setCoinTradeStatus(backendTradeStatus);
+              logger.info('✅ trade_enabled from watchlist_items:', Object.keys(backendTradeStatus).length, 'coins');
             }
-
-            // Set margin status from backend (after processing all items)
             if (Object.keys(backendMarginStatus).length > 0) {
-              setCoinMarginStatus(prev => ({ ...prev, ...backendMarginStatus }));
-              logger.info('✅ Initialized trade_on_margin from backend:', Object.keys(backendMarginStatus).length, 'coins');
+              setCoinMarginStatus(backendMarginStatus);
+              logger.info('✅ trade_on_margin from watchlist_items:', Object.keys(backendMarginStatus).length, 'coins');
+            }
+            if (Object.keys(backendAlertStatus).length > 0) {
+              setCoinAlertStatus(backendAlertStatus);
+            }
+            if (Object.keys(backendBuyAlertStatus).length > 0) {
+              setCoinBuyAlertStatus(backendBuyAlertStatus);
+            }
+            if (Object.keys(backendSellAlertStatus).length > 0) {
+              setCoinSellAlertStatus(backendSellAlertStatus);
             }
 
             // Set amounts from backend (after processing all items)
