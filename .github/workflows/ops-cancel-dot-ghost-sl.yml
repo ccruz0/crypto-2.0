@@ -1,5 +1,5 @@
 # Ops: cancel DOT_USD ghost STOP_LIMIT legs (qty ≫ wallet).
-# Requires repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+# Auth: OIDC via AWS_DEPLOY_ROLE_ARN (static access keys retired).
 name: Ops — cancel DOT ghost SL
 
 on:
@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   cancel-dot-ghost-sl:
@@ -24,11 +25,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ap-southeast-1
 
       - name: Cancel DOT ghost SL on prod
