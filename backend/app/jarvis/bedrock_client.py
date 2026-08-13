@@ -101,6 +101,22 @@ def _extract_first_balanced_object(s: str) -> str | None:
     return None
 
 
+def classify_bedrock_error(exc: BaseException) -> str:
+    """Map a Bedrock/boto failure to a stable operator-facing class.
+
+    ``account_restriction`` is AWS-side (\"Operation not allowed\") and cannot
+    be fixed by IAM or instance-role cutover.
+    """
+    msg = str(exc).lower()
+    if "operation not allowed" in msg:
+        return "account_restriction"
+    if "accessdenied" in msg or "not authorized to perform" in msg:
+        return "iam_denied"
+    if "resourcenotfound" in msg or "could not resolve the foundation model" in msg:
+        return "model_not_found"
+    return "request_failed"
+
+
 def ask_bedrock(prompt: str) -> str:
     """
     Send a user/assistant-style prompt to Claude on Bedrock and return assistant text.
@@ -148,7 +164,8 @@ def ask_bedrock(prompt: str) -> str:
         payload_bytes = raw.read() if hasattr(raw, "read") else raw
         payload: Any = json.loads(payload_bytes)
     except (ClientError, BotoCoreError, OSError) as e:
-        logger.warning("Bedrock request failed: %s", e)
+        kind = classify_bedrock_error(e)
+        logger.warning("Bedrock request failed (%s): %s", kind, e)
         return ""
     except json.JSONDecodeError as e:
         logger.warning("Bedrock response JSON decode failed: %s", e)
