@@ -39,8 +39,6 @@ SSM_GITHUB_APP_PRIVATE_KEY_B64="/automated-trading-platform/prod/github_app/priv
 SSM_GITHUB_APP_ID_LAB="/automated-trading-platform/lab/github_app/app_id"
 SSM_GITHUB_APP_INSTALLATION_ID_LAB="/automated-trading-platform/lab/github_app/installation_id"
 SSM_GITHUB_APP_PRIVATE_KEY_B64_LAB="/automated-trading-platform/lab/github_app/private_key_b64"
-SSM_AWS_ACCESS_KEY="/automated-trading-platform/prod/aws_access_key_id"
-SSM_AWS_SECRET_KEY="/automated-trading-platform/prod/aws_secret_access_key"
 SSM_NOTION_API_KEY="/automated-trading-platform/prod/notion/api_key"
 SSM_NOTION_TASK_DB="/automated-trading-platform/prod/notion/task_db"
 SSM_NOTION_API_KEY_LAB="/automated-trading-platform/lab/notion/api_key"
@@ -78,8 +76,6 @@ GITHUB_TOKEN=""
 GITHUB_APP_ID_VAL=""
 GITHUB_APP_INSTALLATION_ID_VAL=""
 GITHUB_APP_PRIVATE_KEY_B64_VAL=""
-AWS_ACCESS_KEY_ID_VAL=""
-AWS_SECRET_ACCESS_KEY_VAL=""
 NOTION_API_KEY_VAL=""
 NOTION_TASK_DB_VAL=""
 
@@ -105,8 +101,6 @@ if command -v aws >/dev/null 2>&1; then
     [[ -z "$GITHUB_APP_ID_VAL" ]] && GITHUB_APP_ID_VAL="$(fetch_ssm "$SSM_GITHUB_APP_ID_LAB" || true)"
     [[ -z "$GITHUB_APP_INSTALLATION_ID_VAL" ]] && GITHUB_APP_INSTALLATION_ID_VAL="$(fetch_ssm "$SSM_GITHUB_APP_INSTALLATION_ID_LAB" || true)"
     [[ -z "$GITHUB_APP_PRIVATE_KEY_B64_VAL" ]] && GITHUB_APP_PRIVATE_KEY_B64_VAL="$(fetch_ssm "$SSM_GITHUB_APP_PRIVATE_KEY_B64_LAB" || true)"
-    AWS_ACCESS_KEY_ID_VAL="$(fetch_ssm "$SSM_AWS_ACCESS_KEY" || true)"
-    AWS_SECRET_ACCESS_KEY_VAL="$(fetch_ssm "$SSM_AWS_SECRET_KEY" || true)"
     NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY" || true)"
     NOTION_TASK_DB_VAL="$(fetch_ssm "$SSM_NOTION_TASK_DB" || true)"
     ATP_CONTROL_CHAT_ID_VAL="$(fetch_ssm "$SSM_ATP_CONTROL_CHAT_ID" || true)"
@@ -152,8 +146,6 @@ if [[ "$use_ssm" != "true" ]]; then
   GITHUB_APP_ID_VAL="${GITHUB_APP_ID:-}"
   GITHUB_APP_INSTALLATION_ID_VAL="${GITHUB_APP_INSTALLATION_ID:-}"
   GITHUB_APP_PRIVATE_KEY_B64_VAL="${GITHUB_APP_PRIVATE_KEY_B64:-}"
-  AWS_ACCESS_KEY_ID_VAL="${AWS_ACCESS_KEY_ID:-}"
-  AWS_SECRET_ACCESS_KEY_VAL="${AWS_SECRET_ACCESS_KEY:-}"
   NOTION_API_KEY_VAL="${NOTION_API_KEY:-}"
   NOTION_TASK_DB_VAL="${NOTION_TASK_DB:-}"
   ATP_CONTROL_CHAT_ID_VAL="${TELEGRAM_ATP_CONTROL_CHAT_ID:-}"
@@ -296,12 +288,9 @@ fi
 # Optional health config: market data staleness threshold (minutes). See docs/MARKET_UPDATER_HARDENING_PLAN.md.
 echo "HEALTH_STALE_MARKET_MINUTES=15" >> "$RUNTIME_ENV"
 
-# ATP SSM runner: explicit AWS credentials for run-atp-command (if instance metadata unavailable in container)
-[[ -n "$AWS_ACCESS_KEY_ID_VAL" && -n "$AWS_SECRET_ACCESS_KEY_VAL" ]] && {
-  printf "AWS_ACCESS_KEY_ID=%s\n" "$AWS_ACCESS_KEY_ID_VAL" >> "$RUNTIME_ENV"
-  printf "AWS_SECRET_ACCESS_KEY=%s\n" "$AWS_SECRET_ACCESS_KEY_VAL" >> "$RUNTIME_ENV"
-  echo "AWS_DEFAULT_REGION=ap-southeast-1" >> "$RUNTIME_ENV"
-}
+# Region only — never inject static AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+# Containers must use the EC2 instance role (atp-backend-ec2-role). IMDS hop limit 2.
+echo "AWS_DEFAULT_REGION=ap-southeast-1" >> "$RUNTIME_ENV"
 
 # OpenClaw cost optimization: verification uses cheap model (add OPENCLAW_API_TOKEN, OPENCLAW_API_URL manually if using OpenClaw)
 echo "OPENCLAW_VERIFICATION_PRIMARY_MODEL=openai/gpt-4o-mini" >> "$RUNTIME_ENV"
