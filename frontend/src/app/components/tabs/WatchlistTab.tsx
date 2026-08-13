@@ -6,6 +6,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { TopCoin, TradingSignals, saveCoinSettings, updateCoinConfig, updateWatchlistAlert, updateBuyAlert, updateSellAlert, StrategyDecision, TradingConfig } from '@/app/api';
 import { formatDateTime, formatFixed, formatNumber, isFiniteNumber, normalizeSymbolKey } from '@/utils/formatting';
+import { watchlistButtonOn } from '@/utils/watchlistToggleState';
 import { logger } from '@/utils/logger';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import { usePriceStream } from '@/app/context/PriceStreamContext';
@@ -220,7 +221,12 @@ export default function WatchlistTab({
 
   const handleTradeToggle = useCallback(async (symbol: string) => {
     const symbolKey = normalizeSymbolKey(symbol);
-    const currentStatus = coinTradeStatus[symbolKey] || false;
+    const coinRow = topCoins.find((c) => normalizeSymbolKey(c?.instrument_name) === symbolKey);
+    const currentStatus = watchlistButtonOn(
+      coinTradeStatus,
+      symbolKey,
+      coinRow?.trade_enabled,
+    );
     const newStatus = !currentStatus;
     
     setUpdatingCoins(prev => new Set(prev).add(symbol));
@@ -275,7 +281,7 @@ export default function WatchlistTab({
         return next;
       });
     }
-  }, [coinTradeStatus, setCoinTradeStatus, onCoinUpdated, parentCoinTradeStatus]);
+  }, [coinTradeStatus, setCoinTradeStatus, onCoinUpdated, parentCoinTradeStatus, topCoins]);
 
   const handleAlertToggle = useCallback(async (symbol: string, alertType: 'master' | 'buy' | 'sell') => {
     const symbolKey = normalizeSymbolKey(symbol);
@@ -287,7 +293,12 @@ export default function WatchlistTab({
     
     try {
       if (alertType === 'master') {
-        previousStatus = coinAlertStatus[symbolKey] || false;
+        const coinRow = topCoins.find((c) => normalizeSymbolKey(c?.instrument_name) === symbolKey);
+        previousStatus = watchlistButtonOn(
+          coinAlertStatus,
+          symbolKey,
+          coinRow?.alert_enabled,
+        );
         const newStatus = !previousStatus;
         
         // Optimistic update
@@ -309,7 +320,12 @@ export default function WatchlistTab({
           });
         }
       } else if (alertType === 'buy') {
-        previousStatus = coinBuyAlertStatus[symbolKey] || false;
+        const coinRow = topCoins.find((c) => normalizeSymbolKey(c?.instrument_name) === symbolKey);
+        previousStatus = watchlistButtonOn(
+          coinBuyAlertStatus,
+          symbolKey,
+          coinRow?.buy_alert_enabled,
+        );
         const newStatus = !previousStatus;
         
         // Optimistic update
@@ -332,7 +348,12 @@ export default function WatchlistTab({
           });
         }
       } else if (alertType === 'sell') {
-        previousStatus = coinSellAlertStatus[symbolKey] || false;
+        const coinRow = topCoins.find((c) => normalizeSymbolKey(c?.instrument_name) === symbolKey);
+        previousStatus = watchlistButtonOn(
+          coinSellAlertStatus,
+          symbolKey,
+          coinRow?.sell_alert_enabled,
+        );
         const newStatus = !previousStatus;
         
         // Optimistic update
@@ -376,11 +397,16 @@ export default function WatchlistTab({
         return next;
       });
     }
-  }, [coinAlertStatus, coinBuyAlertStatus, coinSellAlertStatus, setCoinAlertStatus, setCoinBuyAlertStatus, setCoinSellAlertStatus, onCoinUpdated]);
+  }, [coinAlertStatus, coinBuyAlertStatus, coinSellAlertStatus, setCoinAlertStatus, setCoinBuyAlertStatus, setCoinSellAlertStatus, onCoinUpdated, topCoins]);
 
   const handleMarginToggle = useCallback(async (symbol: string) => {
     const symbolKey = normalizeSymbolKey(symbol);
-    const currentStatus = coinMarginStatus[symbolKey] || false;
+    const coinRow = topCoins.find((c) => normalizeSymbolKey(c?.instrument_name) === symbolKey);
+    const currentStatus = watchlistButtonOn(
+      coinMarginStatus,
+      symbolKey,
+      coinRow?.trade_on_margin,
+    );
     const newStatus = !currentStatus;
     
     setUpdatingCoins(prev => new Set(prev).add(symbol));
@@ -440,7 +466,7 @@ export default function WatchlistTab({
         return next;
       });
     }
-  }, [coinMarginStatus, onCoinUpdated, parentCoinMarginStatus]);
+  }, [coinMarginStatus, onCoinUpdated, parentCoinMarginStatus, topCoins]);
 
   const handleAmountSave = useCallback(async (symbol: string, value: string) => {
     const symbolKey = normalizeSymbolKey(symbol);
@@ -1122,16 +1148,16 @@ export default function WatchlistTab({
           bValue = parsePercent(getDisplayedSLTP(b, normalizeSymbolKey(b.instrument_name)).tpPercent);
           break;
         case 'trade':
-          aValue = coinTradeStatus[normalizeSymbolKey(a.instrument_name)] ? 1 : 0;
-          bValue = coinTradeStatus[normalizeSymbolKey(b.instrument_name)] ? 1 : 0;
+          aValue = watchlistButtonOn(coinTradeStatus, normalizeSymbolKey(a.instrument_name), a.trade_enabled) ? 1 : 0;
+          bValue = watchlistButtonOn(coinTradeStatus, normalizeSymbolKey(b.instrument_name), b.trade_enabled) ? 1 : 0;
           break;
         case 'margin':
-          aValue = coinMarginStatus[normalizeSymbolKey(a.instrument_name)] ? 1 : 0;
-          bValue = coinMarginStatus[normalizeSymbolKey(b.instrument_name)] ? 1 : 0;
+          aValue = watchlistButtonOn(coinMarginStatus, normalizeSymbolKey(a.instrument_name), a.trade_on_margin) ? 1 : 0;
+          bValue = watchlistButtonOn(coinMarginStatus, normalizeSymbolKey(b.instrument_name), b.trade_on_margin) ? 1 : 0;
           break;
         case 'alerts':
-          aValue = coinAlertStatus[normalizeSymbolKey(a.instrument_name)] ? 1 : 0;
-          bValue = coinAlertStatus[normalizeSymbolKey(b.instrument_name)] ? 1 : 0;
+          aValue = watchlistButtonOn(coinAlertStatus, normalizeSymbolKey(a.instrument_name), a.alert_enabled) ? 1 : 0;
+          bValue = watchlistButtonOn(coinAlertStatus, normalizeSymbolKey(b.instrument_name), b.alert_enabled) ? 1 : 0;
           break;
       }
 
@@ -1307,10 +1333,31 @@ export default function WatchlistTab({
               {sortedCoins.map((coin) => {
                 const symbolKey = normalizeSymbolKey(coin?.instrument_name);
                 const signal = signals[coin?.instrument_name];
-                const tradeEnabled = coinTradeStatus[symbolKey] || false;
-                const masterAlertEnabled = coinAlertStatus[symbolKey] || false;
-                const buyAlertEnabled = coinBuyAlertStatus[symbolKey] || false;
-                const sellAlertEnabled = coinSellAlertStatus[symbolKey] || false;
+                const tradeEnabled = watchlistButtonOn(
+                  coinTradeStatus,
+                  symbolKey,
+                  coin?.trade_enabled,
+                );
+                const marginEnabled = watchlistButtonOn(
+                  coinMarginStatus,
+                  symbolKey,
+                  coin?.trade_on_margin,
+                );
+                const masterAlertEnabled = watchlistButtonOn(
+                  coinAlertStatus,
+                  symbolKey,
+                  coin?.alert_enabled,
+                );
+                const buyAlertEnabled = watchlistButtonOn(
+                  coinBuyAlertStatus,
+                  symbolKey,
+                  coin?.buy_alert_enabled,
+                );
+                const sellAlertEnabled = watchlistButtonOn(
+                  coinSellAlertStatus,
+                  symbolKey,
+                  coin?.sell_alert_enabled,
+                );
                 const isCoinUpdating = updatingCoins.has(coin?.instrument_name);
                 const coinOpenCount = getOpenCountForCoin(coin?.instrument_name);
                 // Per-coin limit (Signal Monitor = 3). Also watermark if global limit blocks all.
@@ -1336,6 +1383,7 @@ export default function WatchlistTab({
                 return (
                   <tr
                     key={coin?.instrument_name}
+                    data-testid={`watchlist-row-${coin?.instrument_name}`}
                     className={`relative ${
                       rowAtOrderLimit
                         ? 'bg-amber-50/90 dark:bg-amber-950/35'
@@ -1607,6 +1655,10 @@ export default function WatchlistTab({
                       <button
                         onClick={() => handleTradeToggle(coin?.instrument_name)}
                         disabled={isCoinUpdating}
+                        data-testid={`trading-toggle-${coin?.instrument_name}`}
+                        aria-pressed={tradeEnabled}
+                        aria-checked={tradeEnabled}
+                        data-state={tradeEnabled ? 'enabled' : 'disabled'}
                         className={`px-3 py-1 rounded text-xs font-semibold transition-colors cursor-help ${
                           tradeEnabled
                             ? 'bg-green-500 text-white hover:bg-green-600'
@@ -1621,13 +1673,18 @@ export default function WatchlistTab({
                       <button
                         onClick={() => handleMarginToggle(coin?.instrument_name)}
                         disabled={isCoinUpdating}
+                        data-testid={`margin-toggle-${coin?.instrument_name}`}
+                        aria-pressed={marginEnabled}
+                        aria-checked={marginEnabled}
+                        data-state={marginEnabled ? 'enabled' : 'disabled'}
                         className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
-                          coinMarginStatus[symbolKey]
+                          marginEnabled
                             ? 'bg-green-500 text-white hover:bg-green-600'
                             : 'bg-red-500 text-white hover:bg-red-600'
                         } disabled:opacity-50`}
+                        title="Watchlist Margin YES = trade this coin on margin (longs). Not the exchange short flag."
                       >
-                        {isCoinUpdating ? '...' : coinMarginStatus[symbolKey] ? 'YES' : 'NO'}
+                        {isCoinUpdating ? '...' : marginEnabled ? 'YES' : 'NO'}
                       </button>
                     </td>
                     <td className="px-4 py-2">
@@ -1642,6 +1699,10 @@ export default function WatchlistTab({
                             }
                           }}
                           disabled={isCoinUpdating || !coin?.instrument_name}
+                          data-testid={`alert-master-${coin?.instrument_name}`}
+                          aria-pressed={masterAlertEnabled}
+                          aria-checked={masterAlertEnabled}
+                          data-state={masterAlertEnabled ? 'enabled' : 'disabled'}
                           className={`px-2 py-1 rounded text-xs transition-colors ${
                             masterAlertEnabled
                               ? 'bg-blue-500 text-white hover:bg-blue-600'
@@ -1661,6 +1722,10 @@ export default function WatchlistTab({
                             }
                           }}
                           disabled={isCoinUpdating || !coin?.instrument_name}
+                          data-testid={`alert-buy-${coin?.instrument_name}`}
+                          aria-pressed={buyAlertEnabled}
+                          aria-checked={buyAlertEnabled}
+                          data-state={buyAlertEnabled ? 'enabled' : 'disabled'}
                           className={`px-2 py-1 rounded text-xs transition-colors ${
                             buyAlertEnabled
                               ? 'bg-green-500 text-white hover:bg-green-600'
@@ -1680,6 +1745,10 @@ export default function WatchlistTab({
                             }
                           }}
                           disabled={isCoinUpdating || !coin?.instrument_name}
+                          data-testid={`alert-sell-${coin?.instrument_name}`}
+                          aria-pressed={sellAlertEnabled}
+                          aria-checked={sellAlertEnabled}
+                          data-state={sellAlertEnabled ? 'enabled' : 'disabled'}
                           className={`px-2 py-1 rounded text-xs transition-colors ${
                             sellAlertEnabled
                               ? 'bg-red-500 text-white hover:bg-red-600'
