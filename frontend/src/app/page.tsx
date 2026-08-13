@@ -1886,7 +1886,7 @@ const VERSION_HISTORY = [
 • \`v0.88\` reserved for CRO long-close (#464)
 
 📦 **PRs**
-• (this PR)
+• #465
 
 ---
 `
