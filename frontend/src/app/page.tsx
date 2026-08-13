@@ -1962,10 +1962,8 @@ const VERSION_HISTORY = [
 • v0.90 (#465) was merged but its frontend deploy was cancelled, so prod stayed on v0.89
 
 📦 **PRs**
-• (this PR)
+• #470
 
----
-`
 ---
 `
   },
