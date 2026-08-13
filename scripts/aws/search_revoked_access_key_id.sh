@@ -67,4 +67,4 @@ if [[ "$env_hits" -eq 0 ]]; then
 fi
 
 echo "=== done hits=${hits} ==="
-echo "List only. Confirm each path before deleting. Leave LAB jarvis-lab-bedrock keys untouched."
+echo "List only. Confirm each path before deleting. After LAB instance-role cutover, jarvis-lab-bedrock user keys can be deactivated."

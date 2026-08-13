@@ -101,6 +101,12 @@ Secret:
 |---|---|
 | `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::634531197711:role/gha-deploy-frontend` |
 
+Do **not** keep `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` as Actions secrets once every workflow uses OIDC. Apply the current `ci-cd/iam/policy-gha-deploy-frontend.json` (SSM + EICE + ECR frontend/backend) before relying on Runtime Guard/Sentinel:
+
+```bash
+AWS_PROFILE=carlos-sso ./scripts/aws/put_gha_deploy_role_policy.sh
+```
+
 ## 6. Safe test (Tarea 6)
 
 The trust policy only allows `ref:refs/heads/main`. A `workflow_dispatch` from the

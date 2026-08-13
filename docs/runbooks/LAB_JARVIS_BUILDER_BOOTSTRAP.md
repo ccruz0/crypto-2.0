@@ -100,7 +100,19 @@ echo "AMI: $UBUNTU_2404_AMI"
 ### Phase 1 — IAM role + instance profile
 
 **Minimum:** `AmazonSSMManagedInstanceCore`  
-**Phase 2A add-on:** Bedrock `InvokeModel` (Jarvis Builder uses Bedrock, not OpenClaw)
+**Phase 2A add-on:** Bedrock `InvokeModel` via instance role `atp-lab-ec2-role` (do **not** put `AWS_ACCESS_KEY_ID` in `runtime.env.lab`).
+
+From the operator Mac (does not touch PROD):
+
+```bash
+AWS_PROFILE=carlos-sso ./scripts/aws/create_atp_lab_ec2_role.sh
+AWS_PROFILE=carlos-sso ./scripts/aws/switch_lab_to_instance_role.sh
+```
+
+The old IAM user `jarvis-lab-bedrock` is retired for runtime. Deactivate its access keys only after a LAB container/host `sts get-caller-identity` shows `atp-lab-ec2-role`.
+
+<details>
+<summary>Legacy: inline policy on IAM user (retired)</summary>
 
 ```bash
 # 1a) Trust policy
@@ -150,6 +162,8 @@ aws iam add-role-to-instance-profile \
   --instance-profile-name atp-lab-builder-ssm-role \
   --role-name atp-lab-builder-ssm-role
 ```
+
+</details>
 
 ---
 
@@ -366,7 +380,7 @@ CURSOR_BRIDGE_AUTO_IN_ADVANCE=false
 CURSOR_CLI_PATH=cursor
 ATP_STAGING_ROOT=/var/lib/atp-staging
 
-# Bedrock (LAB-scoped — fill from LAB SSM or manual)
+# Bedrock (LAB instance role — do not set AWS_ACCESS_KEY_ID)
 JARVIS_BEDROCK_REGION=us-east-1
 JARVIS_BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
 

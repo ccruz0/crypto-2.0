@@ -8,7 +8,7 @@
       "Resource": "*"
     },
     {
-      "Sid": "EcrPushPullFrontendRepo",
+      "Sid": "EcrPushPullAtpRepos",
       "Effect": "Allow",
       "Action": [
         "ecr:BatchCheckLayerAvailability",
@@ -19,7 +19,10 @@
         "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer"
       ],
-      "Resource": "arn:aws:ecr:ap-southeast-1:634531197711:repository/atp-frontend"
+      "Resource": [
+        "arn:aws:ecr:ap-southeast-1:634531197711:repository/atp-frontend",
+        "arn:aws:ecr:ap-southeast-1:634531197711:repository/atp-backend"
+      ]
     },
     {
       "Sid": "SsmSendCommandScoped",
@@ -27,14 +30,33 @@
       "Action": "ssm:SendCommand",
       "Resource": [
         "arn:aws:ec2:ap-southeast-1:634531197711:instance/i-087953603011543c5",
+        "arn:aws:ec2:ap-southeast-1:634531197711:instance/i-0d82c172235770a0d",
         "arn:aws:ssm:ap-southeast-1::document/AWS-RunShellScript"
       ]
     },
     {
-      "Sid": "SsmReadCommandResult",
+      "Sid": "SsmDescribeAndReadCommand",
       "Effect": "Allow",
-      "Action": "ssm:GetCommandInvocation",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:DescribeInstanceInformation"
+      ],
       "Resource": "*"
+    },
+    {
+      "Sid": "Ec2DescribeForEice",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Ec2InstanceConnect",
+      "Effect": "Allow",
+      "Action": "ec2-instance-connect:SendSSHPublicKey",
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:634531197711:instance/i-087953603011543c5",
+        "arn:aws:ec2:ap-southeast-1:634531197711:instance/i-0d82c172235770a0d"
+      ]
     }
   ]
 }

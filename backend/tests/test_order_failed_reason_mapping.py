@@ -29,6 +29,50 @@ def test_telegram_copy_includes_spanish_per_coin_limit():
     assert "Señal enviada" in text
 
 
+def test_instrument_short_sell_disabled_not_insufficient_funds():
+    msg = (
+        "Watchlist Margin YES is on for CRO_USD, but Crypto.com does not "
+        "allow opening a SHORT (margin_sell_enabled=false). Margin longs "
+        "and closing an existing long still work."
+    )
+    code = classify_exchange_error(msg)
+    assert code == ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value
+    assert code != ReasonCode.INSUFFICIENT_FUNDS.value
+
+
+def test_legacy_margin_short_sell_copy_not_insufficient_funds():
+    msg = (
+        "Exchange does not allow margin short sell for CRO_USD "
+        "(margin_sell_enabled=false)"
+    )
+    code = classify_exchange_error(msg)
+    assert code == ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value
+    assert code != ReasonCode.INSUFFICIENT_FUNDS.value
+
+
+def test_instrument_short_sell_disabled_canonical_code():
+    code = classify_exchange_error("INSTRUMENT_SHORT_SELL_DISABLED")
+    assert code == ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value
+
+
+def test_instrument_short_sell_disabled_telegram_copy():
+    msg = (
+        "Watchlist Margin YES is on for CRO_USD, but Crypto.com does not "
+        "allow opening a SHORT (margin_sell_enabled=false)."
+    )
+    code = classify_exchange_error(msg)
+    text = format_order_failed_telegram(
+        symbol="CRO_USD",
+        side="SELL",
+        error_msg=msg,
+        reason_code=code,
+    )
+    assert "INSTRUMENT_SHORT_SELL_DISABLED" in text
+    assert "INSUFFICIENT_FUNDS" not in text
+    assert "short" in text.lower() or "SHORT" in text
+    assert "watchlist" in text.lower() or "Margin YES" in text
+
+
 def test_reason_code_es_label_one_active():
     label = reason_code_es_label(
         ReasonCode.ONE_ACTIVE_TRADE_PER_COIN.value,

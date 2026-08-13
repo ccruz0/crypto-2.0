@@ -9170,6 +9170,19 @@ class SignalMonitorService:
                 position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
             except Exception:
                 position_exists = False
+            # Bot-order counts exclude manual / exchange-synced wallet lots. A positive
+            # base wallet is a long-close (CRO_USD: margin_buy=true, margin_sell=false).
+            # Only a flat/unknown wallet with no bot lot is a short-open candidate.
+            if not position_exists:
+                wallet_balance = self._signed_wallet_base_balance(symbol)
+                if wallet_balance is not None and float(wallet_balance) > 0:
+                    logger.info(
+                        "SELL %s treated as long-close via wallet balance=%s "
+                        "(bot open-position count was 0; not a margin short)",
+                        symbol,
+                        wallet_balance,
+                    )
+                    position_exists = True
             # Shorting: if enabled and coin allows margin *sell*, SELL without position opens a short.
             # Spot SELL still requires position (protect manual holdings).
             # Gate on margin_sell_enabled (not buy|sell OR): CRO_USD has buy=True/sell=False and
@@ -9189,8 +9202,10 @@ class SignalMonitorService:
                             "error": "INSTRUMENT_SHORT_SELL_DISABLED",
                             "blocked": True,
                             "message": (
-                                f"Exchange does not allow margin short sell for {symbol} "
-                                f"(margin_sell_enabled=false)"
+                                f"Watchlist Margin YES is on for {symbol}, but Crypto.com does not "
+                                f"allow opening a SHORT (margin_sell_enabled=false). Margin longs "
+                                f"and closing an existing long still work. No long was found to close, "
+                                f"so this SELL would be a short."
                             ),
                         }
                     is_margin_short_entry = True
@@ -9611,6 +9626,29 @@ class SignalMonitorService:
             )
         return None
     
+    def _signed_wallet_base_balance(self, symbol: str) -> Optional[float]:
+        """Live signed wallet qty for the symbol base. None if unavailable or unreadable."""
+        try:
+            from app.services.exchange_sync import _base_wallet_balance_from_accounts
+
+            summary = trade_client.get_account_summary()
+            if not isinstance(summary, dict):
+                return None
+            accounts = summary.get("accounts") or []
+            if not isinstance(accounts, list):
+                return None
+            bal = _base_wallet_balance_from_accounts(accounts, symbol)
+            if bal is None:
+                return None
+            return float(bal)
+        except Exception as wallet_err:
+            logger.debug(
+                "wallet unavailable for SELL classification %s: %s",
+                symbol,
+                wallet_err,
+            )
+            return None
+
     def _is_short_entry_needing_protection(
         self,
         db: Session,

@@ -155,3 +155,21 @@ def test_put_dashboard_writes_to_watchlist_item():
         "Found update to WatchlistMaster instead."
     )
 
+
+def test_watchlist_toggle_booleans_match_db():
+    """Trade / Margin / Alert flags must round-trip exactly from watchlist_items."""
+    item = create_mock_watchlist_item(
+        "CRO_USD",
+        trade_enabled=True,
+        trade_on_margin=True,
+        alert_enabled=True,
+        buy_alert_enabled=False,
+        sell_alert_enabled=True,
+    )
+    serialized = _serialize_watchlist_item(item, market_data=None, db=None)
+    assert serialized["trade_enabled"] is True
+    assert serialized["trade_on_margin"] is True
+    assert serialized["alert_enabled"] is True
+    assert serialized["buy_alert_enabled"] is False
+    assert serialized["sell_alert_enabled"] is True
+
