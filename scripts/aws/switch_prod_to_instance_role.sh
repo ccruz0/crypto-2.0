@@ -126,6 +126,6 @@ echo "=== Phase D (Mac, show-then-run) — not executed from this script ==="
 echo "1) Delete leaked-key backup:"
 echo "     rm -f ~/.aws/credentials.bak"
 echo "2) Strip AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the local copy of secrets/runtime.env"
-echo "3) Search (list only, do not delete yet):"
-echo "     grep -R --line-number AKIAZHPIBWMH64QS7OF7 ~ 2>/dev/null | sed 's/:.*$//' | sort -u"
+echo "3) Search (list only, do not delete yet). Export REVOKED_AWS_ACCESS_KEY_ID to the revoked access-key ID (do not commit it):"
+echo '     grep -R --line-number "$REVOKED_AWS_ACCESS_KEY_ID" ~ 2>/dev/null | sed "s/:.*$//" | sort -u'
 echo "Leave jarvis-lab-bedrock keys on LAB untouched."

@@ -12,6 +12,7 @@ Fixed values (discovered, read-only):
 - Repo: `ccruz0/crypto-2.0`
 - ECR repo to create: `atp-frontend`
 - Instance profile role used by PROD: `atp-backend-ec2-role` / `atp-backend-ec2-profile` (replaces `EC2_SSM_Role`; see `scripts/aws/create_atp_backend_ec2_role.sh`)
+- Do **not** set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `secrets/runtime.env` — those override the instance role. Region only: `AWS_DEFAULT_REGION=ap-southeast-1`. IMDS hop limit must be 2 so Docker can reach the metadata service.
 
 All policy JSONs referenced below live in `ci-cd/iam/`.
 
