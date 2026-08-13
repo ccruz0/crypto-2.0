@@ -1895,6 +1895,29 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.89',
+    date: '2026-08-13',
+    change: 'CRO SELL: close margin longs instead of blocking as shorts',
+    details: `🚀 VERSIÓN 0.89 — CRO MARGIN LONG-CLOSE
+
+📋 **What shipped**
+• Pre-trade SELL path now treats a positive wallet base balance as a long-close even when bot-order counts are 0
+• Watchlist Margin YES (green) still means margin longs; Crypto.com CRO_USD/CRO_USDT allow buy, not short
+• True short opens still blocked when \`margin_sell_enabled=false\`
+• ORDER FAILED copy no longer reads as "margin is off" / INSUFFICIENT_FUNDS when the watchlist toggle is green
+
+🔧 **Why**
+• 2026-08-13 ATP Control: CRO_USD SELL → ORDER FAILED while Watchlist Margin was YES/green
+• Bot position counts skip manual / exchange-synced lots, so a wallet long looked like a new short (#412 gate)
+• \`margin_sell_enabled=false\` is the exchange short flag, not the watchlist Margin column
+
+📦 **PRs**
+• #464
+
+---
+`
+  },
 
 ];
 
