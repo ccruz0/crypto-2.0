@@ -69,7 +69,15 @@ def _watchlist(*, trade_on_margin: bool):
     return item
 
 
-async def _run_sell(*, symbol: str, trade_on_margin: bool, open_positions: int, env: dict, sell_ok: bool):
+async def _run_sell(
+    *,
+    symbol: str,
+    trade_on_margin: bool,
+    open_positions: int,
+    env: dict,
+    sell_ok: bool,
+    wallet_balance=None,
+):
     svc = SignalMonitorService()
     db = MagicMock()
     captured: dict = {}
@@ -91,21 +99,26 @@ async def _run_sell(*, symbol: str, trade_on_margin: bool, open_positions: int, 
                     "app.services.margin_info_service.instrument_allows_margin_short",
                     return_value=sell_ok,
                 ):
-                    with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
-                        with patch(
-                            "app.services.live_trading_gate.assert_exchange_mutation_allowed",
-                        ):
+                    with patch.object(
+                        svc,
+                        "_signed_wallet_base_balance",
+                        return_value=wallet_balance,
+                    ):
+                        with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
                             with patch(
-                                "app.services.signal_monitor.trade_client.place_market_order",
-                                return_value={"order_id": "dry_sell_1", "status": "FILLED"},
-                            ) as place:
-                                result = await svc._place_order_from_signal(
-                                    db,
-                                    symbol,
-                                    "SELL",
-                                    _watchlist(trade_on_margin=trade_on_margin),
-                                    0.05 if symbol.startswith("CRO") else 3000.0,
-                                )
+                                "app.services.live_trading_gate.assert_exchange_mutation_allowed",
+                            ):
+                                with patch(
+                                    "app.services.signal_monitor.trade_client.place_market_order",
+                                    return_value={"order_id": "dry_sell_1", "status": "FILLED"},
+                                ) as place:
+                                    result = await svc._place_order_from_signal(
+                                        db,
+                                        symbol,
+                                        "SELL",
+                                        _watchlist(trade_on_margin=trade_on_margin),
+                                        0.05 if symbol.startswith("CRO") else 3000.0,
+                                    )
     return result, captured, place
 
 
@@ -137,6 +150,45 @@ def test_eth_short_still_allowed_when_margin_sell_enabled():
         )
     )
     assert result.get("error") != REASON_SELL_REQUIRES_POSITION
+    assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
+    assert result.get("order_id") == "dry_sell_1"
+    assert place.call_count == 1
+    assert captured.get("position_exists") is True
+
+
+def test_cro_wallet_long_close_not_blocked_when_margin_sell_disabled():
+    """ATP Control 2026-08-13: CRO SELL blocked as a short while wallet was long.
+
+    count_open_positions_for_symbol ignores manual/exchange-synced lots, so a
+    margin long looked like a short open. Wallet > 0 must close, not 608-gate.
+    """
+    result, captured, place = asyncio.run(
+        _run_sell(
+            symbol="CRO_USD",
+            trade_on_margin=True,
+            open_positions=0,
+            env={"ALLOW_SHORTING": "true"},
+            sell_ok=False,
+            wallet_balance=12345.0,
+        )
+    )
+    assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
+    assert result.get("blocked") is not True
+    assert result.get("order_id") == "dry_sell_1"
+    assert place.call_count == 1
+    assert captured.get("position_exists") is True
+
+
+def test_cro_bot_long_close_not_blocked_when_margin_sell_disabled():
+    result, captured, place = asyncio.run(
+        _run_sell(
+            symbol="CRO_USD",
+            trade_on_margin=True,
+            open_positions=1,
+            env={"ALLOW_SHORTING": "true"},
+            sell_ok=False,
+        )
+    )
     assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
     assert result.get("order_id") == "dry_sell_1"
     assert place.call_count == 1
