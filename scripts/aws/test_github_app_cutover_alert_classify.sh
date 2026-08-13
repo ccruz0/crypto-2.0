@@ -134,6 +134,32 @@ echo "$out" | grep -q "disk critically full" \
   && assert_eq "disk_reclaim_runs_when_over_threshold" "ok" "ok" \
   || assert_eq "disk_reclaim_runs_when_over_threshold" "ok" "missing"
 
+# ENOSPC retry must use prod_compose (PROD runtime.env mode 600), not bare compose.
+# Source-check both call sites of _restart_backend_aws_for_cutover_heal + helper body.
+helper_def="$(sed -n '/^_restart_backend_aws_for_cutover_heal()/,/^}/p' "$SCRIPT_DIR/_github_app_cutover_alert_lib.sh")"
+echo "$helper_def" | grep -q 'prod_compose.sh restart backend-aws' \
+  && assert_eq "restart_helper_uses_prod_compose" "ok" "ok" \
+  || assert_eq "restart_helper_uses_prod_compose" "ok" "missing"
+# Ensure ENOSPC path reuses the helper (not a bare docker compose restart).
+enospc_block="$(awk '/restart hit ENOSPC/,/ping_fast OK after backend-aws restart|still unhealthy after recovery/ {print}' \
+  "$SCRIPT_DIR/_github_app_cutover_alert_lib.sh")"
+echo "$enospc_block" | grep -q '_restart_backend_aws_for_cutover_heal' \
+  && assert_eq "enospc_retry_uses_restart_helper" "ok" "ok" \
+  || assert_eq "enospc_retry_uses_restart_helper" "ok" "missing"
+if echo "$enospc_block" | grep -E 'docker compose --profile aws restart backend-aws' | grep -vq '_restart'; then
+  assert_eq "enospc_retry_no_bare_compose" "ok" "bare_compose_present"
+else
+  assert_eq "enospc_retry_no_bare_compose" "ok" "ok"
+fi
+
+# Runner: recovery Telegram only when note is exact healed string (not skipped*).
+runner="$SCRIPT_DIR/run_github_app_cutover_monitor_with_alerts.sh"
+grep -q 'AUTO_HEAL_NOTE="attempted — ping_fast recovered"' "$runner" \
+  && grep -q 'AUTO_HEAL_NOTE" == "attempted — ping_fast recovered"' "$runner" \
+  && grep -q 'auto-heal skipped:' "$runner" \
+  && assert_eq "recovery_notify_requires_real_heal" "ok" "ok" \
+  || assert_eq "recovery_notify_requires_real_heal" "ok" "missing"
+
 echo
 echo "Results: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
