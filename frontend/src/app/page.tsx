@@ -1870,10 +1870,37 @@ const VERSION_HISTORY = [
 `
   },
   {
-    version: '0.89',
+    version: '0.88',
+    date: '2026-08-13',
+    change: 'Prod AWS: instance role instead of static access keys',
+    details: `🚀 VERSIÓN 0.88 — INSTANCE ROLE CUTOVER
+
+📋 **What shipped**
+• Prod EC2 uses instance role \`atp-backend-ec2-role\` (profile \`atp-backend-ec2-profile\`) — no long-lived AWS_ACCESS_KEY_ID in runtime.env
+• \`render_runtime_env.sh\` writes AWS_DEFAULT_REGION only; retired inject/store-static-key scripts
+• IMDS hop limit 2 so Docker backend-aws can assume the role
+• Operator cutover: \`scripts/aws/switch_prod_to_instance_role.sh\` (strip key lines, canary recreate backend-aws)
+
+🔧 **Why**
+• Leaked ROOT access key was deleted Aug 9; static keys in secrets/runtime.env were dead, so SES/CE/Bedrock/SSM calls failed and Jarvis missions queued
+• Least-privilege instance role; zero long-lived AWS credentials in the trading runtime
+
+📦 **PRs**
+• #463
+
+⚠️ **Ops**
+• Bedrock "Operation not allowed" remains expected until AWS lifts the account restriction
+• LAB \`jarvis-lab-bedrock\` static key is unchanged (follow-up)
+• Do not re-add AWS_ACCESS_KEY_ID to runtime.env
+
+---
+`
+  },
+  {
+    version: '0.90',
     date: '2026-08-13',
     change: 'Watchlist Trade/Margin/Alert buttons follow the database',
-    details: `🚀 VERSIÓN 0.89 — WATCHLIST BUTTONS = DB
+    details: `🚀 VERSIÓN 0.90 — WATCHLIST BUTTONS = DB
 
 📋 **What shipped**
 • Trade, Margin, and Alert (M/B/S) buttons read \`watchlist_items\` via the API row, not localStorage
@@ -1883,7 +1910,7 @@ const VERSION_HISTORY = [
 
 🔧 **Why**
 • 2026-08-13: Watchlist Margin was green while Telegram looked like margin was off — browser cache / empty overlay hid the DB value
-• \`v0.88\` reserved for CRO long-close (#464)
+• \`v0.89\` is CRO long-close (#464)
 
 📦 **PRs**
 • #465

@@ -1,0 +1,101 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "StsIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockInvokeClaude",
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": [
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:us-east-1:634531197711:inference-profile/*",
+        "arn:aws:bedrock:ap-southeast-1:634531197711:inference-profile/*"
+      ]
+    },
+    {
+      "Sid": "CostExplorerRead",
+      "Effect": "Allow",
+      "Action": "ce:GetCostAndUsage",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Ec2DescribeRead",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeSecurityGroups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SsmParametersAtpPrefix",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": "arn:aws:ssm:ap-southeast-1:634531197711:parameter/automated-trading-platform/*"
+    },
+    {
+      "Sid": "SsmPutTelegramToken",
+      "Effect": "Allow",
+      "Action": "ssm:PutParameter",
+      "Resource": "arn:aws:ssm:ap-southeast-1:634531197711:parameter/automated-trading-platform/prod/telegram/bot_token"
+    },
+    {
+      "Sid": "SsmSendCommandToProdAndLab",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:ap-southeast-1::document/AWS-RunShellScript",
+        "arn:aws:ec2:ap-southeast-1:634531197711:instance/i-087953603011543c5",
+        "arn:aws:ec2:ap-southeast-1:634531197711:instance/i-0d82c172235770a0d"
+      ]
+    },
+    {
+      "Sid": "SsmGetCommandInvocation",
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
+    },
+    {
+      "Sid": "KmsDecryptViaSsm",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.ap-southeast-1.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "EcrAuthToken",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "EcrPullAtpImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+      ],
+      "Resource": [
+        "arn:aws:ecr:ap-southeast-1:634531197711:repository/atp-frontend",
+        "arn:aws:ecr:ap-southeast-1:634531197711:repository/atp-backend"
+      ]
+    }
+  ]
+}
