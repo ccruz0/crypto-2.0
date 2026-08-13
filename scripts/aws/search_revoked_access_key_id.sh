@@ -14,8 +14,10 @@ if [[ -z "$KEY" ]]; then
   echo "Do not commit that value. Paste it only in the terminal." >&2
   exit 1
 fi
-if [[ "$KEY" != AKIA* ]] || [[ "${#KEY}" -lt 16 ]]; then
-  echo "FAIL: REVOKED_AWS_ACCESS_KEY_ID does not look like an access-key ID." >&2
+# AWS access-key IDs are AKIA + 16 alphanumeric chars. Reject placeholders
+# such as AKIA...paste-the-id...
+if [[ ! "$KEY" =~ ^AKIA[A-Z0-9]{16}$ ]]; then
+  echo "FAIL: REVOKED_AWS_ACCESS_KEY_ID must be a 20-character AKIA id, not a placeholder." >&2
   exit 1
 fi
 
