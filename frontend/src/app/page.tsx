@@ -1886,10 +1886,7 @@ const VERSION_HISTORY = [
 • \`margin_sell_enabled=false\` is the exchange short flag, not the watchlist Margin column
 
 📦 **PRs**
-• (this PR)
-
-📦 **PRs**
-• (this PR)
+• #464
 
 ---
 `
