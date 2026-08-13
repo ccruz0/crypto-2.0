@@ -1,0 +1,45 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "StsIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockInvokeClaude",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:us-east-1:634531197711:inference-profile/*",
+        "arn:aws:bedrock:ap-southeast-1:634531197711:inference-profile/*"
+      ]
+    },
+    {
+      "Sid": "SsmParametersLabPrefix",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": "arn:aws:ssm:ap-southeast-1:634531197711:parameter/automated-trading-platform/lab/*"
+    },
+    {
+      "Sid": "KmsDecryptViaSsm",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.ap-southeast-1.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
