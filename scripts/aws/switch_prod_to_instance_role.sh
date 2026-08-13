@@ -129,4 +129,4 @@ echo "2) Strip AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the local copy of 
 echo "3) Search with bash (list only). Do not paste a for-loop into zsh:"
 echo "     export REVOKED_AWS_ACCESS_KEY_ID='AKIA...'"
 echo "     bash scripts/aws/search_revoked_access_key_id.sh"
-echo "Leave jarvis-lab-bedrock keys on LAB untouched."
+echo "LAB Bedrock: AWS_PROFILE=carlos-sso ./scripts/aws/create_atp_lab_ec2_role.sh then switch_lab_to_instance_role.sh"
