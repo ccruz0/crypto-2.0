@@ -21,6 +21,7 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 | [AWS_ARCHITECTURE.md](AWS_ARCHITECTURE.md) | Target architecture, roles, SSM, VPC. |
 | [AWS_LIVE_AUDIT.md](AWS_LIVE_AUDIT.md) | Last live audit snapshot; commands to re-run on instances. |
 | [IMDSV2_REQUIRED_RUNBOOK.md](IMDSV2_REQUIRED_RUNBOOK.md) | Clear EC2 “IMDSv2 recommended” warning: enable required + code already uses IMDSv2. |
+| [IAM_HYGIENE_AFTER_ROOT_KEY_LEAK.md](IAM_HYGIENE_AFTER_ROOT_KEY_LEAK.md) | After leaked ROOT key: confirm root has no keys; list IAM user keys (read-only script). |
 
 ---
 
