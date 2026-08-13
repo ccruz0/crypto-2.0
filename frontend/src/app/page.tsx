@@ -1868,6 +1868,33 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.88',
+    date: '2026-08-13',
+    change: 'Prod AWS: instance role instead of static access keys',
+    details: `🚀 VERSIÓN 0.88 — INSTANCE ROLE CUTOVER
+
+📋 **What shipped**
+• Prod EC2 uses instance role \`atp-backend-ec2-role\` (profile \`atp-backend-ec2-profile\`) — no long-lived AWS_ACCESS_KEY_ID in runtime.env
+• \`render_runtime_env.sh\` writes AWS_DEFAULT_REGION only; retired inject/store-static-key scripts
+• IMDS hop limit 2 so Docker backend-aws can assume the role
+• Operator cutover: \`scripts/aws/switch_prod_to_instance_role.sh\` (strip key lines, canary recreate backend-aws)
+
+🔧 **Why**
+• Leaked ROOT access key was deleted Aug 9; static keys in secrets/runtime.env were dead, so SES/CE/Bedrock/SSM calls failed and Jarvis missions queued
+• Least-privilege instance role; zero long-lived AWS credentials in the trading runtime
+
+📦 **PRs**
+• #463
+
+⚠️ **Ops**
+• Bedrock "Operation not allowed" remains expected until AWS lifts the account restriction
+• LAB \`jarvis-lab-bedrock\` static key is unchanged (follow-up)
+• Do not re-add AWS_ACCESS_KEY_ID to runtime.env
+
+---
+`
+  },
 
 ];
 

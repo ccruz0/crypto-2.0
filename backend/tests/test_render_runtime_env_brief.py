@@ -45,6 +45,8 @@ def _render_in_fixture(tmp_path: Path, runtime_env_body: str) -> tuple[subproces
             TELEGRAM_CHAT_ID=12345
             ADMIN_ACTIONS_KEY=test-admin-key
             DIAGNOSTICS_API_KEY=test-diag-key
+            AWS_ACCESS_KEY_ID=must-not-be-copied
+            AWS_SECRET_ACCESS_KEY=must-not-be-copied
             """
         ),
         encoding="utf-8",
@@ -211,3 +213,24 @@ def test_render_rejects_partial_telegram_api_pair(tmp_path: Path):
     assert "TELEGRAM_API_ID" not in rendered
     assert "TELEGRAM_API_HASH" not in rendered
     assert "TELEGRAM_USER_API=NO" in result.stdout
+
+
+def test_render_does_not_inject_static_aws_keys(tmp_path: Path):
+    """Instance role cutover: runtime.env must never receive AWS_ACCESS_KEY_ID."""
+    result, rendered = _render_in_fixture(
+        tmp_path,
+        textwrap.dedent(
+            """\
+            TELEGRAM_BOT_TOKEN=old
+            TELEGRAM_CHAT_ID=old
+            ADMIN_ACTIONS_KEY=old
+            AWS_ACCESS_KEY_ID=should-not-survive
+            AWS_SECRET_ACCESS_KEY=should-not-survive
+            """
+        ),
+    )
+    assert result.returncode == 0, result.stderr + "\n" + result.stdout
+    assert "AWS_ACCESS_KEY_ID" not in rendered
+    assert "AWS_SECRET_ACCESS_KEY" not in rendered
+    assert "AWS_SESSION_TOKEN" not in rendered
+    assert rendered.get("AWS_DEFAULT_REGION") == "ap-southeast-1"
