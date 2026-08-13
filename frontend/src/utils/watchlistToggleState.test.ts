@@ -16,6 +16,11 @@ describe('watchlistButtonOn', () => {
     expect(watchlistButtonOn({ CRO_USD: false }, 'CRO_USD', true)).toBe(false);
     expect(watchlistButtonOn({ CRO_USD: true }, 'CRO_USD', false)).toBe(true);
   });
+
+  it('does not treat a missing master-alert overlay key as OFF when DB is ON', () => {
+    expect(watchlistButtonOn({}, 'AAVE_USD', true)).toBe(true);
+    expect(watchlistButtonOn({ AAVE_USD: true }, 'AAVE_USD', true)).toBe(true);
+  });
 });
 
 describe('watchlistFlagsFromCoins', () => {

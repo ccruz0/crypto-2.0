@@ -12,6 +12,7 @@ export function watchlistButtonOn(
   dbValue: boolean | null | undefined,
 ): boolean {
   if (symbolKey && overlay && Object.prototype.hasOwnProperty.call(overlay, symbolKey)) {
+    // Explicit false must stay false (optimistic OFF). Do not delete the key.
     return Boolean(overlay[symbolKey]);
   }
   return Boolean(dbValue);
