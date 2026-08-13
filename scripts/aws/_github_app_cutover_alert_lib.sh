@@ -135,6 +135,21 @@ reclaim_disk_for_cutover_heal() {
   return 0
 }
 
+# Restart backend-aws via prod_compose.sh when present (PROD secrets/runtime.env
+# is mode 600; bare `docker compose` cannot read it without the sudo wrapper).
+# Prints compose output to stdout; never prints secret values. Best-effort.
+_restart_backend_aws_for_cutover_heal() {
+  local root_dir="${1:-.}"
+  (
+    cd "$root_dir" || exit 1
+    if [[ -x scripts/aws/prod_compose.sh ]]; then
+      bash scripts/aws/prod_compose.sh restart backend-aws 2>&1 || true
+    else
+      docker compose --profile aws restart backend-aws 2>&1 || true
+    fi
+  ) || true
+}
+
 # Safe infra recovery for TRANSIENT cutover monitor failures.
 # Order: disk reclaim (if full) → ensure_stack_up → targeted restart.
 # Respects deploy marker and cooldown. Never prints secrets.
@@ -215,25 +230,19 @@ attempt_cutover_infra_auto_heal() {
   fi
 
   echo "auto-heal: ping still failing — restarting backend-aws"
-  restart_err="$(
-    cd "$root_dir" || exit 1
-    if [[ -x scripts/aws/prod_compose.sh ]]; then
-      bash scripts/aws/prod_compose.sh restart backend-aws 2>&1 || \
-        docker compose --profile aws restart backend-aws 2>&1 || true
-    else
-      docker compose --profile aws restart backend-aws 2>&1 || true
-    fi
-  )" || true
+  restart_err="$(_restart_backend_aws_for_cutover_heal "$root_dir")" || true
   if [[ -n "$restart_err" ]]; then
     echo "$restart_err" | tail -20 | sed 's/^/  /'
   fi
   if echo "$restart_err" | grep -qi 'no space left on device'; then
     echo "auto-heal: restart hit ENOSPC — reclaiming disk again then retry restart"
     reclaim_disk_for_cutover_heal "$root_dir"
-    (
-      cd "$root_dir" || exit 1
-      docker compose --profile aws restart backend-aws 2>&1 || true
-    ) | tail -10 | sed 's/^/  /' || true
+    # Must use prod_compose (sudo path) on PROD — bare docker compose cannot
+    # read secrets/runtime.env mode 600 and fails the post-reclaim retry.
+    restart_err="$(_restart_backend_aws_for_cutover_heal "$root_dir")" || true
+    if [[ -n "$restart_err" ]]; then
+      echo "$restart_err" | tail -10 | sed 's/^/  /'
+    fi
   fi
 
   local i
@@ -261,8 +270,8 @@ If this persists — especially "no space left on device":
   bash infra/cleanup_disk.sh
   bash scripts/aws/predeploy_disk_guard.sh
   bash scripts/aws/ensure_stack_up.sh
-  docker compose --profile aws restart backend-aws
-  docker compose --profile aws logs backend-aws --tail=80
+  bash scripts/aws/prod_compose.sh restart backend-aws
+  bash scripts/aws/prod_compose.sh logs backend-aws --tail=80
 EOF
       ;;
     AUTH)

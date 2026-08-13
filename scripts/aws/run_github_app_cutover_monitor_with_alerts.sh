@@ -136,12 +136,21 @@ if [[ "$FAIL" == "yes" ]]; then
   # Transient / infra: try safe auto-heal, then recheck before paging.
   if [[ "$SEVERITY" == "TRANSIENT" ]]; then
     echo "Transient/infra failure detected; attempting auto-heal then recheck..."
-    if attempt_cutover_infra_auto_heal "$ROOT_DIR" "$LOG_DIR" "$AUTO_HEAL_COOLDOWN_FILE"; then
+    HEAL_OUT=""
+    HEAL_RC=0
+    HEAL_OUT="$(attempt_cutover_infra_auto_heal "$ROOT_DIR" "$LOG_DIR" "$AUTO_HEAL_COOLDOWN_FILE" 2>&1)" || HEAL_RC=$?
+    echo "$HEAL_OUT"
+    if [[ "$HEAL_RC" -eq 0 ]]; then
       AUTO_HEAL_NOTE="attempted — ping_fast recovered"
       echo "Auto-heal reported recovery; waiting ${AUTO_HEAL_RECHECK_S}s before recheck..."
       sleep "$AUTO_HEAL_RECHECK_S"
+    elif echo "$HEAL_OUT" | grep -q 'auto-heal skipped:'; then
+      # Disabled / cooldown / deploy marker — do not claim we healed.
+      AUTO_HEAL_NOTE="skipped — $(echo "$HEAL_OUT" | sed -n 's/^auto-heal skipped: //p' | head -1)"
+      echo "Auto-heal skipped; waiting ${TRANSIENT_RECHECK_S}s before recheck..."
+      sleep "$TRANSIENT_RECHECK_S"
     else
-      AUTO_HEAL_NOTE="attempted or skipped — ping not confirmed"
+      AUTO_HEAL_NOTE="attempted — ping not confirmed"
       echo "Auto-heal did not confirm recovery; waiting ${TRANSIENT_RECHECK_S}s before recheck..."
       sleep "$TRANSIENT_RECHECK_S"
     fi
@@ -165,8 +174,8 @@ Auto-heal: $AUTO_HEAL_NOTE
 Now: auth_mode=github_app CUTOVER_READY=YES HEALTH=PASS
 EOF
 )"
-      # Only notify recovery if we actually ran a heal path (avoid spam on blips).
-      if [[ "$AUTO_HEAL_NOTE" == attempted* ]]; then
+      # Only notify when a real heal path recovered (not skip/cooldown/blip).
+      if [[ "$AUTO_HEAL_NOTE" == "attempted — ping_fast recovered" ]]; then
         send_telegram "$recovered_msg" || true
       fi
       exit 0

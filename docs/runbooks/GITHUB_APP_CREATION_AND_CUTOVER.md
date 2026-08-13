@@ -471,7 +471,7 @@ bash scripts/aws/uninstall_github_app_cutover_cron.sh
 | Event | Telegram |
 |-------|----------|
 | Monitor **FAIL** (AUTH / OTHER) | Immediate alert with severity, failure list, and remedy |
-| Monitor **FAIL** (TRANSIENT only) | Auto-heal (`ensure_stack_up` + `backend-aws` restart if needed), wait, recheck; alert only if still failing. On recovery, one “auto-healed” notice. |
+| Monitor **FAIL** (TRANSIENT only) | Auto-heal (disk reclaim if full → `ensure_stack_up` → `prod_compose.sh restart backend-aws`, including ENOSPC retry), wait, recheck; alert only if still failing. On recovery after a real heal, one “auto-healed” notice (skips/cooldown/blips do not notify). |
 | Monitor **PASS** | Success heartbeat at most once every **12 hours** |
 | After **2026-06-12 08:18 UTC** with **PASS** | One-time PAT-removal-ready message (marker: `logs/github_app_pat_removal_ready_alert_sent`) |
 
