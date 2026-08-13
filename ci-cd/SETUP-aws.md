@@ -11,7 +11,7 @@ Fixed values (discovered, read-only):
 - PROD instance (dashboard): `i-087953603011543c5` (`atp-rebuild-2026`)
 - Repo: `ccruz0/crypto-2.0`
 - ECR repo to create: `atp-frontend`
-- Instance profile role used by PROD: `EC2_SSM_Role`
+- Instance profile role used by PROD: `atp-backend-ec2-role` / `atp-backend-ec2-profile` (replaces `EC2_SSM_Role`; see `scripts/aws/create_atp_backend_ec2_role.sh`)
 
 All policy JSONs referenced below live in `ci-cd/iam/`.
 
