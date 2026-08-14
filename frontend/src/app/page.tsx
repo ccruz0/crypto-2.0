@@ -1988,7 +1988,7 @@ const VERSION_HISTORY = [
 • Same 8 parent rows repeated hour after hour; expanding ETH only showed the two lots that already match the exchange balance
 
 📦 **PRs**
-• (this PR)
+• #473
 
 ---
 `
