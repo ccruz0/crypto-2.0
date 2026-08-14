@@ -399,6 +399,24 @@ def get_data_sources_status():
             }
         }
 
+def period_volume_for_engine(
+    current_volume: Optional[float],
+    volume_24h: Optional[float],
+) -> Optional[float]:
+    """Volume used to gate BUY/SELL — same rule as Signal Monitor.
+
+    Prefer the completed-period ``current_volume``. Never pass raw ``volume_24h``
+    into the engine: it is a different scale (~24× an hourly bar) and inflates
+    the ratio so Watchlist can paint a red SELL the monitor would not emit
+    (CRO_USD: UI showed 0.56×avg while the engine saw ~73× from 24h volume).
+    """
+    if current_volume is not None and current_volume > 0:
+        return float(current_volume)
+    if volume_24h is not None and volume_24h > 0:
+        return float(volume_24h) / 24.0
+    return None
+
+
 def compute_engine_signals(
     db,
     symbol: str,
@@ -775,6 +793,7 @@ def get_signals(
             ma10w = None  # Must be explicitly available - no fallback
             atr = current_price * 0.02
             volume_24h = 0.0
+            current_volume = None
             avg_volume = 0.0
             volume_ratio = 0.0
             res_up = current_price * 1.02
@@ -854,8 +873,15 @@ def get_signals(
             current_volume_approx = volume_24h / 24.0
             volume_ratio = current_volume_approx / avg_volume if avg_volume > 0 else 1.0
         
-        # Use volume from database or calculated volume
-        current_volume = volume_24h
+        # Align with Signal Monitor: gate BUY/SELL on period current_volume,
+        # never raw volume_24h. volume_24h is a different scale and would inflate
+        # the ratio (CRO Watchlist painted SELL at 0.56×avg because the engine
+        # saw ~73× from 24h volume). If period volume is missing, approximate
+        # as volume_24h / 24 — the same fallback the monitor uses.
+        current_volume = period_volume_for_engine(
+            current_volume if "current_volume" in locals() else None,
+            volume_24h if "volume_24h" in locals() else None,
+        )
         
         # Calculate TP/SL levels
         sl_level = float(current_price * 0.98)  # 2% below current price

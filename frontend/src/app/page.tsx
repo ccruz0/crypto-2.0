@@ -2015,6 +2015,31 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.93',
+    date: '2026-08-14',
+    change: 'Watchlist SELL no longer uses 24h volume (false CRO red)',
+    details: `🚀 VERSIÓN 0.93 — WATCHLIST VOLUME GATE MATCHES TELEGRAM
+
+📋 **Root cause**
+• Watchlist paints the coin name red from \`/api/signals\` \`signals.sell\`
+• That endpoint passed \`volume_24h\` into the trading engine (~24× an hourly bar)
+• Signal Monitor already gates on period \`current_volume\` vs \`volumeMinRatio\` (auto = 1.0×)
+• CRO_USD showed RSI ~77 red + 0.56×avg but \`sell=true\` because the engine saw ~73× from 24h volume — Telegram did not fire
+
+✅ **What shipped**
+• \`/api/signals\` uses period volume for BUY/SELL (same as Signal Monitor); 24h only as \`/24\` fallback
+• Watchlist red SELL now means the engine would actually emit a SELL (volume still has to clear the strategy min)
+
+🔧 **Why**
+• Operator asked why CRO was red with 0/3 and no Telegram alert
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
 
 ];
 
