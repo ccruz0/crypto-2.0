@@ -18,6 +18,7 @@ export interface WatchlistItem {
   alert_enabled?: boolean;  // Enable automatic alerts and order creation
   buy_alert_enabled?: boolean;  // Enable BUY alerts specifically
   sell_alert_enabled?: boolean;  // Enable SELL alerts specifically
+  margin_sell_enabled?: boolean;  // Exchange allows SHORT (instrument flag)
   sl_tp_mode?: string;
   min_price_change_pct?: number | null;
   sl_percentage?: number | null;
@@ -138,6 +139,8 @@ export interface TopCoin {
   alert_enabled?: boolean;  // Alert enabled status for TRADE ALERT YES
   buy_alert_enabled?: boolean;  // Enable BUY alerts specifically
   sell_alert_enabled?: boolean;  // Enable SELL alerts specifically
+  /** Exchange instrument flag: false = no SHORT (CRO). Missing = older API. */
+  margin_sell_enabled?: boolean;
   // Technical indicators (now included in cache)
   rsi?: number;
   ma50?: number;

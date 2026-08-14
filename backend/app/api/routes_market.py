@@ -25,6 +25,10 @@ for path in [backend_root, app_root]:
 from simple_price_fetcher import price_fetcher
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import resolve_strategy_profile
+from app.services.margin_info_service import (
+    clamp_sell_alert_enabled,
+    instrument_allows_margin_short,
+)
 try:
     # Newer versions export this helper; older deployments may not.
     from app.services.watchlist_selector import deduplicate_watchlist_items as _deduplicate_watchlist_items  # type: ignore
@@ -1228,6 +1232,7 @@ def get_top_coins_with_prices(
                         "alert_enabled": watchlist_item.alert_enabled if watchlist_item else False,
                         "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", False) if watchlist_item else False,
                         "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", False) if watchlist_item else False,
+                        "margin_sell_enabled": instrument_allows_margin_short(symbol),
                         # Watchlist fields - include trade settings and SL/TP
                         "trade_enabled": watchlist_item.trade_enabled if watchlist_item else False,
                         "trade_amount_usd": watchlist_item.trade_amount_usd if watchlist_item else None,
@@ -1382,7 +1387,12 @@ def update_watchlist_alert(
             # Update existing item - set both buy and sell to match legacy behavior
             setattr(watchlist_item, "alert_enabled", alert_enabled)
             setattr(watchlist_item, "buy_alert_enabled", alert_enabled)
-            setattr(watchlist_item, "sell_alert_enabled", alert_enabled)
+            from app.services.margin_info_service import clamp_sell_alert_enabled
+            setattr(
+                watchlist_item,
+                "sell_alert_enabled",
+                clamp_sell_alert_enabled(symbol_upper, bool(alert_enabled)),
+            )
         
         # Commit with timeout protection
         commit_start = time.time()
@@ -1398,7 +1408,12 @@ def update_watchlist_alert(
                 if canonical and not getattr(canonical, "is_deleted", False):
                     setattr(canonical, "alert_enabled", alert_enabled)
                     setattr(canonical, "buy_alert_enabled", alert_enabled)
-                    setattr(canonical, "sell_alert_enabled", alert_enabled)
+                    from app.services.margin_info_service import clamp_sell_alert_enabled
+                    setattr(
+                        canonical,
+                        "sell_alert_enabled",
+                        clamp_sell_alert_enabled(symbol_upper, bool(alert_enabled)),
+                    )
                     db.commit()
                     watchlist_item = canonical
                 else:
@@ -1657,6 +1672,16 @@ def update_sell_alert(
     
     try:
         sell_alert_enabled = payload.get("sell_alert_enabled", False)
+        if sell_alert_enabled:
+            from app.services.margin_info_service import instrument_allows_margin_short
+            if not instrument_allows_margin_short(symbol_upper):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{symbol_upper}: el exchange no permite SHORT "
+                        f"(margin_sell_enabled=false). No se puede activar la alerta S."
+                    ),
+                )
         
         # Find or create watchlist item (prefer active canonical row).
         watchlist_item = _select_watchlist_item_for_toggle(db, symbol_upper)
