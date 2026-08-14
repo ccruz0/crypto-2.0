@@ -9163,6 +9163,7 @@ class SignalMonitorService:
         quantity_for_validation = amount_usd if (side or "").strip().upper() == "BUY" else (amount_usd / current_price if current_price > 0 else 0)
         position_exists: Optional[bool] = None
         is_margin_short_entry = False
+        wallet_long_qty: Optional[float] = None
         if (side or "").strip().upper() == "SELL":
             try:
                 from app.services.order_position_service import count_open_positions_for_symbol
@@ -9170,12 +9171,17 @@ class SignalMonitorService:
                 position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
             except Exception:
                 position_exists = False
-            # Bot-order counts exclude manual / exchange-synced wallet lots. A positive
-            # base wallet is a long-close (CRO_USD: margin_buy=true, margin_sell=false).
-            # Only a flat/unknown wallet with no bot lot is a short-open candidate.
+            # Bot-order counts exclude manual / exchange-synced wallet lots. A *material*
+            # positive base wallet is a long-close (CRO_USD: margin_buy=true, margin_sell=false).
+            # Dust (e.g. 0.93 CRO ≈ $0.04) is NOT a long: selling the $100 ticket would
+            # short the remainder and hit 608 CANNOT_SHORT_SELL_INSTRUMENT.
+            # Only a flat/unknown/dust wallet with no bot lot is a short-open candidate.
             if not position_exists:
                 wallet_balance = self._signed_wallet_base_balance(symbol)
-                if wallet_balance is not None and float(wallet_balance) > 0:
+                wallet_long_qty = self._material_wallet_long_qty(
+                    wallet_balance, current_price
+                )
+                if wallet_long_qty is not None:
                     logger.info(
                         "SELL %s treated as long-close via wallet balance=%s "
                         "(bot open-position count was 0; not a margin short)",
@@ -9183,6 +9189,16 @@ class SignalMonitorService:
                         wallet_balance,
                     )
                     position_exists = True
+                    if quantity_for_validation and wallet_long_qty < quantity_for_validation:
+                        quantity_for_validation = wallet_long_qty
+                elif wallet_balance is not None and float(wallet_balance) > 0:
+                    logger.info(
+                        "SELL %s wallet balance=%s is dust vs $%.2f floor; "
+                        "not a long-close (would oversell into a short)",
+                        symbol,
+                        wallet_balance,
+                        self._WALLET_LONG_CLOSE_MIN_USD,
+                    )
             # Shorting: if enabled and coin allows margin *sell*, SELL without position opens a short.
             # Spot SELL still requires position (protect manual holdings).
             # Gate on margin_sell_enabled (not buy|sell OR): CRO_USD has buy=True/sell=False and
@@ -9366,8 +9382,17 @@ class SignalMonitorService:
                     source=source.upper()
                 )
             else:  # SELL
-                # For SELL, calculate quantity from amount_usd and current_price
+                # For SELL, calculate quantity from amount_usd and current_price.
+                # Long-close must never exceed wallet or the remainder is a short.
                 quantity = amount_usd / current_price if current_price > 0 else 0
+                if wallet_long_qty is not None and wallet_long_qty > 0 and quantity > wallet_long_qty:
+                    logger.info(
+                        "SELL %s long-close qty capped to wallet %s (ticket qty was %s)",
+                        symbol,
+                        wallet_long_qty,
+                        quantity,
+                    )
+                    quantity = wallet_long_qty
                 if quantity <= 0:
                     return {
                         "error": "invalid_quantity",
@@ -9626,6 +9651,39 @@ class SignalMonitorService:
             )
         return None
     
+    # Same dust floor as SYSTEM_CORE_MIN_POSITION_USD / dashboard NAKED_SHORT_MIN_POSITION_USD.
+    _WALLET_LONG_CLOSE_MIN_USD = 5.0
+
+    def _material_wallet_long_qty(
+        self,
+        wallet_balance: Optional[float],
+        current_price: float,
+    ) -> Optional[float]:
+        """Positive wallet qty that is a real long to close, else None (flat/dust/unknown)."""
+        if wallet_balance is None:
+            return None
+        try:
+            qty = float(wallet_balance)
+        except (TypeError, ValueError):
+            return None
+        if qty <= 0:
+            return None
+        try:
+            price = float(current_price)
+        except (TypeError, ValueError):
+            return None
+        if price <= 0:
+            return None
+        from app.services.order_position_service import _is_position_dust
+
+        if _is_position_dust(
+            qty,
+            min_position_usd=self._WALLET_LONG_CLOSE_MIN_USD,
+            last_price=price,
+        ):
+            return None
+        return qty
+
     def _signed_wallet_base_balance(self, symbol: str) -> Optional[float]:
         """Live signed wallet qty for the symbol base. None if unavailable or unreadable."""
         try:
