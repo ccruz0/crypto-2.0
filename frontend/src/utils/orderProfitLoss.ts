@@ -33,6 +33,12 @@ export interface OpenPositionLot {
   order: OpenOrder;
   remainingQty: number;
   side: 'BUY' | 'SELL';
+  /**
+   * FIFO still has remaining qty, but wallet-trim dropped this lot because older
+   * (usually protected) lots already explain |balance|. Same rows the hourly
+   * Telegram SL/TP audit lists as "naked entry parents hidden by wallet-sum coverage".
+   */
+  walletTrimHidden?: boolean;
 }
 
 const PROTECTION_ROLES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
@@ -558,6 +564,35 @@ export function lotHasLinkedProtection(lot: OpenPositionLot): boolean {
   return order.has_linked_tp === true || order.has_linked_sl === true;
 }
 
+/** Missing ACTIVE-linked SL and/or TP (undefined flags count as missing). */
+export function lotMissingLinkedProtection(lot: OpenPositionLot): boolean {
+  const order = lot.order;
+  return order.has_linked_sl !== true || order.has_linked_tp !== true;
+}
+
+/**
+ * Re-attach same-side FIFO leftovers that wallet-trim dropped when they still
+ * lack linked SL/TP. Protected extras stay hidden (wallet already covered).
+ */
+export function pinWalletTrimHiddenNakedLots(
+  sameSideLots: OpenPositionLot[],
+  trimmed: OpenPositionLot[]
+): OpenPositionLot[] {
+  const keptIds = new Set(
+    trimmed
+      .map((lot) => lot.order.order_id)
+      .filter((id): id is string => Boolean(id))
+  );
+  const extras: OpenPositionLot[] = [];
+  for (const lot of sameSideLots) {
+    const id = lot.order.order_id;
+    if (!id || keptIds.has(id)) continue;
+    if (!lotMissingLinkedProtection(lot)) continue;
+    extras.push({ ...lot, walletTrimHidden: true });
+  }
+  return extras;
+}
+
 function isAlertOriginLot(lot: OpenPositionLot): boolean {
   const order = lot.order;
   const origin = (order.execution_origin || '').toUpperCase();
@@ -584,7 +619,8 @@ export function keepOppositeSideLotForPortfolioDisplay(lot: OpenPositionLot): bo
 
 /**
  * Portfolio expand display: trim same-side inventory to |balance| for P&L vs
- * wallet, and selectively keep opposite-side lots (see
+ * wallet, pin leftover same-side naked fills (Telegram hourly audit parents),
+ * and selectively keep opposite-side lots (see
  * {@link keepOppositeSideLotForPortfolioDisplay}).
  */
 export function selectOpenLotsForPortfolioDisplay(
@@ -596,11 +632,21 @@ export function selectOpenLotsForPortfolioDisplay(
 
   let selected: OpenPositionLot[];
   if (balance > QTY_EPS) {
+    const trimmedLongs = trimOpenLotsToBalance(longs, balance);
     const oppositeShorts = shorts.filter(keepOppositeSideLotForPortfolioDisplay);
-    selected = [...trimOpenLotsToBalance(longs, balance), ...oppositeShorts];
+    selected = [
+      ...trimmedLongs,
+      ...pinWalletTrimHiddenNakedLots(longs, trimmedLongs),
+      ...oppositeShorts,
+    ];
   } else if (balance < -QTY_EPS) {
+    const trimmedShorts = trimOpenLotsToBalance(shorts, balance);
     const oppositeLongs = longs.filter(keepOppositeSideLotForPortfolioDisplay);
-    selected = [...oppositeLongs, ...trimOpenLotsToBalance(shorts, balance)];
+    selected = [
+      ...oppositeLongs,
+      ...trimmedShorts,
+      ...pinWalletTrimHiddenNakedLots(shorts, trimmedShorts),
+    ];
   } else {
     // Flat wallet: prefer lots with protection or non-alert residuals.
     const preferred = [...longs, ...shorts].filter(
@@ -750,6 +796,8 @@ export function calculateOpenLotsAggregateProfitLoss(
   let anyAvailable = false;
 
   for (const lot of lots) {
+    // Wallet-trim extras are visibility-only; do not inflate row P&L vs balance.
+    if (lot.walletTrimHidden) continue;
     const lotPnl = calculateOpenLotProfitLoss(lot, currentPrice);
     if (!lotPnl.available) continue;
     const entryPrice = getOrderPrice(lot.order);
@@ -998,6 +1046,9 @@ export function buildOpenLotsByOrderId(
       });
       if (asset) {
         lots = selectOpenLotsForPortfolioDisplay(lots, asset.balance);
+        // Visibility-only pins belong on Cartera expand, not Executed Orders /
+        // Huérfano (those stay wallet-aligned).
+        lots = lots.filter((lot) => !lot.walletTrimHidden);
       }
     }
 

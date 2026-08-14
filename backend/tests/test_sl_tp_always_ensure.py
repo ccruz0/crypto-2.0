@@ -525,12 +525,26 @@ class TestHalfProtectedMultilotHeal(unittest.TestCase):
                 watchlist_item=None,
                 current_price=1900.0,
             )
-        self.assertTrue(row["naked_parent"])
-        self.assertEqual(row["order_id"], "5755600492671134850")
-        self.assertAlmostEqual(row["quantity"], 0.0052)
-        self.assertAlmostEqual(row["uncovered_qty"], 0.0052)
-        self.assertFalse(row["has_sl"])
-        self.assertFalse(row["has_tp"])
+            self.assertTrue(row["naked_parent"])
+            self.assertEqual(row["order_id"], "5755600492671134850")
+            self.assertAlmostEqual(row["quantity"], 0.0052)
+            self.assertAlmostEqual(row["uncovered_qty"], 0.0052)
+            self.assertFalse(row["has_sl"])
+            self.assertFalse(row["has_tp"])
+            self.assertFalse(row["in_open_lot"])
+
+            row_open = _naked_parent_report_row(
+                db,
+                parent,
+                symbol="ETH_USDT",
+                currency="ETH",
+                balance=-0.124,
+                skip_reminder=False,
+                watchlist_item=None,
+                current_price=1900.0,
+                in_open_lot=True,
+            )
+            self.assertTrue(row_open["in_open_lot"])
 
     @patch("app.services.sl_tp_checker._fetch_mark_price", return_value=91.43)
     def test_heal_calls_native_oco_per_half_protected_parent(self, _mock_mark):

@@ -62,6 +62,13 @@ export function portfolioLotActionKind(
   if (!lot.order?.order_id) return 'none';
   const notional = lotNotionalUsd(lot, opts.markPrice);
   if (notional <= 0) return 'none';
+  // Wallet-trim extras are not live wallet inventory — never market-flatten them.
+  if (lot.walletTrimHidden) {
+    if (notional < NAKED_SHORT_MIN_POSITION_USD) return 'none';
+    const { needSl, needTp } = lotNeedsProtection(lot);
+    if (needSl || needTp) return 'create_protection';
+    return 'none';
+  }
   if (notional < NAKED_SHORT_MIN_POSITION_USD) return 'clean_dust';
   const { needSl, needTp } = lotNeedsProtection(lot);
   if (needSl || needTp) return 'create_protection';

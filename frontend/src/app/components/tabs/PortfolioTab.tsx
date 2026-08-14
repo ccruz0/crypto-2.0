@@ -407,6 +407,15 @@ export default function PortfolioTab({
         <tr key={rowKey} className="border-t border-gray-200 dark:border-gray-700">
           <td className="px-3 py-2 whitespace-nowrap text-gray-600 dark:text-gray-300">
             {executionDate ? formatDateTime(executionDate) : '—'}
+            {lot.walletTrimHidden && (
+              <span
+                className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"
+                data-testid="portfolio-wallet-trim-hidden-badge"
+                title="FIFO still open, but Cartera wallet-trim hid this lot because older lots already match the exchange balance. Same parent the hourly Telegram SL/TP audit lists."
+              >
+                recorte wallet
+              </span>
+            )}
           </td>
           <td className="px-3 py-2 whitespace-nowrap">
             <span className={`px-2 py-0.5 rounded font-medium ${sideBadgeClass(order.side)}`}>
@@ -502,9 +511,11 @@ export default function PortfolioTab({
               <span className="text-gray-400 text-[11px]">
                 {isStableOrFiatAsset(assetCoin)
                   ? 'margen'
-                  : needSl || needTp
-                    ? '—'
-                    : 'OK'}
+                  : lot.walletTrimHidden
+                    ? 'sin flatten'
+                    : needSl || needTp
+                      ? '—'
+                      : 'OK'}
               </span>
             )}
           </td>
@@ -551,8 +562,10 @@ export default function PortfolioTab({
     const trades = cache?.orders ?? filterFilledPositionOrdersForAsset(executedOrders, assetCoin);
     const currentPrice = getCurrentPriceForAsset(assetCoin);
     const openLots = getOpenPositionLotsForAsset(trades, assetCoin, balance);
-    const longLots = openLots.filter((lot) => lot.side === 'BUY');
-    const shortLots = openLots.filter((lot) => lot.side === 'SELL');
+    const walletLots = openLots.filter((lot) => !lot.walletTrimHidden);
+    const trimHiddenLots = openLots.filter((lot) => lot.walletTrimHidden);
+    const longLots = walletLots.filter((lot) => lot.side === 'BUY');
+    const shortLots = walletLots.filter((lot) => lot.side === 'SELL');
     const hasBackendPnl =
       !asset.cost_basis_unknown &&
       asset.pnl_pct !== null &&
@@ -592,9 +605,32 @@ export default function PortfolioTab({
     }
 
     const showSections = longLots.length > 0 && shortLots.length > 0;
+    const trimHiddenNote = trimHiddenLots.length > 0 && (
+      <div
+        className="mt-4 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 p-2"
+        data-testid="portfolio-wallet-trim-hidden-lots"
+      >
+        <div className="px-1 mb-2 text-xs font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+          Sin SL/TP (ocultas por recorte wallet · {trimHiddenLots.length})
+        </div>
+        <p className="px-1 mb-2 text-[11px] text-amber-800 dark:text-amber-200 normal-case tracking-normal font-normal">
+          Estas entradas siguen abiertas en FIFO pero no entran en el P&L de la fila
+          porque lots más viejos ya cubren el saldo del exchange. Son las mismas
+          que lista la alerta horaria de Telegram. Crear SL/TP aquí puede dejar
+          cobertura por encima del wallet. Limpiar dust está desactivado: un
+          market close movería el saldo que ya está cubierto.
+        </p>
+        {renderLotsTable(trimHiddenLots, currentPrice, assetCoin)}
+      </div>
+    );
 
     if (!showSections) {
-      return renderLotsTable(openLots, currentPrice, assetCoin);
+      return (
+        <div>
+          {walletLots.length > 0 ? renderLotsTable(walletLots, currentPrice, assetCoin) : null}
+          {trimHiddenNote}
+        </div>
+      );
     }
 
     return (
@@ -611,6 +647,7 @@ export default function PortfolioTab({
           </div>
           {renderLotsTable(shortLots, currentPrice, assetCoin)}
         </div>
+        {trimHiddenNote}
       </div>
     );
   };
@@ -946,6 +983,14 @@ export default function PortfolioTab({
                               </div>
                               <p className="mb-2 text-[11px] text-gray-500 dark:text-gray-400 normal-case tracking-normal font-normal">
                                 ≥ ${PORTFOLIO_DUST_MIN_USD}: Crear SL/TP · bajo ${PORTFOLIO_DUST_MIN_USD}: Limpiar dust (market). USDT/USD = margen, sin acción.
+                                {' '}Lots marcados «recorte wallet» son las entradas sin SL/TP que lista la alerta horaria de Telegram.{' '}
+                                <a
+                                  href="/reports/sl-tp-check"
+                                  className="underline hover:no-underline"
+                                  data-testid="portfolio-sl-tp-check-link"
+                                >
+                                  Informe SL/TP Check
+                                </a>
                               </p>
                               {actionMessage && (
                                 <div

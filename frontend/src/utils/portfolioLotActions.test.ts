@@ -69,6 +69,34 @@ describe('portfolioLotActions', () => {
     expect(protectionCreateLabel(false, true)).toBe('Crear TP');
   });
 
+  it('does not flatten wallet-trim-hidden dust leftovers', () => {
+    const lot = makeLot({
+      remainingQty: 11.9,
+      side: 'SELL',
+      has_linked_tp: false,
+      has_linked_sl: false,
+    });
+    lot.walletTrimHidden = true;
+    expect(
+      portfolioLotActionKind(lot, { assetCoin: 'HBAR', markPrice: 0.067 })
+    ).toBe('none');
+  });
+
+  it('still offers Create SL/TP on material wallet-trim-hidden lots', () => {
+    const lot = makeLot({
+      remainingQty: 0.03,
+      side: 'SELL',
+      instrument_name: 'ETH_USDT',
+      has_linked_tp: false,
+      has_linked_sl: false,
+      price: '1900',
+    });
+    lot.walletTrimHidden = true;
+    expect(
+      portfolioLotActionKind(lot, { assetCoin: 'ETH', markPrice: 1875 })
+    ).toBe('create_protection');
+  });
+
   it('returns none when fully protected or stable', () => {
     const protectedLot = makeLot({
       remainingQty: 1,

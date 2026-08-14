@@ -1,7 +1,9 @@
 """Hourly SL/TP check: primary-only + no false-fail paging."""
 from app.services.scheduler import (
     _classify_hourly_sl_tp_create_result,
+    _hourly_sl_tp_dashboard_hint,
     _is_primary_report_sender,
+    _sl_tp_check_dashboard_url,
 )
 
 
@@ -97,3 +99,38 @@ def test_hourly_check_gated_inside_primary_block():
     approval_idx = src.find("await self.check_approval_queue()")
     assert primary_idx != -1 and hourly_idx != -1 and approval_idx != -1
     assert primary_idx < hourly_idx < approval_idx
+
+
+def test_sl_tp_check_dashboard_url_uses_frontend_env(monkeypatch):
+    monkeypatch.setenv("FRONTEND_URL", "https://dashboard.hilovivo.com/")
+    assert _sl_tp_check_dashboard_url() == "https://dashboard.hilovivo.com/reports/sl-tp-check"
+
+
+def test_sl_tp_check_dashboard_url_falls_back_to_public_base(monkeypatch):
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://example.test")
+    assert _sl_tp_check_dashboard_url() == "https://example.test/reports/sl-tp-check"
+
+
+def test_hourly_hint_wallet_gap_only_links_report():
+    url = "https://dashboard.hilovivo.com/reports/sl-tp-check"
+    hint = _hourly_sl_tp_dashboard_hint(
+        [{"symbol": "ETH_USD", "naked_parent": False}], url
+    )
+    assert "hidden from Cartera" not in hint
+    assert f'<a href="{url}">SL/TP Check</a>' in hint
+
+
+def test_hourly_hint_splits_fifo_vs_lookback():
+    url = "https://dashboard.hilovivo.com/reports/sl-tp-check"
+    hint = _hourly_sl_tp_dashboard_hint(
+        [
+            {"naked_parent": True, "in_open_lot": True, "order_id": "a"},
+            {"naked_parent": True, "in_open_lot": False, "order_id": "b"},
+        ],
+        url,
+    )
+    assert "1 still in FIFO" in hint
+    assert "1 lookback-only" in hint
+    assert "hidden from Cartera P" not in hint
+    assert f'<a href="{url}">SL/TP Check</a>' in hint
