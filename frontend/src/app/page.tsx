@@ -2061,7 +2061,7 @@ const VERSION_HISTORY = [
 • Operator: if the system cannot short, do not enable the short-alert buttons
 
 📦 **PRs**
-• (this PR)
+• #478
 
 ---
 `
