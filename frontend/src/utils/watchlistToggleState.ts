@@ -25,7 +25,8 @@ export function exchangeAllowsShortAlert(
   return marginSellEnabled !== false;
 }
 
-/** S button is ON only if the DB/overlay flag is on AND the exchange allows SHORT. */
+/** S button is ON only if the DB/overlay flag is on AND the exchange allows SHORT.
+ *  ON means "open a new independent short" — never close a long. */
 export function sellAlertButtonOn(
   overlay: Record<string, boolean> | undefined,
   symbolKey: string,

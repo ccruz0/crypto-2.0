@@ -83,6 +83,7 @@ async def _run_sell(
     svc = SignalMonitorService()
     db = MagicMock()
     captured: dict = {}
+    _ = wallet_balance  # SELL alerts ignore wallet longs; kept so tests document the case.
 
     def _validate(**kwargs):
         captured.update(kwargs)
@@ -101,31 +102,26 @@ async def _run_sell(
                     "app.services.margin_info_service.instrument_allows_margin_short",
                     return_value=sell_ok,
                 ):
-                    with patch.object(
-                        svc,
-                        "_signed_wallet_base_balance",
-                        return_value=wallet_balance,
-                    ):
-                        with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
+                    with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
+                        with patch(
+                            "app.services.live_trading_gate.assert_exchange_mutation_allowed",
+                        ):
                             with patch(
-                                "app.services.live_trading_gate.assert_exchange_mutation_allowed",
-                            ):
-                                with patch(
-                                    "app.services.signal_monitor.trade_client.place_market_order",
-                                    return_value={"order_id": "dry_sell_1", "status": "FILLED"},
-                                ) as place:
-                                    result = await svc._place_order_from_signal(
-                                        db,
-                                        symbol,
-                                        "SELL",
-                                        _watchlist(
-                                            trade_on_margin=trade_on_margin,
-                                            trade_amount_usd=trade_amount_usd,
-                                        ),
-                                        price
-                                        if price is not None
-                                        else (0.05 if symbol.startswith("CRO") else 3000.0),
-                                    )
+                                "app.services.signal_monitor.trade_client.place_market_order",
+                                return_value={"order_id": "dry_sell_1", "status": "FILLED"},
+                            ) as place:
+                                result = await svc._place_order_from_signal(
+                                    db,
+                                    symbol,
+                                    "SELL",
+                                    _watchlist(
+                                        trade_on_margin=trade_on_margin,
+                                        trade_amount_usd=trade_amount_usd,
+                                    ),
+                                    price
+                                    if price is not None
+                                    else (0.05 if symbol.startswith("CRO") else 3000.0),
+                                )
     return result, captured, place
 
 
@@ -163,12 +159,8 @@ def test_eth_short_still_allowed_when_margin_sell_enabled():
     assert captured.get("position_exists") is True
 
 
-def test_cro_wallet_long_close_not_blocked_when_margin_sell_disabled():
-    """ATP Control 2026-08-13: CRO SELL blocked as a short while wallet was long.
-
-    count_open_positions_for_symbol ignores manual/exchange-synced lots, so a
-    margin long looked like a short open. Wallet > 0 must close, not 608-gate.
-    """
+def test_cro_wallet_long_still_blocked_when_margin_sell_disabled():
+    """SELL alerts never close a long. CRO with a wallet long is still a short open → 608-gate."""
     result, captured, place = asyncio.run(
         _run_sell(
             symbol="CRO_USD",
@@ -179,14 +171,14 @@ def test_cro_wallet_long_close_not_blocked_when_margin_sell_disabled():
             wallet_balance=12345.0,
         )
     )
-    assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
-    assert result.get("blocked") is not True
-    assert result.get("order_id") == "dry_sell_1"
-    assert place.call_count == 1
-    assert captured.get("position_exists") is True
+    assert result.get("blocked") is True
+    assert result.get("error") == "INSTRUMENT_SHORT_SELL_DISABLED"
+    assert place.call_count == 0
+    assert "position_exists" not in captured
+    assert "independent short" in (result.get("message") or "").lower()
 
 
-def test_cro_bot_long_close_not_blocked_when_margin_sell_disabled():
+def test_cro_bot_long_still_blocked_when_margin_sell_disabled():
     result, captured, place = asyncio.run(
         _run_sell(
             symbol="CRO_USD",
@@ -196,18 +188,14 @@ def test_cro_bot_long_close_not_blocked_when_margin_sell_disabled():
             sell_ok=False,
         )
     )
-    assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
-    assert result.get("order_id") == "dry_sell_1"
-    assert place.call_count == 1
-    assert captured.get("position_exists") is True
+    assert result.get("blocked") is True
+    assert result.get("error") == "INSTRUMENT_SHORT_SELL_DISABLED"
+    assert place.call_count == 0
+    assert "position_exists" not in captured
 
 
 def test_cro_dust_wallet_is_not_treated_as_long_close():
-    """ATP Control 2026-08-14: 0.93 CRO dust (~$0.04) made a $100 SELL hit 608.
-
-    v0.89 treated any positive wallet as a long-close, then sold the full ticket
-    (a short of the remainder). Dust must take the short-disabled pre-block.
-    """
+    """Dust CRO must not become a long-close; SELL is always a short and CRO cannot short."""
     result, captured, place = asyncio.run(
         _run_sell(
             symbol="CRO_USD",
@@ -226,24 +214,42 @@ def test_cro_dust_wallet_is_not_treated_as_long_close():
     assert "position_exists" not in captured
 
 
-def test_cro_long_close_qty_capped_to_wallet():
-    """A material long smaller than the ticket must close the wallet, not short the rest."""
+def test_eth_sell_uses_full_ticket_even_with_wallet_long():
+    """Independent short: do not cap qty to a wallet long."""
     result, captured, place = asyncio.run(
         _run_sell(
-            symbol="CRO_USD",
+            symbol="ETH_USD",
             trade_on_margin=True,
             open_positions=0,
             env={"ALLOW_SHORTING": "true"},
-            sell_ok=False,
-            wallet_balance=400.0,  # $20 at $0.05 — above $5 dust, below $100 ticket
+            sell_ok=True,
+            wallet_balance=0.01,  # $30 at $3000 — material long, smaller than $100 ticket
             trade_amount_usd=100.0,
-            price=0.05,
+            price=3000.0,
         )
     )
     assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
     assert result.get("order_id") == "dry_sell_1"
     assert place.call_count == 1
-    assert place.call_args.kwargs.get("qty") == 400.0
+    assert place.call_args.kwargs.get("qty") == 100.0 / 3000.0
+    assert captured.get("position_exists") is True
+
+
+def test_eth_sell_with_bot_long_opens_independent_short():
+    result, captured, place = asyncio.run(
+        _run_sell(
+            symbol="ETH_USD",
+            trade_on_margin=True,
+            open_positions=1,
+            env={"ALLOW_SHORTING": "true"},
+            sell_ok=True,
+            trade_amount_usd=100.0,
+            price=3000.0,
+        )
+    )
+    assert result.get("order_id") == "dry_sell_1"
+    assert place.call_count == 1
+    assert place.call_args.kwargs.get("qty") == 100.0 / 3000.0
     assert captured.get("position_exists") is True
 
 

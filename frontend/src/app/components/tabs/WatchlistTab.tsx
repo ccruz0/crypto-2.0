@@ -1762,7 +1762,7 @@ export default function WatchlistTab({
                           } disabled:opacity-50 disabled:cursor-not-allowed ${shortAlertAllowed ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                           title={
                             shortAlertAllowed
-                              ? 'Sell Alert (SHORT)'
+                              ? 'Alerta S: abre un SHORT nuevo. No cierra un long.'
                               : `Alerta S deshabilitada: el exchange no permite SHORT en ${coin?.instrument_name}`
                           }
                         >

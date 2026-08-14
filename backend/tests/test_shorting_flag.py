@@ -40,16 +40,15 @@ async def _run_sell(*, trade_on_margin: bool, open_positions: int, env: dict | N
                     "app.services.margin_info_service.instrument_allows_margin_short",
                     return_value=True,
                 ):
-                    with patch.object(svc, "_signed_wallet_base_balance", return_value=None):
-                        with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
+                    with patch("app.utils.live_trading.get_live_trading_status", return_value=False):
+                        with patch(
+                            "app.services.live_trading_gate.assert_exchange_mutation_allowed",
+                        ):
                             with patch(
-                                "app.services.live_trading_gate.assert_exchange_mutation_allowed",
+                                "app.services.signal_monitor.trade_client.place_market_order",
+                                return_value={"order_id": "dry_sell_1", "status": "FILLED"},
                             ):
-                                with patch(
-                                    "app.services.signal_monitor.trade_client.place_market_order",
-                                    return_value={"order_id": "dry_sell_1", "status": "FILLED"},
-                                ):
-                                    result = await svc._place_order_from_signal(
+                                result = await svc._place_order_from_signal(
                                     db,
                                     "ETH_USDT",
                                     "SELL",
@@ -99,10 +98,11 @@ def test_sell_spot_without_position_blocked_even_when_shorting_on():
     assert result.get("blocked") is True
 
 
-def test_sell_with_existing_position_allowed_without_shorting_flag():
+def test_sell_with_existing_long_blocked_when_shorting_off():
+    """SELL alerts open shorts; an existing bot long is not a close and does not bypass ALLOW_SHORTING."""
     result, captured = asyncio.run(
         _run_sell(trade_on_margin=True, open_positions=1, env={})
     )
-    assert captured.get("position_exists") is True
-    assert result.get("error") != REASON_SELL_REQUIRES_POSITION
-    assert result.get("order_id") == "dry_sell_1"
+    assert captured.get("position_exists") is False
+    assert result.get("error") == REASON_SELL_REQUIRES_POSITION
+    assert result.get("blocked") is True

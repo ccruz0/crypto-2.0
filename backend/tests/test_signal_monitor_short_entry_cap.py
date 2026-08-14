@@ -4,7 +4,9 @@ for SHORT ENTRIES only.
 Companion to the cap-race dedup fix. Before this change ``_place_order_from_signal`` enforced
 ``check_system_core_buy_allowed`` for BUY but had NO cap guard for SELL, so a margin SELL that
 opens a new short could exceed SYSTEM_CORE_MAX_OPEN_TRADES / one-active-per-coin on the live path.
-A closing SELL (reduces exposure) must NEVER be blocked by this guard.
+A closing SELL from Position Review / SL/TP is a different path. Watchlist SELL
+alerts always open an independent short and ARE routed through this guard
+(one-active-per-coin is skipped so an existing long does not block the short).
 
 Patterns mirror ``test_short_protection.py`` (short entry = margin + no existing position +
 shorting enabled).
@@ -52,6 +54,9 @@ class TestOrchestratorShortEntryCap(unittest.TestCase):
     ):
         # No existing position + margin + shorting enabled => short entry => cap guard applies.
         with patch(
+            "app.services.margin_info_service.instrument_allows_margin_short",
+            return_value=True,
+        ), patch(
             "app.services.system_core_trade_guards.check_system_core_short_entry_allowed",
             return_value=(False, "system_core_max_open_trades count=3 max=3"),
         ):
@@ -78,6 +83,9 @@ class TestOrchestratorShortEntryCap(unittest.TestCase):
             "avg_price": "6.0",
         }
         with patch(
+            "app.services.margin_info_service.instrument_allows_margin_short",
+            return_value=True,
+        ), patch(
             "app.services.system_core_trade_guards.check_system_core_short_entry_allowed",
             return_value=(True, ""),
         ), patch.object(
@@ -93,24 +101,29 @@ class TestOrchestratorShortEntryCap(unittest.TestCase):
     @patch("app.services.order_position_service.count_open_positions_for_symbol", return_value=1)
     @patch("app.services.live_trading_gate.assert_exchange_mutation_allowed")
     @patch("app.utils.live_trading.get_live_trading_status", return_value=False)
-    def test_closing_sell_is_not_routed_through_short_cap(
+    def test_sell_with_existing_position_is_independent_short_entry(
         self, _live, _gate, _count_pos, _shorting, mock_tc
     ):
-        # An existing position => this SELL CLOSES a long, not a short entry => the short cap guard
-        # must NOT be consulted and must NOT block (reducing exposure is always allowed).
+        # An existing bot long does NOT make this a long-close. SELL alerts always
+        # open an independent short, so the short-entry cap guard still applies.
         mock_tc.place_market_order.return_value = {
-            "order_id": "close-1",
+            "order_id": "short-2",
             "status": "FILLED",
             "cumulative_quantity": "16.6",
             "avg_price": "6.0",
         }
         with patch(
+            "app.services.margin_info_service.instrument_allows_margin_short",
+            return_value=True,
+        ), patch(
             "app.services.system_core_trade_guards.check_system_core_short_entry_allowed",
-            return_value=(False, "system_core_max_open_trades count=3 max=3"),
-        ) as guard:
+            return_value=(True, ""),
+        ) as guard, patch.object(
+            self.service, "_create_protection_after_entry_fill", return_value={"status": "ok"}
+        ):
             result = self._place_sell()
 
-        guard.assert_not_called()
+        guard.assert_called_once()
         self.assertNotIn("error", result)
         mock_tc.place_market_order.assert_called_once()
 

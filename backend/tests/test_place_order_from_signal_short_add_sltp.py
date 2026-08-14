@@ -41,6 +41,10 @@ class TestPlaceOrderFromSignalShortAddProtection:
              ), \
              patch("app.services.risk_guard.shorting_enabled", return_value=True), \
              patch(
+                 "app.services.margin_info_service.instrument_allows_margin_short",
+                 return_value=True,
+             ), \
+             patch(
                  "app.services.margin_decision_helper.decide_trading_mode",
              ) as mock_mode, \
              patch.object(
@@ -52,7 +56,7 @@ class TestPlaceOrderFromSignalShortAddProtection:
                  svc,
                  "_is_short_entry_needing_protection",
                  return_value=True,
-             ) as mock_short:
+             ):
             mock_mode.return_value = Mock(use_margin=True, leverage=None)
             mock_tc.place_market_order.return_value = {
                 "order_id": "5755600492782582799",
@@ -73,12 +77,12 @@ class TestPlaceOrderFromSignalShortAddProtection:
             )
 
         assert result.get("order_id") == "5755600492782582799"
-        mock_short.assert_called_once()
         mock_protect.assert_called_once()
         assert mock_protect.call_args.kwargs["entry_side"] == "SELL"
         assert mock_protect.call_args.kwargs["order_id"] == "5755600492782582799"
 
-    def test_long_close_skips_protection(self):
+    def test_existing_bot_long_still_protects_as_independent_short(self):
+        """SELL alerts open a short even if a bot long exists; SL/TP still attach."""
         svc = SignalMonitorService()
         db = _db()
         w = _watchlist()
@@ -91,6 +95,10 @@ class TestPlaceOrderFromSignalShortAddProtection:
                  return_value=1,
              ), \
              patch("app.services.risk_guard.shorting_enabled", return_value=True), \
+             patch(
+                 "app.services.margin_info_service.instrument_allows_margin_short",
+                 return_value=True,
+             ), \
              patch(
                  "app.services.margin_decision_helper.decide_trading_mode",
              ) as mock_mode, \
@@ -106,13 +114,13 @@ class TestPlaceOrderFromSignalShortAddProtection:
              ):
             mock_mode.return_value = Mock(use_margin=True, leverage=None)
             mock_tc.place_market_order.return_value = {
-                "order_id": "close-1",
+                "order_id": "independent-short-1",
                 "status": "FILLED",
                 "avg_price": "0.07",
                 "cumulative_quantity": "100",
             }
 
-            asyncio.run(
+            result = asyncio.run(
                 svc._place_order_from_signal_impl(
                     db=db,
                     symbol="DOGE_USD",
@@ -123,7 +131,9 @@ class TestPlaceOrderFromSignalShortAddProtection:
                 )
             )
 
-        mock_protect.assert_not_called()
+        assert result.get("order_id") == "independent-short-1"
+        mock_protect.assert_called_once()
+        assert mock_protect.call_args.kwargs["entry_side"] == "SELL"
 
     def test_helper_wallet_negative_is_short(self):
         svc = SignalMonitorService()
@@ -227,6 +237,10 @@ class TestPlaceOrderFromSignalShortAddProtection:
                  return_value=0,
              ), \
              patch("app.services.risk_guard.shorting_enabled", return_value=True), \
+             patch(
+                 "app.services.margin_info_service.instrument_allows_margin_short",
+                 return_value=True,
+             ), \
              patch(
                  "app.services.margin_decision_helper.decide_trading_mode",
              ) as mock_mode, \
