@@ -2066,6 +2066,31 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.95',
+    date: '2026-08-14',
+    change: 'SELL alerts open an independent SHORT (never close a long)',
+    details: `🚀 VERSIÓN 0.95 — ALERTA S = SHORT NUEVO, NO CIERRA LONG
+
+📋 **Root cause**
+• Watchlist S / Telegram SELL looked for a bot or wallet long and sold that inventory
+• Operator rule: a SELL alert must open a new independent SHORT, not close a long (longs close via SL/TP)
+
+✅ **What shipped**
+• Signal SELL always places the full ticket as a margin short (when Margin YES + ALLOW_SHORTING + exchange \`margin_sell_enabled\`)
+• Does not inspect wallet/bot longs, does not cap qty to wallet
+• CRO and any no-short instrument still block (S stays grey from v0.94) — no fallback to closing a long
+• Watchlist S tooltip: "abre un SHORT nuevo. No cierra un long."
+
+🔧 **Why**
+• Operator: cualquier alerta de venta abre un corto independiente
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
 
 ];
 
