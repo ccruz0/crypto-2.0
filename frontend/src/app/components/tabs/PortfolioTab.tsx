@@ -511,9 +511,11 @@ export default function PortfolioTab({
               <span className="text-gray-400 text-[11px]">
                 {isStableOrFiatAsset(assetCoin)
                   ? 'margen'
-                  : needSl || needTp
-                    ? '—'
-                    : 'OK'}
+                  : lot.walletTrimHidden
+                    ? 'sin flatten'
+                    : needSl || needTp
+                      ? '—'
+                      : 'OK'}
               </span>
             )}
           </td>
@@ -615,7 +617,8 @@ export default function PortfolioTab({
           Estas entradas siguen abiertas en FIFO pero no entran en el P&L de la fila
           porque lots más viejos ya cubren el saldo del exchange. Son las mismas
           que lista la alerta horaria de Telegram. Crear SL/TP aquí puede dejar
-          cobertura por encima del wallet.
+          cobertura por encima del wallet. Limpiar dust está desactivado: un
+          market close movería el saldo que ya está cubierto.
         </p>
         {renderLotsTable(trimHiddenLots, currentPrice, assetCoin)}
       </div>
