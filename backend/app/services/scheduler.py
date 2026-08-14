@@ -39,6 +39,31 @@ def _sl_tp_check_dashboard_url() -> str:
     return f"{base.rstrip('/')}/reports/sl-tp-check"
 
 
+def _hourly_sl_tp_dashboard_hint(positions_missing: list, report_url: str) -> str:
+    """Operator where-to-look copy. Naked ≠ always hidden by Cartera wallet-trim."""
+    naked = [
+        p for p in (positions_missing or [])
+        if isinstance(p, dict) and p.get("naked_parent")
+    ]
+    if not naked:
+        return (
+            f'Open <a href="{report_url}">SL/TP Check</a> on the dashboard.\n\n'
+        )
+    fifo_n = sum(1 for p in naked if p.get("in_open_lot"))
+    lookback_n = len(naked) - fifo_n
+    bits = []
+    if fifo_n:
+        bits.append(
+            f"{fifo_n} still in FIFO (Cartera expand: wallet lots or "
+            "«recorte wallet» if older lots already match the balance)"
+        )
+    if lookback_n:
+        bits.append(
+            f"{lookback_n} lookback-only (not Cartera lots — FIFO cerrado)"
+        )
+    return "; ".join(bits) + f' — <a href="{report_url}">SL/TP Check</a>.\n\n'
+
+
 def _classify_hourly_sl_tp_create_result(
     create_result: dict | None,
     *,
@@ -498,17 +523,11 @@ class TradingScheduler:
                                     "created or cancelled.\n\n",
                                 )
                             report_url = _sl_tp_check_dashboard_url()
-                            if naked_n:
-                                lines.append(
-                                    "These parent ids are hidden from Cartera P&amp;L "
-                                    "(wallet-trim) — expand the coin or open "
-                                    f'<a href="{report_url}">SL/TP Check</a>.\n\n'
+                            lines.append(
+                                _hourly_sl_tp_dashboard_hint(
+                                    positions_missing, report_url
                                 )
-                            else:
-                                lines.append(
-                                    f'Open <a href="{report_url}">SL/TP Check</a> '
-                                    "on the dashboard.\n\n"
-                                )
+                            )
                             for pos in positions_missing[:5]:
                                 missing = []
                                 if not pos.get("has_sl"):

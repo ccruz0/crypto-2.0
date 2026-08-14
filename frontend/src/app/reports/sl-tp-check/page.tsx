@@ -418,9 +418,9 @@ function InnerSlTpCheckReportPage() {
             <h2 className="text-lg font-semibold text-gray-900">Unprotected positions</h2>
             <p className="text-xs text-gray-500 mt-1">
               Separate Create SL / Create TP actions call the same create-protection-smart path as Expected TP.
-              Naked-parent rows (hourly Telegram audit) are tagged «recorte wallet» when they
-              still have FIFO qty, or «FIFO cerrado» when lookback found a fill that is no
-              longer an open lot.
+              Naked-parent rows (hourly Telegram audit) are tagged «lot FIFO» when they
+              still have open-lot qty (Cartera wallet lots or the recorte-wallet section),
+              or «FIFO cerrado» when lookback found a fill that is no longer an open lot.
             </p>
           </div>
           {displayPositions.length === 0 ? (
@@ -478,11 +478,11 @@ function InnerSlTpCheckReportPage() {
                               data-testid="sl-tp-naked-parent-badge"
                               title={
                                 pos.in_open_lot
-                                  ? 'FILLED entry missing ACTIVE SL/TP. Cartera wallet-trim hides it from row P&L — expand the coin to see «recorte wallet».'
+                                  ? 'FILLED entry missing ACTIVE SL/TP, still in FIFO open lots. May appear in Cartera as a wallet lot or under «recorte wallet» if older lots already match the exchange balance.'
                                   : 'FILLED entry missing ACTIVE SL/TP, not in current FIFO open lots (lookback). Will not appear under Cartera lots.'
                               }
                             >
-                              {pos.in_open_lot ? 'recorte wallet' : 'FIFO cerrado'}
+                              {pos.in_open_lot ? 'lot FIFO' : 'FIFO cerrado'}
                             </span>
                           )}
                         </td>

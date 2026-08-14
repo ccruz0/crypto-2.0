@@ -1981,7 +1981,7 @@ const VERSION_HISTORY = [
 
 ✅ **What shipped**
 • Portfolio expand pins leftover same-side naked fills in a «recorte wallet» section (P&L row still uses wallet lots only)
-• SL/TP Check report tags naked parents (\`recorte wallet\` vs \`FIFO cerrado\`)
+• SL/TP Check report tags naked parents (\`lot FIFO\` vs \`FIFO cerrado\`); Cartera expand still has a «recorte wallet» section for trim-hidden fills
 • Hourly TG alert links to \`/reports/sl-tp-check\` and explains the Cartera hide
 
 🔧 **Why**
