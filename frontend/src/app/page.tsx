@@ -1984,7 +1984,7 @@ const VERSION_HISTORY = [
 • Reminder-skip is not a create-deny when the human asks for protection
 
 📦 **PRs**
-• (morning watchdog)
+• #472
 
 ---
 `
