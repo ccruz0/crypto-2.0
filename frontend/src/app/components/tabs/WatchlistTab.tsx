@@ -6,7 +6,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { TopCoin, TradingSignals, saveCoinSettings, updateCoinConfig, updateWatchlistAlert, updateBuyAlert, updateSellAlert, StrategyDecision, TradingConfig } from '@/app/api';
 import { formatDateTime, formatFixed, formatNumber, isFiniteNumber, normalizeSymbolKey } from '@/utils/formatting';
-import { watchlistButtonOn } from '@/utils/watchlistToggleState';
+import { watchlistAmountText, watchlistButtonOn } from '@/utils/watchlistToggleState';
 import { logger } from '@/utils/logger';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import { usePriceStream } from '@/app/context/PriceStreamContext';
@@ -1131,8 +1131,22 @@ export default function WatchlistTab({
           bValue = signals[b.instrument_name]?.volume_ratio || 0;
           break;
         case 'amount_usd':
-          aValue = parseFloat(coinAmounts[normalizeSymbolKey(a.instrument_name)] || '0') || 0;
-          bValue = parseFloat(coinAmounts[normalizeSymbolKey(b.instrument_name)] || '0') || 0;
+          aValue =
+            parseFloat(
+              watchlistAmountText(
+                coinAmounts,
+                normalizeSymbolKey(a.instrument_name),
+                a.trade_amount_usd,
+              ) || '0',
+            ) || 0;
+          bValue =
+            parseFloat(
+              watchlistAmountText(
+                coinAmounts,
+                normalizeSymbolKey(b.instrument_name),
+                b.trade_amount_usd,
+              ) || '0',
+            ) || 0;
           break;
         case 'orders':
           // Same per-coin limit for all rows → count and ratio order identically.
@@ -1358,6 +1372,11 @@ export default function WatchlistTab({
                   symbolKey,
                   coin?.sell_alert_enabled,
                 );
+                const amountText = watchlistAmountText(
+                  coinAmounts,
+                  symbolKey,
+                  coin?.trade_amount_usd,
+                );
                 const isCoinUpdating = updatingCoins.has(coin?.instrument_name);
                 const coinOpenCount = getOpenCountForCoin(coin?.instrument_name);
                 // Per-coin limit (Signal Monitor = 3). Also watermark if global limit blocks all.
@@ -1533,11 +1552,11 @@ export default function WatchlistTab({
                         />
                       ) : (
                         <span
-                          onClick={() => setEditingAmount(prev => ({ ...prev, [coin?.instrument_name]: coinAmounts[symbolKey] || '' }))}
+                          onClick={() => setEditingAmount(prev => ({ ...prev, [coin?.instrument_name]: amountText || '' }))}
                           className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 px-2 py-1 rounded border border-transparent hover:border-gray-300"
                           title="Click to edit Amount USD"
                         >
-                          {coinAmounts[symbolKey] ? `$${coinAmounts[symbolKey]}` : '-'}
+                          {amountText ? `$${amountText}` : '-'}
                         </span>
                       )}
                     </td>
