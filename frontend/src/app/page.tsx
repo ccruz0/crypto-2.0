@@ -1967,6 +1967,28 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.92',
+    date: '2026-08-14',
+    change: 'Telegram Crear SL/TP overrides skip_sl_tp_reminder',
+    details: `🚀 VERSIÓN 0.92 — EXPLICIT SL/TP CREATE = FORCE
+
+📋 **What shipped**
+• \`/create_sl_tp\`, \`/create_sl\`, \`/create_tp\` (and position-review buttons) pass \`force=True\`
+• \`skip_sl_tp_reminder\` still suppresses automatic reminders; it no longer blocks operator create
+• Bulk \`/create_sl_tp\` already used force — single-symbol path now matches
+
+🔧 **Why**
+• 2026-08-13 ATP Control: daily REVISIÓN DE POSICIÓN offered Crear SL/TP for SUI_USD
+• Operator click → ❌ ERROR CREATING SL/TP: "SL/TP reminder skipped … use force=True"
+• Reminder-skip is not a create-deny when the human asks for protection
+
+📦 **PRs**
+• (morning watchdog)
+
+---
+`
+  },
 
 ];
 
