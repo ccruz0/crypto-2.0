@@ -4380,7 +4380,12 @@ def handle_create_sl_tp_command(chat_id: str, text: str, db: Optional[Session] =
             if "_" not in symbol:
                 symbol = f"{symbol}_USDT"
             
-            result = sl_tp_checker_service.create_sl_tp_for_position(db, symbol)
+            # Explicit operator action (command or position-review button) must
+            # override skip_sl_tp_reminder — same as the bulk create path below.
+            # 2026-08-13: SUI_USD "Crear SL y TP" → ERROR "reminder skipped".
+            result = sl_tp_checker_service.create_sl_tp_for_position(
+                db, symbol, force=True
+            )
             
             if result.get('success'):
                 message = f"✅ <b>SL/TP CREATED</b>\n\n"
@@ -4453,7 +4458,8 @@ def handle_create_sl_command(chat_id: str, text: str, db: Optional[Session] = No
         if "_" not in symbol:
             symbol = f"{symbol}_USDT"
         
-        result = sl_tp_checker_service.create_sl_for_position(db, symbol)
+        # Explicit operator action overrides skip_sl_tp_reminder (position-review buttons).
+        result = sl_tp_checker_service.create_sl_for_position(db, symbol, force=True)
         
         if result.get('success'):
             message = f"✅ <b>SL CREATED</b>\n\n"
@@ -4497,7 +4503,8 @@ def handle_create_tp_command(chat_id: str, text: str, db: Optional[Session] = No
         if "_" not in symbol:
             symbol = f"{symbol}_USDT"
         
-        result = sl_tp_checker_service.create_tp_for_position(db, symbol)
+        # Explicit operator action overrides skip_sl_tp_reminder (position-review buttons).
+        result = sl_tp_checker_service.create_tp_for_position(db, symbol, force=True)
         
         if result.get('success'):
             message = f"✅ <b>TP CREATED</b>\n\n"
