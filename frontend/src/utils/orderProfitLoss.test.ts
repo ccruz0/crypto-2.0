@@ -476,6 +476,100 @@ describe('rebuildOpenLots / open-position filter', () => {
     expect(viaAsset.filter((l) => l.side === 'BUY')).toHaveLength(1);
   });
 
+  it('pins same-side naked fills that wallet-trim dropped (Telegram hourly parents)', () => {
+    // ETH Cartera: two older protected shorts already match |wallet|; a newer
+    // ALERT SELL without children is FIFO-open but trimmed away — same as the
+    // hourly TG "naked entry parent hidden by wallet-sum coverage" rows.
+    const oldProtected = makeOrder({
+      order_id: '5755600491465274888',
+      side: 'SELL',
+      quantity: '0.0049',
+      price: '1840',
+      instrument_name: 'ETH_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      has_linked_sl: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const midProtected = makeOrder({
+      order_id: 'eth-july-mid',
+      side: 'SELL',
+      quantity: '0.00507',
+      price: '1785',
+      instrument_name: 'ETH_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      has_linked_sl: true,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const nakedRecent = makeOrder({
+      order_id: '5755600492922223595',
+      side: 'SELL',
+      quantity: '0.0052',
+      price: '1914.8',
+      instrument_name: 'ETH_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: false,
+      has_linked_sl: false,
+      create_time: 3_000,
+      update_time: 3_000,
+    });
+    const wallet = -(0.0049 + 0.00507);
+    const lots = getOpenPositionLotsForAsset(
+      [oldProtected, midProtected, nakedRecent],
+      'ETH',
+      wallet
+    );
+    const ids = lots.map((l) => l.order.order_id).sort();
+    expect(ids).toEqual([
+      '5755600491465274888',
+      '5755600492922223595',
+      'eth-july-mid',
+    ]);
+    const naked = lots.find((l) => l.order.order_id === '5755600492922223595');
+    expect(naked?.walletTrimHidden).toBe(true);
+    expect(naked?.remainingQty).toBeCloseTo(0.0052, 8);
+    expect(lots.filter((l) => l.walletTrimHidden)).toHaveLength(1);
+
+    const pnl = calculateOpenLotsAggregateProfitLoss(lots, 1900);
+    const walletOnly = lots.filter((l) => !l.walletTrimHidden);
+    const walletPnl = calculateOpenLotsAggregateProfitLoss(walletOnly, 1900);
+    expect(pnl.pnl).toBeCloseTo(walletPnl.pnl, 8);
+  });
+
+  it('does not pin protected extras that exceed wallet', () => {
+    const first = makeOrder({
+      order_id: 'prot-a',
+      side: 'SELL',
+      quantity: '1',
+      price: '100',
+      instrument_name: 'SOL_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      has_linked_sl: true,
+      create_time: 1_000,
+      update_time: 1_000,
+    });
+    const extraProtected = makeOrder({
+      order_id: 'prot-b',
+      side: 'SELL',
+      quantity: '1',
+      price: '110',
+      instrument_name: 'SOL_USD',
+      execution_origin: 'ALERT',
+      has_linked_tp: true,
+      has_linked_sl: true,
+      create_time: 2_000,
+      update_time: 2_000,
+    });
+    const lots = getOpenPositionLotsForAsset([first, extraProtected], 'SOL', -0.25);
+    expect(lots).toHaveLength(1);
+    expect(lots[0].order.order_id).toBe('prot-a');
+    expect(lots[0].walletTrimHidden).toBeUndefined();
+  });
+
   it('drops unprotected opposite shorts on a net-long wallet (ALGO false shorts)', () => {
     const longAlert = makeOrder({
       order_id: 'algo-long',

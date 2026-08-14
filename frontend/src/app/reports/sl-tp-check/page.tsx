@@ -20,6 +20,7 @@ interface MissingPosition {
   current_price?: number | null;
   uncovered_qty?: number | null;
   naked_parent?: boolean;
+  in_open_lot?: boolean;
 }
 
 interface SlTpCheckReport {
@@ -417,6 +418,9 @@ function InnerSlTpCheckReportPage() {
             <h2 className="text-lg font-semibold text-gray-900">Unprotected positions</h2>
             <p className="text-xs text-gray-500 mt-1">
               Separate Create SL / Create TP actions call the same create-protection-smart path as Expected TP.
+              Naked-parent rows (hourly Telegram audit) are tagged «recorte wallet» when they
+              still have FIFO qty, or «FIFO cerrado» when lookback found a fill that is no
+              longer an open lot.
             </p>
           </div>
           {displayPositions.length === 0 ? (
@@ -466,6 +470,19 @@ function InnerSlTpCheckReportPage() {
                           {isFocus && (
                             <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-800 font-semibold">
                               focus
+                            </span>
+                          )}
+                          {pos.naked_parent && (
+                            <span
+                              className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900"
+                              data-testid="sl-tp-naked-parent-badge"
+                              title={
+                                pos.in_open_lot
+                                  ? 'FILLED entry missing ACTIVE SL/TP. Cartera wallet-trim hides it from row P&L — expand the coin to see «recorte wallet».'
+                                  : 'FILLED entry missing ACTIVE SL/TP, not in current FIFO open lots (lookback). Will not appear under Cartera lots.'
+                              }
+                            >
+                              {pos.in_open_lot ? 'recorte wallet' : 'FIFO cerrado'}
                             </span>
                           )}
                         </td>

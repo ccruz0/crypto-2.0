@@ -1811,6 +1811,7 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
     current_price = _safe_float(pos.get("current_price") or pos.get("mark_price"))
     uncovered_qty = _safe_float(pos.get("uncovered_qty"))
     naked_parent = bool(pos.get("naked_parent"))
+    in_open_lot = bool(pos.get("in_open_lot"))
     return {
         "symbol": symbol,
         "currency": currency,
@@ -1826,6 +1827,7 @@ def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
         "current_price": current_price,
         "uncovered_qty": uncovered_qty,
         "naked_parent": naked_parent,
+        "in_open_lot": in_open_lot,
     }
 
 

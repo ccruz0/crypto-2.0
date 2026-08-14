@@ -687,6 +687,7 @@ def _naked_parent_report_row(
     skip_reminder: bool,
     watchlist_item: Optional[WatchlistItem],
     current_price: Optional[float],
+    in_open_lot: bool = False,
 ) -> Dict:
     """Build a SL/TP-check row sized to the parent lot (not wallet uncovered gap)."""
     from app.services.sl_tp_protection import get_active_protection_order
@@ -720,6 +721,7 @@ def _naked_parent_report_row(
         "quantity": qty,
         "entry_price": _order_entry_price(parent),
         "naked_parent": True,
+        "in_open_lot": bool(in_open_lot),
     }
 
 
@@ -1644,6 +1646,16 @@ class SLTPCheckerService:
                     naked_parents = _iter_naked_entry_parents(
                         db, symbol, entry_side=str(entry_side)
                     )
+                    open_lot_ids = set()
+                    try:
+                        from app.services.expected_take_profit import rebuild_open_lots
+
+                        for lot in rebuild_open_lots(db, symbol) or []:
+                            lot_pid = (getattr(lot, "buy_order_id", None) or "").strip()
+                            if lot_pid:
+                                open_lot_ids.add(lot_pid)
+                    except Exception:
+                        pass
                     seen_parent_ids = set()
                     for parent in naked_parents:
                         pid = (parent.exchange_order_id or "").strip()
@@ -1667,6 +1679,7 @@ class SLTPCheckerService:
                             skip_reminder=skip_reminder,
                             watchlist_item=watchlist_item,
                             current_price=mark,
+                            in_open_lot=pid in open_lot_ids,
                         )
                         naked_rows.append(row)
                         seen_parent_ids.add(pid)

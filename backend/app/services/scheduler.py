@@ -26,6 +26,19 @@ def _is_primary_report_sender() -> bool:
     )
 
 
+def _sl_tp_check_dashboard_url() -> str:
+    """Operator dashboard URL for the same rows the hourly Telegram audit lists."""
+    base = (os.getenv("FRONTEND_URL") or os.getenv("PUBLIC_BASE_URL") or "").strip()
+    if not base:
+        try:
+            from app.core.environment import get_frontend_url
+
+            base = get_frontend_url()
+        except Exception:
+            base = "https://dashboard.hilovivo.com"
+    return f"{base.rstrip('/')}/reports/sl-tp-check"
+
+
 def _classify_hourly_sl_tp_create_result(
     create_result: dict | None,
     *,
@@ -483,6 +496,18 @@ class TradingScheduler:
                                 lines.append(
                                     ".\nBackground healing is disabled — no orders were "
                                     "created or cancelled.\n\n",
+                                )
+                            report_url = _sl_tp_check_dashboard_url()
+                            if naked_n:
+                                lines.append(
+                                    "These parent ids are hidden from Cartera P&amp;L "
+                                    "(wallet-trim) — expand the coin or open "
+                                    f'<a href="{report_url}">SL/TP Check</a>.\n\n'
+                                )
+                            else:
+                                lines.append(
+                                    f'Open <a href="{report_url}">SL/TP Check</a> '
+                                    "on the dashboard.\n\n"
                                 )
                             for pos in positions_missing[:5]:
                                 missing = []

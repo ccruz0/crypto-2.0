@@ -2,6 +2,7 @@
 from app.services.scheduler import (
     _classify_hourly_sl_tp_create_result,
     _is_primary_report_sender,
+    _sl_tp_check_dashboard_url,
 )
 
 
@@ -97,3 +98,14 @@ def test_hourly_check_gated_inside_primary_block():
     approval_idx = src.find("await self.check_approval_queue()")
     assert primary_idx != -1 and hourly_idx != -1 and approval_idx != -1
     assert primary_idx < hourly_idx < approval_idx
+
+
+def test_sl_tp_check_dashboard_url_uses_frontend_env(monkeypatch):
+    monkeypatch.setenv("FRONTEND_URL", "https://dashboard.hilovivo.com/")
+    assert _sl_tp_check_dashboard_url() == "https://dashboard.hilovivo.com/reports/sl-tp-check"
+
+
+def test_sl_tp_check_dashboard_url_falls_back_to_public_base(monkeypatch):
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://example.test")
+    assert _sl_tp_check_dashboard_url() == "https://example.test/reports/sl-tp-check"

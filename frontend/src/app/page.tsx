@@ -1968,6 +1968,32 @@ const VERSION_HISTORY = [
 `
   },
 
+  {
+    version: '0.92',
+    date: '2026-08-14',
+    change: 'Cartera shows Telegram naked SL/TP parents hidden by wallet-trim',
+    details: `🚀 VERSIÓN 0.92 — NAKED PARENTS VISIBLE IN CARTERA
+
+📋 **Root cause**
+• Hourly Telegram SL/TP audit lists FILLED entry parents missing ACTIVE SL/TP even when wallet-sum coverage looks 100%
+• Cartera expand trimmed FIFO lots to |wallet| oldest-first, so those parent ids never appeared (ETH/DOGE "recorte wallet")
+• Operators saw 8 missing SL+TP in TG and only the wallet-aligned lots (Acción OK) on the dashboard
+
+✅ **What shipped**
+• Portfolio expand pins leftover same-side naked fills in a «recorte wallet» section (P&L row still uses wallet lots only)
+• SL/TP Check report tags naked parents (\`recorte wallet\` vs \`FIFO cerrado\`)
+• Hourly TG alert links to \`/reports/sl-tp-check\` and explains the Cartera hide
+
+🔧 **Why**
+• Same 8 parent rows repeated hour after hour; expanding ETH only showed the two lots that already match the exchange balance
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
+
 ];
 
 // Helper function to get current version (must be defined before component)
