@@ -1,32 +1,49 @@
-# Enable GitHub auto-merge on every PR targeting main once opened/ready.
-# Prerequisite (repo admin, one-time):
-#   Settings → General → Pull Requests → ☑ Allow auto-merge
-# Ruleset still requires path-guard green; protected-path PRs will not merge
-# until an admin bypasses or the PR avoids those files.
+# Arm squash auto-merge on PRs to main, including Cloud Agent drafts.
+#
+# Why this exists:
+#   Cursor Cloud opens PRs as drafts. GitHub auto-merge cannot be enabled on a
+#   draft, so the previous `if: draft == false` job skipped them. Bugbot inline
+#   threads then keep mergeStateStatus BLOCKED because protect-main-production
+#   requires conversation resolution. This workflow marks the PR ready, enables
+#   auto-merge, resolves leftover bot-only threads after Bugbot approves, and
+#   squash-merges when Path Guard is green.
+#
+# Still required: repo Settings → General → Pull Requests → Allow auto-merge.
+# Path-guard failures and human review threads still block merge.
 name: Enable auto-merge
 
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize]
     branches: [main]
+  pull_request_review:
+    types: [submitted, dismissed]
 
 permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   enable-auto-merge:
-    if: github.event.pull_request.draft == false
+    if: >
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.state == 'open'
     runs-on: ubuntu-latest
     steps:
-      - name: Enable auto-merge (squash)
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ready draft, arm auto-merge, squash when green
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          set -euo pipefail
-          # Idempotent: succeeds if already enabled or if repo allow_auto_merge is on.
-          gh pr merge "$PR_URL" --auto --squash || {
-            echo "::warning::Could not enable auto-merge (is 'Allow auto-merge' enabled in repo Settings → General → Pull Requests?)."
-            exit 0
-          }
+          GH_PAGER: cat
+          NO_COLOR: "1"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTO_MERGE_POLL_SECONDS: "90"
+        run: python3 scripts/github_auto_merge.py
