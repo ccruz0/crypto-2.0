@@ -123,5 +123,7 @@ def test_should_attempt_squash_when_blocked_but_path_guard_green() -> None:
 
 
 def test_ruleset_update_block_detection() -> None:
+    assert auto_merge.is_ruleset_update_block("Cannot update this protected ref.") is True
+    assert auto_merge.is_ruleset_update_block("Repository rule violations found") is True
     assert auto_merge.is_ruleset_update_block("Resource not accessible by integration") is True
     assert auto_merge.is_ruleset_update_block("SHA did not match") is False

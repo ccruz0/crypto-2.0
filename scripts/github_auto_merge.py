@@ -42,6 +42,7 @@ TERMINAL_PR_STATES = frozenset({"MERGED", "CLOSED"})
 POLL_SECONDS_DEFAULT = 90
 POLL_INTERVAL_SECONDS = 5
 PATH_GUARD_CHECK_NAME = "path-guard"
+RULESET_HINT_MARKER = "<!-- auto-merge-ruleset-hint -->"
 RULESET_BYPASS_HINT = (
     "GitHub Actions cannot finish the merge while protect-main-production "
     "has Restrict updates and an empty bypass list. One-time operator step: "
@@ -50,6 +51,21 @@ RULESET_BYPASS_HINT = (
     "Or turn off Restrict updates (Require a pull request already blocks "
     "direct pushes to main)."
 )
+RULESET_PR_COMMENT = f"""{RULESET_HINT_MARKER}
+Auto-merge is armed, but GitHub Actions cannot squash-merge: **Cannot update this protected ref** (`protect-main-production` → Restrict updates, empty bypass list).
+
+This is a one-time repo setting. Cloud agents cannot change it (API 403).
+
+1. Open [protect-main-production](https://github.com/ccruz0/crypto-2.0/rules/13156283)
+2. **Bypass list** → Add bypass → **GitHub Actions**
+3. Bypass mode: **Pull request** (not Always)
+4. Save
+5. Re-run the **Enable auto-merge** workflow on this PR (or push an empty commit)
+
+Alternative: turn **off Restrict updates**. Require a pull request is already on, so nobody can push straight to `main`.
+
+Optional: repo secret `AUTO_MERGE_TOKEN` = a PAT that can merge; the workflow already reads it.
+"""
 
 
 class GhError(RuntimeError):
@@ -112,12 +128,13 @@ def is_ruleset_update_block(output: str) -> bool:
     return any(
         token in lowered
         for token in (
-            "restricted from pushing",
+            "cannot update this protected ref",
             "cannot update this branch",
+            "repository rule violations",
+            "restricted from pushing",
             "resource not accessible",
             "not authorized to merge",
             "gh-rs-",
-            "ruleset",
             "protect-main-production",
         )
     )
@@ -315,6 +332,19 @@ def rest_squash_merge(repo: str, number: int, sha: str, title: str) -> str:
     raise GhError(output)
 
 
+def comment_ruleset_hint(repo: str, number: int) -> None:
+    result = run_gh(["api", f"repos/{repo}/issues/{number}/comments"], check=False)
+    if result.returncode == 0:
+        try:
+            comments = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            comments = []
+        for comment in comments:
+            if RULESET_HINT_MARKER in (comment.get("body") or ""):
+                return
+    run_gh(["pr", "comment", str(number), "--body", RULESET_PR_COMMENT])
+
+
 def try_squash_merge(pr: dict[str, Any], repo: str) -> str:
     """Prefer REST merge; gh pr merge preflight treats Restrict updates as BLOCKED."""
     number = int(pr["number"])
@@ -428,6 +458,7 @@ def process_pr(
                 print(f"Squash merge not completed yet: {error}", flush=True)
                 if is_ruleset_update_block(last_merge_error):
                     print(f"::error::{RULESET_BYPASS_HINT}", flush=True)
+                    comment_ruleset_hint(repo, number)
                     return 1
         if time.monotonic() >= deadline:
             break
