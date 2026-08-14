@@ -2036,7 +2036,7 @@ const VERSION_HISTORY = [
 • 2026-08-14 11:19 WIB: CRO_USD SELL SIGNAL then ORDER FAILED 608 while Watchlist Margin was YES
 
 📦 **PRs**
-• (this PR)
+• #477
 
 ---
 `
