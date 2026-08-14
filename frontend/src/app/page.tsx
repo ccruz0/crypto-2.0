@@ -2035,7 +2035,7 @@ const VERSION_HISTORY = [
 • Operator asked why CRO was red with 0/3 and no Telegram alert
 
 📦 **PRs**
-• (this PR)
+• #476
 
 ---
 `
