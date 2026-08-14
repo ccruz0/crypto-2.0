@@ -146,13 +146,14 @@ class TestShortEntryGuard:
 
     def test_blocks_one_active_trade_per_coin(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
-            with patch(
-                "app.services.order_position_service.count_open_positions_for_symbol",
-                return_value=1,
-            ):
-                allowed, reason = scg.check_system_core_short_entry_allowed(
-                    mock_db, "DOT_USD", 100.0, price=6.0
-                )
+            with patch.object(scg, "_resolve_max_open_per_coin", return_value=1):
+                with patch(
+                    "app.services.order_position_service.count_open_positions_for_symbol",
+                    return_value=1,
+                ):
+                    allowed, reason = scg.check_system_core_short_entry_allowed(
+                        mock_db, "DOT_USD", 100.0, price=6.0
+                    )
         assert allowed is False
         assert reason == "system_core_one_active_trade_per_coin"
 

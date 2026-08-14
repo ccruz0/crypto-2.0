@@ -2086,7 +2086,7 @@ const VERSION_HISTORY = [
 • Operator: cualquier alerta de venta abre un corto independiente
 
 📦 **PRs**
-• (this PR)
+• #479
 
 ---
 `
