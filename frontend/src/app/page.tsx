@@ -2015,6 +2015,32 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.93',
+    date: '2026-08-14',
+    change: 'CRO SELL: dust wallet is not a long-close (no 608 short)',
+    details: `🚀 VERSIÓN 0.93 — DUST WALLET ≠ LONG-CLOSE
+
+📋 **Root cause**
+• SELL alert for CRO_USD is valid (RSI/trend/volume + 3% throttle) — Telegram is correct
+• Crypto.com CRO allows margin buy, not short (\`margin_sell_enabled=false\`, 608 CANNOT_SHORT_SELL)
+• v0.89 treated any positive wallet as a long-close; ~0.93 CRO (~$0.04) dust then sold the $100 ticket → exchange short → 608
+• Pre-gate \`INSTRUMENT_SHORT_SELL_DISABLED\` never ran because dust looked like a position
+
+✅ **What shipped**
+• Wallet long-close only when notional ≥ $5 (same dust floor as system_core / Cartera)
+• Long-close qty is capped to wallet so a smaller long cannot oversell into a short
+• Telegram 608 copy uses the same Spanish SHORT-disabled line (raw 608 stays in Detalle técnico)
+
+🔧 **Why**
+• 2026-08-14 11:19 WIB: CRO_USD SELL SIGNAL then ORDER FAILED 608 while Watchlist Margin was YES
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
 
 ];
 

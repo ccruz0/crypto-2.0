@@ -95,6 +95,19 @@ def test_instrument_short_sell_disabled_does_not_sound_like_watchlist_off():
     assert "watchlist" in msg.lower()
 
 
+def test_cannot_short_sell_608_uses_same_spanish_copy():
+    """Exchange 608 must not dump the raw error as the operator-facing line."""
+    msg = humanize_guardrail_reason(
+        "500 Server Error: CANNOT_SHORT_SELL_INSTRUMENT (code: 608)",
+        "CRO_USD",
+        side="SELL",
+    )
+    assert "Venta" in msg
+    assert "CRO" in msg
+    assert "SHORT" in msg
+    assert "608" not in msg
+
+
 def test_order_failed_telegram_guardrail_includes_technical_detail():
     section, stored = order_failed_telegram_error_section(
         "system_core_one_active_trade_per_coin",

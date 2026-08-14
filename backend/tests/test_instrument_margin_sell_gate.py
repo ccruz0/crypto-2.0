@@ -62,9 +62,9 @@ class TestMarginInfoSellFlag(unittest.TestCase):
         self.assertFalse(instrument_allows_margin_short("CRO_USD"))
 
 
-def _watchlist(*, trade_on_margin: bool):
+def _watchlist(*, trade_on_margin: bool, trade_amount_usd: float = 10.0):
     item = MagicMock()
-    item.trade_amount_usd = 10.0
+    item.trade_amount_usd = trade_amount_usd
     item.trade_on_margin = trade_on_margin
     return item
 
@@ -77,6 +77,8 @@ async def _run_sell(
     env: dict,
     sell_ok: bool,
     wallet_balance=None,
+    trade_amount_usd: float = 10.0,
+    price: float | None = None,
 ):
     svc = SignalMonitorService()
     db = MagicMock()
@@ -116,8 +118,13 @@ async def _run_sell(
                                         db,
                                         symbol,
                                         "SELL",
-                                        _watchlist(trade_on_margin=trade_on_margin),
-                                        0.05 if symbol.startswith("CRO") else 3000.0,
+                                        _watchlist(
+                                            trade_on_margin=trade_on_margin,
+                                            trade_amount_usd=trade_amount_usd,
+                                        ),
+                                        price
+                                        if price is not None
+                                        else (0.05 if symbol.startswith("CRO") else 3000.0),
                                     )
     return result, captured, place
 
@@ -192,6 +199,51 @@ def test_cro_bot_long_close_not_blocked_when_margin_sell_disabled():
     assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
     assert result.get("order_id") == "dry_sell_1"
     assert place.call_count == 1
+    assert captured.get("position_exists") is True
+
+
+def test_cro_dust_wallet_is_not_treated_as_long_close():
+    """ATP Control 2026-08-14: 0.93 CRO dust (~$0.04) made a $100 SELL hit 608.
+
+    v0.89 treated any positive wallet as a long-close, then sold the full ticket
+    (a short of the remainder). Dust must take the short-disabled pre-block.
+    """
+    result, captured, place = asyncio.run(
+        _run_sell(
+            symbol="CRO_USD",
+            trade_on_margin=True,
+            open_positions=0,
+            env={"ALLOW_SHORTING": "true"},
+            sell_ok=False,
+            wallet_balance=0.93,
+            trade_amount_usd=100.0,
+            price=0.0484,
+        )
+    )
+    assert result.get("blocked") is True
+    assert result.get("error") == "INSTRUMENT_SHORT_SELL_DISABLED"
+    assert place.call_count == 0
+    assert "position_exists" not in captured
+
+
+def test_cro_long_close_qty_capped_to_wallet():
+    """A material long smaller than the ticket must close the wallet, not short the rest."""
+    result, captured, place = asyncio.run(
+        _run_sell(
+            symbol="CRO_USD",
+            trade_on_margin=True,
+            open_positions=0,
+            env={"ALLOW_SHORTING": "true"},
+            sell_ok=False,
+            wallet_balance=400.0,  # $20 at $0.05 — above $5 dust, below $100 ticket
+            trade_amount_usd=100.0,
+            price=0.05,
+        )
+    )
+    assert result.get("error") != "INSTRUMENT_SHORT_SELL_DISABLED"
+    assert result.get("order_id") == "dry_sell_1"
+    assert place.call_count == 1
+    assert place.call_args.kwargs.get("qty") == 400.0
     assert captured.get("position_exists") is True
 
 
