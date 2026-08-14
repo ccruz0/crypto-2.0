@@ -18,6 +18,26 @@ export function watchlistButtonOn(
   return Boolean(dbValue);
 }
 
+/** Exchange allows SHORT / SELL alerts. Missing field (old API) keeps the button enabled. */
+export function exchangeAllowsShortAlert(
+  marginSellEnabled: boolean | null | undefined,
+): boolean {
+  return marginSellEnabled !== false;
+}
+
+/** S button is ON only if the DB/overlay flag is on AND the exchange allows SHORT. */
+export function sellAlertButtonOn(
+  overlay: Record<string, boolean> | undefined,
+  symbolKey: string,
+  dbSellAlert: boolean | null | undefined,
+  marginSellEnabled: boolean | null | undefined,
+): boolean {
+  if (!exchangeAllowsShortAlert(marginSellEnabled)) {
+    return false;
+  }
+  return watchlistButtonOn(overlay, symbolKey, dbSellAlert);
+}
+
 /** Collect boolean watchlist flags from API rows using uppercase keys. */
 export function watchlistFlagsFromCoins(
   coins: Array<{

@@ -1073,6 +1073,8 @@ class SignalMonitorService:
             buy_alert_enabled = bool(getattr(item, 'buy_alert_enabled', False))
             sell_alert_enabled = bool(getattr(item, 'sell_alert_enabled', False))
             trade_enabled = bool(getattr(item, 'trade_enabled', False))
+            from app.services.margin_info_service import clamp_sell_alert_enabled
+            sell_alert_enabled = clamp_sell_alert_enabled(normalized_symbol, sell_alert_enabled)
             
             logger.info(
                 f"[ALERT_CONFIG] symbol={symbol} normalized={normalized_symbol} "
@@ -6064,6 +6066,8 @@ class SignalMonitorService:
             )
         # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
         sell_alert_enabled = getattr(watchlist_item, 'sell_alert_enabled', False)
+        from app.services.margin_info_service import clamp_sell_alert_enabled
+        sell_alert_enabled = clamp_sell_alert_enabled(symbol, bool(sell_alert_enabled))
         
         # Log alert decision with all flags for clarity
         if sell_signal:
@@ -6222,6 +6226,10 @@ class SignalMonitorService:
                     fresh_check = get_canonical_watchlist_item(db, symbol)
                     if fresh_check:
                         sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
+                        from app.services.margin_info_service import clamp_sell_alert_enabled
+                        sell_alert_enabled = clamp_sell_alert_enabled(
+                            symbol, bool(sell_alert_enabled)
+                        )
                         logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
                 except Exception as e:
                     logger.warning(f"Error en última verificación de flags para {symbol}: {e}")

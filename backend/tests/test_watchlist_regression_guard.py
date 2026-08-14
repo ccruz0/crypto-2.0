@@ -9,7 +9,7 @@ that breaks the "DB is single source of truth" guarantee.
 """
 
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from app.api.routes_dashboard import _serialize_watchlist_item
 
 
@@ -156,7 +156,8 @@ def test_put_dashboard_writes_to_watchlist_item():
     )
 
 
-def test_watchlist_toggle_booleans_match_db():
+@patch("app.services.margin_info_service.instrument_allows_margin_short", return_value=True)
+def test_watchlist_toggle_booleans_match_db(mock_short):
     """Trade / Margin / Alert flags must round-trip exactly from watchlist_items."""
     item = create_mock_watchlist_item(
         "CRO_USD",
@@ -172,4 +173,13 @@ def test_watchlist_toggle_booleans_match_db():
     assert serialized["alert_enabled"] is True
     assert serialized["buy_alert_enabled"] is False
     assert serialized["sell_alert_enabled"] is True
+
+
+@patch("app.services.margin_info_service.instrument_allows_margin_short", return_value=False)
+def test_serialize_exposes_margin_sell_enabled_without_mutating_db_sell_flag(mock_short):
+    """CRO: DB may still have sell_alert_enabled=true; API reports the exchange flag separately."""
+    item = create_mock_watchlist_item("CRO_USD", sell_alert_enabled=True)
+    serialized = _serialize_watchlist_item(item, market_data=None, db=None)
+    assert serialized["sell_alert_enabled"] is True
+    assert serialized["margin_sell_enabled"] is False
 

@@ -2041,6 +2041,31 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.94',
+    date: '2026-08-14',
+    change: 'Disable Watchlist S (SHORT) alerts when exchange forbids short',
+    details: `🚀 VERSIÓN 0.94 — NO SHORT ALERT BUTTON IF EXCHANGE FORBIDS SHORT
+
+📋 **Root cause**
+• CRO_USD SELL alerts fired while Crypto.com \`margin_sell_enabled=false\` (608 CANNOT_SHORT_SELL)
+• Watchlist S button did not know the instrument cannot open a SHORT
+
+✅ **What shipped**
+• Dashboard / top-coins expose \`margin_sell_enabled\` from Crypto.com instruments
+• Watchlist S is disabled (grey, not clickable) when the exchange forbids SHORT — CRO and any other coin with the same flag
+• Backend will not send SELL/SHORT Telegram or accept S=ON for those instruments
+• BUY alerts (B) and Margin YES (longs) are unchanged
+
+🔧 **Why**
+• Operator: if the system cannot short, do not enable the short-alert buttons
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
 
 ];
 
