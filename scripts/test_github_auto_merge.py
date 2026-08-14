@@ -77,7 +77,7 @@ def test_path_guard_passed() -> None:
     assert auto_merge.path_guard_passed([]) is False
     assert (
         auto_merge.path_guard_passed(
-            [{"name": "path-guard", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+            [{"name": "path-guard", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-08-14T01:00:00Z"}]
         )
         is True
     )
@@ -87,6 +87,50 @@ def test_path_guard_passed() -> None:
         )
         is False
     )
+
+
+def test_path_guard_uses_latest_completed_not_older_failures() -> None:
+    rollup = [
+        {
+            "name": "path-guard",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "completedAt": "2026-08-14T01:00:00Z",
+        },
+        {
+            "name": "path-guard",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "completedAt": "2026-08-14T02:00:00Z",
+        },
+        {
+            "name": "path-guard",
+            "status": "IN_PROGRESS",
+            "conclusion": "",
+            "completedAt": "0001-01-01T00:00:00Z",
+        },
+    ]
+    assert auto_merge.path_guard_passed(rollup) is True
+
+
+def test_ruleset_update_block_detection() -> None:
+    assert auto_merge.is_ruleset_update_block("Cannot update this protected ref.") is True
+    assert auto_merge.is_ruleset_update_block("Repository rule violations found") is False
+    assert (
+        auto_merge.is_ruleset_update_block(
+            "A conversation must be resolved before this pull request can be merged."
+        )
+        is False
+    )
+    assert auto_merge.is_unresolved_conversation_block(
+        "A conversation must be resolved before this pull request can be merged."
+    )
+    assert auto_merge.is_ruleset_update_block("SHA did not match") is False
+
+
+def test_force_resolve_bot_threads() -> None:
+    assert auto_merge.should_resolve_bot_threads(None, force=True) is True
+    assert auto_merge.should_resolve_bot_threads(None, force=False) is False
 
 
 def test_should_attempt_squash_when_blocked_but_path_guard_green() -> None:
@@ -120,10 +164,3 @@ def test_should_attempt_squash_when_blocked_but_path_guard_green() -> None:
         )
         is False
     )
-
-
-def test_ruleset_update_block_detection() -> None:
-    assert auto_merge.is_ruleset_update_block("Cannot update this protected ref.") is True
-    assert auto_merge.is_ruleset_update_block("Repository rule violations found") is True
-    assert auto_merge.is_ruleset_update_block("Resource not accessible by integration") is True
-    assert auto_merge.is_ruleset_update_block("SHA did not match") is False

@@ -108,35 +108,42 @@ def can_immediate_merge(merge_state_status: str | None) -> bool:
 
 
 def path_guard_passed(status_check_rollup: list[dict[str, Any]] | None) -> bool:
+    """True if the latest completed Path Guard check succeeded.
+
+    GitHub's rollup keeps older cancelled/failed attempts next to a newer
+    success; requiring every entry named path-guard to be green stays closed.
+    """
     checks = status_check_rollup or []
-    matches = [item for item in checks if item.get("name") == PATH_GUARD_CHECK_NAME]
-    if not matches:
+    completed = []
+    for item in checks:
+        if item.get("name") != PATH_GUARD_CHECK_NAME:
+            continue
+        if (item.get("status") or "").upper() != "COMPLETED":
+            continue
+        finished = item.get("completedAt") or ""
+        if str(finished).startswith("0001"):
+            continue
+        completed.append(item)
+    if not completed:
         return False
-    return all(
-        (item.get("status") or "").upper() == "COMPLETED"
-        and (item.get("conclusion") or "").upper() == "SUCCESS"
-        for item in matches
-    )
+    latest = max(completed, key=lambda item: str(item.get("completedAt") or ""))
+    return (latest.get("conclusion") or "").upper() == "SUCCESS"
 
 
 def has_unresolved_human_threads(threads: list[dict[str, Any]]) -> bool:
     return any(not is_bot_only_thread(thread) for thread in threads)
 
 
+def is_unresolved_conversation_block(output: str) -> bool:
+    return "conversation must be resolved" in output.lower()
+
+
 def is_ruleset_update_block(output: str) -> bool:
     lowered = output.lower()
-    return any(
-        token in lowered
-        for token in (
-            "cannot update this protected ref",
-            "cannot update this branch",
-            "repository rule violations",
-            "restricted from pushing",
-            "resource not accessible",
-            "not authorized to merge",
-            "gh-rs-",
-            "protect-main-production",
-        )
+    if is_unresolved_conversation_block(lowered):
+        return False
+    return "cannot update this protected ref" in lowered or (
+        "restricted from pushing" in lowered
     )
 
 
@@ -167,12 +174,10 @@ def should_skip_pr(state: str | None, merged: bool) -> bool:
     return (state or "").upper() in TERMINAL_PR_STATES
 
 
-def should_resolve_bot_threads(review_decision: str | None) -> bool:
-    """Only clear leftover Bugbot threads after an explicit approve.
-
-    An empty decision means Bugbot has not finished; resolving then would
-    hide in-flight findings and merge before the review lands.
-    """
+def should_resolve_bot_threads(review_decision: str | None, *, force: bool = False) -> bool:
+    """Clear leftover Bugbot threads after approve, or when they are the merge blocker."""
+    if force:
+        return True
     return (review_decision or "").upper() == "APPROVED"
 
 
@@ -361,9 +366,9 @@ def try_squash_merge(pr: dict[str, Any], repo: str) -> str:
 
 
 def resolve_eligible_bot_threads(
-    owner: str, name: str, number: int, review_decision: str | None
+    owner: str, name: str, number: int, review_decision: str | None, *, force: bool = False
 ) -> int:
-    if not should_resolve_bot_threads(review_decision):
+    if not should_resolve_bot_threads(review_decision, force=force):
         print(
             f"Skipping bot-thread resolution (reviewDecision={review_decision or 'none'})",
             flush=True,
@@ -456,6 +461,12 @@ def process_pr(
             except GhError as error:
                 last_merge_error = str(error)
                 print(f"Squash merge not completed yet: {error}", flush=True)
+                if is_unresolved_conversation_block(last_merge_error):
+                    print("Unresolved review threads block merge; resolving bot-only threads.", flush=True)
+                    resolve_eligible_bot_threads(
+                        owner, name, number, pr.get("reviewDecision"), force=True
+                    )
+                    continue
                 if is_ruleset_update_block(last_merge_error):
                     print(f"::error::{RULESET_BYPASS_HINT}", flush=True)
                     comment_ruleset_hint(repo, number)

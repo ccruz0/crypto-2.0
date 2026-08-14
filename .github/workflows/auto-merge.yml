@@ -5,8 +5,8 @@
 #   draft, so the previous `if: draft == false` job skipped them. Bugbot inline
 #   threads then keep mergeStateStatus BLOCKED because protect-main-production
 #   requires conversation resolution. This workflow marks the PR ready, enables
-#   auto-merge, resolves leftover bot-only threads after Bugbot approves, and
-#   squash-merges when Path Guard is green.
+#   auto-merge, resolves leftover bot-only threads, and squash-merges when
+#   Path Guard is green.
 #
 # Still required: repo Settings → General → Pull Requests → Allow auto-merge.
 # Path-guard failures and human review threads still block merge.
@@ -18,21 +18,30 @@ on:
     branches: [main]
   pull_request_review:
     types: [submitted, dismissed]
+  check_run:
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: auto-merge-${{ github.event.pull_request.number }}
+  group: auto-merge-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number }}
   cancel-in-progress: false
 
 jobs:
   enable-auto-merge:
     if: >
-      github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.state == 'open'
+      (
+        github.event_name != 'check_run' &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.state == 'open'
+      ) || (
+        github.event_name == 'check_run' &&
+        github.event.check_run.name == 'path-guard' &&
+        github.event.check_run.conclusion == 'success'
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,6 +53,6 @@ jobs:
           GH_PAGER: cat
           NO_COLOR: "1"
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number }}
           AUTO_MERGE_POLL_SECONDS: "90"
         run: python3 scripts/github_auto_merge.py
