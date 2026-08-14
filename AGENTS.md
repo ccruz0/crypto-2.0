@@ -105,8 +105,10 @@ header `v{version}` badge).
 
 Ruleset `protect-main-production` still requires **path-guard** green. Human
 review threads are never auto-resolved. Protected-path PRs stay blocked.
-Cloud agents cannot edit the ruleset (API 403). If a PR still sits `BLOCKED`
-after Path Guard, check unresolved **human** comments or path-guard.
+If merges stay `BLOCKED` with Path Guard green, the ruleset **Restrict updates**
+rule has an empty bypass list — add **GitHub Actions** as a bypass actor
+(mode: Pull request) or set repo secret `AUTO_MERGE_TOKEN` to a PAT that can
+merge. Cloud agents cannot edit the ruleset (API 403).
 
 ### Dashboard version history (mandatory on shippable PRs)
 Every user-visible / production-bound change **must** append a new entry to

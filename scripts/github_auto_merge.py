@@ -9,7 +9,8 @@ This script:
 1. Marks the PR ready for review if it is still a draft.
 2. Enables GitHub squash auto-merge (GitHub merges later if we cannot now).
 3. Resolves leftover bot-only review threads after Cursor Bugbot approves.
-4. Squash-merges immediately when mergeStateStatus is CLEAN/UNSTABLE.
+4. Squash-merges via the REST merge endpoint when Path Guard is green,
+   even if github-actions still sees mergeStateStatus=BLOCKED (Restrict updates).
 
 Does not resolve threads that include a human reviewer, and does not merge
 when reviewDecision is CHANGES_REQUESTED.
@@ -40,6 +41,15 @@ IMMEDIATE_MERGE_STATUSES = frozenset({"CLEAN", "UNSTABLE", "HAS_HOOKS"})
 TERMINAL_PR_STATES = frozenset({"MERGED", "CLOSED"})
 POLL_SECONDS_DEFAULT = 90
 POLL_INTERVAL_SECONDS = 5
+PATH_GUARD_CHECK_NAME = "path-guard"
+RULESET_BYPASS_HINT = (
+    "GitHub Actions cannot finish the merge while protect-main-production "
+    "has Restrict updates and an empty bypass list. One-time operator step: "
+    "Settings → Rules → Rulesets → protect-main-production → Bypass list → "
+    "Add bypass → GitHub Actions → Bypass mode: Pull request → Save. "
+    "Or turn off Restrict updates (Require a pull request already blocks "
+    "direct pushes to main)."
+)
 
 
 class GhError(RuntimeError):
@@ -81,6 +91,59 @@ def can_immediate_merge(merge_state_status: str | None) -> bool:
     return (merge_state_status or "").upper() in IMMEDIATE_MERGE_STATUSES
 
 
+def path_guard_passed(status_check_rollup: list[dict[str, Any]] | None) -> bool:
+    checks = status_check_rollup or []
+    matches = [item for item in checks if item.get("name") == PATH_GUARD_CHECK_NAME]
+    if not matches:
+        return False
+    return all(
+        (item.get("status") or "").upper() == "COMPLETED"
+        and (item.get("conclusion") or "").upper() == "SUCCESS"
+        for item in matches
+    )
+
+
+def has_unresolved_human_threads(threads: list[dict[str, Any]]) -> bool:
+    return any(not is_bot_only_thread(thread) for thread in threads)
+
+
+def is_ruleset_update_block(output: str) -> bool:
+    lowered = output.lower()
+    return any(
+        token in lowered
+        for token in (
+            "restricted from pushing",
+            "cannot update this branch",
+            "resource not accessible",
+            "not authorized to merge",
+            "gh-rs-",
+            "ruleset",
+            "protect-main-production",
+        )
+    )
+
+
+def should_attempt_squash(
+    *,
+    is_draft: bool,
+    merge_state_status: str | None,
+    review_decision: str | None,
+    path_guard_ok: bool,
+    human_threads: bool,
+) -> bool:
+    if is_draft or human_threads:
+        return False
+    if (review_decision or "").upper() == "CHANGES_REQUESTED":
+        return False
+    if (merge_state_status or "").upper() == "DIRTY":
+        return False
+    if can_immediate_merge(merge_state_status):
+        return True
+    # github-actions often sees BLOCKED because of Restrict updates even when
+    # Path Guard is green and there are no human review threads.
+    return path_guard_ok
+
+
 def should_skip_pr(state: str | None, merged: bool) -> bool:
     if merged:
         return True
@@ -110,7 +173,7 @@ def load_pr(number: int) -> dict[str, Any]:
             "view",
             str(number),
             "--json",
-            "number,url,isDraft,state,mergedAt,mergeStateStatus,reviewDecision,autoMergeRequest",
+            "number,url,title,isDraft,state,mergedAt,mergeStateStatus,reviewDecision,autoMergeRequest,headRefOid,statusCheckRollup",
         ]
     )
     return json.loads(result.stdout)
@@ -219,13 +282,52 @@ def enable_auto_merge(url: str) -> str:
 
 def squash_merge_now(url: str) -> str:
     result = run_gh(["pr", "merge", url, "--squash"], check=False)
-    output = (result.stdout or "") + (result.stderr or "")
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
     if result.returncode == 0:
-        return output.strip() or "squash-merged"
+        return output or "squash-merged"
     lowered = output.lower()
     if "already merged" in lowered:
-        return output.strip()
-    raise GhError(f"Immediate squash merge failed: {output.strip()}")
+        return output
+    raise GhError(output)
+
+
+def rest_squash_merge(repo: str, number: int, sha: str, title: str) -> str:
+    result = run_gh(
+        [
+            "api",
+            "--method",
+            "PUT",
+            f"repos/{repo}/pulls/{number}/merge",
+            "-f",
+            "merge_method=squash",
+            "-f",
+            f"commit_title={title}",
+            "-f",
+            f"sha={sha}",
+        ],
+        check=False,
+    )
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if result.returncode == 0:
+        return output or "squash-merged via REST"
+    if "already merged" in output.lower():
+        return output
+    raise GhError(output)
+
+
+def try_squash_merge(pr: dict[str, Any], repo: str) -> str:
+    """Prefer REST merge; gh pr merge preflight treats Restrict updates as BLOCKED."""
+    number = int(pr["number"])
+    title = pr.get("title") or f"#{number}"
+    sha = pr.get("headRefOid") or ""
+    if sha:
+        try:
+            return rest_squash_merge(repo, number, sha, title)
+        except GhError as rest_error:
+            print(f"REST squash merge failed: {rest_error}", flush=True)
+            if is_ruleset_update_block(str(rest_error)):
+                raise
+    return squash_merge_now(pr["url"])
 
 
 def resolve_eligible_bot_threads(
@@ -287,22 +389,46 @@ def process_pr(
 
     deadline = time.monotonic() + max(0, poll_seconds)
     last_status = pr.get("mergeStateStatus")
+    last_merge_error = ""
     while True:
         pr = load_pr(number)
         last_status = pr.get("mergeStateStatus")
         if should_skip_pr(pr.get("state"), bool(pr.get("mergedAt"))):
             print("PR merged or closed during wait.", flush=True)
             return 0
-        if can_immediate_merge(last_status):
-            print(f"mergeStateStatus={last_status}; squash-merging now.", flush=True)
-            if dry_run:
-                print("dry-run: skip squash merge", flush=True)
-                return 0
-            print(squash_merge_now(url), flush=True)
-            return 0
         if last_status == "DIRTY":
             print("PR has conflicts; cannot auto-merge.", flush=True)
             return 1
+        unresolved = (
+            []
+            if dry_run
+            else list_unresolved_threads(owner, name, number)
+        )
+        attempt = should_attempt_squash(
+            is_draft=bool(pr.get("isDraft")),
+            merge_state_status=last_status,
+            review_decision=pr.get("reviewDecision"),
+            path_guard_ok=path_guard_passed(pr.get("statusCheckRollup")),
+            human_threads=has_unresolved_human_threads(unresolved),
+        )
+        if attempt:
+            print(
+                f"Attempting squash merge (mergeStateStatus={last_status}, "
+                f"path-guard={path_guard_passed(pr.get('statusCheckRollup'))}).",
+                flush=True,
+            )
+            if dry_run:
+                print("dry-run: skip squash merge", flush=True)
+                return 0
+            try:
+                print(try_squash_merge(pr, repo), flush=True)
+                return 0
+            except GhError as error:
+                last_merge_error = str(error)
+                print(f"Squash merge not completed yet: {error}", flush=True)
+                if is_ruleset_update_block(last_merge_error):
+                    print(f"::error::{RULESET_BYPASS_HINT}", flush=True)
+                    return 1
         if time.monotonic() >= deadline:
             break
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -313,6 +439,8 @@ def process_pr(
         "A later Path Guard / Bugbot event will retry.",
         flush=True,
     )
+    if last_merge_error:
+        print(f"Last merge attempt: {last_merge_error}", flush=True)
     return 0
 
 

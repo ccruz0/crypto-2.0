@@ -40,7 +40,7 @@ jobs:
 
       - name: Ready draft, arm auto-merge, squash when green
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
           GH_PAGER: cat
           NO_COLOR: "1"
           GITHUB_REPOSITORY: ${{ github.repository }}

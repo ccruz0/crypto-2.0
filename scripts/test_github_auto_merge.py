@@ -71,3 +71,57 @@ def test_auto_merge_enable_ok_treats_blocked_as_retryable() -> None:
         is True
     )
     assert auto_merge.auto_merge_enable_ok(1, "HTTP 403 Resource not accessible") is False
+
+
+def test_path_guard_passed() -> None:
+    assert auto_merge.path_guard_passed([]) is False
+    assert (
+        auto_merge.path_guard_passed(
+            [{"name": "path-guard", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        )
+        is True
+    )
+    assert (
+        auto_merge.path_guard_passed(
+            [{"name": "path-guard", "status": "IN_PROGRESS", "conclusion": ""}]
+        )
+        is False
+    )
+
+
+def test_should_attempt_squash_when_blocked_but_path_guard_green() -> None:
+    assert (
+        auto_merge.should_attempt_squash(
+            is_draft=False,
+            merge_state_status="BLOCKED",
+            review_decision=None,
+            path_guard_ok=True,
+            human_threads=False,
+        )
+        is True
+    )
+    assert (
+        auto_merge.should_attempt_squash(
+            is_draft=False,
+            merge_state_status="BLOCKED",
+            review_decision=None,
+            path_guard_ok=False,
+            human_threads=False,
+        )
+        is False
+    )
+    assert (
+        auto_merge.should_attempt_squash(
+            is_draft=False,
+            merge_state_status="BLOCKED",
+            review_decision=None,
+            path_guard_ok=True,
+            human_threads=True,
+        )
+        is False
+    )
+
+
+def test_ruleset_update_block_detection() -> None:
+    assert auto_merge.is_ruleset_update_block("Resource not accessible by integration") is True
+    assert auto_merge.is_ruleset_update_block("SHA did not match") is False
