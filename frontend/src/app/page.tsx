@@ -2161,7 +2161,7 @@ const VERSION_HISTORY = [
 • Operator asked to look at the AWS cost alert — the figure was not a true monthly bill
 
 📦 **PRs**
-• (this PR)
+• #481
 
 ---
 `
