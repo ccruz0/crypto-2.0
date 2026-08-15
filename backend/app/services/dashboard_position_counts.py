@@ -118,8 +118,48 @@ def collect_bases_for_position_counts(
     return sorted(bases)
 
 
-def compute_open_position_counts(db, bases: Iterable[str]) -> Dict[str, int]:
-    """Bot entry/exposure slots per base — same definition as Signal Monitor."""
+# Wallet exposure below this USD notional is ignored for the count fallback
+# (dust leftovers like ~$0.05 BONK / ~$1 XLM should not show as an open slot).
+_WALLET_EXPOSURE_USD_FLOOR = 5.0
+
+
+def _wallet_abs_usd_by_base(balances: Iterable[dict]) -> Dict[str, float]:
+    """Best-effort |usd_value| per base from portfolio balance rows."""
+    out: Dict[str, float] = {}
+    for bal in balances or []:
+        if not isinstance(bal, dict):
+            continue
+        currency = str(bal.get("currency") or bal.get("asset") or "").upper()
+        base = _base_from_symbol(currency)
+        if not base:
+            continue
+        try:
+            usd = abs(
+                float(
+                    bal.get("usd_value")
+                    if bal.get("usd_value") is not None
+                    else bal.get("market_value") or 0.0
+                )
+            )
+        except (TypeError, ValueError):
+            usd = 0.0
+        # Prefer the larger absolute USD when dual books exist for one base.
+        out[base] = max(out.get(base, 0.0), usd)
+    return out
+
+
+def compute_open_position_counts(
+    db,
+    bases: Iterable[str],
+    *,
+    balances: Optional[Iterable[dict]] = None,
+) -> Dict[str, int]:
+    """Bot entry/exposure slots per base — same definition as Signal Monitor.
+
+    When ``balances`` is provided, a wallet with meaningful |usd| exposure but a
+    bot FIFO count of 0 is treated as at least 1 open slot (margin shorts that
+    missed ``trade_signal_id`` tagging used to show HBAR=0 while wallet ≠ 0).
+    """
     from app.services.order_position_service import count_open_positions_for_symbol
 
     counts: Dict[str, int] = {}
@@ -129,6 +169,22 @@ def compute_open_position_counts(db, bases: Iterable[str]) -> Dict[str, int]:
         except Exception as err:
             logger.warning("count_open_positions_for_symbol(%s) failed: %s", base, err)
             counts[base] = 0
+
+    if balances is None:
+        return counts
+
+    wallet_usd = _wallet_abs_usd_by_base(balances)
+    for base, usd in wallet_usd.items():
+        if usd < _WALLET_EXPOSURE_USD_FLOOR:
+            continue
+        if int(counts.get(base, 0) or 0) <= 0:
+            counts[base] = 1
+            logger.info(
+                "open_position_counts wallet fallback base=%s usd=%.2f -> 1 "
+                "(bot FIFO count was 0)",
+                base,
+                usd,
+            )
     return counts
 
 

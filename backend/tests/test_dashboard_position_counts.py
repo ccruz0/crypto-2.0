@@ -115,3 +115,39 @@ def test_ghost_when_no_wallet():
     _, _, alerts = compute_protection_leg_stats(orders, [])
     assert len(alerts) == 1
     assert alerts[0]["reason"] == "no_wallet"
+
+
+def test_open_position_counts_wallet_fallback(monkeypatch):
+    """Meaningful wallet short with bot FIFO count 0 → report 1 slot."""
+    from app.services import dashboard_position_counts as dpc
+
+    monkeypatch.setattr(
+        "app.services.order_position_service.count_open_positions_for_symbol",
+        lambda db, base: 0,
+    )
+    counts = dpc.compute_open_position_counts(
+        db=None,
+        bases=["HBAR", "BONK"],
+        balances=[
+            {"currency": "HBAR", "balance": -1474.0, "usd_value": -97.0},
+            {"currency": "BONK", "balance": -20000.0, "usd_value": -0.05},
+        ],
+    )
+    assert counts["HBAR"] == 1
+    # Dust USD ignored
+    assert counts.get("BONK", 0) == 0
+
+
+def test_open_position_counts_keeps_bot_fifo(monkeypatch):
+    from app.services import dashboard_position_counts as dpc
+
+    monkeypatch.setattr(
+        "app.services.order_position_service.count_open_positions_for_symbol",
+        lambda db, base: 2 if base == "ALGO" else 0,
+    )
+    counts = dpc.compute_open_position_counts(
+        db=None,
+        bases=["ALGO"],
+        balances=[{"currency": "ALGO", "balance": -1200.0, "usd_value": -100.0}],
+    )
+    assert counts["ALGO"] == 2
