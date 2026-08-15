@@ -32,8 +32,8 @@ def test_telegram_copy_includes_spanish_per_coin_limit():
 def test_instrument_short_sell_disabled_not_insufficient_funds():
     msg = (
         "Watchlist Margin YES is on for CRO_USD, but Crypto.com does not "
-        "allow opening a SHORT (margin_sell_enabled=false). Margin longs "
-        "and closing an existing long still work."
+        "allow opening a SHORT (margin_sell_enabled=false). A SELL alert "
+        "always opens a new independent short; it does not close an existing long."
     )
     code = classify_exchange_error(msg)
     assert code == ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value

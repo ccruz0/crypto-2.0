@@ -119,7 +119,10 @@ class TestPlaceOrderFromSignalShortProtection(unittest.TestCase):
             self.service,
             "_create_protection_after_entry_fill",
             return_value={"sl_result": {"order_id": "sl"}, "tp_result": {"order_id": "tp"}},
-        ) as mock_protect:
+        ) as mock_protect, patch(
+            "app.services.margin_info_service.instrument_allows_margin_short",
+            return_value=True,
+        ):
             result = asyncio.run(
                 self.service._place_order_from_signal(
                     db=self.db,

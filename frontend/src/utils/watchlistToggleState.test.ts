@@ -4,6 +4,8 @@ import {
   watchlistAmountsFromItems,
   watchlistButtonOn,
   watchlistFlagsFromCoins,
+  exchangeAllowsShortAlert,
+  sellAlertButtonOn,
 } from './watchlistToggleState';
 
 describe('watchlistButtonOn', () => {
@@ -75,5 +77,24 @@ describe('watchlistAmountsFromItems', () => {
     ]);
     expect(amounts).toEqual({ CRO_USD: '100', GRAM_USDT: '0.02' });
     expect(Object.prototype.hasOwnProperty.call(amounts, 'DGB_USD')).toBe(false);
+  });
+});
+
+describe('exchangeAllowsShortAlert / sellAlertButtonOn', () => {
+  it('keeps the S button available when the API omits margin_sell_enabled', () => {
+    expect(exchangeAllowsShortAlert(undefined)).toBe(true);
+    expect(exchangeAllowsShortAlert(null)).toBe(true);
+    expect(exchangeAllowsShortAlert(true)).toBe(true);
+  });
+
+  it('disables SHORT alerts when the exchange sets margin_sell_enabled=false', () => {
+    expect(exchangeAllowsShortAlert(false)).toBe(false);
+    expect(sellAlertButtonOn({}, 'CRO_USD', true, false)).toBe(false);
+    expect(sellAlertButtonOn({ CRO_USD: true }, 'CRO_USD', true, false)).toBe(false);
+  });
+
+  it('still honors overlay/DB when shorts are allowed', () => {
+    expect(sellAlertButtonOn({}, 'ETH_USD', true, true)).toBe(true);
+    expect(sellAlertButtonOn({ ETH_USD: false }, 'ETH_USD', true, true)).toBe(false);
   });
 });

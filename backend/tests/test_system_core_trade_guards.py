@@ -156,6 +156,43 @@ class TestShortEntryGuard:
         assert allowed is False
         assert reason == "system_core_one_active_trade_per_coin"
 
+    def test_ignore_one_active_per_coin_still_enforces_max_open(self, mock_db):
+        with patch.object(scg, "_GUARDS_ON", True):
+            with patch.object(scg, "_resolve_max_open_trades", return_value=3):
+                with patch(
+                    "app.services.system_core_trade_guards.count_distinct_symbols_with_open_positions",
+                    return_value=3,
+                ):
+                    allowed, reason = scg.check_system_core_short_entry_allowed(
+                        mock_db,
+                        "DOT_USD",
+                        100.0,
+                        price=6.0,
+                        ignore_one_active_per_coin=True,
+                    )
+        assert allowed is False
+        assert "system_core_max_open_trades" in reason
+
+    def test_ignore_one_active_per_coin_allows_existing_long(self, mock_db):
+        with patch.object(scg, "_GUARDS_ON", True):
+            with patch(
+                "app.services.order_position_service.count_open_positions_for_symbol",
+                return_value=1,
+            ):
+                with patch(
+                    "app.services.system_core_trade_guards.count_distinct_symbols_with_open_positions",
+                    return_value=1,
+                ):
+                    allowed, reason = scg.check_system_core_short_entry_allowed(
+                        mock_db,
+                        "ETH_USD",
+                        100.0,
+                        price=3000.0,
+                        ignore_one_active_per_coin=True,
+                    )
+        assert allowed is True
+        assert reason == ""
+
     def test_blocks_max_open_trades(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
             with patch.object(scg, "_resolve_max_open_trades", return_value=3):

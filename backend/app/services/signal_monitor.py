@@ -1073,6 +1073,8 @@ class SignalMonitorService:
             buy_alert_enabled = bool(getattr(item, 'buy_alert_enabled', False))
             sell_alert_enabled = bool(getattr(item, 'sell_alert_enabled', False))
             trade_enabled = bool(getattr(item, 'trade_enabled', False))
+            from app.services.margin_info_service import clamp_sell_alert_enabled
+            sell_alert_enabled = clamp_sell_alert_enabled(normalized_symbol, sell_alert_enabled)
             
             logger.info(
                 f"[ALERT_CONFIG] symbol={symbol} normalized={normalized_symbol} "
@@ -6064,6 +6066,8 @@ class SignalMonitorService:
             )
         # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
         sell_alert_enabled = getattr(watchlist_item, 'sell_alert_enabled', False)
+        from app.services.margin_info_service import clamp_sell_alert_enabled
+        sell_alert_enabled = clamp_sell_alert_enabled(symbol, bool(sell_alert_enabled))
         
         # Log alert decision with all flags for clarity
         if sell_signal:
@@ -6222,6 +6226,10 @@ class SignalMonitorService:
                     fresh_check = get_canonical_watchlist_item(db, symbol)
                     if fresh_check:
                         sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
+                        from app.services.margin_info_service import clamp_sell_alert_enabled
+                        sell_alert_enabled = clamp_sell_alert_enabled(
+                            symbol, bool(sell_alert_enabled)
+                        )
                         logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
                 except Exception as e:
                     logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
@@ -9164,52 +9172,37 @@ class SignalMonitorService:
         position_exists: Optional[bool] = None
         is_margin_short_entry = False
         if (side or "").strip().upper() == "SELL":
-            try:
-                from app.services.order_position_service import count_open_positions_for_symbol
-                base_symbol = symbol.split("_")[0] if "_" in symbol else symbol
-                position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
-            except Exception:
-                position_exists = False
-            # Bot-order counts exclude manual / exchange-synced wallet lots. A positive
-            # base wallet is a long-close (CRO_USD: margin_buy=true, margin_sell=false).
-            # Only a flat/unknown wallet with no bot lot is a short-open candidate.
-            if not position_exists:
-                wallet_balance = self._signed_wallet_base_balance(symbol)
-                if wallet_balance is not None and float(wallet_balance) > 0:
-                    logger.info(
-                        "SELL %s treated as long-close via wallet balance=%s "
-                        "(bot open-position count was 0; not a margin short)",
-                        symbol,
-                        wallet_balance,
-                    )
-                    position_exists = True
-            # Shorting: if enabled and coin allows margin *sell*, SELL without position opens a short.
-            # Spot SELL still requires position (protect manual holdings).
-            # Gate on margin_sell_enabled (not buy|sell OR): CRO_USD has buy=True/sell=False and
-            # Crypto.com rejects short opens with 608 CANNOT_SHORT_SELL_INSTRUMENT.
-            if (not position_exists) and user_wants_margin:
-                from app.services.risk_guard import shorting_enabled
-                from app.services.margin_info_service import instrument_allows_margin_short
+            # A SELL *alert* always opens a new independent SHORT. It does not look
+            # for a bot long or a wallet long to close — longs are closed by SL/TP /
+            # Position Review, not by the Watchlist S button.
+            # Week-5 still needs position_exists=True for a short-open bypass.
+            from app.services.risk_guard import shorting_enabled
+            from app.services.margin_info_service import instrument_allows_margin_short
 
-                if shorting_enabled():
-                    if not instrument_allows_margin_short(symbol):
-                        logger.info(
-                            "INSTRUMENT_SHORT_SELL_DISABLED symbol=%s — exchange margin_sell_enabled=false; "
-                            "blocking margin short open (avoids 608 CANNOT_SHORT_SELL_INSTRUMENT)",
-                            symbol,
-                        )
-                        return {
-                            "error": "INSTRUMENT_SHORT_SELL_DISABLED",
-                            "blocked": True,
-                            "message": (
-                                f"Watchlist Margin YES is on for {symbol}, but Crypto.com does not "
-                                f"allow opening a SHORT (margin_sell_enabled=false). Margin longs "
-                                f"and closing an existing long still work. No long was found to close, "
-                                f"so this SELL would be a short."
-                            ),
-                        }
-                    is_margin_short_entry = True
-                    position_exists = True
+            logger.info(
+                "SELL %s opens an independent SHORT (does not close a long)",
+                symbol,
+            )
+            if user_wants_margin and shorting_enabled():
+                if not instrument_allows_margin_short(symbol):
+                    logger.info(
+                        "INSTRUMENT_SHORT_SELL_DISABLED symbol=%s — exchange margin_sell_enabled=false; "
+                        "blocking margin short open (avoids 608 CANNOT_SHORT_SELL_INSTRUMENT)",
+                        symbol,
+                    )
+                    return {
+                        "error": "INSTRUMENT_SHORT_SELL_DISABLED",
+                        "blocked": True,
+                        "message": (
+                            f"Watchlist Margin YES is on for {symbol}, but Crypto.com does not "
+                            f"allow opening a SHORT (margin_sell_enabled=false). A SELL alert "
+                            f"always opens a new independent short; it does not close an existing long."
+                        ),
+                    }
+                is_margin_short_entry = True
+                position_exists = True
+            else:
+                position_exists = False
         try:
             from app.core.trading_invariants_week5 import validate_trading_decision, InvariantFailure
             fail = validate_trading_decision(
@@ -9301,9 +9294,10 @@ class SignalMonitorService:
                     ),
                 }
 
-        # A SHORT ENTRY (margin SELL opening a NEW position) increases open exposure, so it must
-        # obey the same position/exposure caps as a BUY. Closing SELLs are NOT short entries and
-        # are intentionally never blocked here (they reduce exposure). RSI/MA200 are BUY-only.
+        # A SHORT ENTRY (margin SELL opening a NEW independent short) increases open
+        # exposure, so it must obey amount/drawdown/max-open caps as a BUY. RSI/MA200
+        # are BUY-only. one-active-per-coin is skipped: a SELL alert must not treat an
+        # existing long as "already in a trade" (it does not close that long).
         if is_margin_short_entry:
             try:
                 from app.services.system_core_trade_guards import check_system_core_short_entry_allowed
@@ -9313,6 +9307,7 @@ class SignalMonitorService:
                     symbol,
                     float(amount_usd),
                     price=float(current_price),
+                    ignore_one_active_per_coin=True,
                 )
                 if not ok_sc:
                     logger.info(
@@ -9365,8 +9360,7 @@ class SignalMonitorService:
                     dry_run=dry_run_mode,
                     source=source.upper()
                 )
-            else:  # SELL
-                # For SELL, calculate quantity from amount_usd and current_price
+            else:  # SELL — independent short ticket (never capped to a wallet long)
                 quantity = amount_usd / current_price if current_price > 0 else 0
                 if quantity <= 0:
                     return {
@@ -9401,12 +9395,8 @@ class SignalMonitorService:
 
             entry_side_upper = side.upper()
             # BUY always needs protection.
-            # SELL: OR pre-place first-short flag with post-place wallet short detection.
-            # - First margin short: ``is_margin_short_entry`` is True before fill settles
-            #   (wallet may still read flat) — keep that so SL/TP is attempted.
-            # - Short *add* (existing bot short): ``is_margin_short_entry`` is False, so
-            #   wallet < 0 (or margin fallback) must still trigger protection (DOGE
-            #   5755600492782582799).
+            # SELL alerts always set ``is_margin_short_entry`` (independent short).
+            # Keep the wallet OR as a backstop if that flag is ever false.
             if entry_side_upper == "BUY":
                 needs_protection = True
             elif entry_side_upper == "SELL":
@@ -9625,29 +9615,6 @@ class SignalMonitorService:
                 f"Order was seen but status is not FILLED or cumulative_quantity is invalid."
             )
         return None
-    
-    def _signed_wallet_base_balance(self, symbol: str) -> Optional[float]:
-        """Live signed wallet qty for the symbol base. None if unavailable or unreadable."""
-        try:
-            from app.services.exchange_sync import _base_wallet_balance_from_accounts
-
-            summary = trade_client.get_account_summary()
-            if not isinstance(summary, dict):
-                return None
-            accounts = summary.get("accounts") or []
-            if not isinstance(accounts, list):
-                return None
-            bal = _base_wallet_balance_from_accounts(accounts, symbol)
-            if bal is None:
-                return None
-            return float(bal)
-        except Exception as wallet_err:
-            logger.debug(
-                "wallet unavailable for SELL classification %s: %s",
-                symbol,
-                wallet_err,
-            )
-            return None
 
     def _is_short_entry_needing_protection(
         self,

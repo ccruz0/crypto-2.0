@@ -280,13 +280,17 @@ def check_system_core_short_entry_allowed(
     amount_usd: float,
     *,
     price: float,
+    ignore_one_active_per_coin: bool = False,
 ) -> Tuple[bool, str]:
     """Position/exposure gates for a SHORT ENTRY (a margin SELL that opens a NEW position).
 
     A short entry increases open exposure, so it must obey the same amount cap, daily-drawdown,
-    one-active-per-coin and max-open-trades limits as a BUY. The RSI/MA200 gates are BUY-specific
-    and are NOT applied here. Closing SELLs (which reduce exposure) must NOT be routed through
-    this guard.
+    and max-open-trades limits as a BUY. The RSI/MA200 gates are BUY-specific and are NOT
+    applied here.
+
+    ``ignore_one_active_per_coin``: Watchlist SELL alerts always open an independent short
+    and must not treat an existing long as "already in a trade". Amount/drawdown/max-open
+    still apply.
 
     Returns (allowed, reason). When guards are disabled, always (True, "").
     """
@@ -306,10 +310,11 @@ def check_system_core_short_entry_allowed(
     try:
         from app.services.order_position_service import count_open_positions_for_symbol
 
-        max_per_coin = _resolve_max_open_per_coin()
-        open_for_symbol = count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price))
-        if open_for_symbol >= max_per_coin:
-            return False, "system_core_one_active_trade_per_coin"
+        if not ignore_one_active_per_coin:
+            max_per_coin = _resolve_max_open_per_coin()
+            open_for_symbol = count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price))
+            if open_for_symbol >= max_per_coin:
+                return False, "system_core_one_active_trade_per_coin"
 
         max_open_trades = _resolve_max_open_trades()
         open_symbols = count_distinct_symbols_with_open_positions(db)
