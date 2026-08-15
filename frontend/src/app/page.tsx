@@ -2139,6 +2139,30 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.98',
+    date: '2026-08-15',
+    change: 'Wallet-aware open position counts + ops ghost git fallback',
+    details: `🚀 VERSIÓN 0.98 — POSITION COUNT + OPS
+
+📋 **What shipped**
+• \`open_position_counts\` falls back to 1 when wallet |USD| ≥ $5 but bot FIFO count is 0 (fixes HBAR short showing 0/limit)
+• Ops ghost/heal workflows: chown \`.git\` + fall back to \`/app/scripts\` when host git fetch fails
+
+🔧 **Why**
+• 2026-08-15 audit: HBAR wallet short ~$97 with BUY SL/TP live, but dashboard count=0
+• Ops cancel-ghost failed with \`.git/objects\` permission on EC2
+
+📦 **Ops done same day (no PR)**
+• Cancelled HBAR wrong-side SELL SL/TP qty 42 ghosts
+• BONK \`trade_amount_usd\` $10 → $100 (aligned with ALGO/HBAR)
+
+📦 **PRs**
+• (this)
+
+---
+`
+  },
 
 ];
 

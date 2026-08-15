@@ -1012,7 +1012,9 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         )
 
         bases_for_counts = collect_bases_for_position_counts(balances_list, unified_open_orders)
-        open_position_counts = compute_open_position_counts(db, bases_for_counts)
+        open_position_counts = compute_open_position_counts(
+            db, bases_for_counts, balances=balances_list
+        )
         open_tp_counts, open_protective_counts, ghost_protection_alerts = compute_protection_leg_stats(
             unified_open_orders, balances_list
         )
