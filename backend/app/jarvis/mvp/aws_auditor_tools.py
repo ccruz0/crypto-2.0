@@ -323,6 +323,7 @@ def get_cost_summary() -> dict[str, Any]:
         return _tool_result(
             "get_cost_summary",
             period_days=30,
+            granularity="DAILY",
             total_usd=total_usd,
             total_unblended_usd=total_usd,
             month_to_date_usd=mtd_usd,

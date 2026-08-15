@@ -2186,6 +2186,7 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • #482
+• #483 (VERSION_HISTORY conflict so frontend can build)
 
 ---
 `

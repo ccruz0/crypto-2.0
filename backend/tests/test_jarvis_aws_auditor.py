@@ -139,6 +139,7 @@ def test_get_cost_summary_uses_daily_rolling_window(mock_client, _today):
     assert out["total_usd"] == 150.0
     assert out["total_unblended_usd"] == 150.0
     assert out["month_to_date_usd"] == 50.0
+    assert out["granularity"] == "DAILY"
     assert out["top_services"][0]["amount_usd"] == 150.0
     assert all(call.kwargs["Granularity"] == "DAILY" for call in ce.get_cost_and_usage.call_args_list)
 
