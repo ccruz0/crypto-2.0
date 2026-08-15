@@ -108,10 +108,15 @@ def _aws_cost_hint() -> str:
         summary = get_cost_summary()
         if not summary.get("success", True):
             return f"n/a ({summary.get('error', 'unavailable')[:80]})"
-        total = summary.get("total_unblended_usd")
-        if total is not None:
-            return f"~${float(total):.2f} (30d)"
-        return "available (see jarvis metrics)"
+        total = summary.get("total_usd")
+        if total is None:
+            total = summary.get("total_unblended_usd")
+        if total is None:
+            return "available (see jarvis metrics)"
+        mtd = summary.get("month_to_date_usd")
+        if mtd is not None:
+            return f"~${float(total):.2f} (30d); MTD ${float(mtd):.2f}"
+        return f"~${float(total):.2f} (30d)"
     except Exception as exc:
         return f"n/a ({type(exc).__name__})"
 

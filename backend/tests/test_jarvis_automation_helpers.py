@@ -238,6 +238,18 @@ def test_daily_report_includes_exchange_warning(monkeypatch):
     assert "Exchange integration optional in current trading mode" in report
 
 
+def test_aws_cost_hint_reads_total_usd(monkeypatch):
+    from scripts.automation.daily_report import _aws_cost_hint
+
+    monkeypatch.setattr(
+        "app.jarvis.mvp.aws_auditor_tools.get_cost_summary",
+        lambda: {"success": True, "total_usd": 142.5, "month_to_date_usd": 61.0},
+    )
+    hint = _aws_cost_hint()
+    assert "~$142.50 (30d)" in hint
+    assert "MTD $61.00" in hint
+
+
 def test_health_check_main_exits_zero_with_exchange_warning_only(monkeypatch, tmp_path):
     from scripts.automation import health_check as hc
 

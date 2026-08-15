@@ -146,6 +146,7 @@ def compile_audit_findings(tool_results: list[dict[str, Any]]) -> dict[str, Any]
 
     cost = by_tool.get("get_cost_summary") or {}
     total_spend = float(cost.get("total_usd") or 0) if cost.get("success") else None
+    mtd_spend = float(cost.get("month_to_date_usd") or 0) if cost.get("success") else None
 
     summary = {
         "total_resources_scanned": sum(
@@ -159,6 +160,7 @@ def compile_audit_findings(tool_results: list[dict[str, Any]]) -> dict[str, Any]
         "security_findings_count": len(security_findings),
         "resource_findings_count": len(resource_findings),
         "total_30d_spend_usd": total_spend,
+        "month_to_date_spend_usd": mtd_spend,
         "read_only": True,
     }
 
