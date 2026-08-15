@@ -2142,6 +2142,7 @@ const VERSION_HISTORY = [
   {
     version: '0.98',
     date: '2026-08-15',
+<<<<<<< HEAD
     change: 'Wallet-aware open position counts + ops ghost git fallback',
     details: `🚀 VERSIÓN 0.98 — POSITION COUNT + OPS
 
@@ -2159,6 +2160,28 @@ const VERSION_HISTORY = [
 
 📦 **PRs**
 • (this)
+=======
+    change: 'AWS cost KR alert uses 30-day rolling daily spend (not inflated monthly buckets)',
+    details: `🚀 VERSIÓN 0.98 — AWS COST ALERT ACCURACY
+
+📋 **Root cause**
+• Daily Jarvis KR refresh (07:30) alerts when \`aws_monthly_spend\` exceeds the $120 target
+• Cost Explorer was queried with MONTHLY granularity over a 30-day window, which returns full overlapping calendar months (~1.5 months of spend)
+• Daily report looked for \`total_unblended_usd\` (never returned) so AWS cost showed as unavailable
+• Cost Explorer failures were stored as $0, which hid overspend on the KR
+
+✅ **What shipped**
+• 30-day spend uses DAILY granularity; month-to-date is derived from the same window
+• KR Telegram reason: "AWS 30-day rolling spend exceeds monthly target"
+• Daily report prints 30d + MTD when Cost Explorer succeeds
+• Metric refresh errors instead of treating missing Cost Explorer data as $0
+
+🔧 **Why**
+• Operator asked to look at the AWS cost alert — the figure was not a true monthly bill
+
+📦 **PRs**
+• (this PR)
+>>>>>>> origin/main
 
 ---
 `

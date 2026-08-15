@@ -16,7 +16,7 @@ from app.database import (
 )
 from app.jarvis.mvp.kr_metric_resolver import METRIC_ALIASES, SUPPORTED_METRICS, resolve_metric
 from app.jarvis.mvp.kr_refresh_persistence import list_kr_refresh_runs
-from app.jarvis.mvp.kr_refresh_service import refresh_key_results
+from app.jarvis.mvp.kr_refresh_service import _should_alert_spend_exceeded, refresh_key_results
 from app.jarvis.mvp.objective_persistence import get_objective, record_key_result, record_objective
 from app.jarvis.mvp.telegram_kr_alerts import format_kr_alert
 
@@ -54,6 +54,29 @@ def test_resolve_metric_aws_monthly_spend():
     assert result["error"] is None
     assert result["current_value"] == 142.5
     assert "Cost Explorer" in result["source"]
+    assert "30d rolling" in result["source"]
+
+
+def test_resolve_metric_aws_monthly_spend_unavailable():
+    with patch("app.jarvis.mvp.metrics_persistence._fetch_aws_monthly_cost", return_value=None):
+        result = resolve_metric("aws_monthly_spend")
+
+    assert result["error"]
+    assert "unavailable" in result["error"].lower()
+    assert result["current_value"] == 0.0
+
+
+def test_should_alert_spend_exceeded_only_for_min_spend_krs():
+    over = {
+        "metric_name": "aws_monthly_spend",
+        "direction": "min",
+        "target_value": 120,
+    }
+    assert _should_alert_spend_exceeded(over, 168.0) is True
+    assert _should_alert_spend_exceeded(over, 120.0) is False
+    assert _should_alert_spend_exceeded(over, 95.0) is False
+    assert _should_alert_spend_exceeded({**over, "direction": "max"}, 168.0) is False
+    assert _should_alert_spend_exceeded({**over, "metric_name": "aws_ec2_count"}, 168.0) is False
 
 
 @patch("app.jarvis.mvp.kr_refresh_service.resolve_metric")
@@ -151,8 +174,70 @@ def test_telegram_alert_format():
         target_value=120,
         status="behind",
         unit="USD",
-        reason="AWS spend exceeds target",
+        reason="AWS 30-day rolling spend exceeds monthly target",
     )
     assert "JARVIS KR ALERT" in message
     assert "Reduce AWS spend" in message
     assert "No action executed." in message
+
+
+@patch("app.jarvis.mvp.kr_refresh_service.resolve_metric")
+def test_refresh_queues_aws_spend_exceeded_alert(mock_resolve, sqlite_engine):
+    oid = record_objective(title="Reduce AWS spend", status="active")
+    record_key_result(
+        objective_id=oid,
+        title="Monthly AWS spend below $120",
+        metric_name="aws_monthly_spend",
+        target_value=120,
+        current_value=0,
+        unit="USD",
+        direction="min",
+    )
+    mock_resolve.return_value = {
+        "metric_name": "aws_monthly_spend",
+        "current_value": 168.0,
+        "source": "AWS Cost Explorer (30d rolling)",
+        "confidence": "high",
+        "error": None,
+    }
+
+    with patch("app.jarvis.mvp.kr_refresh_service.send_kr_refresh_alerts", return_value=1) as mock_send:
+        result = refresh_key_results(send_telegram=True)
+
+    assert result["alerts_queued"] >= 1
+    mock_send.assert_called_once()
+    alerts = mock_send.call_args[0][0]
+    assert any("exceeds monthly target" in str(a.get("reason") or "") for a in alerts)
+    assert any(float(a.get("current_value") or 0) == 168.0 for a in alerts)
+
+
+@patch("app.jarvis.mvp.kr_refresh_service.resolve_metric")
+def test_refresh_does_not_alert_when_spend_within_target(mock_resolve, sqlite_engine):
+    oid = record_objective(title="Reduce AWS spend", status="active")
+    record_key_result(
+        objective_id=oid,
+        title="Monthly AWS spend below $120",
+        metric_name="aws_monthly_spend",
+        target_value=120,
+        current_value=0,
+        unit="USD",
+        direction="min",
+    )
+    mock_resolve.return_value = {
+        "metric_name": "aws_monthly_spend",
+        "current_value": 95.0,
+        "source": "AWS Cost Explorer (30d rolling)",
+        "confidence": "high",
+        "error": None,
+    }
+
+    with patch("app.jarvis.mvp.kr_refresh_service.send_kr_refresh_alerts", return_value=0) as mock_send:
+        result = refresh_key_results(send_telegram=True)
+
+    spend_alerts = [
+        a
+        for a in (mock_send.call_args[0][0] if mock_send.called else [])
+        if "exceeds" in str(a.get("reason") or "")
+    ]
+    assert spend_alerts == []
+    assert result["execution_performed"] is False
