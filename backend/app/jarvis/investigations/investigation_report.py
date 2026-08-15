@@ -52,6 +52,9 @@ _HEALTHY_DEPLOYMENT_CAUSE = "No unhealthy services detected; deployment health c
 _FILLED_TRADE_HISTORY_CAUSE = (
     "FILLED orders exist in database but dashboard trade history does not display them"
 )
+_OPEN_ORDERS_NOT_EMPTY_CAUSE = (
+    "Open orders are not empty; scheduled empty-book probe is a non-finding"
+)
 _DEPLOYMENT_SCOPED_TEMPLATES = frozenset({"deployment_unhealthy"})
 _TRADE_HISTORY_SCOPED_TEMPLATES = frozenset({"executed_orders_missing"})
 _MISMATCH_SCOPED_TEMPLATES = frozenset(
@@ -61,6 +64,13 @@ _MISMATCH_SCOPED_TEMPLATES = frozenset(
         "open_orders_empty",
         "crypto_com_trigger_orders",
     }
+)
+# Canned "empty book / cache blocked" causes — invalid when DB open-status count > 0.
+_EMPTY_BOOK_CAUSE_MARKERS = (
+    "trigger order api failure blocks cache",
+    "database has open orders but dashboard cache is empty",
+    "dashboard shows empty open orders",
+    "dashboard shows zero open orders",
 )
 
 
@@ -447,7 +457,62 @@ _KNOWN_CAUSE_PATTERNS: list[dict[str, Any]] = [
         ],
         "category": "deployment",
     },
+    {
+        "cause": _OPEN_ORDERS_NOT_EMPTY_CAUSE,
+        "fix": "No empty-book repair needed. Continue scheduled open-orders health monitoring.",
+        "impact": "Scheduled open_orders_empty probe found live open-status rows; not an empty-book incident.",
+        "verification": [
+            "Confirm Open-status count (NEW/ACTIVE/PARTIALLY_FILLED) is > 0.",
+            "Route true dashboard/exchange count mismatches to dashboard_exchange_mismatch.",
+        ],
+        "matchers": [
+            re.compile(
+                r"Open-status count[^0-9]{0,40}(?:NEW/ACTIVE/PARTIALLY_FILLED\)?:\s*)?([1-9]\d*)",
+                re.I,
+            ),
+            re.compile(r"'ACTIVE'\s*:\s*([1-9]\d*)", re.I),
+        ],
+        "category": "orders",
+    },
 ]
+
+
+_OPEN_STATUS_COUNT_RE = re.compile(
+    r"Open-status count[^0-9]{0,80}?(?:NEW/ACTIVE/PARTIALLY_FILLED\)?:\s*)?([0-9]+)",
+    re.I,
+)
+_ACTIVE_STATUS_COUNT_RE = re.compile(r"['\"]ACTIVE['\"]\s*:\s*([0-9]+)", re.I)
+
+
+def open_status_count_from_evidence(evidence: list[EvidenceItem] | None) -> int | None:
+    """Best-effort open-status row count from collector evidence details.
+
+    Returns None when no countable open-status signal is present.
+    """
+    if not evidence:
+        return None
+    best: int | None = None
+    for item in evidence:
+        detail = str(item.get("detail") or "") if isinstance(item, dict) else str(item or "")
+        if not detail:
+            continue
+        match = _OPEN_STATUS_COUNT_RE.search(detail)
+        if match:
+            value = int(match.group(1))
+            best = value if best is None else max(best, value)
+            continue
+        match = _ACTIVE_STATUS_COUNT_RE.search(detail)
+        if match:
+            value = int(match.group(1))
+            best = value if best is None else max(best, value)
+    return best
+
+
+def _is_empty_book_cause(root_cause: str | None) -> bool:
+    cause = (root_cause or "").lower()
+    if not cause:
+        return False
+    return any(marker in cause for marker in _EMPTY_BOOK_CAUSE_MARKERS)
 
 
 def _evidence_corpus(evidence: list[EvidenceItem], tool_outputs: list[dict[str, Any]] | None = None) -> str:
@@ -1016,11 +1081,40 @@ def build_investigation_report(
         verification_steps = ["Re-run investigation with expanded log access."]
         next_action = recommended_fix
 
+    # Scheduled open_orders_empty asks "Why are open orders empty?". When evidence
+    # already shows open-status rows, that premise is false — do not complete with
+    # empty-book / trigger-cache RCs or leave resolution_status=active (pages
+    # Telegram CRITICAL). Seen 2026-08-14 ATP Control 200234 (ACTIVE=31).
+    open_count = open_status_count_from_evidence(evidence)
+    empty_probe_falsified = (
+        template_id == "open_orders_empty"
+        and open_count is not None
+        and open_count > 0
+    )
+    if empty_probe_falsified:
+        root_cause = _OPEN_ORDERS_NOT_EMPTY_CAUSE
+        confidence = max(float(confidence or 0.0), 92.0)
+        recommended_fix = (
+            "No empty-book repair needed. Continue scheduled open-orders health monitoring."
+        )
+        impact = (
+            f"Open-status count is {open_count}; scheduled empty-book probe is a non-finding. "
+            "Dashboard/exchange count mismatches belong to dashboard_exchange_mismatch."
+        )
+        verification_steps = [
+            f"Confirm Open-status count remains > 0 (observed {open_count}).",
+            "Use dashboard_exchange_mismatch for true count inconsistencies.",
+        ]
+        next_action = recommended_fix
+
     # Build summary from evidence highlights.
     summary_lines = [objective]
     for item in evidence[:4]:
         summary_lines.append(f"- {item['detail'][:120]}")
-    if classification and not classification.active_mismatch and category not in ("authentication", "portfolio"):
+    if empty_probe_falsified:
+        summary_lines.append(f"Conclusion: {root_cause}")
+        summary_lines.append(f"- Open-status count observed: {open_count}")
+    elif classification and not classification.active_mismatch and category not in ("authentication", "portfolio"):
         summary_lines.append(f"Conclusion: {classification.root_cause}")
         for note in classification.notes:
             summary_lines.append(f"- {note}")
@@ -1031,7 +1125,9 @@ def build_investigation_report(
     if failures:
         summary_lines.append(f"Collector failures: {'; '.join(failures[:3])}")
 
-    if not (classification and not classification.active_mismatch and category not in ("authentication", "portfolio")):
+    if not empty_probe_falsified and not (
+        classification and not classification.active_mismatch and category not in ("authentication", "portfolio")
+    ):
         for output in tool_outputs or []:
             if _is_present(output.get("next_action")):
                 next_action = str(output["next_action"])
@@ -1179,7 +1275,11 @@ def build_investigation_report(
         created_at=created_at,
         tool_results=tool_results,
         collector_failures=failures,
-        resolution_status=classification.resolution if classification else None,
+        resolution_status=(
+            "resolved"
+            if empty_probe_falsified
+            else (classification.resolution if classification else None)
+        ),
         synthesis=synthesis,
         missing_evidence=missing_evidence if status != InvestigationStatus.COMPLETED else [],
         domain=domain_value,
@@ -1239,6 +1339,19 @@ def validate_investigation_report_fields(
         root_cause == _FILLED_TRADE_HISTORY_CAUSE
         and template_id
         and template_id not in _TRADE_HISTORY_SCOPED_TEMPLATES
+    ):
+        return InvestigationStatus.INSUFFICIENT_EVIDENCE
+
+    # Reject empty-book / trigger-cache canned causes when open-status count > 0.
+    # Scheduled open_orders_empty otherwise completes with "Trigger order API
+    # failure blocks cache updates" and pages CRITICAL via resolution_status=active
+    # even though the book is not empty (ATP Control 200234, 2026-08-14).
+    open_count = open_status_count_from_evidence(evidence)
+    if (
+        template_id == "open_orders_empty"
+        and open_count is not None
+        and open_count > 0
+        and _is_empty_book_cause(root_cause)
     ):
         return InvestigationStatus.INSUFFICIENT_EVIDENCE
 

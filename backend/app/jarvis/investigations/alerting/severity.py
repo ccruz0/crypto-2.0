@@ -19,6 +19,8 @@ _RESOLVED_HEALTHY_MARKERS = (
     "no issues detected",
     "healthy",
     "no mismatch detected",
+    "open orders are not empty",
+    "scheduled empty-book probe is a non-finding",
 )
 
 # Patterns applied only to authoritative text (summary, root_cause, resolution_status, etc.).
@@ -221,6 +223,15 @@ def _status_value(report: Any) -> str:
 
 def _is_active_open_order_mismatch(report: Any) -> bool:
     """Investigation concluded with an active dashboard/exchange count mismatch."""
+    # Scheduled open_orders_empty with live open-status rows is not an empty-book
+    # CRITICAL — count mismatches belong to dashboard_exchange_mismatch.
+    if (getattr(report, "template_id", None) or "") == "open_orders_empty":
+        from app.jarvis.investigations.investigation_report import open_status_count_from_evidence
+
+        open_count = open_status_count_from_evidence(getattr(report, "evidence", None) or [])
+        if open_count is not None and open_count > 0:
+            return False
+
     resolution = (getattr(report, "resolution_status", None) or "").lower()
     if resolution == "active":
         return True

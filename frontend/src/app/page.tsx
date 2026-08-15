@@ -2091,6 +2091,33 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.96',
+    date: '2026-08-15',
+    change: 'Jarvis: stop false CRITICAL open_orders_empty when book is not empty',
+    details: `🚀 VERSIÓN 0.96 — OPEN_ORDERS_EMPTY NON-FINDING WHEN COUNT > 0
+
+📋 **Root cause**
+• Scheduled \`open_orders_empty\` asks "Why are open orders empty?" every cycle
+• When DB already has ACTIVE/NEW rows, ranked RC still picked "Trigger order API failure blocks cache updates"
+• \`resolution_status=active\` (exchange vs dashboard count noise / 50001) paged Telegram CRITICAL
+• Evidence on 2026-08-14 showed Open-status count=31 / ACTIVE=31 — not an empty book
+
+✅ **What shipped**
+• When \`open_orders_empty\` evidence shows open-status count > 0 → conclude non-finding, \`resolution=resolved\`
+• Reject empty-book / trigger-cache canned causes for that template when count > 0
+• Severity defense: do not CRITICAL-page \`open_orders_empty\` while open-status count > 0
+• True count mismatches still belong to \`dashboard_exchange_mismatch\`
+
+🔧 **Why**
+• Morning triage ATP Control [200234](https://t.me/ATP_control_bot/200234)
+
+📦 **PRs**
+• (this PR)
+
+---
+`
+  },
 
 ];
 
