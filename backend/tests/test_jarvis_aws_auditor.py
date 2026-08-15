@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from datetime import date
+
 from app.jarvis.mvp.aws_auditor import compile_audit_findings, is_aws_audit_task, run_aws_audit
+from app.jarvis.mvp.aws_auditor_tools import get_cost_summary
 from app.jarvis.mvp.risk import classify_task_risk
 
 
@@ -91,3 +94,65 @@ def test_aws_audit_service_persists_audit_id(monkeypatch):
     assert out.get("audit_id") == "audit-test-id"
     assert "read-only" in out["final_answer"].lower()
     reset_jarvis_graph_cache()
+
+
+def _ce_day(start: str, end: str, amount: str, service: str = "Amazon Elastic Compute Cloud - Compute"):
+    return {
+        "TimePeriod": {"Start": start, "End": end},
+        "Total": {"UnblendedCost": {"Amount": amount}},
+        "Groups": [
+            {
+                "Keys": [service],
+                "Metrics": {"UnblendedCost": {"Amount": amount}},
+            }
+        ],
+    }
+
+
+@patch("app.jarvis.mvp.aws_auditor_tools._utc_today", return_value=date(2026, 8, 15))
+@patch("app.jarvis.mvp.aws_auditor_tools._client")
+def test_get_cost_summary_uses_daily_rolling_window(mock_client, _today):
+    """MONTHLY buckets spanning two months must not be used for the KR spend figure."""
+    ce = MagicMock()
+    mock_client.return_value = ce
+
+    july_day = _ce_day("2026-07-16", "2026-07-17", "100.00")
+    august_day = _ce_day("2026-08-01", "2026-08-02", "50.00")
+
+    def _get_cost_and_usage(**kwargs):
+        assert kwargs["Granularity"] == "DAILY"
+        assert kwargs["TimePeriod"]["Start"] == "2026-07-17"
+        assert kwargs["TimePeriod"]["End"] == "2026-08-16"
+        rows = [july_day, august_day]
+        if kwargs.get("GroupBy"):
+            return {"ResultsByTime": rows}
+        return {
+            "ResultsByTime": [
+                {k: v for k, v in row.items() if k != "Groups"} for row in rows
+            ]
+        }
+
+    ce.get_cost_and_usage.side_effect = _get_cost_and_usage
+
+    out = get_cost_summary()
+    assert out["success"] is True
+    assert out["total_usd"] == 150.0
+    assert out["total_unblended_usd"] == 150.0
+    assert out["month_to_date_usd"] == 50.0
+    assert out["top_services"][0]["amount_usd"] == 150.0
+    assert all(call.kwargs["Granularity"] == "DAILY" for call in ce.get_cost_and_usage.call_args_list)
+
+
+def test_compile_audit_findings_includes_month_to_date():
+    out = compile_audit_findings(
+        [
+            {
+                "tool": "get_cost_summary",
+                "success": True,
+                "total_usd": 140.0,
+                "month_to_date_usd": 62.0,
+            }
+        ]
+    )
+    assert out["summary"]["total_30d_spend_usd"] == 140.0
+    assert out["summary"]["month_to_date_spend_usd"] == 62.0

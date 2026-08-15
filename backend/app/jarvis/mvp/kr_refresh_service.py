@@ -32,6 +32,7 @@ def _canonical_metric(metric_name: str) -> str:
 
 
 def _should_alert_spend_exceeded(kr: dict[str, Any], current: float) -> bool:
+    """Alert when a minimize-spend KR (monthly/daily AWS cost) is above target."""
     canonical = _canonical_metric(str(kr.get("metric_name") or ""))
     if canonical not in ("aws_monthly_spend", "aws_daily_spend"):
         return False
@@ -134,7 +135,7 @@ def refresh_key_results(*, send_telegram: bool = True) -> dict[str, Any]:
                 "target_value": target,
                 "status": status,
                 "unit": kr.get("unit"),
-                "reason": "AWS spend exceeds target",
+                "reason": "AWS 30-day rolling spend exceeds monthly target",
             })
 
         if _should_alert_accuracy_below(kr, current):
