@@ -4457,7 +4457,28 @@ class ExchangeSyncService:
                         "tp_newly_created": False,
                         "error": oco_res.get("error"),
                     }
-            sl_result = _place_sl()
+            logger.info(
+                "[SLTP_SL_ATTEMPT] parent=%s symbol=%s margin=%s tp_result=%s "
+                "— about to place SL",
+                order_id,
+                symbol,
+                is_margin,
+                tp_result,
+            )
+            try:
+                sl_result = _place_sl()
+            except Exception as sl_place_exc:
+                logger.error(
+                    "[SLTP_SL_EXCEPTION] parent=%s symbol=%s margin=%s tp_result=%s "
+                    "_place_sl() raised: %s",
+                    order_id,
+                    symbol,
+                    is_margin,
+                    tp_result,
+                    sl_place_exc,
+                    exc_info=True,
+                )
+                sl_result = {"order_id": None, "error": f"sl_place_exception: {sl_place_exc}"}
             sl_newly_created = bool(sl_result.get("order_id")) and not sl_result.get("error")
 
         # When SL already exists and nothing new was created, treat as idempotent
