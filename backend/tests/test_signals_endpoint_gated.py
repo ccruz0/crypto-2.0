@@ -12,7 +12,7 @@ but-low-volume symbols (e.g. DGB) falsely show the red SELL state on the dashboa
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from app.api.routes_signals import compute_engine_signals
+from app.api.routes_signals import compute_engine_signals, period_volume_for_engine
 from app.services.strategy_profiles import StrategyType, RiskApproach
 
 
@@ -111,5 +111,75 @@ class TestDgbVolumeGateRealEngine:
         params["rsi"] = 85.0
         buy, sell, _state = compute_engine_signals(
             db=MagicMock(), current_volume=200.0, avg_volume=100.0, **params
+        )
+        assert sell is True
+
+
+class TestPeriodVolumeForEngine:
+    """Watchlist must feed the engine the same period volume Signal Monitor uses."""
+
+    def test_prefers_period_volume_over_24h(self):
+        # Live CRO_USD: period ~26.5k vs 24h ~3.48M would look like 73× if mixed.
+        assert period_volume_for_engine(26510.0, 3483861.0) == 26510.0
+
+    def test_falls_back_to_24h_divided_by_24(self):
+        assert period_volume_for_engine(None, 2400.0) == 100.0
+        assert period_volume_for_engine(0.0, 2400.0) == 100.0
+
+    def test_missing_both_returns_none(self):
+        assert period_volume_for_engine(None, None) is None
+        assert period_volume_for_engine(0.0, 0.0) is None
+
+
+# CRO_USD 2026-08-14: RSI ~77, MA50 < EMA10, Auto/Conservative volumeMinRatio 1.0.
+_CRO = dict(
+    symbol="CRO_USD",
+    current_price=0.04832,
+    rsi=77.02,
+    atr=0.000247,
+    ma50=0.046913,
+    ma200=0.049141,
+    ema10=0.047464,
+)
+
+
+class TestCroPeriodVolumeDoesNotInflateSell:
+    """Regression: Watchlist painted red SELL while Telegram stayed silent.
+
+    /signals used to pass volume_24h into the engine (~73× vs avg) while the
+    dashboard column showed period volume_ratio 0.56× (< auto 1.0× min).
+    Signal Monitor already uses period volume, so no Telegram SELL fired.
+    """
+
+    @patch("app.api.routes_signals.DB_AVAILABLE", True)
+    @patch("app.services.strategy_profiles.resolve_strategy_profile",
+           return_value=(StrategyType.AUTO, RiskApproach.CONSERVATIVE))
+    @patch("app.services.watchlist_selector.get_canonical_watchlist_item")
+    def test_period_volume_below_min_does_not_sell(self, mock_wl, _resolve):
+        mock_wl.return_value = _wl_item()
+        buy, sell, state = compute_engine_signals(
+            db=MagicMock(),
+            current_volume=26510.0,
+            avg_volume=47286.59,
+            **_CRO,
+        )
+        assert sell is False
+        assert buy is False
+        if state and isinstance(state, dict):
+            reasons = state.get("reasons") or {}
+            assert reasons.get("sell_volume_ok") is False
+
+    @patch("app.api.routes_signals.DB_AVAILABLE", True)
+    @patch("app.services.strategy_profiles.resolve_strategy_profile",
+           return_value=(StrategyType.AUTO, RiskApproach.CONSERVATIVE))
+    @patch("app.services.watchlist_selector.get_canonical_watchlist_item")
+    def test_passing_raw_24h_volume_would_falsely_sell(self, mock_wl, _resolve):
+        """Documents the old bug: feeding volume_24h as current_volume trips SELL."""
+        mock_wl.return_value = _wl_item()
+        _buy, sell, _state = compute_engine_signals(
+            db=MagicMock(),
+            current_volume=3483861.0,
+            avg_volume=47286.59,
+            **_CRO,
         )
         assert sell is True

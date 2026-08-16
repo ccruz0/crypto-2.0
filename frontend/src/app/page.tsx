@@ -2018,175 +2018,24 @@ const VERSION_HISTORY = [
   {
     version: '0.93',
     date: '2026-08-14',
-    change: 'CRO SELL: dust wallet is not a long-close (no 608 short)',
-    details: `🚀 VERSIÓN 0.93 — DUST WALLET ≠ LONG-CLOSE
+    change: 'Watchlist SELL no longer uses 24h volume (false CRO red)',
+    details: `🚀 VERSIÓN 0.93 — WATCHLIST VOLUME GATE MATCHES TELEGRAM
 
 📋 **Root cause**
-• SELL alert for CRO_USD is valid (RSI/trend/volume + 3% throttle) — Telegram is correct
-• Crypto.com CRO allows margin buy, not short (\`margin_sell_enabled=false\`, 608 CANNOT_SHORT_SELL)
-• v0.89 treated any positive wallet as a long-close; ~0.93 CRO (~$0.04) dust then sold the $100 ticket → exchange short → 608
-• Pre-gate \`INSTRUMENT_SHORT_SELL_DISABLED\` never ran because dust looked like a position
+• Watchlist paints the coin name red from \`/api/signals\` \`signals.sell\`
+• That endpoint passed \`volume_24h\` into the trading engine (~24× an hourly bar)
+• Signal Monitor already gates on period \`current_volume\` vs \`volumeMinRatio\` (auto = 1.0×)
+• CRO_USD showed RSI ~77 red + 0.56×avg but \`sell=true\` because the engine saw ~73× from 24h volume — Telegram did not fire
 
 ✅ **What shipped**
-• Wallet long-close only when notional ≥ $5 (same dust floor as system_core / Cartera)
-• Long-close qty is capped to wallet so a smaller long cannot oversell into a short
-• Telegram 608 copy uses the same Spanish SHORT-disabled line (raw 608 stays in Detalle técnico)
+• \`/api/signals\` uses period volume for BUY/SELL (same as Signal Monitor); 24h only as \`/24\` fallback
+• Watchlist red SELL now means the engine would actually emit a SELL (volume still has to clear the strategy min)
 
 🔧 **Why**
-• 2026-08-14 11:19 WIB: CRO_USD SELL SIGNAL then ORDER FAILED 608 while Watchlist Margin was YES
+• Operator asked why CRO was red with 0/3 and no Telegram alert
 
 📦 **PRs**
-• (this PR)
-
----
-`
-  },
-  {
-    version: '0.94',
-    date: '2026-08-14',
-    change: 'Disable Watchlist S (SHORT) alerts when exchange forbids short',
-    details: `🚀 VERSIÓN 0.94 — NO SHORT ALERT BUTTON IF EXCHANGE FORBIDS SHORT
-
-📋 **Root cause**
-• CRO_USD SELL alerts fired while Crypto.com \`margin_sell_enabled=false\` (608 CANNOT_SHORT_SELL)
-• Watchlist S button did not know the instrument cannot open a SHORT
-
-✅ **What shipped**
-• Dashboard / top-coins expose \`margin_sell_enabled\` from Crypto.com instruments
-• Watchlist S is disabled (grey, not clickable) when the exchange forbids SHORT — CRO and any other coin with the same flag
-• Backend will not send SELL/SHORT Telegram or accept S=ON for those instruments
-• BUY alerts (B) and Margin YES (longs) are unchanged
-
-🔧 **Why**
-• Operator: if the system cannot short, do not enable the short-alert buttons
-
-📦 **PRs**
-• (this PR)
-
----
-`
-  },
-  {
-    version: '0.95',
-    date: '2026-08-14',
-    change: 'SELL alerts open an independent SHORT (never close a long)',
-    details: `🚀 VERSIÓN 0.95 — ALERTA S = SHORT NUEVO, NO CIERRA LONG
-
-📋 **Root cause**
-• Watchlist S / Telegram SELL looked for a bot or wallet long and sold that inventory
-• Operator rule: a SELL alert must open a new independent SHORT, not close a long (longs close via SL/TP)
-
-✅ **What shipped**
-• Signal SELL always places the full ticket as a margin short (when Margin YES + ALLOW_SHORTING + exchange \`margin_sell_enabled\`)
-• Does not inspect wallet/bot longs, does not cap qty to wallet
-• CRO and any no-short instrument still block (S stays grey from v0.94) — no fallback to closing a long
-• Watchlist S tooltip: "abre un SHORT nuevo. No cierra un long."
-
-🔧 **Why**
-• Operator: cualquier alerta de venta abre un corto independiente
-
-📦 **PRs**
-• (this PR)
-
----
-`
-  },
-  {
-    version: '0.96',
-    date: '2026-08-15',
-    change: 'Jarvis: stop false CRITICAL open_orders_empty when book is not empty',
-    details: `🚀 VERSIÓN 0.96 — OPEN_ORDERS_EMPTY NON-FINDING WHEN COUNT > 0
-
-📋 **Root cause**
-• Scheduled \`open_orders_empty\` asks "Why are open orders empty?" every cycle
-• When DB already has ACTIVE/NEW rows, ranked RC still picked "Trigger order API failure blocks cache updates"
-• \`resolution_status=active\` (exchange vs dashboard count noise / 50001) paged Telegram CRITICAL
-• Evidence on 2026-08-14 showed Open-status count=31 / ACTIVE=31 — not an empty book
-
-✅ **What shipped**
-• When \`open_orders_empty\` evidence shows open-status count > 0 → conclude non-finding, \`resolution=resolved\`
-• Reject empty-book / trigger-cache canned causes for that template when count > 0
-• Severity defense: do not CRITICAL-page \`open_orders_empty\` while open-status count > 0
-• True count mismatches still belong to \`dashboard_exchange_mismatch\`
-
-🔧 **Why**
-• Morning triage ATP Control [200234](https://t.me/ATP_control_bot/200234)
-
-📦 **PRs**
-• (this PR)
-
----
-`
-  },
-  {
-    version: '0.97',
-    date: '2026-08-15',
-    change: 'Watchlist Amount USD follows the database (DGB_USD)',
-    details: `🚀 VERSIÓN 0.97 — AMOUNT USD = DB
-
-📋 **What shipped**
-• Amount USD reads \`watchlist_items.trade_amount_usd\` when overlay has no key
-• Dashboard load **replaces** the amount map from the API (does not merge leftover localStorage)
-• Null DB amount (DGB_USD) shows \`-\`, not a stale $10
-
-🔧 **Why**
-• 2026-08-14: DGB_USD Amount showed $10 in Watchlist while Postgres \`trade_amount_usd\` was null
-• Same overlay-merge bug as Trade/Margin/Alert before v0.90 — localStorage $10 survived because null amounts were skipped
-
-📦 **PRs**
-• #474
-
----
-`
-  },
-  {
-    version: '0.98',
-    date: '2026-08-15',
-    change: 'AWS cost KR alert uses 30-day rolling daily spend (not inflated monthly buckets)',
-    details: `🚀 VERSIÓN 0.98 — AWS COST ALERT ACCURACY
-
-📋 **Root cause**
-• Daily Jarvis KR refresh (07:30) alerts when \`aws_monthly_spend\` exceeds the $120 target
-• Cost Explorer was queried with MONTHLY granularity over a 30-day window, which returns full overlapping calendar months (~1.5 months of spend)
-• Daily report looked for \`total_unblended_usd\` (never returned) so AWS cost showed as unavailable
-• Cost Explorer failures were stored as $0, which hid overspend on the KR
-
-✅ **What shipped**
-• 30-day spend uses DAILY granularity; month-to-date is derived from the same window
-• KR Telegram reason: "AWS 30-day rolling spend exceeds monthly target"
-• Daily report prints 30d + MTD when Cost Explorer succeeds
-• Metric refresh errors instead of treating missing Cost Explorer data as $0
-
-🔧 **Why**
-• Operator asked to look at the AWS cost alert — the figure was not a true monthly bill
-
-📦 **PRs**
-• #481
-
----
-`
-  },
-  {
-    version: '0.99',
-    date: '2026-08-15',
-    change: 'Wallet-aware open position counts + ops ghost git fallback',
-    details: `🚀 VERSIÓN 0.99 — POSITION COUNT + OPS
-
-📋 **What shipped**
-• \`open_position_counts\` falls back to 1 when wallet |USD| ≥ $5 but bot FIFO count is 0 (fixes HBAR short showing 0/limit)
-• Ops ghost/heal workflows: chown \`.git\` + fall back to \`/app/scripts\` when host git fetch fails
-
-🔧 **Why**
-• 2026-08-15 audit: HBAR wallet short ~$97 with BUY SL/TP live, but dashboard count=0
-• Ops cancel-ghost failed with \`.git/objects\` permission on EC2
-
-📦 **Ops done same day (no PR)**
-• Cancelled HBAR wrong-side SELL SL/TP qty 42 ghosts
-• BONK \`trade_amount_usd\` $10 → $100 (aligned with ALGO/HBAR)
-
-📦 **PRs**
-• #482
-• #483 (VERSION_HISTORY conflict so frontend can build)
+• #476
 
 ---
 `
