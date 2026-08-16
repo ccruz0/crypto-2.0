@@ -59,6 +59,8 @@ def humanize_guardrail_reason(
         "instrument_short_sell" in r
         or "margin_sell_enabled" in r
         or "margin short sell" in r
+        or "cannot_short_sell" in r
+        or "cannot_short" in r
     ):
         return (
             f"🚫 {action} no ejecutada: {base} tiene Margin YES en watchlist, "

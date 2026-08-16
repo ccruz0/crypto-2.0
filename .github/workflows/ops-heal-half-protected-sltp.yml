@@ -62,13 +62,26 @@ jobs:
           read -r -d '' REMOTE <<EOF || true
           set -eu
           cd /home/ubuntu/crypto-2.0
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin "$REF"
-          sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q "origin/$REF" -- \
-            backend/scripts/ops_heal_half_protected_sltp.py
+          sudo chown -R ubuntu:ubuntu /home/ubuntu/crypto-2.0/.git 2>/dev/null || true
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           echo CONTAINER=\$CONTAINER REF=$REF DRY_RUN=${DRY_RUN} SYMBOLS=${SYMBOLS:-}
           test -n "\$CONTAINER"
-          docker exec "\$CONTAINER" python3 /repo/backend/scripts/ops_heal_half_protected_sltp.py ${LIVE_FLAG} ${SYMBOLS_FLAG}
+          SCRIPT=""
+          if sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 fetch origin "$REF" \
+            && sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q "origin/$REF" -- \
+              backend/scripts/ops_heal_half_protected_sltp.py; then
+            SCRIPT=/repo/backend/scripts/ops_heal_half_protected_sltp.py
+          elif docker exec "\$CONTAINER" test -f /app/scripts/ops_heal_half_protected_sltp.py; then
+            echo "WARN: git checkout failed; using image /app/scripts"
+            SCRIPT=/app/scripts/ops_heal_half_protected_sltp.py
+          elif docker exec "\$CONTAINER" test -f /repo/backend/scripts/ops_heal_half_protected_sltp.py; then
+            echo "WARN: git checkout failed; using existing /repo script"
+            SCRIPT=/repo/backend/scripts/ops_heal_half_protected_sltp.py
+          else
+            echo "ERROR: ops_heal_half_protected_sltp.py not found" >&2
+            exit 1
+          fi
+          docker exec "\$CONTAINER" python3 "\$SCRIPT" ${LIVE_FLAG} ${SYMBOLS_FLAG}
           EOF
           # Do not set Parameters.executionTimeout: AWS CLI requires a StringList and
           # document defaults are already 3600s. Rely on --timeout-seconds below.

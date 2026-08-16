@@ -19,7 +19,7 @@ from app.jarvis.approval_storage import (
     get_default_approval_storage,
     reset_default_approval_storage_for_tests,
 )
-from app.jarvis.bedrock_client import extract_planner_json_object
+from app.jarvis import bedrock_client
 from app.jarvis.executor import execute_plan
 from app.jarvis.memory import InMemoryJarvisMemory, reset_default_memory_for_tests
 from app.jarvis.orchestrator import run_jarvis
@@ -57,22 +57,32 @@ def test_validate_plan_dict_rejects_extra_fields():
     assert err is not None
 
 
-def test_extract_json_noisy_model_output():
-    text = """Here is the plan:
-```json
-{"action": "get_server_time", "args": {}, "reasoning": "user asked"}
-```
-Hope this helps."""
-    obj = extract_planner_json_object(text)
+def test_structured_json_arrives_as_dict_via_tool_use(monkeypatch):
+    # Phase 2 contract: JSON is delivered as a parsed dict through forced
+    # tool-use — there is no text-to-JSON extraction step anymore.
+    fake_response = {
+        "output": {
+            "message": {
+                "content": [
+                    {"toolUse": {"input": {"action": "get_server_time", "args": {}, "reasoning": "user asked"}}}
+                ]
+            }
+        },
+        "usage": {"inputTokens": 10, "outputTokens": 5},
+    }
+    monkeypatch.setattr(bedrock_client, "_converse", lambda **kw: fake_response)
+    obj = bedrock_client.ask_bedrock_json("plan something")
     assert obj is not None
     assert obj.get("action") == "get_server_time"
 
 
-def test_extract_json_balanced_with_prose():
-    text = 'Sure — {"action":"echo_message","args":{"message":"x"},"reasoning":"ok"} — done.'
-    obj = extract_planner_json_object(text)
-    assert obj is not None
-    assert obj["action"] == "echo_message"
+def test_structured_json_returns_none_without_tool_use_block(monkeypatch):
+    fake_response = {
+        "output": {"message": {"content": [{"text": "prose only, no structure"}]}},
+        "usage": {"inputTokens": 4, "outputTokens": 3},
+    }
+    monkeypatch.setattr(bedrock_client, "_converse", lambda **kw: fake_response)
+    assert bedrock_client.ask_bedrock_json("plan something") is None
 
 
 def test_execute_plan_safe_tool_success():
@@ -444,7 +454,8 @@ def test_execute_ready_medium_risk_does_not_require_actor(monkeypatch):
 
 
 def test_planner_fallback_on_invalid_json(monkeypatch):
-    monkeypatch.setattr("app.jarvis.planner.ask_bedrock", lambda prompt: "not json at all {{{")
+    # Structured path cannot produce malformed JSON; the failure mode is None.
+    monkeypatch.setattr("app.jarvis.planner.ask_bedrock_json", lambda prompt, **kw: None)
     plan = create_plan("hello there", jarvis_run_id="fb-1")
     assert plan.get("action") == "echo_message"
     assert "fallback" in (plan.get("args") or {}).get("message", "")
@@ -452,8 +463,8 @@ def test_planner_fallback_on_invalid_json(monkeypatch):
 
 def test_planner_valid_when_bedrock_returns_json(monkeypatch):
     monkeypatch.setattr(
-        "app.jarvis.planner.ask_bedrock",
-        lambda prompt: '{"action":"list_available_tools","args":{},"reasoning":"list"}',
+        "app.jarvis.planner.ask_bedrock_json",
+        lambda prompt, **kw: {"action": "list_available_tools", "args": {}, "reasoning": "list"},
     )
     plan = create_plan("what tools", jarvis_run_id="ok-1")
     assert plan.get("action") == "list_available_tools"

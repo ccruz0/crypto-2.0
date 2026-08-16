@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
+from app.jarvis.bedrock_client import ask_bedrock, ask_bedrock_json
 from app.jarvis.mvp.aws_auditor import compile_audit_findings, is_aws_audit_task, run_aws_audit
 from app.jarvis.mvp.crypto_auditor import (
     compile_crypto_audit_findings,
@@ -186,8 +186,7 @@ def planner_agent(state: dict[str, Any]) -> dict[str, Any]:
         f"{sorted(READONLY_TOOLS)}) and args (object). Task: {task}"
     )
     plan: list[dict[str, Any]] = []
-    raw = ask_bedrock(prompt)
-    parsed = extract_planner_json_object(raw) if raw else None
+    parsed = ask_bedrock_json(prompt, task="standard", agent="mvp_planner", mission_id=str(state.get("task_id") or "") or None)
     if isinstance(parsed, dict) and isinstance(parsed.get("plan"), list):
         plan = [p for p in parsed["plan"] if isinstance(p, dict)]
     if not plan:

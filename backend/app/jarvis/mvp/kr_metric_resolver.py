@@ -169,22 +169,26 @@ def resolve_metric(metric_name: str) -> dict[str, Any]:
             from app.jarvis.mvp.metrics_persistence import _fetch_aws_monthly_cost
 
             value = _fetch_aws_monthly_cost()
+            if value is None:
+                return _error_result(raw, "AWS Cost Explorer unavailable")
             return _result(
                 metric_name=raw,
                 current_value=value,
-                source="AWS Cost Explorer (30d)",
-                confidence="high" if value > 0 else "medium",
+                source="AWS Cost Explorer (30d rolling)",
+                confidence="high",
             )
 
         if canonical == "aws_daily_spend":
             from app.jarvis.mvp.metrics_persistence import _fetch_aws_daily_cost
 
             value = _fetch_aws_daily_cost()
+            if value is None:
+                return _error_result(raw, "AWS Cost Explorer unavailable")
             return _result(
                 metric_name=raw,
                 current_value=value,
                 source="AWS Cost Explorer (24h)",
-                confidence="high" if value > 0 else "medium",
+                confidence="high",
             )
 
         if canonical == "aws_ec2_count":

@@ -21,7 +21,7 @@ from app.jarvis.action_policy import (
 from app.jarvis.execution.safety import SafetyLevel, classify_text, is_forbidden
 from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
-from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
+from app.jarvis.bedrock_client import ask_bedrock_json
 from app.jarvis.executor import invoke_registered_tool, is_invoke_error_payload
 from app.jarvis.ga4_readonly_analytics import run_ga4_readonly_analytics
 from app.jarvis.perico_mission import (
@@ -97,7 +97,7 @@ def _json_dump(value: Any) -> str:
 class PlannerAgent:
     name = "planner"
 
-    def run(self, prompt: str) -> dict[str, Any]:
+    def run(self, prompt: str, *, mission_id: str | None = None) -> dict[str, Any]:
         prompt_text = (prompt or "").strip()
         if is_autonomous_mission_blocked(prompt_text):
             return {
@@ -114,8 +114,7 @@ class PlannerAgent:
             "requires_research (boolean), requires_input (boolean).\n"
             f"Prompt: {prompt}"
         )
-        raw = ask_bedrock(ask)
-        parsed = extract_planner_json_object(raw or "")
+        parsed = ask_bedrock_json(ask, task="standard", agent="autonomous_planner", mission_id=mission_id)
         if not isinstance(parsed, dict):
             return {
                 "objective": prompt[:300],
@@ -144,15 +143,14 @@ class PlannerAgent:
 class ResearchAgent:
     name = "research"
 
-    def run(self, *, prompt: str, plan: dict[str, Any]) -> dict[str, Any]:
+    def run(self, *, prompt: str, plan: dict[str, Any], mission_id: str | None = None) -> dict[str, Any]:
         ask = (
             "You are a research agent. Produce JSON only with keys "
             "findings (array of strings), open_questions (array of strings), confidence (0-1 float).\n"
             f"Mission prompt: {prompt}\n"
             f"Plan: {_json_dump(plan)[:2400]}"
         )
-        raw = ask_bedrock(ask)
-        parsed = extract_planner_json_object(raw or "")
+        parsed = ask_bedrock_json(ask, task="standard", agent="research", mission_id=mission_id)
         if not isinstance(parsed, dict):
             return {
                 "findings": ["No external data source configured; proceeding with available context."],
@@ -178,6 +176,7 @@ class StrategyAgent:
         plan: dict[str, Any],
         research: dict[str, Any] | None,
         outcome_memory: list[dict[str, Any]] | None = None,
+        mission_id: str | None = None,
     ) -> dict[str, Any]:
         history = outcome_memory or []
         success_rate = _historical_success_rate(history)
@@ -197,8 +196,7 @@ class StrategyAgent:
             f"Research: {_json_dump(research or {})[:2200]}\n"
             f"Historical outcome success rate: {success_rate:.3f}"
         )
-        raw = ask_bedrock(ask)
-        parsed = extract_planner_json_object(raw or "")
+        parsed = ask_bedrock_json(ask, task="standard", agent="strategy", mission_id=mission_id)
         if not isinstance(parsed, dict):
             # Fallback: derive one conservative action from available research.
             findings = [str(x) for x in ((research or {}).get("findings") or []) if isinstance(x, (str, int, float))]

@@ -296,6 +296,8 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
         if getattr(item, "sl_tp_mode", None):
             log.warning(f"Strategy resolution incomplete for {_symbol_str(item)}: preset={strategy_type}, risk={risk_approach}, sl_tp_mode={getattr(item, 'sl_tp_mode')}")
     
+    from app.services.margin_info_service import instrument_allows_margin_short
+    serialized["margin_sell_enabled"] = instrument_allows_margin_short(_symbol_str(item))
     return serialized
 
 
@@ -416,6 +418,8 @@ def _serialize_watchlist_master(item: WatchlistMaster, db: Optional[Session] = N
                 db.rollback()
                 log.error(f"Error saving calculated SL/TP for {_symbol_str(item)}: {e}", exc_info=True)
     
+    from app.services.margin_info_service import instrument_allows_margin_short
+    serialized["margin_sell_enabled"] = instrument_allows_margin_short(_symbol_str(item))
     return serialized
 
 
@@ -1008,7 +1012,9 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         )
 
         bases_for_counts = collect_bases_for_position_counts(balances_list, unified_open_orders)
-        open_position_counts = compute_open_position_counts(db, bases_for_counts)
+        open_position_counts = compute_open_position_counts(
+            db, bases_for_counts, balances=balances_list
+        )
         open_tp_counts, open_protective_counts, ghost_protection_alerts = compute_protection_leg_stats(
             unified_open_orders, balances_list
         )
@@ -2633,9 +2639,16 @@ def update_watchlist_item(
             if not getattr(item, "buy_alert_enabled", False):
                 setattr(item, "buy_alert_enabled", True)
                 log.info(f"⚡ [TRADE] Auto-enabled buy_alert_enabled for {_symbol_str(item)} (required for BUY alerts)")
-            if not getattr(item, "sell_alert_enabled", False):
-                setattr(item, "sell_alert_enabled", True)
-                log.info(f"⚡ [TRADE] Auto-enabled sell_alert_enabled for {_symbol_str(item)} (required for SELL alerts)")
+            from app.services.margin_info_service import clamp_sell_alert_enabled
+            if clamp_sell_alert_enabled(_symbol_str(item), True):
+                if not getattr(item, "sell_alert_enabled", False):
+                    setattr(item, "sell_alert_enabled", True)
+                    log.info(f"⚡ [TRADE] Auto-enabled sell_alert_enabled for {_symbol_str(item)} (required for SELL alerts)")
+            else:
+                log.info(
+                    f"⚡ [TRADE] Skipped sell_alert_enabled for {_symbol_str(item)} "
+                    f"(exchange margin_sell_enabled=false; no SHORT alerts)"
+                )
             db.commit()
             db.refresh(item)
     
@@ -3068,9 +3081,14 @@ def bulk_update_alerts(
                 item.buy_alert_enabled = buy_alerts
                 changed = True
             
-            # Update SELL alert
-            if hasattr(item, "sell_alert_enabled") and item.sell_alert_enabled != sell_alerts:
-                item.sell_alert_enabled = sell_alerts
+            # Update SELL alert — never enable S on instruments that cannot short
+            from app.services.margin_info_service import clamp_sell_alert_enabled
+            desired_sell = clamp_sell_alert_enabled(
+                getattr(item, "symbol", "") or "",
+                bool(sell_alerts),
+            )
+            if hasattr(item, "sell_alert_enabled") and item.sell_alert_enabled != desired_sell:
+                item.sell_alert_enabled = desired_sell
                 changed = True
             
             # Update TRADE

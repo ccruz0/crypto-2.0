@@ -26,7 +26,7 @@ from app.jarvis.planner import create_plan
     ],
 )
 def test_fuzzy_marketing_routes_to_run_marketing_review(user_input: str) -> None:
-    with patch("app.jarvis.planner.ask_bedrock") as mock_bedrock:
+    with patch("app.jarvis.planner.ask_bedrock_json") as mock_bedrock:
         plan = create_plan(user_input, jarvis_run_id="test-run")
     mock_bedrock.assert_not_called()
     assert plan.get("action") == "run_marketing_review"
@@ -35,14 +35,14 @@ def test_fuzzy_marketing_routes_to_run_marketing_review(user_input: str) -> None
 
 
 def test_slash_jarvis_review_my_marketing() -> None:
-    with patch("app.jarvis.planner.ask_bedrock") as mock_bedrock:
+    with patch("app.jarvis.planner.ask_bedrock_json") as mock_bedrock:
         plan = create_plan("/jarvis review my marketing", jarvis_run_id="r1")
     mock_bedrock.assert_not_called()
     assert plan.get("action") == "run_marketing_review"
 
 
 def test_unrelated_text_does_not_route_to_marketing_review() -> None:
-    with patch("app.jarvis.planner.ask_bedrock", return_value="not json") as mock_bedrock:
+    with patch("app.jarvis.planner.ask_bedrock_json", return_value=None) as mock_bedrock:
         plan = create_plan("the weather is nice in tokyo today", jarvis_run_id="r2")
     mock_bedrock.assert_called_once()
     assert plan.get("action") == "echo_message"
@@ -50,7 +50,7 @@ def test_unrelated_text_does_not_route_to_marketing_review() -> None:
 
 def test_marketing_only_without_action_does_not_fuzzy_route() -> None:
     """Domain keyword alone must not trigger review."""
-    with patch("app.jarvis.planner.ask_bedrock", return_value="not json"):
+    with patch("app.jarvis.planner.ask_bedrock_json", return_value=None):
         plan = create_plan("I read a marketing newsletter yesterday", jarvis_run_id="r3")
     assert plan.get("action") == "echo_message"
 

@@ -279,3 +279,14 @@ def instrument_allows_margin_short(symbol: str) -> bool:
         return False
     return bool(getattr(info, "margin_sell_enabled", False))
 
+
+def clamp_sell_alert_enabled(symbol: str, desired: bool) -> bool:
+    """SELL / short alerts are only allowed when the exchange permits margin sell.
+
+    Turning the flag OFF always succeeds. Turning it ON is a no-op (False) for
+    instruments like CRO_USD where Crypto.com sets ``margin_sell_enabled=false``.
+    """
+    if not desired:
+        return False
+    return instrument_allows_margin_short(symbol)
+

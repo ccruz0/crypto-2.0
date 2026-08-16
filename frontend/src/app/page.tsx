@@ -29,7 +29,7 @@ import SystemHealthPanel from '@/components/SystemHealth';
 import { getSystemHealth } from '@/lib/api';
 import { palette } from '@/theme/palette';
 import { logger } from '@/utils/logger';
-import { watchlistButtonOn, watchlistFlagsFromCoins } from '@/utils/watchlistToggleState';
+import { watchlistAmountsFromItems, watchlistButtonOn, watchlistFlagsFromCoins } from '@/utils/watchlistToggleState';
 import { dedupeWatchlistCoins } from '@/utils/watchlistCoins';
 import {
   DEFAULT_TRADING_LIMITS,
@@ -5396,6 +5396,7 @@ function resolveDecisionIndexColor(value: number): string {
         if (Object.keys(flags.sellAlert).length > 0) {
           setCoinSellAlertStatus(flags.sellAlert);
         }
+        setCoinAmounts(watchlistAmountsFromItems(cleanedCoins));
         logger.info(
           '✅ Watchlist buttons hydrated from DB/top-coins:',
           Object.keys(flags.trade).length,
@@ -5452,35 +5453,10 @@ function resolveDecisionIndexColor(value: number): string {
         // PRIMARY: Try to load from localStorage (temporary, will be overridden by backend)
         // NOTE: Backend values will take priority when they arrive
         try {
-          const localAmounts = localStorage.getItem('watchlist_amounts');
+          // Amounts must NOT come from localStorage — null DB amounts (DGB_USD)
+          // would keep a leftover $10. Amount overlay is replaced from watchlist_items.
           const localSLPercent = localStorage.getItem('watchlist_sl_percent');
           const localTPPercent = localStorage.getItem('watchlist_tp_percent');
-          
-          // Amounts / SL% / TP% may use localStorage as a short-lived cache.
-          // Trade / Margin / Alert buttons must NOT — those come from watchlist_items.
-          
-          // Load from localStorage as temporary initial state
-          // Backend values will override these when they arrive
-          // CRITICAL: Clean stale $10 values before loading
-          if (localAmounts) {
-            const parsedAmounts = JSON.parse(localAmounts) as Record<string, string>;
-            // Remove all values that are exactly "10", "10.0", or "10.00" (obsolete defaults)
-            const cleanedAmounts: Record<string, string> = {};
-            Object.entries(parsedAmounts).forEach(([symbol, value]) => {
-              const isStaleValue = value === '10' || value === '10.0' || value === '10.00';
-              if (!isStaleValue) {
-                cleanedAmounts[symbol] = value;
-              }
-            });
-            
-            // Only load cleaned values (non-$10 values)
-            if (Object.keys(cleanedAmounts).length > 0) {
-              setCoinAmounts(prev => ({
-                ...prev,
-                ...cleanedAmounts
-              }));
-            }
-          }
           if (localSLPercent) {
             setCoinSLPercent(prev => ({
               ...prev,
@@ -5577,41 +5553,28 @@ function resolveDecisionIndexColor(value: number): string {
               setCoinSellAlertStatus(backendSellAlertStatus);
             }
 
-            // Set amounts from backend (after processing all items)
-            // Don't overwrite recently saved values (within last 5 seconds) to prevent race conditions
-            if (Object.keys(backendAmounts).length > 0) {
+            // Replace Amount USD overlay from watchlist_items (null DB → no key → UI "-").
+            // Merge would keep a leftover localStorage $10 on DGB_USD.
+            {
               const now = Date.now();
-              const filteredBackendAmounts: Record<string, string> = {};
-              Object.entries(backendAmounts).forEach(([symbol, value]) => {
-                const lastSaved = recentlySavedAmounts.current[symbol];
-                // Only use backend value if it wasn't recently saved (within 5 seconds)
-                if (!lastSaved || (now - lastSaved) > 5000) {
-                  filteredBackendAmounts[symbol] = value;
-                } else {
-                  logger.debug(`Skipping backend amount for ${symbol} (saved ${now - lastSaved}ms ago)`);
-                }
-              });
-              if (Object.keys(filteredBackendAmounts).length > 0) {
-                // CRITICAL: Backend is source of truth - always overwrite localStorage values
-                // Use functional update to ensure we're using the latest backend values
-                setCoinAmounts(prev => {
-                  const updated = { ...prev, ...filteredBackendAmounts };
-                  // Log specific values for debugging
-                  if (filteredBackendAmounts['LTC_USDT']) {
-                    logger.info(`🔍 LTC_USDT amount from backend: ${filteredBackendAmounts['LTC_USDT']}, overwriting localStorage value`);
+              setCoinAmounts(prev => {
+                const next: Record<string, string> = { ...backendAmounts };
+                Object.entries(recentlySavedAmounts.current).forEach(([symbol, ts]) => {
+                  if (now - ts <= 5000 && prev[symbol] !== undefined) {
+                    next[symbol] = prev[symbol];
                   }
-                  return updated;
                 });
-                logger.info('✅ Initialized trade_amount_usd from backend:', Object.keys(filteredBackendAmounts).length, 'coins');
-                // Update localStorage with backend values to keep them in sync
-                try {
-                  const currentAmounts = JSON.parse(localStorage.getItem('watchlist_amounts') || '{}');
-                  const updatedAmounts = { ...currentAmounts, ...filteredBackendAmounts };
-                  localStorage.setItem('watchlist_amounts', JSON.stringify(updatedAmounts));
-                  logger.info('✅ Updated localStorage with backend amounts');
-                } catch (err) {
-                  logger.warn('Failed to update localStorage with backend amounts:', err);
-                }
+                return next;
+              });
+              logger.info(
+                '✅ trade_amount_usd from watchlist_items:',
+                Object.keys(backendAmounts).length,
+                'coins',
+              );
+              try {
+                localStorage.setItem('watchlist_amounts', JSON.stringify(backendAmounts));
+              } catch (err) {
+                logger.warn('Failed to update localStorage with backend amounts:', err);
               }
             }
 

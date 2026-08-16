@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,22 @@ def _safe_call(tool: str, fn) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("aws_auditor tool=%s error=%s", tool, exc)
         return _tool_result(tool, success=False, error=str(exc))
+
+
+def _utc_today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _unblended_amount(metrics: dict[str, Any] | None) -> float:
+    raw = ((metrics or {}).get("UnblendedCost") or {}).get("Amount", 0) or 0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _period_unblended_total(period: dict[str, Any]) -> float:
+    return _unblended_amount(period.get("Total") or {})
 
 
 def get_ec2_inventory() -> dict[str, Any]:
@@ -244,57 +260,73 @@ def get_security_group_inventory() -> dict[str, Any]:
 
 
 def get_cost_summary() -> dict[str, Any]:
-    """Fetch AWS cost summary for the last 30 days via Cost Explorer (read-only)."""
+    """Fetch AWS cost via Cost Explorer (read-only).
+
+    Rolling 30-day spend uses DAILY granularity. MONTHLY granularity over a
+    mid-month window returns full overlapping calendar months, which inflates
+    totals versus a monthly budget and false-triggers the AWS spend KR alert.
+    """
 
     def _run() -> dict[str, Any]:
         ce = _client("ce")
-        end = datetime.now(timezone.utc).date()
-        start = end - timedelta(days=30)
+        today = _utc_today()
+        rolling_start = today - timedelta(days=29)
+        rolling_end = today + timedelta(days=1)  # exclusive; includes today
+        mtd_prefix = today.replace(day=1).isoformat()
+        window = {
+            "Start": rolling_start.isoformat(),
+            "End": rolling_end.isoformat(),
+        }
         resp = ce.get_cost_and_usage(
-            TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
-            Granularity="MONTHLY",
+            TimePeriod=window,
+            Granularity="DAILY",
             Metrics=["UnblendedCost"],
         )
         periods = resp.get("ResultsByTime") or []
         total = 0.0
+        mtd = 0.0
         by_period: list[dict[str, Any]] = []
         for period in periods:
-            amount = float(
-                (period.get("Total") or {})
-                .get("UnblendedCost", {})
-                .get("Amount", 0)
-                or 0
-            )
+            amount = _period_unblended_total(period)
             total += amount
+            start = str((period.get("TimePeriod") or {}).get("Start") or "")
+            if start >= mtd_prefix:
+                mtd += amount
             by_period.append(
                 {
-                    "start": period.get("TimePeriod", {}).get("Start"),
-                    "end": period.get("TimePeriod", {}).get("End"),
+                    "start": (period.get("TimePeriod") or {}).get("Start"),
+                    "end": (period.get("TimePeriod") or {}).get("End"),
                     "amount_usd": round(amount, 2),
                 }
             )
         service_resp = ce.get_cost_and_usage(
-            TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
-            Granularity="MONTHLY",
+            TimePeriod=window,
+            Granularity="DAILY",
             Metrics=["UnblendedCost"],
             GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
         )
-        services: list[dict[str, Any]] = []
-        for group in (service_resp.get("ResultsByTime") or [{}])[0].get("Groups") or []:
-            svc = (group.get("Keys") or ["Unknown"])[0]
-            amt = float(
-                (group.get("Metrics") or {})
-                .get("UnblendedCost", {})
-                .get("Amount", 0)
-                or 0
-            )
-            if amt > 0.01:
-                services.append({"service": svc, "amount_usd": round(amt, 2)})
+        by_service: dict[str, float] = {}
+        for period in service_resp.get("ResultsByTime") or []:
+            for group in period.get("Groups") or []:
+                svc = str((group.get("Keys") or ["Unknown"])[0])
+                amt = _unblended_amount(group.get("Metrics") or {})
+                if amt:
+                    by_service[svc] = by_service.get(svc, 0.0) + amt
+        services = [
+            {"service": svc, "amount_usd": round(amt, 2)}
+            for svc, amt in by_service.items()
+            if amt > 0.01
+        ]
         services.sort(key=lambda x: x["amount_usd"], reverse=True)
+        total_usd = round(total, 2)
+        mtd_usd = round(mtd, 2)
         return _tool_result(
             "get_cost_summary",
             period_days=30,
-            total_usd=round(total, 2),
+            granularity="DAILY",
+            total_usd=total_usd,
+            total_unblended_usd=total_usd,
+            month_to_date_usd=mtd_usd,
             by_period=by_period,
             top_services=services[:15],
             anomalies=[],

@@ -213,6 +213,7 @@ def test_jarvis_task_endpoint_routes_wallet_reconcile(client, monkeypatch):
     monkeypatch.setenv("JARVIS_ENABLED", "true")
     monkeypatch.setenv("JARVIS_DRY_RUN_ONLY", "true")
     monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock", lambda _prompt: "")
+    monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock_json", lambda _prompt, **_kw: None)
 
     fake_result = {
         "tool": "reconcile_crypto_wallet_vs_dashboard",

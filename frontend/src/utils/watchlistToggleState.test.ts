@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { watchlistButtonOn, watchlistFlagsFromCoins } from './watchlistToggleState';
+import {
+  watchlistAmountText,
+  watchlistAmountsFromItems,
+  watchlistButtonOn,
+  watchlistFlagsFromCoins,
+  exchangeAllowsShortAlert,
+  sellAlertButtonOn,
+} from './watchlistToggleState';
 
 describe('watchlistButtonOn', () => {
   it('uses the DB/API row when overlay has no key', () => {
@@ -40,5 +47,54 @@ describe('watchlistFlagsFromCoins', () => {
     expect(flags.alert.CRO_USD).toBe(true);
     expect(flags.buyAlert.CRO_USD).toBe(false);
     expect(flags.sellAlert.CRO_USD).toBe(true);
+  });
+});
+
+describe('watchlistAmountText', () => {
+  it('uses the DB amount when overlay has no key', () => {
+    expect(watchlistAmountText({}, 'CRO_USD', 100)).toBe('100');
+    expect(watchlistAmountText({}, 'DGB_USD', null)).toBe(null);
+    expect(watchlistAmountText(undefined, 'DGB_USD', null)).toBe(null);
+  });
+
+  it('does not keep a stale overlay-less $10 when DB is null', () => {
+    expect(watchlistAmountText({}, 'DGB_USD', null)).toBe(null);
+    expect(watchlistAmountText({ AAVE_USD: '100' }, 'DGB_USD', null)).toBe(null);
+  });
+
+  it('uses overlay for in-flight edits including clearing', () => {
+    expect(watchlistAmountText({ DGB_USD: '10' }, 'DGB_USD', null)).toBe('10');
+    expect(watchlistAmountText({ DGB_USD: '' }, 'DGB_USD', 10)).toBe(null);
+  });
+});
+
+describe('watchlistAmountsFromItems', () => {
+  it('omits null DB amounts so DGB_USD does not inherit a leftover $10', () => {
+    const amounts = watchlistAmountsFromItems([
+      { symbol: 'CRO_USD', trade_amount_usd: 100 },
+      { symbol: 'DGB_USD', trade_amount_usd: null },
+      { instrument_name: 'GRAM_USDT', trade_amount_usd: 0.02 },
+    ]);
+    expect(amounts).toEqual({ CRO_USD: '100', GRAM_USDT: '0.02' });
+    expect(Object.prototype.hasOwnProperty.call(amounts, 'DGB_USD')).toBe(false);
+  });
+});
+
+describe('exchangeAllowsShortAlert / sellAlertButtonOn', () => {
+  it('keeps the S button available when the API omits margin_sell_enabled', () => {
+    expect(exchangeAllowsShortAlert(undefined)).toBe(true);
+    expect(exchangeAllowsShortAlert(null)).toBe(true);
+    expect(exchangeAllowsShortAlert(true)).toBe(true);
+  });
+
+  it('disables SHORT alerts when the exchange sets margin_sell_enabled=false', () => {
+    expect(exchangeAllowsShortAlert(false)).toBe(false);
+    expect(sellAlertButtonOn({}, 'CRO_USD', true, false)).toBe(false);
+    expect(sellAlertButtonOn({ CRO_USD: true }, 'CRO_USD', true, false)).toBe(false);
+  });
+
+  it('still honors overlay/DB when shorts are allowed', () => {
+    expect(sellAlertButtonOn({}, 'ETH_USD', true, true)).toBe(true);
+    expect(sellAlertButtonOn({ ETH_USD: false }, 'ETH_USD', true, true)).toBe(false);
   });
 });

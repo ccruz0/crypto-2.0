@@ -25,8 +25,8 @@ def _isoformat(value: Any) -> str | None:
     return str(value)
 
 
-def _fetch_aws_daily_cost() -> float:
-    """Read-only: last 24h AWS spend estimate via Cost Explorer."""
+def _fetch_aws_daily_cost() -> float | None:
+    """Read-only: last 24h AWS spend estimate via Cost Explorer. None if unavailable."""
     try:
         from app.jarvis.mvp.aws_auditor_tools import _client
 
@@ -49,19 +49,24 @@ def _fetch_aws_daily_cost() -> float:
         return round(total, 2)
     except Exception as exc:
         logger.warning("collect_daily_metrics aws_daily_cost failed: %s", exc)
-        return 0.0
+        return None
 
 
-def _fetch_aws_monthly_cost() -> float:
+def _fetch_aws_monthly_cost() -> float | None:
+    """Read-only: 30-day rolling AWS spend via Cost Explorer. None if unavailable."""
     try:
         from app.jarvis.mvp.aws_auditor_tools import get_cost_summary
 
         result = get_cost_summary()
         if result.get("success"):
             return float(result.get("total_usd") or 0.0)
+        logger.warning(
+            "collect_daily_metrics aws_monthly_cost failed: %s",
+            result.get("error") or "cost summary unsuccessful",
+        )
     except Exception as exc:
         logger.warning("collect_daily_metrics aws_monthly_cost failed: %s", exc)
-    return 0.0
+    return None
 
 
 def _fetch_aws_resource_counts() -> dict[str, int]:
@@ -256,8 +261,8 @@ def collect_daily_metrics(*, metric_date: date | None = None) -> dict[str, Any]:
 
     metrics = {
         "metric_date": target_date.isoformat(),
-        "aws_monthly_cost": _fetch_aws_monthly_cost(),
-        "aws_daily_cost": _fetch_aws_daily_cost(),
+        "aws_monthly_cost": _fetch_aws_monthly_cost() or 0.0,
+        "aws_daily_cost": _fetch_aws_daily_cost() or 0.0,
         "ec2_count": aws_resources["ec2_count"],
         "ebs_count": aws_resources["ebs_count"],
         "snapshot_count": aws_resources["snapshot_count"],

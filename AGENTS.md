@@ -97,12 +97,18 @@ fall back to Portfolio. Version History is `?tab=version-history` (also the
 header `v{version}` badge).
 
 ### GitHub auto-merge on `main`
-`allow_auto_merge` is **on**; `.github/workflows/auto-merge.yml` enables squash
-auto-merge on non-draft PRs. Ruleset `protect-main-production` still requires
-**path-guard** + **conversation resolution** (Bugbot threads must be resolved).
-The ruleset `update` restriction means bots often cannot finish the merge —
-human squash-merge in the UI may still be required (same pattern as #398/#399).
-Cloud agents cannot edit the ruleset (API 403).
+`allow_auto_merge` is **on**. `.github/workflows/auto-merge.yml` now:
+- marks Cloud Agent **draft** PRs ready for review (drafts cannot arm auto-merge)
+- enables squash auto-merge
+- resolves leftover **bot-only** Bugbot threads after Cursor approves
+- squash-merges immediately when `mergeStateStatus` is CLEAN/UNSTABLE
+
+Ruleset `protect-main-production` still requires **path-guard** green. Human
+review threads are never auto-resolved. Protected-path PRs stay blocked.
+If merges stay `BLOCKED` with Path Guard green, the ruleset **Restrict updates**
+rule has an empty bypass list — add **GitHub Actions** as a bypass actor
+(mode: Pull request) or set repo secret `AUTO_MERGE_TOKEN` to a PAT that can
+merge. Cloud agents cannot edit the ruleset (API 403).
 
 ### Dashboard version history (mandatory on shippable PRs)
 Every user-visible / production-bound change **must** append a new entry to
