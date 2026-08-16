@@ -1,0 +1,18 @@
+{
+  "_comment": "Tier -> Bedrock inference-profile mapping for ap-southeast-1. IDs verified against `aws bedrock list-inference-profiles --region ap-southeast-1` (Anthropic, filtered) as provided by the account owner. Constraint: current generation only (no Claude 3 line); prefer apac.* when that model has an APAC profile, else global.*. At the 4.5 line no APAC profile exists, so all three are global.* and fully pinned (dated+version) to avoid floating aliases. NOTE: listed != callable — every Converse probe on this account currently returns 'Operation not allowed' until AWS enables model access; the preflight distinguishes that (transient, account-side) from an invalid/EOL ID (config bug, hard fail).",
+  "region": "ap-southeast-1",
+  "tiers": {
+    "simple": {
+      "id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "note": "Haiku 4.5 — global-only (no APAC Haiku 4.5 listed)"
+    },
+    "standard": {
+      "id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "note": "Sonnet 4.5 pinned; alternative: global.anthropic.claude-sonnet-4-6 (undated alias)"
+    },
+    "critical": {
+      "id": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+      "note": "Opus 4.5 pinned; alternatives: opus-4-6-v1 / opus-4-7 / opus-4-8 (newer, undated aliases, higher cost)"
+    }
+  }
+}

@@ -21,7 +21,8 @@ from app.jarvis.action_policy import (
 from app.jarvis.execution.safety import SafetyLevel, classify_text, is_forbidden
 from app.jarvis.analytics_mission_deliverables import infer_analytics_deliverables
 from app.jarvis.analytics_prompt_gates import readonly_analytics_prompt_sufficient
-from app.jarvis.bedrock_client import ask_bedrock_json
+from app.jarvis import failure_metrics
+from app.jarvis.bedrock_client import BedrockInvocationError, ask_bedrock_json
 from app.jarvis.executor import invoke_registered_tool, is_invoke_error_payload
 from app.jarvis.ga4_readonly_analytics import run_ga4_readonly_analytics
 from app.jarvis.perico_mission import (
@@ -114,7 +115,11 @@ class PlannerAgent:
             "requires_research (boolean), requires_input (boolean).\n"
             f"Prompt: {prompt}"
         )
-        parsed = ask_bedrock_json(ask, task="standard", agent="autonomous_planner", mission_id=mission_id)
+        try:
+            parsed = ask_bedrock_json(ask, task="standard", agent="autonomous_planner", mission_id=mission_id)
+        except BedrockInvocationError as _e:
+            failure_metrics.record_heuristic_fallback(_e.kind)
+            parsed = None
         if not isinstance(parsed, dict):
             return {
                 "objective": prompt[:300],
@@ -150,7 +155,11 @@ class ResearchAgent:
             f"Mission prompt: {prompt}\n"
             f"Plan: {_json_dump(plan)[:2400]}"
         )
-        parsed = ask_bedrock_json(ask, task="standard", agent="research", mission_id=mission_id)
+        try:
+            parsed = ask_bedrock_json(ask, task="standard", agent="research", mission_id=mission_id)
+        except BedrockInvocationError as _e:
+            failure_metrics.record_heuristic_fallback(_e.kind)
+            parsed = None
         if not isinstance(parsed, dict):
             return {
                 "findings": ["No external data source configured; proceeding with available context."],
@@ -196,7 +205,11 @@ class StrategyAgent:
             f"Research: {_json_dump(research or {})[:2200]}\n"
             f"Historical outcome success rate: {success_rate:.3f}"
         )
-        parsed = ask_bedrock_json(ask, task="standard", agent="strategy", mission_id=mission_id)
+        try:
+            parsed = ask_bedrock_json(ask, task="standard", agent="strategy", mission_id=mission_id)
+        except BedrockInvocationError as _e:
+            failure_metrics.record_heuristic_fallback(_e.kind)
+            parsed = None
         if not isinstance(parsed, dict):
             # Fallback: derive one conservative action from available research.
             findings = [str(x) for x in ((research or {}).get("findings") or []) if isinstance(x, (str, int, float))]

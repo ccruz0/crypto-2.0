@@ -27,12 +27,33 @@ import logging
 import os
 import random
 import time
+from collections.abc import Callable
 from typing import Any
 
-from app.jarvis import cost_tracker
+from app.jarvis import cost_tracker, failure_metrics
 from app.jarvis.model_router import fallback_chain
 
 logger = logging.getLogger(__name__)
+
+
+class BedrockInvocationError(RuntimeError):
+    """A Bedrock invocation failed in a way the caller must not ignore.
+
+    Carries a stable ``kind`` (see :func:`classify_bedrock_error`) so callers
+    and dashboards can branch on the failure class without string-matching
+    messages. Raised instead of the pre-R6 silent ``""`` / ``None``.
+    """
+
+    def __init__(self, message: str, *, kind: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def _fail(message: str, *, kind: str) -> "BedrockInvocationError":
+    """Count the failure, log it at ERROR, and build the exception to raise."""
+    failure_metrics.record_invocation_failure(kind)
+    logger.error("bedrock invocation failed kind=%s: %s", kind, message)
+    return BedrockInvocationError(message, kind=kind)
 
 DEFAULT_REGION = "us-east-1"
 
@@ -70,22 +91,21 @@ def _converse(
     agent: str,
     mission_id: str | None,
     tool_schema: dict[str, Any] | None,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Shared transport: one logical call with retry/backoff and model fallback.
 
-    Returns the raw converse() response dict, or None on failure. Never raises.
+    Returns the raw converse() response dict. Raises BedrockInvocationError on
+    any failure — it never signals failure by returning None (R6 point 3).
     """
     try:
         from botocore.exceptions import BotoCoreError, ClientError  # noqa: PLC0415
     except ImportError as e:
-        logger.warning("botocore not available: %s", e)
-        return None
+        raise _fail(f"botocore not available: {e}", kind="boto3_missing") from e
 
     try:
         client = _boto3_client()
     except Exception as e:  # noqa: BLE001 — boto3 import/client construction failure
-        logger.warning("bedrock client unavailable: %s", e)
-        return None
+        raise _fail(f"bedrock client unavailable: {e}", kind="boto3_missing") from e
 
     request: dict[str, Any] = {
         "messages": [{"role": "user", "content": [{"text": prompt}]}],
@@ -105,6 +125,7 @@ def _converse(
             "toolChoice": {"tool": {"name": _STRUCTURED_TOOL_NAME}},
         }
 
+    last_kind = "no_model_available"
     for model_id in fallback_chain(task):
         for attempt in range(1, _MAX_ATTEMPTS_PER_MODEL + 1):
             try:
@@ -128,14 +149,15 @@ def _converse(
                     model_id, code, kind, e,
                 )
                 if kind == "model_not_found":
+                    last_kind = kind
                     break  # this model is unavailable; try the next in the chain
-                return None  # access/account/validation errors: fail fast, no blind retries
+                # access/account/validation errors: fail fast and loudly
+                raise _fail(f"converse failed model={model_id} code={code}: {e}", kind=kind) from e
             except (BotoCoreError, OSError) as e:
-                logger.warning(
-                    "bedrock transport error model=%s class=%s: %s",
-                    model_id, classify_bedrock_error(e), e,
-                )
-                return None
+                raise _fail(
+                    f"transport error model={model_id}: {e}",
+                    kind=classify_bedrock_error(e),
+                ) from e
             usage = response.get("usage") or {}
             cost_tracker.record_usage(
                 model_id=model_id,
@@ -146,7 +168,7 @@ def _converse(
                 mission_id=mission_id,
             )
             return response
-    return None
+    raise _fail("every model in the fallback chain was unavailable", kind=last_kind)
 
 
 def classify_bedrock_error(exc: BaseException) -> str:
@@ -174,17 +196,16 @@ def _content_blocks(response: dict[str, Any]) -> list[dict[str, Any]]:
 def ask_bedrock(prompt: str) -> str:
     """Send a prompt to Claude on Bedrock and return the assistant text.
 
-    On failure (credentials, API, network), logs and returns an empty string.
-    Signature and failure contract are byte-compatible with the legacy client.
+    Fails loudly (R6 point 3): raises :class:`BedrockInvocationError` on any
+    AWS/network/model failure instead of returning ``""``. Callers that want to
+    degrade should use :func:`ask_bedrock_with_fallback`, which counts the
+    degradation so running on heuristics is alertable rather than silent.
     """
     text = (prompt or "").strip()
     if not text:
-        logger.warning("ask_bedrock called with empty prompt")
-        return ""
+        raise ValueError("ask_bedrock called with empty prompt")
 
     response = _converse(prompt=text, task="standard", agent="text", mission_id=None, tool_schema=None)
-    if response is None:
-        return ""
 
     parts: list[str] = []
     for block in _content_blocks(response):
@@ -192,8 +213,23 @@ def ask_bedrock(prompt: str) -> str:
             parts.append(str(block.get("text") or ""))
     assistant_text = "".join(parts).strip()
     if not assistant_text:
-        logger.warning("bedrock converse returned no assistant text")
+        raise _fail("converse returned no assistant text", kind="no_assistant_text")
     return assistant_text
+
+
+def ask_bedrock_with_fallback(prompt: str, fallback: Callable[[], str]) -> str:
+    """Call :func:`ask_bedrock`, degrading to ``fallback()`` on failure.
+
+    The degradation is counted (``bedrock_heuristic_fallbacks{kind}``) and
+    logged at ERROR, so a system silently running on heuristics shows up in
+    metrics instead of looking healthy.
+    """
+    try:
+        return ask_bedrock(prompt)
+    except BedrockInvocationError as e:
+        failure_metrics.record_heuristic_fallback(e.kind)
+        logger.error("bedrock degraded to heuristic fallback kind=%s", e.kind)
+        return fallback()
 
 
 def ask_bedrock_json(
@@ -203,17 +239,16 @@ def ask_bedrock_json(
     task: str = "standard",
     agent: str = "unknown",
     mission_id: str | None = None,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Structured call: JSON arrives as a parsed dict via forced tool-use.
 
     There is no text-to-JSON parsing step — the shape is enforced by the
-    ``toolChoice`` contract on the Bedrock side. Returns ``None`` on failure;
-    never raises on AWS/network problems.
+    ``toolChoice`` contract on the Bedrock side. Fails loudly (R6 point 3):
+    raises :class:`BedrockInvocationError` rather than returning ``None``.
     """
     text = (prompt or "").strip()
     if not text:
-        logger.warning("ask_bedrock_json called with empty prompt")
-        return None
+        raise ValueError("ask_bedrock_json called with empty prompt")
 
     response = _converse(
         prompt=text,
@@ -222,8 +257,6 @@ def ask_bedrock_json(
         mission_id=mission_id,
         tool_schema=schema or _ANY_OBJECT_SCHEMA,
     )
-    if response is None:
-        return None
 
     for block in _content_blocks(response):
         if not isinstance(block, dict):
@@ -233,5 +266,4 @@ def ask_bedrock_json(
             payload = tool_use.get("input")
             if isinstance(payload, dict):
                 return payload
-    logger.warning("bedrock converse returned no structured toolUse block")
-    return None
+    raise _fail("converse returned no structured toolUse block", kind="no_structured_output")
