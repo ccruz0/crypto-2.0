@@ -55,6 +55,7 @@ def test_high_risk_task_requires_approval(client, monkeypatch):
     monkeypatch.setenv("JARVIS_ENABLED", "true")
     monkeypatch.setenv("JARVIS_DRY_RUN_ONLY", "true")
     monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock", lambda _prompt: "")
+    monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock_json", lambda _prompt, **_kw: None)
 
     response = client.post(
         "/api/jarvis/task",
@@ -73,6 +74,7 @@ def test_low_risk_task_completes_with_readonly_tools(client, monkeypatch):
     monkeypatch.setenv("JARVIS_ENABLED", "true")
     monkeypatch.setenv("JARVIS_DRY_RUN_ONLY", "true")
     monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock", lambda _prompt: "")
+    monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock_json", lambda _prompt, **_kw: None)
 
     response = client.post(
         "/api/jarvis/task",
@@ -106,6 +108,7 @@ def test_readonly_tool_allowlist(monkeypatch):
     monkeypatch.setenv("JARVIS_ENABLED", "true")
     monkeypatch.setenv("JARVIS_DRY_RUN_ONLY", "true")
     monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock", lambda _prompt: "")
+    monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock_json", lambda _prompt, **_kw: None)
 
     with patch("app.jarvis.mvp.agents.run_readonly_tool") as mock_tool:
         mock_tool.return_value = {"success": True, "tool": "get_runtime_status"}

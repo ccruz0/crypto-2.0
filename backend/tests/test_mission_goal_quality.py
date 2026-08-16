@@ -187,27 +187,25 @@ def test_retry_allowed_once_for_shallow_google_ads():
 
 
 def test_under_specified_prompt_uses_fallback_clarification_when_bedrock_unavailable(monkeypatch):
-    monkeypatch.setattr("app.jarvis.bedrock_client.ask_bedrock", lambda _q: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr("app.jarvis.bedrock_client.ask_bedrock_json", lambda _q, **_kw: (_ for _ in ()).throw(RuntimeError("x")))
     q = format_natural_clarification_request(mission_prompt="Do something vague.", plan={"objective": "x"})
     assert "?" in q
     assert "Provide missing constraints" not in q
 
 
 def test_natural_clarification_uses_model_question_when_spanish(monkeypatch):
-    monkeypatch.setattr("app.jarvis.bedrock_client.ask_bedrock", lambda _q: "{}")
     monkeypatch.setattr(
-        "app.jarvis.bedrock_client.extract_planner_json_object",
-        lambda _raw: {"question": "¿Debo incluir también las campañas pausadas?"},
+        "app.jarvis.bedrock_client.ask_bedrock_json",
+        lambda _q, **_kw: {"question": "¿Debo incluir también las campañas pausadas?"},
     )
     q = format_natural_clarification_request(mission_prompt="Analyze ads", plan={"objective": "o"})
     assert "pausadas" in q.lower() or "campañas" in q.lower()
 
 
 def test_natural_clarification_english_model_uses_spanish_fallback(monkeypatch):
-    monkeypatch.setattr("app.jarvis.bedrock_client.ask_bedrock", lambda _q: "{}")
     monkeypatch.setattr(
-        "app.jarvis.bedrock_client.extract_planner_json_object",
-        lambda _raw: {"question": "What time range should I use for this analysis?"},
+        "app.jarvis.bedrock_client.ask_bedrock_json",
+        lambda _q, **_kw: {"question": "What time range should I use for this analysis?"},
     )
     q = format_natural_clarification_request(mission_prompt="Analyze ads", plan={"objective": "o"})
     assert "Puedo hacerlo" in q

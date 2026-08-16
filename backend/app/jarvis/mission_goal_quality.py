@@ -438,7 +438,7 @@ def format_natural_clarification_request(*, mission_prompt: str, plan: dict[str,
     """One friendly clarification question; falls back to a soft default if Bedrock is unavailable."""
     fallback = _sanitize_telegram_plain(_SPANISH_CLARIFICATION_FALLBACK)
     try:
-        from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
+        from app.jarvis.bedrock_client import ask_bedrock_json
 
         ask = (
             "You are Jarvis, a careful autonomous operator.\n"
@@ -450,8 +450,7 @@ def format_natural_clarification_request(*, mission_prompt: str, plan: dict[str,
             f"User mission:\n{mission_prompt[:900]}\n"
             f"Planner objective:\n{str(plan.get('objective') or '')[:400]}\n"
         )
-        raw = ask_bedrock(ask)
-        parsed = extract_planner_json_object(raw or "")
+        parsed = ask_bedrock_json(ask, task="simple", agent="clarifier")
         if isinstance(parsed, dict):
             q = _sanitize_telegram_plain(str(parsed.get("question") or ""))
             if q and "?" in q and len(q) < 420 and clarification_question_looks_spanish(q):

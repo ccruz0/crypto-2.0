@@ -72,6 +72,7 @@ def test_aws_audit_service_persists_audit_id(monkeypatch):
     monkeypatch.setenv("JARVIS_ENABLED", "true")
     monkeypatch.setenv("JARVIS_DRY_RUN_ONLY", "true")
     monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock", lambda _prompt: "")
+    monkeypatch.setattr("app.jarvis.mvp.agents.ask_bedrock_json", lambda _prompt, **_kw: None)
 
     mock_findings = {
         "summary": {"read_only": True, "tools_succeeded": 7, "tools_executed": 7},

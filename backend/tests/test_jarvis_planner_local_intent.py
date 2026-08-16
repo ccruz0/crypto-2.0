@@ -12,7 +12,7 @@ def assert_bedrock_not_called(monkeypatch):
     def _fail(*_a, **_k):
         raise AssertionError("ask_bedrock must not be called for local direct intents")
 
-    monkeypatch.setattr("app.jarvis.planner.ask_bedrock", _fail)
+    monkeypatch.setattr("app.jarvis.planner.ask_bedrock_json", _fail)
     yield
 
 
@@ -64,11 +64,11 @@ def test_marketing_review_intent(assert_bedrock_not_called):
 def test_unrelated_text_uses_bedrock(monkeypatch):
     calls: list[str] = []
 
-    def fake_ask(prompt: str) -> str:
+    def fake_ask(prompt: str, **_kw) -> dict:
         calls.append(prompt)
-        return '{"action":"get_unix_time","args":{},"reasoning":"from bedrock"}'
+        return {"action": "get_unix_time", "args": {}, "reasoning": "from bedrock"}
 
-    monkeypatch.setattr("app.jarvis.planner.ask_bedrock", fake_ask)
+    monkeypatch.setattr("app.jarvis.planner.ask_bedrock_json", fake_ask)
     out = create_plan("completely unrelated query about zebras and clocks", jarvis_run_id="run-e")
     assert calls, "Bedrock should be consulted when no local intent matches"
     assert out["action"] == "get_unix_time"
@@ -77,11 +77,11 @@ def test_unrelated_text_uses_bedrock(monkeypatch):
 def test_partial_phrase_does_not_match_local_intent(monkeypatch):
     calls: list[int] = []
 
-    def fake_ask(_prompt: str) -> str:
+    def fake_ask(_prompt: str, **_kw) -> dict:
         calls.append(1)
-        return '{"action":"echo_message","args":{"message":"x"},"reasoning":"t"}'
+        return {"action": "echo_message", "args": {"message": "x"}, "reasoning": "t"}
 
-    monkeypatch.setattr("app.jarvis.planner.ask_bedrock", fake_ask)
+    monkeypatch.setattr("app.jarvis.planner.ask_bedrock_json", fake_ask)
     out = create_plan("please list tools for me later", jarvis_run_id="run-f")
     assert calls
     assert out["action"] == "echo_message"

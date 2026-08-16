@@ -207,8 +207,7 @@ def test_ops_agent_auto_exec_and_requires_approval_actions(monkeypatch):
 
 
 def test_strategy_agent_adds_ops_diagnosis_actions_when_not_configured(monkeypatch):
-    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock", lambda prompt: '{"actions":[]}')
-    monkeypatch.setattr("app.jarvis.autonomous_agents.extract_planner_json_object", lambda raw: {"actions": []})
+    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock_json", lambda prompt, **_kw: {"actions": []})
     out = StrategyAgent().run(
         prompt="Google Ads not configured",
         plan={},
@@ -304,7 +303,7 @@ class _FakeTelegram:
 
 
 class _PlannerSimple:
-    def run(self, prompt: str) -> dict:
+    def run(self, prompt: str, **_kw) -> dict:
         _ = prompt
         return {
             "objective": "simple",
@@ -315,7 +314,7 @@ class _PlannerSimple:
 
 
 class _StrategySimple:
-    def run(self, *, prompt: str, plan: dict, research: dict | None, outcome_memory=None) -> dict:
+    def run(self, *, prompt: str, plan: dict, research: dict | None, outcome_memory=None, **_kw) -> dict:
         _ = prompt, plan, research, outcome_memory
         return {
             "actions": [

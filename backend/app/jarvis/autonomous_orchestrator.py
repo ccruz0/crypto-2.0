@@ -713,7 +713,7 @@ class JarvisAutonomousOrchestrator:
                 mission_id,
                 "Perico (software): bucle inspectar → hipótesis → parche mínimo → validar; sin deploy automático a producción.",
             )
-        plan = self.planner.run(prompt)
+        plan = self.planner.run(prompt, mission_id=mission_id)
         self.notion.append_technical_detail_marker(mission_id, "Salida en bruto del planificador y agentes")
         self.notion.append_agent_output(mission_id, agent_name="planner", content=_dump(plan))
 
@@ -790,7 +790,7 @@ class JarvisAutonomousOrchestrator:
         if plan.get("requires_research"):
             self.notion.transition_state(mission_id, to_state=MISSION_STATUS_RESEARCHING, note="research started")
             self.notion.append_readability_timeline_low(mission_id, "Fase de investigación iniciada.")
-            research = self.researcher.run(prompt=prompt, plan=plan)
+            research = self.researcher.run(prompt=prompt, plan=plan, mission_id=mission_id)
             self.notion.append_agent_output(mission_id, agent_name="research", content=_dump(research))
 
         outcome_memory = self.notion.get_recent_outcomes(mission_id, limit=30)
@@ -799,6 +799,7 @@ class JarvisAutonomousOrchestrator:
             plan=plan,
             research=research,
             outcome_memory=outcome_memory,
+            mission_id=mission_id,
         )
         if active_perico:
             raw_acts = [x for x in (strategy.get("actions") or []) if isinstance(x, dict)]

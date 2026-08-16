@@ -37,7 +37,7 @@ def test_strategy_injects_diagnose_when_bedrock_returns_only_generic_actions(mon
         ]
     }
 
-    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock", lambda _q: json.dumps(payload))
+    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock_json", lambda _q, **_kw: payload)
     out = StrategyAgent().run(
         prompt=GOOGLE_ADS_ANALYTICS_PROMPT,
         plan={"objective": "o", "steps": [], "requires_research": True, "requires_input": False},
@@ -71,7 +71,7 @@ def test_strategy_skips_inject_when_diagnose_already_in_strategy(monkeypatch):
             },
         ]
     }
-    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock", lambda _q: json.dumps(payload))
+    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock_json", lambda _q, **_kw: payload)
     out = StrategyAgent().run(
         prompt=GOOGLE_ADS_ANALYTICS_PROMPT,
         plan={"objective": "o", "steps": [], "requires_research": True, "requires_input": False},
@@ -98,7 +98,7 @@ def test_strategy_does_not_inject_for_ga4_only_well_specified_prompt(monkeypatch
             }
         ]
     }
-    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock", lambda _q: json.dumps(payload))
+    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock_json", lambda _q, **_kw: payload)
     out = StrategyAgent().run(
         prompt=ga4_prompt,
         plan={"objective": "o", "steps": [], "requires_research": True, "requires_input": False},
@@ -135,7 +135,7 @@ def test_execution_returns_structured_google_ads_result_after_strategy_injection
             "error_message": None,
         }
 
-    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock", lambda _q: json.dumps({"actions": []}))
+    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock_json", lambda _q, **_kw: {"actions": []})
     monkeypatch.setattr("app.jarvis.autonomous_agents.run_google_ads_readonly_diagnostic", _fake_diag)
     strategy = StrategyAgent().run(
         prompt=GOOGLE_ADS_ANALYTICS_PROMPT,
@@ -156,7 +156,7 @@ def test_execution_returns_structured_google_ads_result_after_strategy_injection
 def test_telegram_done_message_contains_metrics_after_injected_path(monkeypatch):
     from app.jarvis.autonomous_orchestrator import JarvisAutonomousOrchestrator
 
-    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock", lambda _q: json.dumps({"actions": []}))
+    monkeypatch.setattr("app.jarvis.autonomous_agents.ask_bedrock_json", lambda _q, **_kw: {"actions": []})
     strategy = StrategyAgent().run(
         prompt=GOOGLE_ADS_ANALYTICS_PROMPT,
         plan={"objective": "o", "steps": [], "requires_research": True, "requires_input": False},
