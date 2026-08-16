@@ -1,0 +1,75 @@
+# Phase 2 (P2-R6): split the API and the Jarvis runner into independent containers.
+#
+# This is an OVERLAY on top of the untouched base docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.phase2.yml --profile local up -d
+#
+# What it does:
+#   * backend            -> API-only. JARVIS_ENABLED=false: mission execution is
+#                           disabled in the public-facing container.
+#   * atp-jarvis-runner  -> same image/build, JARVIS_ENABLED=true, NO public
+#                           ports, its own resource limits. All Jarvis/agent
+#                           work (Bedrock calls, missions, Telegram-driven
+#                           actions) runs here, isolated from the API.
+#
+# Kill test (acceptance): `docker stop atp-jarvis-runner` — the dashboard/API
+# on :8002 must stay up and healthy.
+#
+# Rollback: run the base file alone (it is untouched):
+#   docker compose -f docker-compose.yml --profile local up -d
+
+services:
+  backend:
+    environment:
+      - JARVIS_ENABLED=false            # API-only: no mission execution here
+      - RUN_TELEGRAM=false              # runner owns Telegram-driven actions
+
+  atp-jarvis-runner:
+    profiles:
+      - local
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: atp-jarvis-runner
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-local}
+      - APP_ENV=${APP_ENV:-local}
+      - JARVIS_ENABLED=true
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
+      - RUNTIME_ORIGIN=${RUNTIME_ORIGIN:-LOCAL}
+      - TRADING_ENABLED=${TRADING_ENABLED:-false}
+      - UVICORN_WORKERS=1
+      - DISABLE_MIDDLEWARES=0
+      - ENABLE_CORS=0                   # internal process: no browser traffic
+      - DISABLE_AUTH=${DISABLE_AUTH:-true}
+      - JARVIS_COST_LOG=/app/var/jarvis_costs.jsonl
+      # VPN gate behaves as in the base backend service
+      - VPN_GATE_ENABLED=${VPN_GATE_ENABLED:-true}
+      - VPN_GATE_URL=${VPN_GATE_URL:-https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT}
+      - VPN_GATE_EXPECTS_JSON=${VPN_GATE_EXPECTS_JSON:-true}
+      - VPN_GATE_TIMEOUT_SECS=${VPN_GATE_TIMEOUT_SECS:-3}
+      - VPN_GATE_RETRY_SECS=${VPN_GATE_RETRY_SECS:-5}
+      - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
+      - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
+    # No `ports:` on purpose — the runner is not publicly reachable.
+    # The process listens on 8002 inside the container only.
+    volumes:
+      - ./backend:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 127.0.0.1 --port 8002 --log-level info --timeout-keep-alive 30 --timeout-graceful-shutdown 10"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8002/api/health/ready', timeout=15)"]
+      interval: 30s
+      timeout: 20s
+      retries: 5

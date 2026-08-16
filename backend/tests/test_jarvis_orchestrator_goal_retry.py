@@ -20,13 +20,13 @@ GOOGLE_ADS_READ_ONLY_FULL = (
 
 
 class _PlannerOk:
-    def run(self, prompt: str) -> dict[str, Any]:
+    def run(self, prompt: str, **_kw: Any) -> dict[str, Any]:
         _ = prompt
         return {"objective": "Read-only Google Ads analytics", "requires_input": False, "requires_research": False}
 
 
 class _PlannerNeedsInput:
-    def run(self, prompt: str) -> dict[str, Any]:
+    def run(self, prompt: str, **_kw: Any) -> dict[str, Any]:
         _ = prompt
         return {
             "objective": "Unclear scope",
@@ -37,7 +37,7 @@ class _PlannerNeedsInput:
 
 
 class _ResearchNoop:
-    def run(self, *, prompt: str, plan: dict) -> dict:
+    def run(self, *, prompt: str, plan: dict, **_kw: Any) -> dict:
         _ = prompt, plan
         return {"findings": [], "open_questions": [], "confidence": 1.0}
 
@@ -204,7 +204,7 @@ def test_google_ads_stays_shallow_after_retry_waits_for_input_not_done():
 
 
 def test_planner_requires_input_sends_natural_clarification_not_rigid_block(monkeypatch):
-    monkeypatch.setattr("app.jarvis.bedrock_client.ask_bedrock", lambda _q: (_ for _ in ()).throw(RuntimeError("off")))
+    monkeypatch.setattr("app.jarvis.bedrock_client.ask_bedrock_json", lambda _q, **_kw: (_ for _ in ()).throw(RuntimeError("off")))
     fake = _FakeNotion()
     tg = _FakeTelegram()
     orch = JarvisAutonomousOrchestrator(

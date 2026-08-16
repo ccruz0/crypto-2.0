@@ -50,8 +50,8 @@ def test_readonly_analytics_heuristic_rejects_when_critical_verbs_present():
 
 def test_planner_clears_requires_input_for_spanish_google_ads_review_prompt(monkeypatch):
     monkeypatch.setattr(
-        "app.jarvis.autonomous_agents.ask_bedrock",
-        lambda _q: json.dumps(
+        "app.jarvis.autonomous_agents.ask_bedrock_json",
+        lambda _q, **_kw: (
             {
                 "objective": "Revisar campañas",
                 "steps": ["Diagnóstico", "Responder"],
@@ -67,8 +67,8 @@ def test_planner_clears_requires_input_for_spanish_google_ads_review_prompt(monk
 
 def test_planner_clears_requires_input_for_sufficient_google_ads_prompt(monkeypatch):
     monkeypatch.setattr(
-        "app.jarvis.autonomous_agents.ask_bedrock",
-        lambda _q: json.dumps(
+        "app.jarvis.autonomous_agents.ask_bedrock_json",
+        lambda _q, **_kw: (
             {
                 "objective": "Summarize Google Ads",
                 "steps": ["Query metrics", "Rank campaigns"],
@@ -85,8 +85,8 @@ def test_planner_clears_requires_input_for_sufficient_google_ads_prompt(monkeypa
 def test_planner_keeps_requires_input_when_prompt_vague(monkeypatch):
     vague = "Do something about Google Ads."
     monkeypatch.setattr(
-        "app.jarvis.autonomous_agents.ask_bedrock",
-        lambda _q: json.dumps(
+        "app.jarvis.autonomous_agents.ask_bedrock_json",
+        lambda _q, **_kw: (
             {
                 "objective": "Clarify scope",
                 "steps": ["Ask user"],

@@ -7,7 +7,7 @@ import re
 import unicodedata
 from typing import Any
 
-from app.jarvis.bedrock_client import ask_bedrock, extract_planner_json_object
+from app.jarvis.bedrock_client import ask_bedrock_json
 from app.jarvis.plan_validation import PlanValidated, validate_plan_dict
 from app.jarvis.tools import TOOL_SPECS, list_tool_names
 
@@ -250,35 +250,20 @@ User request: {text}
 """
 
     try:
-        raw = ask_bedrock(prompt)
+        parsed = ask_bedrock_json(prompt, task="standard", agent="planner", mission_id=rid or None)
     except Exception as e:
         logger.exception("jarvis.planner.bedrock_exception run_id=%s err=%s", rid or "-", e)
         return _fallback_plan(user_input, "bedrock_exception")
 
-    logger.info(
-        "jarvis.planner.bedrock_raw run_id=%s chars=%d",
-        rid or "-",
-        len(raw or ""),
-    )
-    if raw:
-        logger.info(
-            "jarvis.planner.bedrock_raw_preview run_id=%s preview=%r",
-            rid or "-",
-            (raw or "")[:600],
-        )
-
-    if not raw:
+    if not parsed:
         logger.warning("jarvis.planner.empty_bedrock_response run_id=%s", rid or "-")
         return _fallback_plan(user_input, "empty_bedrock_response")
 
-    parsed = extract_planner_json_object(raw)
-    if not parsed:
-        logger.warning(
-            "jarvis.planner.parse_failed run_id=%s preview=%r",
-            rid or "-",
-            (raw or "")[:400],
-        )
-        return _fallback_plan(user_input, "invalid_json")
+    logger.info(
+        "jarvis.planner.bedrock_structured run_id=%s keys=%s",
+        rid or "-",
+        list(parsed.keys())[:8],
+    )
 
     validated, err = validate_plan_dict(parsed)
     if validated is None:

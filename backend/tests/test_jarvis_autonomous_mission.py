@@ -97,7 +97,7 @@ class _FakeTelegram:
 
 
 class _PlannerCritical:
-    def run(self, prompt: str) -> dict:
+    def run(self, prompt: str, **_kw) -> dict:
         _ = prompt
         return {
             "objective": "Test",
@@ -108,7 +108,7 @@ class _PlannerCritical:
 
 
 class _ResearchNoop:
-    def run(self, *, prompt: str, plan: dict) -> dict:
+    def run(self, *, prompt: str, plan: dict, **_kw) -> dict:
         _ = prompt, plan
         return {"findings": [], "open_questions": [], "confidence": 1.0}
 
@@ -139,6 +139,7 @@ class _StrategyNoop:
         plan: dict,
         research: dict | None,
         outcome_memory: list[dict] | None = None,
+        **_kw,
     ) -> dict:
         _ = prompt, plan, research, outcome_memory
         return {
