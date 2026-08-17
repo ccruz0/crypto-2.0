@@ -545,24 +545,55 @@ def update_portfolio_cache(db: Session) -> Dict:
                 # Check if portfolio_loans table exists before using it (use cached check)
                 if _table_exists(db, 'portfolio_loans'):
                     logger.info(f"Syncing {len(loans_found)} loans to database...")
-                    
-                    # Deactivate all existing loans for currencies we have data for
+
+                    # Upsert one row per currency instead of appending a new one.
+                    #
+                    # This block used to deactivate every historical row for the
+                    # borrowed currencies and then INSERT a fresh one, on every
+                    # refresh. update_portfolio_cache runs roughly once a minute
+                    # (exchange_sync refreshes the cache when it is >60s old), so
+                    # the table grew by one row per borrowed currency per minute
+                    # and nothing ever pruned it: prod reached id 518376 for what
+                    # is at most one row per currency. Worse, the bulk deactivate
+                    # rewrote all of those rows every single minute.
+                    #
+                    # The sibling portfolio_balances table already does this right
+                    # (it clears itself before reinserting, see above).
                     currencies_with_loans = [loan["currency"] for loan in loans_found]
-                    db.query(PortfolioLoan).filter(
-                        PortfolioLoan.currency.in_(currencies_with_loans)
-                    ).update({"is_active": False}, synchronize_session=False)
-                    
-                    # Add new loans
                     for loan_data in loans_found:
-                        new_loan = PortfolioLoan(
-                            currency=loan_data["currency"],
-                            borrowed_amount=loan_data["borrowed_amount"],
-                            borrowed_usd_value=loan_data["borrowed_usd_value"],
-                            notes="Auto-synced from Crypto.com",
-                            is_active=True
+                        # currency is indexed; newest row wins so the historical
+                        # duplicates already in prod are ignored, not loaded.
+                        existing = (
+                            db.query(PortfolioLoan)
+                            .filter(PortfolioLoan.currency == loan_data["currency"])
+                            .order_by(PortfolioLoan.id.desc())
+                            .first()
                         )
-                        db.add(new_loan)
+                        if existing:
+                            existing.borrowed_amount = loan_data["borrowed_amount"]
+                            existing.borrowed_usd_value = loan_data["borrowed_usd_value"]
+                            existing.notes = "Auto-synced from Crypto.com"
+                            existing.is_active = True
+                        else:
+                            db.add(PortfolioLoan(
+                                currency=loan_data["currency"],
+                                borrowed_amount=loan_data["borrowed_amount"],
+                                borrowed_usd_value=loan_data["borrowed_usd_value"],
+                                notes="Auto-synced from Crypto.com",
+                                is_active=True,
+                            ))
                         logger.info(f"💰 Synced loan: {loan_data['currency']} ${loan_data['borrowed_usd_value']:.2f}")
+
+                    # Retire currencies that no longer carry a loan. The old code
+                    # only ever touched currencies present in THIS cycle, so a
+                    # repaid loan kept is_active=True with a stale amount forever
+                    # (prod: ALGO id=510494, DOGE id=473496, USD id=416873 were
+                    # still flagged active thousands of rows behind the others).
+                    if currencies_with_loans:
+                        db.query(PortfolioLoan).filter(
+                            PortfolioLoan.is_active == True,  # noqa: E712
+                            PortfolioLoan.currency.notin_(currencies_with_loans),
+                        ).update({"is_active": False}, synchronize_session=False)
                 else:
                     logger.debug("portfolio_loans table does not exist, skipping loans sync")
             except Exception as loan_update_err:
