@@ -358,3 +358,30 @@ docker build --build-arg BACKEND_URL=http://backend-aws:8002 \
   BUY con cinco flags y no menciona `trendFilters`, `rsiConfirmation` ni
   `candleConfirmation`, que son posteriores. Tampoco contempla el gate de MA200
   en la capa de ejecución.
+
+---
+
+## Errata (mismo día)
+
+**Sobre "Auto-merge sin revisión humana": `main` SÍ está protegido.**
+
+Más arriba se afirma que el repo no tiene branch protection, citando
+Settings → Branches (*"Classic branch protections have not been configured"*).
+La cita es literal pero la conclusión es engañosa.
+
+Al intentar commitear este mismo fichero directamente a `main`, GitHub ofreció
+el botón **"Bypass rules and commit changes"**. Es decir: `main` está protegido
+por un **ruleset moderno**, funcionalidad distinta de las *classic branch
+protections*, que no aparece en esa pantalla de Settings.
+
+Evidencia adicional: el PR #492 muestra `path-guard` como check **Required**, y
+la opción de merge ofrece *"Merge without waiting for requirements to be met
+(bypass rules)"*.
+
+Redacción correcta: `main` tiene un ruleset con al menos un check requerido
+(`path-guard`); lo que no tiene son classic branch protections. El auto-merge
+opera **dentro** de ese ruleset, no saltándoselo. Eso hace que el job de docker
+build sea más efectivo de lo estimado: al ser un check de PR, entra en el
+conjunto de requisitos que el auto-merge debe esperar.
+
+No se usó el bypass en ningún momento de esta sesión.
