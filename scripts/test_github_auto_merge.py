@@ -294,3 +294,28 @@ def test_status_context_shape_is_understood() -> None:
     rollup[0]["state"] = "SUCCESS"
     assert auto_merge.pending_check_names(rollup) == []
     assert auto_merge.failing_check_names(rollup) == []
+
+
+def test_poll_survives_transient_api_failure(monkeypatch) -> None:
+    """A 503 mid-poll must not kill a run whose whole job is to wait (PR #500)."""
+    calls = {"n": 0}
+
+    def flaky_load_pr(number: int) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise auto_merge.GhError("gh pr view failed (1): HTTP 503")
+        return {
+            "number": number,
+            "url": "https://example.test/pr",
+            "isDraft": False,
+            "state": "MERGED",
+            "mergedAt": "2026-08-17T15:00:00Z",
+            "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [],
+        }
+
+    monkeypatch.setattr(auto_merge, "load_pr", flaky_load_pr)
+    monkeypatch.setattr(auto_merge.time, "sleep", lambda _seconds: None)
+
+    assert auto_merge.process_pr(500, "ccruz0/crypto-2.0", poll_seconds=30, dry_run=True) == 0
+    assert calls["n"] >= 2, "expected the poll loop to retry after the 503"

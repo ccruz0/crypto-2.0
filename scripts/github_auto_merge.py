@@ -294,6 +294,32 @@ def load_pr(number: int) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
+def load_pr_with_retry(
+    number: int,
+    *,
+    attempts: int = 4,
+    delay_seconds: int = POLL_INTERVAL_SECONDS,
+) -> dict[str, Any]:
+    """load_pr, tolerating transient API failures.
+
+    GitHub returned HTTP 503 on the very first read during the 2026-08-17
+    incident and the whole run died before it could do anything.
+    """
+    last_error: GhError | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return load_pr(number)
+        except GhError as error:
+            last_error = error
+            print(
+                f"Could not read PR (attempt {attempt}/{attempts}): {error}",
+                flush=True,
+            )
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    raise last_error if last_error else GhError("load_pr failed")
+
+
 def list_unresolved_threads(owner: str, name: str, number: int) -> list[dict[str, Any]]:
     query = """
     query($owner: String!, $name: String!, $number: Int!) {
@@ -491,7 +517,7 @@ def process_pr(
     dry_run: bool = False,
 ) -> int:
     owner, name = parse_repo(repo)
-    pr = load_pr(number)
+    pr = load_pr_with_retry(number)
     url = pr["url"]
     print(
         f"PR #{number} draft={pr.get('isDraft')} state={pr.get('state')} "
@@ -524,7 +550,17 @@ def process_pr(
     last_status = pr.get("mergeStateStatus")
     last_merge_error = ""
     while True:
-        pr = load_pr(number)
+        try:
+            pr = load_pr(number)
+        except GhError as poll_error:
+            # A transient API blip must not kill a run whose whole job is to
+            # wait. GitHub returned HTTP 503 mid-poll on PR #500 and the run
+            # died on the spot. Keep polling until the deadline instead.
+            print(f"Could not read PR (retrying): {poll_error}", flush=True)
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(POLL_INTERVAL_SECONDS)
+            continue
         last_status = pr.get("mergeStateStatus")
         if should_skip_pr(pr.get("state"), bool(pr.get("mergedAt"))):
             print("PR merged or closed during wait.", flush=True)
