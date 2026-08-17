@@ -59,5 +59,8 @@ jobs:
           NO_COLOR: "1"
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number }}
-          AUTO_MERGE_POLL_SECONDS: "90"
+          # Long enough to outlast the slowest check in one run. With 90s the
+          # script gave up mid-trivy (~90s) and left the PR open waiting for a
+          # re-trigger. Measured on PR #500: everything else lands in ~10s.
+          AUTO_MERGE_POLL_SECONDS: "600"
         run: python3 scripts/github_auto_merge.py
