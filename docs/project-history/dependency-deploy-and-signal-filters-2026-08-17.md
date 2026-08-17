@@ -358,3 +358,101 @@ docker build --build-arg BACKEND_URL=http://backend-aws:8002 \
   BUY con cinco flags y no menciona `trendFilters`, `rsiConfirmation` ni
   `candleConfirmation`, que son posteriores. Tampoco contempla el gate de MA200
   en la capa de ejecución.
+
+---
+
+## Errata 2 — el dataset NO son 91 muestras
+
+Corrección a "Estado medido del pipeline de auto-ML".
+
+Se lanzó el retrain en dry-run con lookback de 365 días (run #16,
+`workflow_dispatch`, `DRY_RUN=true DAYS=365`) para comprobar si el volumen de
+datos era un problema de ventana. No lo es, y la cifra de 91 que aparece más
+arriba estaba mal interpretada.
+
+El conjunto de entrenamiento real:
+
+```json
+"label_source": "hybrid",
+"n_dataset_rows": 1021,
+"n_from_trade_outcome": 91,
+"n_from_alert": 930,
+"n_positive": 542,
+"n_negative": 479,
+"label_def": "prefer trade_outcomes COMPLETE (pnl_usd>0); else alert-path (dir_acc_1h OR tp_before_sl)"
+```
+
+Son **1021 filas**, razonablemente balanceadas. El 91 es solo el subconjunto
+etiquetado con resultado de operación real; las otras 930 se etiquetan por la
+vía de alertas. La sección de arriba confundió el 91 (que viene de las
+estadísticas de cobertura del join) con el tamaño del dataset.
+
+Métricas del candidato entrenado, con holdout real:
+
+| Métrica | Valor |
+|---------|-------|
+| n_train / n_test | 765 / 256 |
+| accuracy | 0.633 |
+| precision | 0.650 |
+| recall | 0.669 |
+| roc_auc | 0.691 |
+
+Decisión de promoción:
+
+```json
+"should_promote": false,
+"reason": "autonomous_promote_disabled",
+"candidate_metric": 0.6907,
+"current_metric": 0.8254,
+"promoted": false,
+"dry_run": true
+```
+
+Tres conclusiones que cambian el diagnóstico:
+
+1. **Ya existe un modelo entrenado y es mejor que este candidato** (0.825 frente
+   a 0.691). `MANIFEST_VERSION 14` indica que el pipeline ha construido modelos
+   14 veces. No promocionar fue lo correcto.
+
+2. **Ampliar la ventana empeoró el modelo.** Con 365 días el candidato saca
+   0.691, por debajo del 0.825 del modelo actual. Más datos no es mejor aquí:
+   los más antiguos probablemente vienen de otro régimen de mercado.
+
+3. **`live_gate_enabled: false`.** El gate ML no está activo en producción. Ni
+   el modelo bueno ni el malo influyen en las decisiones de trading. Ese, y no
+   el volumen de datos, es el motivo real de que `auto` no cambie.
+
+Además, `n_from_trade_outcome` sigue siendo 91 con 365 días de ventana, igual
+que con 90. El bot tiene ~91 operaciones completas etiquetadas en total; no es
+que la ventana las estuviera recortando.
+
+Diagnóstico corregido: el cuello de botella **no es la retención de datos**.
+Es que el gate está apagado y la promoción es manual. Aumentar la ventana o
+guardar más logs no habría cambiado nada.
+
+---
+
+## Errata — `main` sí está protegido
+
+Corrección a la sección "Auto-merge sin revisión humana".
+
+Más arriba se afirma que el repo no tiene branch protection, citando
+Settings → Branches (*"Classic branch protections have not been configured"*).
+La cita es literal pero la conclusión es engañosa.
+
+Al intentar commitear un fichero directamente a `main`, GitHub ofrece el botón
+**"Bypass rules and commit changes"**. Es decir: `main` está protegido por un
+**ruleset moderno**, funcionalidad distinta de las *classic branch protections*,
+que no aparece en esa pantalla de Settings.
+
+Evidencia adicional: el PR #492 mostró `path-guard` como check **Required**, y
+la opción de merge ofrecía *"Merge without waiting for requirements to be met
+(bypass rules)"*.
+
+Redacción correcta: `main` tiene un ruleset con al menos un check requerido
+(`path-guard`); lo que no tiene son classic branch protections. El auto-merge
+opera **dentro** de ese ruleset, no saltándoselo. Eso hace que el job de docker
+build sea más efectivo de lo estimado: al ser un check de PR, entra en el
+conjunto de requisitos que el auto-merge debe esperar.
+
+No se usó el bypass en ningún momento de esta sesión.
