@@ -230,3 +230,64 @@ def test_eth_negative_wallet_keeps_protected_long_in_details(db_session):
     assert buy_long.exchange_order_id in entry_ids
     assert sell_a.exchange_order_id in entry_ids
     assert sell_b.exchange_order_id in entry_ids
+
+
+def test_positive_wallet_mixed_trim_surfaces_ghost_mixed_trimmed(db_session):
+    """The trim warning must reach the summary row, not be replaced downstream.
+
+    #497 added ghost_mixed_trimmed but _align_open_lots_to_wallet only used it to
+    decide whether to bail out — every return path then rebuilt the warning from
+    scratch as lots_exceed_wallet or None, so the value never left the function
+    and the badge #497 promised could not render.
+    """
+    t_short = datetime(2026, 4, 1, 14, 54, tzinfo=timezone.utc)
+    t_long = datetime(2026, 8, 7, 17, 40, tzinfo=timezone.utc)
+
+    # Unmatchable SELL with no live protection: the phantom short #496 describes.
+    _add_order(
+        db_session,
+        exchange_order_id="5755600486727374908",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        price="0.10483",
+        quantity="1796",
+        exchange_create_time=t_short,
+    )
+
+    long_entry = _add_order(
+        db_session,
+        exchange_order_id="5755600492696996146",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.BUY,
+        price="0.08829",
+        quantity="1132",
+        exchange_create_time=t_long,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490102060693",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="0.095",
+        quantity="1132",
+        cumulative_quantity="0",
+        parent_order_id=long_entry.exchange_order_id,
+        exchange_create_time=t_long,
+    )
+
+    wallet = 1132.0
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "ALGO", "balance": wallet, "value_usd": 99.9}],
+        market_prices={"ALGO": 0.0883, "ALGO_USD": 0.0883},
+    )
+
+    algo = summary.get("ALGO_USD")
+    assert algo is not None, "positive wallet must keep the legitimate long visible"
+    assert algo.get("wallet_qty_warning") == "ghost_mixed_trimmed"
+    # The long survives; only the phantom short is gone.
+    assert algo["position_side"] == "LONG"
+    assert algo["net_qty"] == pytest.approx(wallet)

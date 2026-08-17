@@ -290,9 +290,17 @@ def _align_open_lots_to_wallet(
     if ghost_warning and ghost_warning != "ghost_mixed_trimmed":
         return [], ghost_warning
 
+    # ghost_mixed_trimmed gana sobre lots_exceed_wallet en los returns de abajo:
+    # que se hayan descartado lots fantasma es un problema de integridad de datos,
+    # mientras que recortar a |wallet| es rutina. El campo admite un solo valor,
+    # asi que se prioriza el diagnostico. Sin esto el warning se perdia entero y
+    # el aviso que prometia #497 no llegaba nunca al frontend.
+    def _with_ghost(warning: Optional[str]) -> Optional[str]:
+        return ghost_warning or warning
+
     wallet_abs = abs(wallet_balance)
     if wallet_abs <= 0:
-        return list(filtered), None
+        return list(filtered), _with_ghost(None)
 
     # Prefer lots that match wallet direction so a short wallet does not keep
     # oldest long lots and flip the reported side (DOGE inflate regression).
@@ -354,14 +362,14 @@ def _align_open_lots_to_wallet(
                 was_trimmed = True
 
         warning = "lots_exceed_wallet" if was_trimmed else None
-        return kept, warning
+        return kept, _with_ghost(warning)
 
     # No active protection — fall back to direction-preferring trim.
     trimmed, was_trimmed = _trim_lots_to_wallet_qty(
         filtered, wallet_abs, sort_key=_trim_sort_key
     )
     warning = "lots_exceed_wallet" if was_trimmed else None
-    return trimmed, warning
+    return trimmed, _with_ghost(warning)
 
 
 def _allocate_wallet_aligned_pairs(
@@ -3357,7 +3365,9 @@ def get_expected_take_profit_details(
         covered_cap = min(float(total_covered_qty), net_qty)
         uncovered_qty = max(0.0, net_qty - covered_cap)
         total_covered_qty = Decimal(str(covered_cap))
-        if total_lot_qty > net_qty + 1e-12:
+        # Misma precedencia que en _align_open_lots_to_wallet: el recorte a
+        # |wallet| no debe tapar un ghost_mixed_trimmed ya diagnosticado.
+        if total_lot_qty > net_qty + 1e-12 and wallet_warning != "ghost_mixed_trimmed":
             wallet_warning = "lots_exceed_wallet"
         position_side_preview = resolve_position_side(db, open_lots)
         if actual_balance > 0 and position_side_preview == "SHORT":
