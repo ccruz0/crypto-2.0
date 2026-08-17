@@ -176,6 +176,62 @@ def cap_protection_qty_from_wallet(
         return float(quantity), None
 
 
+def short_cover_block_reason(
+    symbol: str,
+    entry_side: str,
+    *,
+    dry_run: bool = False,
+    source: str = "auto",
+) -> Optional[str]:
+    """Reason to refuse BUY-side protection when no short exists, else None.
+
+    A SELL entry gets BUY-side SL/TP, and a BUY-side protection order exists for
+    exactly one purpose: closing a short. The system's own definition of a short
+    is a negative base balance — see
+    ``SignalMonitor._is_short_entry_needing_protection``, which already applies
+    this test on the post-fill path. The other creation paths (sl_tp_checker
+    healing, exchange_sync ``_create_sl_tp_impl``, manual/API routes) never did,
+    so a phantom short lot invented by the FIFO could still arm a BUY TP and get
+    it filled: ALGO_USD spent 620,65 USD over 22 fills covering shorts that had
+    never been opened.
+
+    Fails OPEN — returns None — when the wallet cannot be read. Leaving a real
+    short unprotected is a worse outcome than one phantom cover order.
+
+    Refs #496
+    """
+    if dry_run or (entry_side or "").upper() != "SELL":
+        return None
+    try:
+        from app.services.exchange_sync import _base_wallet_balance_from_accounts
+
+        summary = trade_client.get_account_summary()
+        wallet_bal = _base_wallet_balance_from_accounts(
+            summary.get("accounts") or [],
+            symbol,
+        )
+    except Exception as bal_err:
+        logger.warning(
+            "[SLTP_SHORT_COVER_GUARD] wallet unreadable for %s (%s), allowing: %s",
+            symbol,
+            source,
+            bal_err,
+        )
+        return None
+    if wallet_bal is None:
+        logger.warning(
+            "[SLTP_SHORT_COVER_GUARD] no wallet balance for %s (%s), allowing",
+            symbol,
+            source,
+        )
+        return None
+    if float(wallet_bal) < 0:
+        return None
+    return (
+        f"no short to cover: {symbol} wallet balance {wallet_bal} is not negative"
+    )
+
+
 def cancel_protection_leg_on_exchange(
     db: Session,
     leg: ExchangeOrder,
@@ -382,6 +438,19 @@ def create_oco_protection_orders(
                 "error": None,
                 "status": "already_protected",
             }
+
+    cover_block = short_cover_block_reason(
+        symbol, entry_side, dry_run=dry_run, source=source
+    )
+    if cover_block:
+        err = f"SL/TP blocked: {cover_block}"
+        logger.warning("[SLTP_SHORT_COVER_BLOCKED] %s OCO — %s", source.upper(), err)
+        return {
+            "sl_result": {"order_id": None, "error": err},
+            "tp_result": {"order_id": None, "error": err},
+            "oco_group_id": None,
+            "error": err,
+        }
 
     if not dry_run:
         order_usd_value = float(entry_price) * float(quantity)
@@ -687,6 +756,19 @@ def create_take_profit_order(
                 existing_qty,
                 requested_qty,
             )
+
+    cover_block = short_cover_block_reason(
+        symbol, entry_side, dry_run=dry_run, source=source
+    )
+    if cover_block:
+        logger.warning(
+            "[SLTP_SHORT_COVER_BLOCKED] %s TP %s parent=%s — %s",
+            source.upper(),
+            symbol,
+            parent_order_id,
+            cover_block,
+        )
+        return {"order_id": None, "error": f"SL/TP blocked: {cover_block}"}
 
     # Repair stale TP vs live market (short TP above last → INVALID_TRIGGER_PRICE).
     tp_percentage = None
@@ -1129,6 +1211,19 @@ def create_stop_loss_order(
         is_margin = watchlist_is_margin
     if leverage is None:
         leverage = watchlist_leverage
+
+    cover_block = short_cover_block_reason(
+        symbol, entry_side, dry_run=dry_run, source=source
+    )
+    if cover_block:
+        logger.warning(
+            "[SLTP_SHORT_COVER_BLOCKED] %s SL %s parent=%s — %s",
+            source.upper(),
+            symbol,
+            parent_order_id,
+            cover_block,
+        )
+        return {"order_id": None, "error": f"SL/TP blocked: {cover_block}"}
 
     if sl_percentage is None:
         try:
