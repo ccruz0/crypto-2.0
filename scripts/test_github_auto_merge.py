@@ -164,3 +164,133 @@ def test_should_attempt_squash_when_blocked_but_path_guard_green() -> None:
         )
         is False
     )
+
+
+# --- issue #498: never merge a commit whose checks are still in flight -------
+
+
+def _check(name: str, status: str = "COMPLETED", conclusion: str | None = "SUCCESS",
+           completed: str = "2026-08-17T14:43:20Z") -> dict:
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "completedAt": completed,
+    }
+
+
+def _pr499_rollup() -> list[dict]:
+    """The real rollup of PR #499 at the moment it squashed itself."""
+    return [
+        _check("path-guard"),
+        _check("trivy", status="IN_PROGRESS", conclusion=None, completed=""),
+        _check("Egress Security Audit"),
+        _check("Jarvis/Planner surface tests (curated subset — NOT the full backend suite)"),
+        _check("check-no-inline-secrets"),
+        _check("enable-auto-merge", status="IN_PROGRESS", conclusion=None, completed=""),
+    ]
+
+
+def test_pending_checks_block_the_squash() -> None:
+    rollup = _pr499_rollup()
+    assert auto_merge.pending_check_names(rollup) == ["trivy"]
+    assert auto_merge.failing_check_names(rollup) == []
+    assert (
+        auto_merge.should_attempt_squash(
+            is_draft=False,
+            merge_state_status="BLOCKED",
+            review_decision=None,
+            path_guard_ok=True,
+            human_threads=False,
+            pending_checks=auto_merge.pending_check_names(rollup),
+            failed_checks=auto_merge.failing_check_names(rollup),
+        )
+        is False
+    ), "PR #499 merged in 18s with trivy pending; that must not happen again"
+
+
+def test_own_check_never_counts_as_pending() -> None:
+    """The script runs inside enable-auto-merge, so its own run is always live."""
+    rollup = [_check("enable-auto-merge", status="IN_PROGRESS", conclusion=None, completed="")]
+    assert auto_merge.pending_check_names(rollup) == []
+
+
+def test_unstable_status_no_longer_merges_with_pending_checks() -> None:
+    """UNSTABLE is GitHub's state for 'mergeable but checks red or running'."""
+    rollup = _pr499_rollup()
+    assert (
+        auto_merge.should_attempt_squash(
+            is_draft=False,
+            merge_state_status="UNSTABLE",
+            review_decision=None,
+            path_guard_ok=True,
+            human_threads=False,
+            pending_checks=auto_merge.pending_check_names(rollup),
+            failed_checks=auto_merge.failing_check_names(rollup),
+        )
+        is False
+    )
+
+
+def test_failing_check_blocks_the_squash() -> None:
+    rollup = [_check("path-guard"), _check("trivy", conclusion="FAILURE")]
+    assert auto_merge.failing_check_names(rollup) == ["trivy"]
+    assert (
+        auto_merge.should_attempt_squash(
+            is_draft=False,
+            merge_state_status="CLEAN",
+            review_decision=None,
+            path_guard_ok=True,
+            human_threads=False,
+            pending_checks=[],
+            failed_checks=["trivy"],
+        )
+        is False
+    )
+
+
+def test_neutral_and_skipped_are_not_failures() -> None:
+    """Bugbot closes NEUTRAL when it has nothing to say; SKIPPED is a path filter."""
+    rollup = [
+        _check("Cursor Bugbot", conclusion="NEUTRAL"),
+        _check("deploy-frontend", conclusion="SKIPPED"),
+    ]
+    assert auto_merge.failing_check_names(rollup) == []
+    assert auto_merge.pending_check_names(rollup) == []
+
+
+def test_all_green_still_merges() -> None:
+    rollup = [_check("path-guard"), _check("trivy"), _check("Cursor Bugbot", conclusion="NEUTRAL")]
+    assert (
+        auto_merge.should_attempt_squash(
+            is_draft=False,
+            merge_state_status="BLOCKED",
+            review_decision=None,
+            path_guard_ok=True,
+            human_threads=False,
+            pending_checks=auto_merge.pending_check_names(rollup),
+            failed_checks=auto_merge.failing_check_names(rollup),
+        )
+        is True
+    )
+
+
+def test_older_failed_attempt_does_not_poison_a_rerun() -> None:
+    """GitHub keeps the old cancelled run beside the newer success."""
+    rollup = [
+        _check("trivy", conclusion="CANCELLED", completed="2026-08-17T14:00:00Z"),
+        _check("trivy", conclusion="SUCCESS", completed="2026-08-17T14:43:20Z"),
+    ]
+    assert auto_merge.failing_check_names(rollup) == []
+
+
+def test_status_context_shape_is_understood() -> None:
+    """Legacy commit statuses use context/state, not name/status/conclusion."""
+    rollup = [
+        {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING"},
+    ]
+    assert auto_merge.pending_check_names(rollup) == ["ci/legacy"]
+    rollup[0]["state"] = "SUCCESS"
+    assert auto_merge.pending_check_names(rollup) == []
+    assert auto_merge.failing_check_names(rollup) == []

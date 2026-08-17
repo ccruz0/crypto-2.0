@@ -42,6 +42,14 @@ TERMINAL_PR_STATES = frozenset({"MERGED", "CLOSED"})
 POLL_SECONDS_DEFAULT = 90
 POLL_INTERVAL_SECONDS = 5
 PATH_GUARD_CHECK_NAME = "path-guard"
+
+# This script runs inside the enable-auto-merge job, so its own check run is
+# always in progress while we look. Counting it would deadlock every merge.
+SELF_CHECK_NAMES = frozenset({"enable-auto-merge"})
+# NEUTRAL is how Cursor Bugbot closes when it has nothing to say; SKIPPED is a
+# workflow whose path filter did not match. Neither is a failure.
+PASSING_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+UNSETTLED_STATUS_STATES = frozenset({"", "PENDING", "EXPECTED"})
 RULESET_HINT_MARKER = "<!-- auto-merge-ruleset-hint -->"
 RULESET_BYPASS_HINT = (
     "GitHub Actions cannot finish the merge while protect-main-production "
@@ -130,6 +138,79 @@ def path_guard_passed(status_check_rollup: list[dict[str, Any]] | None) -> bool:
     return (latest.get("conclusion") or "").upper() == "SUCCESS"
 
 
+def _check_name(item: dict[str, Any]) -> str:
+    """CheckRun uses `name`, StatusContext uses `context`."""
+    return str(item.get("name") or item.get("context") or "")
+
+
+def _check_recency(item: dict[str, Any]) -> str:
+    return str(
+        item.get("completedAt") or item.get("startedAt") or item.get("createdAt") or ""
+    )
+
+
+def _is_status_context(item: dict[str, Any]) -> bool:
+    typename = (item.get("__typename") or "").upper()
+    if typename:
+        return typename == "STATUSCONTEXT"
+    return "state" in item and "status" not in item
+
+
+def latest_check_per_name(
+    status_check_rollup: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Collapse the rollup to the newest entry per check name.
+
+    GitHub keeps older cancelled/failed attempts beside a newer success, so
+    reading every entry would treat any re-run PR as permanently red.
+    """
+    latest: dict[str, dict[str, Any]] = {}
+    for item in status_check_rollup or []:
+        name = _check_name(item)
+        if not name or name in SELF_CHECK_NAMES:
+            continue
+        current = latest.get(name)
+        if current is None or _check_recency(item) >= _check_recency(current):
+            latest[name] = item
+    return latest
+
+
+def _check_settled(item: dict[str, Any]) -> bool:
+    if _is_status_context(item):
+        return (item.get("state") or "").upper() not in UNSETTLED_STATUS_STATES
+    if (item.get("status") or "").upper() != "COMPLETED":
+        return False
+    return bool(item.get("conclusion"))
+
+
+def _check_passing(item: dict[str, Any]) -> bool:
+    if _is_status_context(item):
+        return (item.get("state") or "").upper() == "SUCCESS"
+    return (item.get("conclusion") or "").upper() in PASSING_CONCLUSIONS
+
+
+def pending_check_names(
+    status_check_rollup: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Checks on the head commit that have not concluded yet."""
+    return sorted(
+        name
+        for name, item in latest_check_per_name(status_check_rollup).items()
+        if not _check_settled(item)
+    )
+
+
+def failing_check_names(
+    status_check_rollup: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Checks on the head commit that concluded, but not well."""
+    return sorted(
+        name
+        for name, item in latest_check_per_name(status_check_rollup).items()
+        if _check_settled(item) and not _check_passing(item)
+    )
+
+
 def has_unresolved_human_threads(threads: list[dict[str, Any]]) -> bool:
     return any(not is_bot_only_thread(thread) for thread in threads)
 
@@ -154,12 +235,24 @@ def should_attempt_squash(
     review_decision: str | None,
     path_guard_ok: bool,
     human_threads: bool,
+    pending_checks: list[str] | tuple[str, ...] = (),
+    failed_checks: list[str] | tuple[str, ...] = (),
 ) -> bool:
     if is_draft or human_threads:
         return False
     if (review_decision or "").upper() == "CHANGES_REQUESTED":
         return False
     if (merge_state_status or "").upper() == "DIRTY":
+        return False
+    # Wait for the checks of the CURRENT head commit (issue #498).
+    #
+    # Before this, the only check ever consulted was path-guard, and
+    # IMMEDIATE_MERGE_STATUSES accepts UNSTABLE — which is precisely GitHub's
+    # state for "mergeable, but checks are failing or still running". PR #499
+    # squashed itself 18 seconds after creation with trivy still pending and
+    # Bugbot yet to look. Resolving stale bot threads was enough to unblock the
+    # ruleset, and nothing else was consulted.
+    if pending_checks or failed_checks:
         return False
     if can_immediate_merge(merge_state_status):
         return True
@@ -417,10 +510,15 @@ def process_pr(
 
     if not dry_run:
         resolve_eligible_bot_threads(owner, name, number, pr.get("reviewDecision"))
-        message = enable_auto_merge(url)
-        print(message, flush=True)
     else:
         print("dry-run: skip ready / resolve / auto-merge", flush=True)
+
+    # GitHub's native auto-merge only waits for checks the ruleset marks
+    # REQUIRED. This repo marks none, so arming it up front meant GitHub merged
+    # the moment the ruleset stopped blocking — regardless of what was still
+    # running. It is now armed only once the head commit is green, at which
+    # point it is just a fallback for the direct squash below.
+    armed = False
 
     deadline = time.monotonic() + max(0, poll_seconds)
     last_status = pr.get("mergeStateStatus")
@@ -434,6 +532,24 @@ def process_pr(
         if last_status == "DIRTY":
             print("PR has conflicts; cannot auto-merge.", flush=True)
             return 1
+
+        rollup = pr.get("statusCheckRollup")
+        pending = pending_check_names(rollup)
+        failed = failing_check_names(rollup)
+        if failed:
+            # The failing check is already red on the PR; do not add a second
+            # red mark, just refuse to merge and say why.
+            print(
+                f"Head commit has failing checks: {', '.join(failed)}. Not merging.",
+                flush=True,
+            )
+            return 0
+        if pending:
+            print(f"Waiting on checks: {', '.join(pending)}", flush=True)
+        elif not armed and not dry_run:
+            print(enable_auto_merge(url), flush=True)
+            armed = True
+
         unresolved = (
             []
             if dry_run
@@ -443,8 +559,10 @@ def process_pr(
             is_draft=bool(pr.get("isDraft")),
             merge_state_status=last_status,
             review_decision=pr.get("reviewDecision"),
-            path_guard_ok=path_guard_passed(pr.get("statusCheckRollup")),
+            path_guard_ok=path_guard_passed(rollup),
             human_threads=has_unresolved_human_threads(unresolved),
+            pending_checks=pending,
+            failed_checks=failed,
         )
         if attempt:
             print(
@@ -476,9 +594,9 @@ def process_pr(
         time.sleep(POLL_INTERVAL_SECONDS)
 
     print(
-        f"Auto-merge armed; waiting on GitHub (mergeStateStatus={last_status}, "
-        f"reviewDecision={pr.get('reviewDecision') or 'none'}). "
-        "A later Path Guard / Bugbot event will retry.",
+        f"Not merged in this run (mergeStateStatus={last_status}, "
+        f"reviewDecision={pr.get('reviewDecision') or 'none'}, "
+        f"armed={armed}). Any later check_run completion re-runs this workflow.",
         flush=True,
     )
     if last_merge_error:
