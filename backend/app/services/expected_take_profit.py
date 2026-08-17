@@ -194,6 +194,38 @@ def _drop_ghost_direction_lots(
         return [], "ghost_short_vs_long"
     if wallet_balance < 0 and long_lots and not short_lots:
         return [], "ghost_long_vs_short"
+
+    # MIXED: un lot cuyo lado contradice el signo del wallet sigue siendo un
+    # fantasma aunque existan lots del otro lado. Sin balance negativo no hay
+    # corto posible, asi que tener longs al lado no vuelve reales a los shorts.
+    # Origen: ALGO_USD acumulo 4 "shorts" (4379 unidades) a partir de ventas
+    # sin compra emparejable, y el bot gasto 620 USD comprando para cerrarlos.
+    #
+    # Se descarta lot a lot, no el conjunto entero, para no tumbar los longs
+    # legitimos que el caso MIXED debe seguir mostrando (ver docstring de
+    # _align_open_lots_to_wallet sobre ALGO-style MIXED longs).
+    #
+    # El warning ghost_mixed_trimmed es propio y NO significa wipe: el llamador
+    # debe conservar los lots devueltos. Pendiente anadirlo a la union cerrada
+    # de frontend/src/app/api.ts, o mapearlo antes de responder.
+    #
+    # Refs #496
+    # Solo con wallet POSITIVO. El simetrico no se sostiene: con balance neto
+    # negativo si puede haber longs reales, y test_expected_tp_mixed_protected_lots
+    # exige conservarlos (test_eth_negative_wallet_keeps_protected_long_in_details).
+    if wallet_balance > 0 and short_lots and long_lots:
+        protected = _protected_entry_ids_for_lots(db, open_lots)
+        aligned = [
+            lot
+            for lot in open_lots
+            if _lot_aligns_wallet_direction(db, lot, wallet_balance)
+            or (lot.buy_order_id and lot.buy_order_id in protected)
+        ]
+        if len(aligned) != len(open_lots):
+            # Warning distinto del wipe total: el llamador debe CONSERVAR
+            # `aligned` (los longs legitimos) en vez de devolver lista vacia.
+            return aligned, "ghost_mixed_trimmed"
+
     return open_lots, None
 
 
@@ -253,7 +285,9 @@ def _align_open_lots_to_wallet(
     """
     wallet_balance = Decimal(str(wallet_balance or 0))
     filtered, ghost_warning = _drop_ghost_direction_lots(db, open_lots, wallet_balance)
-    if ghost_warning:
+    # ghost_mixed_trimmed NO vacia: se descartaron solo los lots que contradicen
+    # el signo del wallet y hay que seguir con los que quedan (issue #496).
+    if ghost_warning and ghost_warning != "ghost_mixed_trimmed":
         return [], ghost_warning
 
     wallet_abs = abs(wallet_balance)
