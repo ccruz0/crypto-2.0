@@ -1,0 +1,67 @@
+# Verifica que las imagenes de Docker se pueden construir ANTES de mergear.
+#
+# Motivo: los checks de CI existentes no construyen las imagenes, asi que un bump
+# de dependencias podia pasar en verde y romper el despliegue despues del merge.
+# Ocurrio dos veces el 17-ago-2026:
+#   - uvicorn 0.51.0 exige websockets>=13.0, pero requirements.txt fija
+#     websockets==10.4 porque alpaca-trade-api requiere <11.
+#   - react-dom 19.2.7 exige peer react@^19.2.7, pero package.json tenia react 19.2.0.
+# Detalle completo en la issue #490.
+#
+# Este workflow SOLO construye. No hace push a ECR, no toca produccion y no
+# necesita credenciales AWS. Usa el mismo Dockerfile y el mismo contexto de build
+# que los workflows de despliegue, para que lo que se valida aqui sea de verdad
+# lo que luego se despliega.
+name: CI docker build
+
+on:
+  pull_request:
+    paths:
+      - 'backend/requirements.txt'
+      - 'backend/Dockerfile.aws'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - 'frontend/Dockerfile'
+      - '.github/workflows/ci-docker-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Build backend image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Mismo -f y mismo contexto que deploy-backend.yml
+      - name: Build backend image
+        run: |
+          set -euo pipefail
+          docker build -f backend/Dockerfile.aws \
+            --build-arg GIT_SHA="${GITHUB_SHA}" \
+            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "atp-backend:ci-${GITHUB_SHA::12}" \
+            .
+
+  frontend:
+    name: Build frontend image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Mismo -f y mismo contexto que deploy-frontend.yml
+      - name: Build frontend image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg BACKEND_URL=http://backend-aws:8002 \
+            -t "atp-frontend:ci-${GITHUB_SHA::12}" \
+            -f frontend/Dockerfile \
+            frontend
