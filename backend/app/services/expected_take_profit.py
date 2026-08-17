@@ -194,6 +194,34 @@ def _drop_ghost_direction_lots(
         return [], "ghost_short_vs_long"
     if wallet_balance < 0 and long_lots and not short_lots:
         return [], "ghost_long_vs_short"
+
+    # MIXED: un lot cuyo lado contradice el signo del wallet sigue siendo un
+    # fantasma aunque existan lots del otro lado. Sin balance negativo no hay
+    # corto posible, asi que tener longs al lado no vuelve reales a los shorts.
+    # Origen: ALGO_USD acumulo 4 "shorts" (4379 unidades) a partir de ventas
+    # sin compra emparejable, y el bot gasto 620 USD comprando para cerrarlos.
+    #
+    # Se descarta lot a lot, no el conjunto entero, para no tumbar los longs
+    # legitimos que el caso MIXED debe seguir mostrando (ver docstring de
+    # _align_open_lots_to_wallet sobre ALGO-style MIXED longs).
+    #
+    # Se reutiliza el warning ghost_short_vs_long / ghost_long_vs_short en vez
+    # de inventar uno nuevo: el frontend los tiene tipados como union cerrada
+    # (frontend/src/app/api.ts) y un valor nuevo no se renderizaria.
+    #
+    # Refs #496
+    if short_lots and long_lots:
+        aligned = [
+            lot
+            for lot in open_lots
+            if _lot_aligns_wallet_direction(db, lot, wallet_balance)
+        ]
+        if len(aligned) != len(open_lots):
+            warning = (
+                "ghost_short_vs_long" if wallet_balance > 0 else "ghost_long_vs_short"
+            )
+            return aligned, warning
+
     return open_lots, None
 
 
