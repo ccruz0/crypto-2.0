@@ -540,6 +540,11 @@ def calculate_trading_signals(
     # Set all condition flags from should_trigger_buy_signal
     strategy_state["reasons"]["buy_rsi_ok"] = decision.condition_flags.get("rsi_ok")
     buy_ma_ok_from_decision = decision.condition_flags.get("ma_ok")
+    # trendFilters / rsiConfirmation / candleConfirmation se evaluaban y se
+    # descartaban (issue #489). Se exponen para diagnostico.
+    strategy_state["reasons"]["buy_trend_filters_ok"] = decision.condition_flags.get("trend_filters_ok")
+    strategy_state["reasons"]["buy_rsi_confirmation_ok"] = decision.condition_flags.get("rsi_confirmation_ok")
+    strategy_state["reasons"]["buy_candle_confirmation_ok"] = decision.condition_flags.get("candle_confirmation_ok")
     
     # FIXED: For strategies that don't require MAs, set buy_ma_ok=True (not blocking)
     # Check if strategy requires MAs from config
@@ -631,7 +636,13 @@ def calculate_trading_signals(
     # This is the PRIMARY rule - it overrides any other logic
     # FIXED: Ensure we check ALL boolean flags - if any are False, don't trigger BUY
     # Note: buy_ma_ok=None is excluded from this check (means MA not required)
-    all_buy_flags_true = bool(buy_flags_boolean) and all(b is True for b in buy_flags_boolean.values())
+    # should_trigger_buy_signal() ya evaluo trendFilters / rsiConfirmation /
+    # candleConfirmation, pero su veredicto se ignoraba (issue #489).
+    all_buy_flags_true = (
+        bool(buy_flags_boolean)
+        and all(b is True for b in buy_flags_boolean.values())
+        and decision.should_buy
+    )
     
     # Enhanced logging for LDO to diagnose signal trigger issues
     if "LDO" in symbol.upper():
