@@ -420,6 +420,28 @@ def _allocate_wallet_aligned_pairs(
     return allocated, warning
 
 
+def _last_traded_pair_for_base(db: Session, base: str) -> Optional[str]:
+    """Pair symbol this base last actually traded on, e.g. XLM -> XLM_USD.
+
+    Used when there are no lots to read the pair from. Falling back to the bare
+    base would key the row as "XLM" while every other row for a traded asset is
+    a pair, so deep links and sister-book lookups would miss it.
+    """
+    base = (base or "").upper()
+    if not base:
+        return None
+    if "_" in base:
+        return base
+    candidates = _order_symbol_scope(base)
+    entry = (
+        db.query(ExchangeOrder)
+        .filter(ExchangeOrder.symbol.in_(candidates))
+        .order_by(ExchangeOrder.exchange_create_time.desc())
+        .first()
+    )
+    return (entry.symbol or "").upper() if entry and entry.symbol else None
+
+
 def _emit_cost_basis_unknown_row(
     db: Session,
     *,
@@ -428,6 +450,7 @@ def _emit_cost_basis_unknown_row(
     current_price: float,
     warning: Optional[str],
     results: Dict[str, Dict],
+    fallback_symbol: Optional[str] = None,
 ) -> None:
     """Keep a wiped symbol visible, sized from the wallet, with no cost basis.
 
@@ -442,6 +465,9 @@ def _emit_cost_basis_unknown_row(
     pair_symbol = next(iter(_group_lots_by_pair(open_lots)), None)
     if not pair_symbol:
         pair_symbol = (open_lots[0].symbol if open_lots else "") or ""
+    if not pair_symbol and fallback_symbol:
+        # No lots at all: resolve the pair from order history instead.
+        pair_symbol = _last_traded_pair_for_base(db, fallback_symbol) or ""
     if not pair_symbol:
         return
 
@@ -2348,9 +2374,35 @@ def get_expected_take_profit_summary(
 
             open_lots = rebuild_open_lots(db, symbol)
             if not open_lots:
-                logger.debug(
-                    "Expected TP: Skipping %s - negative balance but no open lots",
+                # Orphaned protection is the richer story (real covered qty and
+                # expected profit from the live SL/TP), and the discovery loop
+                # at the end of this function already emits it with
+                # orphaned_protection_only. Do not pre-empt it with a bare
+                # wallet row — that loop skips symbols already in `results`.
+                if build_orphaned_protection_lots(db, symbol):
+                    continue
+                # A negative balance with nothing to rebuild is still a real
+                # short residue sitting in the account, so it must not vanish
+                # from Expected TP just because the FIFO has no lot for it.
+                # Typically the leftover of a short that closed cleanly (prod
+                # XLM: SELL 631 -> BUY 631 TAKE_PROFIT, leaving -0.67).
+                #
+                # Same treatment as a full ghost wipe: sized from the wallet,
+                # no cost basis, no invented P&L.
+                logger.info(
+                    "Expected TP: %s short residue with no lots — emitting from "
+                    "wallet (balance=%s)",
                     symbol,
+                    balance,
+                )
+                _emit_cost_basis_unknown_row(
+                    db,
+                    open_lots=[],
+                    wallet_balance=balance,
+                    current_price=current_price,
+                    warning=None,
+                    results=results,
+                    fallback_symbol=symbol,
                 )
                 continue
 
