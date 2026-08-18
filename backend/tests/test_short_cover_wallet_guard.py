@@ -7,10 +7,14 @@ gets armed and filled, and the bot buys inventory it never sold (ALGO_USD:
 short — negative base balance — at the single choke point every creation path
 funnels through.
 """
+import itertools
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app.services.tp_sl_order_creator import short_cover_block_reason
+from app.services.tp_sl_order_creator import (
+    matching_wallet_balances,
+    short_cover_block_reason,
+)
 
 
 def _accounts(balance):
@@ -138,3 +142,88 @@ class TestCreatorsHonourGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- the exchange's account ordering must never decide protection ------------
+
+
+def _split_accounts(*entries):
+    """Accounts as the exchange might serialise them, in the given order."""
+    return {"accounts": [{"currency": c, "balance": b} for c, b in entries]}
+
+
+class TestMultipleMatchingAccounts(unittest.TestCase):
+    """_account_matches_symbol matches the bare base, the exact pair and ETH_*.
+
+    So one symbol can map to several accounts. Reading only the first one made
+    the verdict depend on the exchange's serialisation order, which can change
+    without any deploy on our side.
+    """
+
+    @patch("app.services.tp_sl_order_creator.trade_client")
+    def test_spot_first_then_margin_short_allows(self, mock_client):
+        # Positive spot listed before the negative margin leg.
+        mock_client.get_account_summary.return_value = _split_accounts(
+            ("ETH", 1.5), ("ETH_SHORT", -0.75)
+        )
+        self.assertIsNone(short_cover_block_reason("ETH_USD", "SELL"))
+
+    @patch("app.services.tp_sl_order_creator.trade_client")
+    def test_margin_short_first_then_spot_allows(self, mock_client):
+        # Same account set, opposite order. The verdict must not change.
+        mock_client.get_account_summary.return_value = _split_accounts(
+            ("ETH_SHORT", -0.75), ("ETH", 1.5)
+        )
+        self.assertIsNone(short_cover_block_reason("ETH_USD", "SELL"))
+
+    @patch("app.services.tp_sl_order_creator.trade_client")
+    def test_order_is_irrelevant_for_every_permutation(self, mock_client):
+        """The property, stated directly: order must never change the verdict."""
+        entries = [("ETH", 1.5), ("ETH_SHORT", -0.75), ("ETH_USD", 0.0)]
+        verdicts = set()
+        for permutation in itertools.permutations(entries):
+            mock_client.get_account_summary.return_value = _split_accounts(*permutation)
+            verdicts.add(short_cover_block_reason("ETH_USD", "SELL"))
+        self.assertEqual(
+            verdicts,
+            {None},
+            "a short exists in this account set; every ordering must allow",
+        )
+
+    @patch("app.services.tp_sl_order_creator.trade_client")
+    def test_all_positive_still_blocks_in_any_order(self, mock_client):
+        """No negative anywhere means no short — that verdict is order-proof too."""
+        entries = [("ALGO", 1220.11), ("ALGO_USD", 71.11)]
+        verdicts = set()
+        for permutation in itertools.permutations(entries):
+            mock_client.get_account_summary.return_value = _split_accounts(*permutation)
+            reason = short_cover_block_reason("ALGO_USD", "SELL")
+            self.assertIsNotNone(reason)
+            verdicts.add("blocked")
+        self.assertEqual(verdicts, {"blocked"})
+
+    @patch("app.services.tp_sl_order_creator.trade_client")
+    def test_unrelated_currencies_are_not_counted(self, mock_client):
+        """A short on another asset must not license an ETH cover order."""
+        mock_client.get_account_summary.return_value = _split_accounts(
+            ("BTC", -2.0), ("ETH", 1.5)
+        )
+        reason = short_cover_block_reason("ETH_USD", "SELL")
+        self.assertIsNotNone(reason)
+        self.assertIn("1.5", reason)
+
+    def test_matching_wallet_balances_collects_every_match(self):
+        accounts = _split_accounts(
+            ("ETH", 1.5), ("ETH_SHORT", -0.75), ("BTC", 9.0)
+        )["accounts"]
+        self.assertEqual(
+            sorted(matching_wallet_balances(accounts, "ETH_USD")), [-0.75, 1.5]
+        )
+
+    def test_matching_wallet_balances_survives_junk_rows(self):
+        accounts = [
+            {"currency": "ETH", "balance": "not-a-number"},
+            {"currency": "ETH_SHORT", "balance": -0.75},
+            {"currency": None, "balance": 1},
+        ]
+        self.assertEqual(matching_wallet_balances(accounts, "ETH_USD"), [-0.75])
