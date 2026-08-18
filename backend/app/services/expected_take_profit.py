@@ -52,6 +52,7 @@ class OpenLot:
         parent_order_id: Optional[str] = None,
         oco_group_id: Optional[str] = None,
         cost_basis_unknown: bool = False,
+        entry_side: Optional[OrderSideEnum] = None,
     ):
         self.symbol = symbol
         self.buy_order_id = buy_order_id
@@ -66,6 +67,10 @@ class OpenLot:
         # filled BUY order / cost basis found). Consumers must NOT report a
         # computed expected profit for such lots (it would be meaningless).
         self.cost_basis_unknown = cost_basis_unknown
+        # Explicit entry side for synthetic lots with no buy_order_id. Without
+        # it, side resolution defaults to BUY and a short residue would be
+        # reported as LONG.
+        self.entry_side = entry_side
 
 
 def _order_symbol_scope(symbol: str) -> List[str]:
@@ -118,6 +123,7 @@ def _clone_open_lot(lot: OpenLot, lot_qty: Optional[Decimal] = None) -> OpenLot:
         parent_order_id=lot.parent_order_id,
         oco_group_id=lot.oco_group_id,
         cost_basis_unknown=getattr(lot, "cost_basis_unknown", False),
+        entry_side=getattr(lot, "entry_side", None),
     )
     cloned.matched_tp = lot.matched_tp
     cloned.match_origin = lot.match_origin
@@ -478,6 +484,12 @@ def _emit_cost_basis_unknown_row(
         buy_price=Decimal(str(current_price)),
         lot_qty=abs(wallet_balance),
         cost_basis_unknown=True,
+        # The wallet sign IS the direction. Without this the lot has no
+        # buy_order_id, side resolution defaults to BUY, and a short residue
+        # would be labelled LONG — the opposite of what this row exists to show.
+        entry_side=(
+            OrderSideEnum.SELL if wallet_balance < 0 else OrderSideEnum.BUY
+        ),
     )
     summary_row = _compute_expected_tp_for_lots(
         db,
@@ -567,6 +579,9 @@ def _symbols_equivalent_for_matching(lot_symbol: str, tp_symbol: str) -> bool:
 
 def _entry_side_for_lot(db: Session, lot: OpenLot) -> OrderSideEnum:
     """Resolve the original entry side (BUY long vs SELL short) for an open lot."""
+    explicit = getattr(lot, "entry_side", None)
+    if explicit is not None:
+        return explicit
     if not lot.buy_order_id:
         return OrderSideEnum.BUY
     entry = db.query(ExchangeOrder).filter(
@@ -2162,7 +2177,11 @@ def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
         return "LONG"
 
     entry_ids = [lot.buy_order_id for lot in open_lots if lot.buy_order_id]
-    if not entry_ids:
+    if not entry_ids and not any(
+        getattr(lot, "entry_side", None) for lot in open_lots
+    ):
+        # Nothing to resolve a side from at all. Synthetic lots DO carry one,
+        # so they must fall through to the loop below instead of defaulting.
         return "LONG"
 
     entries = db.query(ExchangeOrder).filter(
@@ -2173,7 +2192,12 @@ def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
     buy_qty = Decimal("0")
     sell_qty = Decimal("0")
     for lot in open_lots:
-        side = side_by_id.get(lot.buy_order_id, OrderSideEnum.BUY)
+        # Synthetic lots carry their side explicitly: they have no
+        # buy_order_id, so the lookup below would default them to BUY and
+        # report a short residue as LONG.
+        side = getattr(lot, "entry_side", None) or side_by_id.get(
+            lot.buy_order_id, OrderSideEnum.BUY
+        )
         if side == OrderSideEnum.SELL:
             sell_qty += lot.lot_qty
         else:

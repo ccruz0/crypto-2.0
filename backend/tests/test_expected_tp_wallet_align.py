@@ -708,6 +708,10 @@ def test_short_residue_without_lots_stays_visible(db_session):
     assert xlm["cost_basis_unknown"] is True
     assert xlm["avg_entry_price"] is None
     assert xlm["total_expected_profit"] is None
+    # The wallet sign is the direction: a negative residue is SHORT, never LONG.
+    # The synthetic lot has no buy_order_id, so side resolution would default to
+    # BUY and mislabel it (found by Cursor Bugbot on PR #507).
+    assert xlm["position_side"] == "SHORT"
 
 
 def test_zero_balance_without_lots_is_still_skipped(db_session):
