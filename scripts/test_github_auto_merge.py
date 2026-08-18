@@ -350,7 +350,7 @@ def _instrument(monkeypatch, pr: dict) -> list[str]:
     monkeypatch.setattr(auto_merge.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
         auto_merge, "disable_auto_merge",
-        lambda _u: calls.append("disable") or "auto-merge disabled",
+        lambda _u: (calls.append("disable"), (True, "auto-merge disabled"))[1],
     )
     monkeypatch.setattr(
         auto_merge, "enable_auto_merge",
@@ -399,3 +399,19 @@ def test_green_head_keeps_its_arming_and_merges(monkeypatch) -> None:
     assert "disable" not in calls
     assert "enable" in calls
     assert "squash" in calls
+
+
+def test_failed_disarm_never_resolves_threads(monkeypatch) -> None:
+    """If the disarm fails, resolving threads would unblock the ruleset with the
+    stale arming still live — the exact #505 failure mode. Found by Bugbot on #506.
+    """
+    calls = _instrument(monkeypatch, _pr(pending=True, armed=True))
+    monkeypatch.setattr(
+        auto_merge, "disable_auto_merge",
+        lambda _u: (calls.append("disable_failed"), (False, "HTTP 503"))[1],
+    )
+    rc = auto_merge.process_pr(506, "ccruz0/crypto-2.0", poll_seconds=0)
+    assert "disable_failed" in calls
+    assert "resolve_threads" not in calls, "must not unblock the ruleset after a failed disarm"
+    assert "squash" not in calls
+    assert rc == 1

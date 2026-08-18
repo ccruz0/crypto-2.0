@@ -421,7 +421,7 @@ def enable_auto_merge(url: str) -> str:
     raise GhError(f"Could not enable auto-merge: {output}")
 
 
-def disable_auto_merge(url: str) -> str:
+def disable_auto_merge(url: str) -> tuple[bool, str]:
     """Disarm GitHub's native auto-merge.
 
     Arming survives a push. A commit that was green gets auto-merge armed
@@ -436,9 +436,8 @@ def disable_auto_merge(url: str) -> str:
     result = run_gh(["pr", "merge", "--disable-auto", url], check=False)
     output = ((result.stdout or "") + (result.stderr or "")).strip()
     if result.returncode == 0:
-        return output or "auto-merge disabled"
-    # Not armed, already merged, or no permission: nothing to disarm.
-    return f"could not disable auto-merge (ignored): {output}"
+        return True, output or "auto-merge disabled"
+    return False, f"could not disable auto-merge: {output}"
 
 
 def squash_merge_now(url: str) -> str:
@@ -564,7 +563,18 @@ def process_pr(
             pending_check_names(initial_rollup)
             or failing_check_names(initial_rollup)
         ) and pr.get("autoMergeRequest"):
-            print(disable_auto_merge(url), flush=True)
+            disarmed, message = disable_auto_merge(url)
+            print(message, flush=True)
+            if not disarmed:
+                # A failed disarm must NOT fall through to thread resolution:
+                # resolving is what unblocks the ruleset, and the stale arming
+                # is still live. Better to leave the PR unmerged this run.
+                print(
+                    "Refusing to resolve threads while a stale arming may still "
+                    "be live. Re-run once the disarm succeeds.",
+                    flush=True,
+                )
+                return 1
         resolve_eligible_bot_threads(owner, name, number, pr.get("reviewDecision"))
     else:
         print("dry-run: skip ready / resolve / auto-merge", flush=True)
@@ -606,8 +616,10 @@ def process_pr(
         # fire on this one the moment the ruleset unblocks — without waiting for
         # anything. Disarm it while this head is not green (PR #505).
         if (pending or failed) and not dry_run and pr.get("autoMergeRequest"):
-            print(disable_auto_merge(url), flush=True)
-            armed = False
+            disarmed, message = disable_auto_merge(url)
+            print(message, flush=True)
+            if disarmed:
+                armed = False
 
         if failed:
             # The failing check is already red on the PR; do not add a second
