@@ -722,3 +722,26 @@ def test_zero_balance_without_lots_is_still_skipped(db_session):
         market_prices={"XLM": 0.1486, "XLM_USD": 0.1486},
     )
     assert not [k for k in summary if k.startswith("XLM")]
+
+
+def test_short_residue_of_never_traded_asset_still_appears(db_session):
+    """No order history at all must not mean no row.
+
+    Prod 2026-08-18: ADA, AVAX and STRK carry a negative balance with zero
+    orders in the DB (dust that never went through the bot). Resolving the pair
+    from order history returned nothing and the row was dropped, leaving real
+    inventory invisible. The bare base is the right fallback — it is how LDO and
+    LINK already appear in the summary.
+    """
+    wallet = -0.54619637
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "ADA", "balance": wallet, "value_usd": -0.09}],
+        market_prices={"ADA": 0.1648, "ADA_USD": 0.1648},
+    )
+
+    ada = summary.get("ADA")
+    assert ada is not None, "a never-traded short residue must still be visible"
+    assert ada["position_side"] == "SHORT"
+    assert ada["net_qty"] == pytest.approx(abs(wallet))
+    assert ada["cost_basis_unknown"] is True
