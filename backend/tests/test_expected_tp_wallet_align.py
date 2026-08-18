@@ -658,3 +658,67 @@ def test_ghost_wipe_with_zero_wallet_still_drops_the_symbol(db_session):
         market_prices={"ALGO": 0.07687, "ALGO_USD": 0.07687},
     )
     assert not [k for k in summary if k.startswith("ALGO")]
+
+
+def test_short_residue_without_lots_stays_visible(db_session):
+    """A negative balance the FIFO cannot rebuild is still real inventory.
+
+    Prod XLM_USD on 2026-08-18: the short closed cleanly (SELL 631 -> BUY 631
+    TAKE_PROFIT), leaving -0.67 of residue with no open lot. The summary skipped
+    it at the `negative balance but no open lots` branch, so -0.67 XLM sat in
+    the account invisible. Same for XRP, BONK, ADA, AVAX and STRK.
+    """
+    t0 = datetime(2026, 8, 16, 16, 17, tzinfo=timezone.utc)
+    sell = _add_order(
+        db_session,
+        exchange_order_id="xlm-short-sell",
+        symbol="XLM_USD",
+        side=OrderSideEnum.SELL,
+        price="0.156",
+        quantity="631",
+        exchange_create_time=t0,
+    )
+    # The cover fill closes it out, so rebuild_open_lots finds nothing.
+    _add_order(
+        db_session,
+        exchange_order_id="xlm-short-cover",
+        symbol="XLM_USD",
+        side=OrderSideEnum.BUY,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        price="0.150",
+        quantity="631",
+        parent_order_id=sell.exchange_order_id,
+        exchange_create_time=t0,
+    )
+
+    wallet = -0.67309999
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "XLM", "balance": wallet, "value_usd": -0.10}],
+        market_prices={"XLM": 0.1486, "XLM_USD": 0.1486},
+    )
+
+    xlm = summary.get("XLM_USD")
+    assert xlm is not None, "short residue must not disappear from Expected TP"
+    # Keyed on the pair it actually traded on, not the bare base.
+    assert xlm["symbol"] == "XLM_USD"
+    assert xlm["net_qty"] == pytest.approx(abs(wallet))
+    assert xlm["wallet_balance"] == pytest.approx(wallet)
+    assert xlm["cost_basis_unknown"] is True
+    assert xlm["avg_entry_price"] is None
+    assert xlm["total_expected_profit"] is None
+    # The wallet sign is the direction: a negative residue is SHORT, never LONG.
+    # The synthetic lot has no buy_order_id, so side resolution would default to
+    # BUY and mislabel it (found by Cursor Bugbot on PR #507).
+    assert xlm["position_side"] == "SHORT"
+
+
+def test_zero_balance_without_lots_is_still_skipped(db_session):
+    """No balance means nothing to show; the residue rule must not over-reach."""
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "XLM", "balance": 0.0, "value_usd": 0.0}],
+        market_prices={"XLM": 0.1486, "XLM_USD": 0.1486},
+    )
+    assert not [k for k in summary if k.startswith("XLM")]

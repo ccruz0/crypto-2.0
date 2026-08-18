@@ -52,6 +52,7 @@ class OpenLot:
         parent_order_id: Optional[str] = None,
         oco_group_id: Optional[str] = None,
         cost_basis_unknown: bool = False,
+        entry_side: Optional[OrderSideEnum] = None,
     ):
         self.symbol = symbol
         self.buy_order_id = buy_order_id
@@ -66,6 +67,10 @@ class OpenLot:
         # filled BUY order / cost basis found). Consumers must NOT report a
         # computed expected profit for such lots (it would be meaningless).
         self.cost_basis_unknown = cost_basis_unknown
+        # Explicit entry side for synthetic lots with no buy_order_id. Without
+        # it, side resolution defaults to BUY and a short residue would be
+        # reported as LONG.
+        self.entry_side = entry_side
 
 
 def _order_symbol_scope(symbol: str) -> List[str]:
@@ -118,6 +123,7 @@ def _clone_open_lot(lot: OpenLot, lot_qty: Optional[Decimal] = None) -> OpenLot:
         parent_order_id=lot.parent_order_id,
         oco_group_id=lot.oco_group_id,
         cost_basis_unknown=getattr(lot, "cost_basis_unknown", False),
+        entry_side=getattr(lot, "entry_side", None),
     )
     cloned.matched_tp = lot.matched_tp
     cloned.match_origin = lot.match_origin
@@ -420,6 +426,28 @@ def _allocate_wallet_aligned_pairs(
     return allocated, warning
 
 
+def _last_traded_pair_for_base(db: Session, base: str) -> Optional[str]:
+    """Pair symbol this base last actually traded on, e.g. XLM -> XLM_USD.
+
+    Used when there are no lots to read the pair from. Falling back to the bare
+    base would key the row as "XLM" while every other row for a traded asset is
+    a pair, so deep links and sister-book lookups would miss it.
+    """
+    base = (base or "").upper()
+    if not base:
+        return None
+    if "_" in base:
+        return base
+    candidates = _order_symbol_scope(base)
+    entry = (
+        db.query(ExchangeOrder)
+        .filter(ExchangeOrder.symbol.in_(candidates))
+        .order_by(ExchangeOrder.exchange_create_time.desc())
+        .first()
+    )
+    return (entry.symbol or "").upper() if entry and entry.symbol else None
+
+
 def _emit_cost_basis_unknown_row(
     db: Session,
     *,
@@ -428,6 +456,7 @@ def _emit_cost_basis_unknown_row(
     current_price: float,
     warning: Optional[str],
     results: Dict[str, Dict],
+    fallback_symbol: Optional[str] = None,
 ) -> None:
     """Keep a wiped symbol visible, sized from the wallet, with no cost basis.
 
@@ -442,6 +471,9 @@ def _emit_cost_basis_unknown_row(
     pair_symbol = next(iter(_group_lots_by_pair(open_lots)), None)
     if not pair_symbol:
         pair_symbol = (open_lots[0].symbol if open_lots else "") or ""
+    if not pair_symbol and fallback_symbol:
+        # No lots at all: resolve the pair from order history instead.
+        pair_symbol = _last_traded_pair_for_base(db, fallback_symbol) or ""
     if not pair_symbol:
         return
 
@@ -452,6 +484,12 @@ def _emit_cost_basis_unknown_row(
         buy_price=Decimal(str(current_price)),
         lot_qty=abs(wallet_balance),
         cost_basis_unknown=True,
+        # The wallet sign IS the direction. Without this the lot has no
+        # buy_order_id, side resolution defaults to BUY, and a short residue
+        # would be labelled LONG — the opposite of what this row exists to show.
+        entry_side=(
+            OrderSideEnum.SELL if wallet_balance < 0 else OrderSideEnum.BUY
+        ),
     )
     summary_row = _compute_expected_tp_for_lots(
         db,
@@ -541,6 +579,9 @@ def _symbols_equivalent_for_matching(lot_symbol: str, tp_symbol: str) -> bool:
 
 def _entry_side_for_lot(db: Session, lot: OpenLot) -> OrderSideEnum:
     """Resolve the original entry side (BUY long vs SELL short) for an open lot."""
+    explicit = getattr(lot, "entry_side", None)
+    if explicit is not None:
+        return explicit
     if not lot.buy_order_id:
         return OrderSideEnum.BUY
     entry = db.query(ExchangeOrder).filter(
@@ -2136,7 +2177,11 @@ def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
         return "LONG"
 
     entry_ids = [lot.buy_order_id for lot in open_lots if lot.buy_order_id]
-    if not entry_ids:
+    if not entry_ids and not any(
+        getattr(lot, "entry_side", None) for lot in open_lots
+    ):
+        # Nothing to resolve a side from at all. Synthetic lots DO carry one,
+        # so they must fall through to the loop below instead of defaulting.
         return "LONG"
 
     entries = db.query(ExchangeOrder).filter(
@@ -2147,7 +2192,12 @@ def resolve_position_side(db: Session, open_lots: List[OpenLot]) -> str:
     buy_qty = Decimal("0")
     sell_qty = Decimal("0")
     for lot in open_lots:
-        side = side_by_id.get(lot.buy_order_id, OrderSideEnum.BUY)
+        # Synthetic lots carry their side explicitly: they have no
+        # buy_order_id, so the lookup below would default them to BUY and
+        # report a short residue as LONG.
+        side = getattr(lot, "entry_side", None) or side_by_id.get(
+            lot.buy_order_id, OrderSideEnum.BUY
+        )
         if side == OrderSideEnum.SELL:
             sell_qty += lot.lot_qty
         else:
@@ -2348,9 +2398,35 @@ def get_expected_take_profit_summary(
 
             open_lots = rebuild_open_lots(db, symbol)
             if not open_lots:
-                logger.debug(
-                    "Expected TP: Skipping %s - negative balance but no open lots",
+                # Orphaned protection is the richer story (real covered qty and
+                # expected profit from the live SL/TP), and the discovery loop
+                # at the end of this function already emits it with
+                # orphaned_protection_only. Do not pre-empt it with a bare
+                # wallet row — that loop skips symbols already in `results`.
+                if build_orphaned_protection_lots(db, symbol):
+                    continue
+                # A negative balance with nothing to rebuild is still a real
+                # short residue sitting in the account, so it must not vanish
+                # from Expected TP just because the FIFO has no lot for it.
+                # Typically the leftover of a short that closed cleanly (prod
+                # XLM: SELL 631 -> BUY 631 TAKE_PROFIT, leaving -0.67).
+                #
+                # Same treatment as a full ghost wipe: sized from the wallet,
+                # no cost basis, no invented P&L.
+                logger.info(
+                    "Expected TP: %s short residue with no lots — emitting from "
+                    "wallet (balance=%s)",
                     symbol,
+                    balance,
+                )
+                _emit_cost_basis_unknown_row(
+                    db,
+                    open_lots=[],
+                    wallet_balance=balance,
+                    current_price=current_price,
+                    warning=None,
+                    results=results,
+                    fallback_symbol=symbol,
                 )
                 continue
 
