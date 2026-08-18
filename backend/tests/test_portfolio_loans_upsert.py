@@ -119,3 +119,29 @@ def test_multiple_currencies_keep_one_row_each(db_session):
         _run_cache_update(db_session, accounts)
 
     assert db_session.query(PortfolioLoan).count() == 2
+
+
+def test_full_repayment_retires_every_active_row(db_session):
+    """When every loan is repaid, loans_found is empty — and that is the case
+    that matters most.
+
+    portfolio_snapshot only falls back to portfolio_loans when there are no
+    negative balances left (`if total_borrowed_usd == 0.0`), which is exactly
+    the full-repayment state. Rows left active there become the borrowed total
+    of the wallet balance. Found by Cursor Bugbot on PR #504.
+    """
+    _run_cache_update(db_session, [_account("XRP", -0.35), _account("DOGE", -2769.5)])
+    assert db_session.query(PortfolioLoan).filter(
+        PortfolioLoan.is_active == True  # noqa: E712
+    ).count() == 2
+
+    # Everything repaid: no negative balances at all.
+    _run_cache_update(db_session, [_account("XRP", 12.0), _account("DOGE", 4.0)])
+
+    active = db_session.query(PortfolioLoan).filter(
+        PortfolioLoan.is_active == True  # noqa: E712
+    ).all()
+    assert active == [], f"stale active rows survive full repayment: {active}"
+
+    # The rows stay for history, they are just no longer active.
+    assert db_session.query(PortfolioLoan).count() == 2
