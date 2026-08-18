@@ -3369,11 +3369,18 @@ def get_expected_take_profit_details(
         # |wallet| no debe tapar un ghost_mixed_trimmed ya diagnosticado.
         if total_lot_qty > net_qty + 1e-12 and wallet_warning != "ghost_mixed_trimmed":
             wallet_warning = "lots_exceed_wallet"
-        position_side_preview = resolve_position_side(db, open_lots)
-        if actual_balance > 0 and position_side_preview == "SHORT":
-            wallet_warning = "ghost_short_vs_long"
-        elif actual_balance < 0 and position_side_preview == "LONG":
-            wallet_warning = "ghost_long_vs_short"
+        # Ojo: `open_lots` YA se reasigno a los lots post-alineamiento arriba
+        # (`open_lots, pair_share = allocated[symbol]`), asi que este side no es
+        # el del libro crudo. Si el recorte a wallet tira los longs no
+        # protegidos y deja solo shorts protegidos, sale SHORT puro contra
+        # wallet positivo y pisaria el ghost_mixed_trimmed que el summary ya
+        # reporto, haciendo que summary y detalle discrepen del mismo simbolo.
+        if wallet_warning != "ghost_mixed_trimmed":
+            position_side_preview = resolve_position_side(db, open_lots)
+            if actual_balance > 0 and position_side_preview == "SHORT":
+                wallet_warning = "ghost_short_vs_long"
+            elif actual_balance < 0 and position_side_preview == "LONG":
+                wallet_warning = "ghost_long_vs_short"
         logger.info(
             "Expected TP Details: %s wallet-aligned - pair_share=%s, full_wallet=%s, TotalLots=%s, NetQty=%s, warning=%s",
             symbol,
