@@ -1792,6 +1792,7 @@ export interface ExpectedTPSummaryItem {
     | 'lots_exceed_wallet'
     | 'ghost_short_vs_long'
     | 'ghost_long_vs_short'
+    | 'ghost_mixed_trimmed'
     | null;
 }
 
@@ -1911,6 +1912,7 @@ export interface ExpectedTPDetails {
     | 'lots_exceed_wallet'
     | 'ghost_short_vs_long'
     | 'ghost_long_vs_short'
+    | 'ghost_mixed_trimmed'
     | null;
   strategy?: {
     sl_percentage: number;

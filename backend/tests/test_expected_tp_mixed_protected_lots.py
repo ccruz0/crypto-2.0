@@ -230,3 +230,144 @@ def test_eth_negative_wallet_keeps_protected_long_in_details(db_session):
     assert buy_long.exchange_order_id in entry_ids
     assert sell_a.exchange_order_id in entry_ids
     assert sell_b.exchange_order_id in entry_ids
+
+
+def test_positive_wallet_mixed_trim_surfaces_ghost_mixed_trimmed(db_session):
+    """The trim warning must reach the summary row, not be replaced downstream.
+
+    #497 added ghost_mixed_trimmed but _align_open_lots_to_wallet only used it to
+    decide whether to bail out — every return path then rebuilt the warning from
+    scratch as lots_exceed_wallet or None, so the value never left the function
+    and the badge #497 promised could not render.
+    """
+    t_short = datetime(2026, 4, 1, 14, 54, tzinfo=timezone.utc)
+    t_long = datetime(2026, 8, 7, 17, 40, tzinfo=timezone.utc)
+
+    # Unmatchable SELL with no live protection: the phantom short #496 describes.
+    _add_order(
+        db_session,
+        exchange_order_id="5755600486727374908",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        price="0.10483",
+        quantity="1796",
+        exchange_create_time=t_short,
+    )
+
+    long_entry = _add_order(
+        db_session,
+        exchange_order_id="5755600492696996146",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.BUY,
+        price="0.08829",
+        quantity="1132",
+        exchange_create_time=t_long,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="73817490102060693",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="0.095",
+        quantity="1132",
+        cumulative_quantity="0",
+        parent_order_id=long_entry.exchange_order_id,
+        exchange_create_time=t_long,
+    )
+
+    wallet = 1132.0
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "ALGO", "balance": wallet, "value_usd": 99.9}],
+        market_prices={"ALGO": 0.0883, "ALGO_USD": 0.0883},
+    )
+
+    algo = summary.get("ALGO_USD")
+    assert algo is not None, "positive wallet must keep the legitimate long visible"
+    assert algo.get("wallet_qty_warning") == "ghost_mixed_trimmed"
+    # The long survives; only the phantom short is gone.
+    assert algo["position_side"] == "LONG"
+    assert algo["net_qty"] == pytest.approx(wallet)
+
+
+def test_details_does_not_clobber_mixed_trim_when_trim_leaves_only_shorts(db_session):
+    """Summary and details must not disagree on the same symbol.
+
+    The details path re-derives the warning from `resolve_position_side`, but by
+    then `open_lots` has been REASSIGNED to the post-alignment list (see the
+    `open_lots, pair_share = allocated[symbol]` line). If the wallet trim drops
+    oversized unprotected longs and leaves only protected shorts, that list is
+    pure SHORT against a positive wallet, and the check overwrites a surviving
+    ghost_mixed_trimmed with ghost_short_vs_long.
+
+    Found by Cursor Bugbot on PR #505.
+    """
+    t_prot = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+    t_naked = datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc)
+    t_long = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
+
+    # Protected short, sized to eat the whole wallet so nothing else fits.
+    protected_short = _add_order(
+        db_session,
+        exchange_order_id="algo-short-protected",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        price="0.10",
+        quantity="10",
+        exchange_create_time=t_prot,
+    )
+    _add_order(
+        db_session,
+        exchange_order_id="algo-short-protected-tp",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.BUY,
+        order_type="TAKE_PROFIT_LIMIT",
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.ACTIVE,
+        price="0.09",
+        quantity="10",
+        cumulative_quantity="0",
+        parent_order_id=protected_short.exchange_order_id,
+        exchange_create_time=t_prot,
+    )
+    # Unprotected short: the ghost the filter drops -> ghost_mixed_trimmed.
+    _add_order(
+        db_session,
+        exchange_order_id="algo-short-naked",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        price="0.10",
+        quantity="5",
+        exchange_create_time=t_naked,
+    )
+    # Oversized unprotected long: survives the ghost filter, then the wallet
+    # trim drops it because the protected short already fills |wallet|.
+    _add_order(
+        db_session,
+        exchange_order_id="algo-long-oversized",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.BUY,
+        price="0.09",
+        quantity="50",
+        exchange_create_time=t_long,
+    )
+
+    wallet = 10.0
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "ALGO", "balance": wallet, "value_usd": 0.9}],
+        market_prices={"ALGO": 0.09, "ALGO_USD": 0.09},
+    )
+    algo = summary.get("ALGO_USD")
+    assert algo is not None
+    assert algo.get("wallet_qty_warning") == "ghost_mixed_trimmed"
+
+    details = get_expected_take_profit_details(
+        db_session, "ALGO_USD", current_price=0.09, portfolio_balance=wallet
+    )
+    assert details.get("wallet_qty_warning") == algo.get("wallet_qty_warning"), (
+        "details must not re-derive a different warning than summary"
+    )

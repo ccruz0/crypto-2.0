@@ -624,6 +624,14 @@ export default function ExpectedTakeProfitTab({
                           ghost LONG vs wallet
                         </span>
                       )}
+                      {item.wallet_qty_warning === 'ghost_mixed_trimmed' && (
+                        <span
+                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
+                          title="Hedged book: lots contradicting the wallet sign were dropped, aligned lots kept"
+                        >
+                          ghost lots trimmed
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
