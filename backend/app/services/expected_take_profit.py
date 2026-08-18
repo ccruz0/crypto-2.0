@@ -412,6 +412,62 @@ def _allocate_wallet_aligned_pairs(
     return allocated, warning
 
 
+def _emit_cost_basis_unknown_row(
+    db: Session,
+    *,
+    open_lots: List[OpenLot],
+    wallet_balance: Decimal,
+    current_price: float,
+    warning: Optional[str],
+    results: Dict[str, Dict],
+) -> None:
+    """Keep a wiped symbol visible, sized from the wallet, with no cost basis.
+
+    Issue #496 point 3: a sell with no matchable buy should be reported as
+    unknown cost basis, never silently dropped. Same idea one level up — when
+    every lot is discarded, the wallet is still real and must stay on screen.
+
+    cost_basis_unknown makes _compute_expected_tp_for_lots null out avg entry
+    and expected profit, so the row shows the position without inventing a P&L
+    from a buy price we do not have.
+    """
+    pair_symbol = next(iter(_group_lots_by_pair(open_lots)), None)
+    if not pair_symbol:
+        pair_symbol = (open_lots[0].symbol if open_lots else "") or ""
+    if not pair_symbol:
+        return
+
+    synthetic = OpenLot(
+        symbol=pair_symbol,
+        buy_order_id=None,
+        buy_time=datetime.now(timezone.utc),
+        buy_price=Decimal(str(current_price)),
+        lot_qty=abs(wallet_balance),
+        cost_basis_unknown=True,
+    )
+    summary_row = _compute_expected_tp_for_lots(
+        db,
+        pair_symbol,
+        [synthetic],
+        wallet_balance,
+        current_price,
+    )
+    if not summary_row:
+        return
+    summary_row["wallet_balance"] = float(wallet_balance)
+    if warning:
+        summary_row["wallet_qty_warning"] = warning
+    logger.info(
+        "Expected TP: %s kept visible after ghost wipe (warning=%s, wallet=%s, "
+        "dropped_lots=%s)",
+        pair_symbol,
+        warning,
+        wallet_balance,
+        len(open_lots),
+    )
+    results[pair_symbol] = summary_row
+
+
 def _emit_wallet_aligned_pair_summaries(
     db: Session,
     *,
@@ -424,6 +480,23 @@ def _emit_wallet_aligned_pair_summaries(
     wallet_balance = Decimal(str(wallet_balance or 0))
     allocated, warning = _allocate_wallet_aligned_pairs(db, open_lots, wallet_balance)
     if not allocated:
+        # A full ghost wipe used to make the SYMBOL disappear from Expected TP,
+        # taking its real wallet balance with it. Prod 2026-08-18: ALGO (71.11),
+        # CRO, AKT and BCH were all absent while the coins sat in the account.
+        #
+        # Dropping lots that contradict the wallet is right; concluding there is
+        # no position is not. The balance is exchange truth — what was lost with
+        # the lots is the cost basis, so the row comes back without one.
+        if wallet_balance != 0 and current_price > 0:
+            _emit_cost_basis_unknown_row(
+                db,
+                open_lots=open_lots,
+                wallet_balance=wallet_balance,
+                current_price=current_price,
+                warning=warning,
+                results=results,
+            )
+            return
         if warning:
             logger.info(
                 "Expected TP: Skipping wallet-aligned emit (warning=%s, wallet=%s, lots=%s)",

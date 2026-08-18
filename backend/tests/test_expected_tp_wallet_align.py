@@ -181,7 +181,12 @@ def test_btc_oversize_lots_capped_to_wallet_across_sister_books(db_session):
 
 
 def test_dgb_ghost_short_dropped_when_wallet_long(db_session):
-    """DGB-like: stale SELL lots must not create a huge SHORT vs long wallet."""
+    """DGB-like: stale SELL lots must not create a huge SHORT vs long wallet.
+
+    The ghost SHORT must go; the 4028 DGB actually held must not go with it.
+    This used to assert the whole symbol vanished, which was the old
+    implementation rather than the intent — see the wipe-visibility test below.
+    """
     t0 = datetime(2026, 1, 15, tzinfo=timezone.utc)
     ghost = _add_order(
         db_session,
@@ -214,7 +219,13 @@ def test_dgb_ghost_short_dropped_when_wallet_long(db_session):
     )
 
     dgb_rows = [row for row in summary.values() if str(row.get("symbol", "")).startswith("DGB")]
-    assert dgb_rows == []
+    assert len(dgb_rows) == 1
+    dgb = dgb_rows[0]
+    # The ghost 332700 SHORT is gone; the real long wallet stays on screen.
+    assert dgb["position_side"] == "LONG"
+    assert dgb["net_qty"] == pytest.approx(4028.0)
+    assert dgb["wallet_qty_warning"] == "ghost_short_vs_long"
+    assert dgb["cost_basis_unknown"] is True
     assert not any(float(row.get("net_qty") or 0) > 10000 for row in summary.values())
 
 
@@ -587,3 +598,63 @@ def test_naked_micro_short_visible_when_protected_covers_wallet(db_session):
     # Wallet truth stays the exchange balance (not inflated by the pinned micro).
     assert details["net_qty"] == pytest.approx(abs(wallet), rel=1e-6)
     assert details.get("wallet_qty_warning") == "lots_exceed_wallet"
+
+
+def test_ghost_wipe_keeps_symbol_visible_with_unknown_cost_basis(db_session):
+    """A full ghost wipe must not delete the symbol along with its wallet.
+
+    Prod 2026-08-18: ALGO_USD held 71.11 coins and was absent from Expected TP
+    entirely. Its lots were all SELL (the longs had been stopped out), the
+    wallet was positive, so _drop_ghost_direction_lots returned [] and the emit
+    step skipped the symbol — balance and all.
+    """
+    t0 = datetime(2026, 4, 1, 14, 54, tzinfo=timezone.utc)
+    _add_order(
+        db_session,
+        exchange_order_id="5755600486727374908",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        price="0.10483",
+        quantity="1796",
+        exchange_create_time=t0,
+    )
+
+    wallet = 71.1149288
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "ALGO", "balance": wallet, "value_usd": 5.47}],
+        market_prices={"ALGO": 0.07687, "ALGO_USD": 0.07687},
+    )
+
+    algo = summary.get("ALGO_USD")
+    assert algo is not None, "the symbol must survive the ghost wipe"
+    assert algo["net_qty"] == pytest.approx(wallet)
+    assert algo["wallet_balance"] == pytest.approx(wallet)
+    assert algo["wallet_qty_warning"] == "ghost_short_vs_long"
+
+    # The lots are gone, so there is no cost basis to report — and no P&L may
+    # be invented from a buy price we do not have.
+    assert algo["cost_basis_unknown"] is True
+    assert algo["avg_entry_price"] is None
+    assert algo["total_expected_profit"] is None
+
+
+def test_ghost_wipe_with_zero_wallet_still_drops_the_symbol(db_session):
+    """No balance means no position; nothing to keep on screen."""
+    t0 = datetime(2026, 4, 1, 14, 54, tzinfo=timezone.utc)
+    _add_order(
+        db_session,
+        exchange_order_id="algo-ghost-sell-2",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.SELL,
+        price="0.10483",
+        quantity="1796",
+        exchange_create_time=t0,
+    )
+
+    summary = get_expected_take_profit_summary(
+        db_session,
+        portfolio_assets=[{"coin": "ALGO", "balance": 0.0, "value_usd": 0.0}],
+        market_prices={"ALGO": 0.07687, "ALGO_USD": 0.07687},
+    )
+    assert not [k for k in summary if k.startswith("ALGO")]
