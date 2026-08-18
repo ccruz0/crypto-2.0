@@ -176,6 +176,34 @@ def cap_protection_qty_from_wallet(
         return float(quantity), None
 
 
+def matching_wallet_balances(accounts: list, symbol: str) -> list:
+    """Every account balance that maps to ``symbol``, not just the first one.
+
+    ``_base_wallet_balance_from_accounts`` returns the FIRST matching account
+    when none matches the pair exactly, and ``_account_matches_symbol`` matches
+    the bare base (``ETH``), the exact pair, and any ``ETH_*`` prefix. So if the
+    exchange ever splits an asset across a positive spot account and a negative
+    margin one, which balance you get depends on the order the exchange happened
+    to serialise them in — a thing that can change with no deploy on our side.
+
+    Returning all of them lets the caller decide on evidence instead of on luck.
+    """
+    from app.services.exchange_sync import _account_matches_symbol
+
+    balances = []
+    for account in accounts or []:
+        if not _account_matches_symbol(account, symbol):
+            continue
+        raw = account.get("balance")
+        if raw is None:
+            raw = account.get("quantity")
+        try:
+            balances.append(float(raw or 0))
+        except (TypeError, ValueError):
+            continue
+    return balances
+
+
 def short_cover_block_reason(
     symbol: str,
     entry_side: str,
@@ -195,6 +223,13 @@ def short_cover_block_reason(
     it filled: ALGO_USD spent 620,65 USD over 22 fills covering shorts that had
     never been opened.
 
+    Reads EVERY account that maps to the symbol, not just the first one. A
+    single negative balance anywhere is proof that a short exists, so the guard
+    stands down. Depending on the first match would make the decision hinge on
+    the order the exchange serialises its accounts in — outside our control and
+    changeable with no deploy — and getting it wrong strips protection from a
+    real short.
+
     Fails OPEN — returns None — when the wallet cannot be read. Leaving a real
     short unprotected is a worse outcome than one phantom cover order.
 
@@ -203,13 +238,8 @@ def short_cover_block_reason(
     if dry_run or (entry_side or "").upper() != "SELL":
         return None
     try:
-        from app.services.exchange_sync import _base_wallet_balance_from_accounts
-
         summary = trade_client.get_account_summary()
-        wallet_bal = _base_wallet_balance_from_accounts(
-            summary.get("accounts") or [],
-            symbol,
-        )
+        balances = matching_wallet_balances(summary.get("accounts") or [], symbol)
     except Exception as bal_err:
         logger.warning(
             "[SLTP_SHORT_COVER_GUARD] wallet unreadable for %s (%s), allowing: %s",
@@ -218,18 +248,17 @@ def short_cover_block_reason(
             bal_err,
         )
         return None
-    if wallet_bal is None:
+    if not balances:
         logger.warning(
             "[SLTP_SHORT_COVER_GUARD] no wallet balance for %s (%s), allowing",
             symbol,
             source,
         )
         return None
-    if float(wallet_bal) < 0:
+    if any(balance < 0 for balance in balances):
         return None
-    return (
-        f"no short to cover: {symbol} wallet balance {wallet_bal} is not negative"
-    )
+    shown = ", ".join(f"{balance:g}" for balance in balances)
+    return f"no short to cover: {symbol} wallet balance(s) {shown} not negative"
 
 
 def cancel_protection_leg_on_exchange(
