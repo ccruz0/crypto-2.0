@@ -472,8 +472,16 @@ def _emit_cost_basis_unknown_row(
     if not pair_symbol:
         pair_symbol = (open_lots[0].symbol if open_lots else "") or ""
     if not pair_symbol and fallback_symbol:
-        # No lots at all: resolve the pair from order history instead.
-        pair_symbol = _last_traded_pair_for_base(db, fallback_symbol) or ""
+        # No lots at all: resolve the pair from order history instead. If the
+        # asset was never traded through this bot there is no pair to find —
+        # fall back to the bare base rather than dropping the row, which is how
+        # LDO and LINK already appear in the summary. Prod: ADA, AVAX and STRK
+        # carry a negative balance with zero orders in the DB, and returning
+        # early here left real inventory invisible.
+        pair_symbol = (
+            _last_traded_pair_for_base(db, fallback_symbol)
+            or fallback_symbol.upper()
+        )
     if not pair_symbol:
         return
 
