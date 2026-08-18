@@ -421,6 +421,25 @@ def enable_auto_merge(url: str) -> str:
     raise GhError(f"Could not enable auto-merge: {output}")
 
 
+def disable_auto_merge(url: str) -> tuple[bool, str]:
+    """Disarm GitHub's native auto-merge.
+
+    Arming survives a push. A commit that was green gets auto-merge armed
+    legitimately, then a new commit arrives with its checks still running — and
+    the old arming fires the moment the ruleset unblocks, without ever looking
+    at the new commit. Resolving a stale Bugbot thread is enough to unblock it.
+
+    Seen on PR #505: armed at 06:44 on a green head, fired at 07:18:43 on the
+    next commit while Bugbot had been running for 11 seconds and this script was
+    still printing "Waiting on checks".
+    """
+    result = run_gh(["pr", "merge", "--disable-auto", url], check=False)
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if result.returncode == 0:
+        return True, output or "auto-merge disabled"
+    return False, f"could not disable auto-merge: {output}"
+
+
 def squash_merge_now(url: str) -> str:
     result = run_gh(["pr", "merge", url, "--squash"], check=False)
     output = ((result.stdout or "") + (result.stderr or "")).strip()
@@ -535,6 +554,27 @@ def process_pr(
             mark_ready(number)
 
     if not dry_run:
+        # Disarm BEFORE touching threads. Resolving stale bot conversations is
+        # exactly what stops the ruleset from blocking, so an arming left over
+        # from an earlier commit would fire the instant we resolve them — which
+        # is how #505 merged with Bugbot 11 seconds into its run.
+        initial_rollup = pr.get("statusCheckRollup")
+        if (
+            pending_check_names(initial_rollup)
+            or failing_check_names(initial_rollup)
+        ) and pr.get("autoMergeRequest"):
+            disarmed, message = disable_auto_merge(url)
+            print(message, flush=True)
+            if not disarmed:
+                # A failed disarm must NOT fall through to thread resolution:
+                # resolving is what unblocks the ruleset, and the stale arming
+                # is still live. Better to leave the PR unmerged this run.
+                print(
+                    "Refusing to resolve threads while a stale arming may still "
+                    "be live. Re-run once the disarm succeeds.",
+                    flush=True,
+                )
+                return 1
         resolve_eligible_bot_threads(owner, name, number, pr.get("reviewDecision"))
     else:
         print("dry-run: skip ready / resolve / auto-merge", flush=True)
@@ -572,6 +612,15 @@ def process_pr(
         rollup = pr.get("statusCheckRollup")
         pending = pending_check_names(rollup)
         failed = failing_check_names(rollup)
+        # Arming survives a push, so an arming earned by an EARLIER commit can
+        # fire on this one the moment the ruleset unblocks — without waiting for
+        # anything. Disarm it while this head is not green (PR #505).
+        if (pending or failed) and not dry_run and pr.get("autoMergeRequest"):
+            disarmed, message = disable_auto_merge(url)
+            print(message, flush=True)
+            if disarmed:
+                armed = False
+
         if failed:
             # The failing check is already red on the PR; do not add a second
             # red mark, just refuse to merge and say why.

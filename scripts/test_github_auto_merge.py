@@ -319,3 +319,99 @@ def test_poll_survives_transient_api_failure(monkeypatch) -> None:
 
     assert auto_merge.process_pr(500, "ccruz0/crypto-2.0", poll_seconds=30, dry_run=True) == 0
     assert calls["n"] >= 2, "expected the poll loop to retry after the 503"
+
+
+# --- PR #505: arming survives a push and fires on the next commit ------------
+
+
+def _pr(*, pending: bool, armed: bool, state: str = "OPEN") -> dict:
+    checks = [_check("path-guard")]
+    if pending:
+        checks.append(_check("Cursor Bugbot", status="IN_PROGRESS", conclusion=None, completed=""))
+    return {
+        "number": 505,
+        "url": "https://example.test/pr/505",
+        "isDraft": False,
+        "state": state,
+        "mergedAt": None,
+        "mergeStateStatus": "BLOCKED",
+        "reviewDecision": None,
+        "autoMergeRequest": {"enabledAt": "2026-08-18T06:44:47Z"} if armed else None,
+        "statusCheckRollup": checks,
+    }
+
+
+def _instrument(monkeypatch, pr: dict) -> list[str]:
+    """Record the order of side effects, and stop the run after one poll."""
+    calls: list[str] = []
+    monkeypatch.setattr(auto_merge, "load_pr", lambda _n: pr)
+    monkeypatch.setattr(auto_merge, "load_pr_with_retry", lambda _n, **_k: pr)
+    monkeypatch.setattr(auto_merge, "time", auto_merge.time)
+    monkeypatch.setattr(auto_merge.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        auto_merge, "disable_auto_merge",
+        lambda _u: (calls.append("disable"), (True, "auto-merge disabled"))[1],
+    )
+    monkeypatch.setattr(
+        auto_merge, "enable_auto_merge",
+        lambda _u: calls.append("enable") or "auto-merge enabled",
+    )
+    monkeypatch.setattr(
+        auto_merge, "resolve_eligible_bot_threads",
+        lambda *a, **k: calls.append("resolve_threads"),
+    )
+    monkeypatch.setattr(auto_merge, "list_unresolved_threads", lambda *a: [])
+    monkeypatch.setattr(
+        auto_merge, "try_squash_merge",
+        lambda *a, **k: calls.append("squash") or "merged",
+    )
+    return calls
+
+
+def test_stale_arming_is_disarmed_when_head_has_pending_checks(monkeypatch) -> None:
+    calls = _instrument(monkeypatch, _pr(pending=True, armed=True))
+    auto_merge.process_pr(505, "ccruz0/crypto-2.0", poll_seconds=0)
+    assert "disable" in calls, "an arming from an earlier commit must be disarmed"
+    assert "squash" not in calls, "must not merge while checks are pending"
+
+
+def test_disarm_happens_before_resolving_bot_threads(monkeypatch) -> None:
+    """Order matters: resolving threads is what unblocks the ruleset.
+
+    If we resolve first, the stale arming fires before we ever disarm it —
+    which is exactly how #505 merged with Bugbot still running.
+    """
+    calls = _instrument(monkeypatch, _pr(pending=True, armed=True))
+    auto_merge.process_pr(505, "ccruz0/crypto-2.0", poll_seconds=0)
+    assert calls.index("disable") < calls.index("resolve_threads")
+
+
+def test_no_disarm_when_nothing_was_armed(monkeypatch) -> None:
+    calls = _instrument(monkeypatch, _pr(pending=True, armed=False))
+    auto_merge.process_pr(505, "ccruz0/crypto-2.0", poll_seconds=0)
+    assert "disable" not in calls
+
+
+def test_green_head_keeps_its_arming_and_merges(monkeypatch) -> None:
+    """A green head must still arm and merge — no regression from the disarm."""
+    calls = _instrument(monkeypatch, _pr(pending=False, armed=False))
+    auto_merge.process_pr(505, "ccruz0/crypto-2.0", poll_seconds=0)
+    assert "disable" not in calls
+    assert "enable" in calls
+    assert "squash" in calls
+
+
+def test_failed_disarm_never_resolves_threads(monkeypatch) -> None:
+    """If the disarm fails, resolving threads would unblock the ruleset with the
+    stale arming still live — the exact #505 failure mode. Found by Bugbot on #506.
+    """
+    calls = _instrument(monkeypatch, _pr(pending=True, armed=True))
+    monkeypatch.setattr(
+        auto_merge, "disable_auto_merge",
+        lambda _u: (calls.append("disable_failed"), (False, "HTTP 503"))[1],
+    )
+    rc = auto_merge.process_pr(506, "ccruz0/crypto-2.0", poll_seconds=0)
+    assert "disable_failed" in calls
+    assert "resolve_threads" not in calls, "must not unblock the ruleset after a failed disarm"
+    assert "squash" not in calls
+    assert rc == 1
