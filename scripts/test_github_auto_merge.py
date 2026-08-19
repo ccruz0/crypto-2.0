@@ -415,3 +415,37 @@ def test_failed_disarm_never_resolves_threads(monkeypatch) -> None:
     assert "resolve_threads" not in calls, "must not unblock the ruleset after a failed disarm"
     assert "squash" not in calls
     assert rc == 1
+
+
+def test_squash_error_keeps_the_rest_message(monkeypatch) -> None:
+    """The CLI collapses every rule violation into one generic sentence.
+
+    Only the REST response names the rule. PR #510 retried for 600s without ever
+    cleaning up the Bugbot thread that was blocking it, because the error the
+    caller inspected said "the base branch policy prohibits the merge" and the
+    detector looks for "conversation must be resolved".
+    """
+    rest_msg = (
+        'Repository rule violations found\n\n'
+        'A conversation must be resolved before this pull request can be merged.'
+    )
+    cli_msg = "Pull request #510 is not mergeable: the base branch policy prohibits the merge."
+
+    def boom_rest(*_a, **_k):
+        raise auto_merge.GhError(rest_msg)
+
+    def boom_cli(*_a, **_k):
+        raise auto_merge.GhError(cli_msg)
+
+    monkeypatch.setattr(auto_merge, "rest_squash_merge", boom_rest)
+    monkeypatch.setattr(auto_merge, "squash_merge_now", boom_cli)
+
+    with pytest.raises(auto_merge.GhError) as excinfo:
+        auto_merge.try_squash_merge(
+            {"number": 510, "title": "t", "headRefOid": "abc", "url": "u"},
+            "ccruz0/crypto-2.0",
+        )
+    combined = str(excinfo.value)
+    assert auto_merge.is_unresolved_conversation_block(combined), (
+        "the merged error must still name the rule so bot-thread cleanup fires"
+    )

@@ -11,6 +11,10 @@
 # Still required: repo Settings → General → Pull Requests → Allow auto-merge.
 # Path-guard failures and human review threads still block merge.
 #
+# The merge is made with a GitHub App installation token (app
+# atp-auto-merge-ccruz0, installed only on this repo) instead of GITHUB_TOKEN,
+# so the resulting push to main DOES trigger deploy-backend. See the step below.
+#
 # The check_run trigger fires on ANY completed check (except this job's own,
 # which would loop). The script now refuses to merge while the head commit has
 # checks in flight, so it needs waking up when the last one lands — watching
@@ -52,9 +56,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # A merge pushed with GITHUB_TOKEN does NOT trigger downstream workflows:
+      # GitHub suppresses events created with it to prevent recursion. That is
+      # why every bot merge left main undeployed and each deploy had to be
+      # dispatched by hand (#498 point 3). An App installation token is not
+      # subject to that guard, so the push to main fires deploy-backend.
+      #
+      # Deliberately NO fallback to GITHUB_TOKEN: falling back silently would
+      # restore the invisible no-deploy bug. Failing loudly here is the point.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.AUTO_MERGE_APP_ID }}
+          private-key: ${{ secrets.AUTO_MERGE_APP_PRIVATE_KEY }}
+
       - name: Ready draft, arm auto-merge, squash when green
         env:
-          GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_PAGER: cat
           NO_COLOR: "1"
           GITHUB_REPOSITORY: ${{ github.repository }}
