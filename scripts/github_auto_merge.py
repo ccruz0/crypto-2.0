@@ -500,6 +500,15 @@ def try_squash_merge(pr: dict[str, Any], repo: str) -> str:
             print(f"REST squash merge failed: {rest_error}", flush=True)
             if is_ruleset_update_block(str(rest_error)):
                 raise
+            try:
+                return squash_merge_now(pr["url"])
+            except GhError as cli_error:
+                # Keep BOTH messages. Only REST names the actual rule ("A
+                # conversation must be resolved..."); the CLI collapses every
+                # rule violation into "the base branch policy prohibits the
+                # merge", so a caller inspecting only the CLI text cannot tell
+                # which rule fired and never triggers the bot-thread cleanup.
+                raise GhError(f"{cli_error} | REST: {rest_error}") from cli_error
     return squash_merge_now(pr["url"])
 
 
