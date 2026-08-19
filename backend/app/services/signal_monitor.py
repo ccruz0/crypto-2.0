@@ -7502,6 +7502,17 @@ class SignalMonitorService:
             raise ValueError(error_message)
         
         amount_usd = _to_float(getattr(watchlist_item, "trade_amount_usd", None))
+        # Recortar AQUI, en el origen del importe, y no en la comprobacion:
+        # todo lo de abajo (chequeo de saldo, calculo de margen, guardrail y la
+        # propia colocacion) usa `amount_usd`, asi que recortar solo en el
+        # guardrail dejaria pasar una orden mayor que el limite — peor que
+        # rechazarla. Un limite de riesgo acota el tamano, no cancela la
+        # operacion; rechazar filtraba por tamano y no por calidad.
+        from app.utils.trading_guardrails import clamp_order_usd_to_limit
+
+        amount_usd, _cap_note = clamp_order_usd_to_limit(
+            amount_usd, symbol=symbol, side="BUY"
+        )
         
         # Read trade_on_margin from database FIRST - CRITICAL for margin trading
         # This must be read BEFORE balance check to avoid blocking margin orders

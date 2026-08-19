@@ -118,6 +118,40 @@ def resolve_max_open_orders_total() -> int:
     return int(_get_runtime_trading_limits()["maxOpenOrdersTotal"])
 
 
+def clamp_order_usd_to_limit(
+    order_usd_value: float,
+    *,
+    symbol: str = "",
+    side: str = "",
+) -> Tuple[float, Optional[str]]:
+    """Cap an entry order to MAX_USD_PER_ORDER instead of refusing it.
+
+    A risk limit bounds size; it does not cancel the trade. Rejecting filtered by
+    SIZE rather than by quality, so the coins configured with the largest amounts
+    were exactly the ones silenced: on 2026-08-19 five symbols (ETH_USD, AKT_USD,
+    BTC_USD, SOL_USD, ALGO_USD) had trade_amount_usd=1000 against a $100 cap and
+    could not place a single order — 1000 > 100 always, independent of market.
+
+    The codebase already prefers capping over refusing for protection orders
+    (``cap_protection_qty_from_wallet``); this brings entries in line.
+
+    Returns ``(usd_to_use, note)`` where ``note`` is None when nothing was
+    capped. The caller must use the returned value for BOTH the guardrail check
+    and the actual placement — clamping only the check would let an oversized
+    order through, which is worse than refusing it.
+    """
+    limit = resolve_max_usd_per_order()
+    value = float(order_usd_value or 0.0)
+    if value <= limit:
+        return value, None
+    note = (
+        f"order size capped from ${value:.2f} to ${limit:.2f} "
+        "by MAX_USD_PER_ORDER"
+    )
+    logger.warning("[GUARDRAIL_CAP] %s %s - %s", symbol or "?", side or "?", note)
+    return limit, note
+
+
 def resolve_max_usd_per_order() -> float:
     return float(_get_runtime_trading_limits()["maxUsdPerOrder"])
 
