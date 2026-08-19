@@ -1,4 +1,12 @@
-"""Resolve backend build fingerprint (commit SHA, build time) for health headers."""
+"""Resolve backend build fingerprint (commit SHA, build time) for health headers.
+
+Comparing ``X-ATP-Backend-Commit`` against ``origin/main`` is how you tell a
+merged change from a deployed one. That gap used to be routine: merges made with
+GITHUB_TOKEN never triggered deploy-backend, so main could sit ahead of prod for
+hours (issue #498 point 3, and PR #497 on 2026-08-17). Since the auto-merge
+workflow signs its merges with a GitHub App installation token, the push to main
+cascades into a deploy on its own and the two should track each other.
+"""
 
 from __future__ import annotations
 
