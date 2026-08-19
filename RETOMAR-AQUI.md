@@ -1,17 +1,20 @@
-# Estado a 18-ago-2026, fin de sesion
+# Estado a 19-ago-2026, fin de sesion
 
 ## Lo primero
 
-**Todo desplegado y verificado. `main` y produccion alineados en `02ed3556`.**
-No queda ningun merge sin desplegar, que es justo lo que fallo anoche con #497.
+**El deploy ya se encadena solo.** Un merge del auto-merge dispara
+`deploy-backend` sin intervencion, verificado de extremo a extremo con #511:
 
 ```
-x-atp-backend-commit: 02ed3556
-System Health: PASS (market_data, market_updater, signal_monitor, telegram)
-Expected TP summary: 25 simbolos
+#511 merged by atp-auto-merge-ccruz0[bot]
+Deploy backend  95e97c4d  event=push  completed/success   <- push, no workflow_dispatch
+x-atp-backend-commit: 95e97c4d
 ```
 
-## Mergeado y desplegado hoy (9 PRs)
+`main` y produccion alineados en `95e97c4d`. System Health PASS. Expected TP: 25
+simbolos.
+
+## Mergeado y desplegado (12 PRs, 18 y 19-ago)
 
 | PR | Que arregla |
 |---|---|
@@ -24,6 +27,9 @@ Expected TP summary: 25 simbolos
 | #506 | Desarmar el auto-merge cuando llega un commit con checks en vuelo |
 | #507 | El residuo de un corto sin lots no desaparece del summary |
 | #508 | El residuo de un activo nunca operado tampoco |
+| #509 | RETOMAR-AQUI.md entra al repo (era untracked) |
+| #510 | Mergear con token de GitHub App para que dispare el deploy |
+| #511 | Prueba E2E del encadenado (merge -> deploy automatico) |
 
 ### Resultados medidos en produccion
 
@@ -41,26 +47,55 @@ Expected TP summary: 25 simbolos
 
 ## Lo que sigue abierto
 
-1. **#498 punto 3 — `AUTO_MERGE_TOKEN` no existe.** Ningun merge del bot dispara
-   deploy. Los 5 deploys de hoy fueron a mano con
-   `gh workflow run deploy-backend.yml --ref main`. Es lo que hay que arreglar
-   para no repetir lo de #497.
-2. **CI ejecuta 16 de 341 ficheros de test.** Cuantificado en un comentario a
+1. **CI ejecuta 16 de 341 ficheros de test.** Cuantificado en un comentario a
    #498. Hay 21 tests rojos en `main` que llevan semanas invisibles. Decision de
    Carlos: ampliar en `continue-on-error` primero y hacerlo bloqueante al llegar
    a cero — arreglar 21 antes de tener visibilidad es esfuerzo sin recompensa
    intermedia, y una suite que deja todo en rojo acaba desactivada.
-3. **Limpieza de las ~525.000 filas historicas de `portfolio_loans`.** #504 corto
+2. **Limpieza de las ~525.000 filas historicas de `portfolio_loans`.** #504 corto
    el crecimiento pero no limpia lo escrito. Es migracion de datos en produccion
    y va aparte. Conviene decidir a la vez si se quiere un indice unico sobre
    `currency`, que lo impediria estructuralmente pero exige deduplicar antes.
-4. **Ventana estrecha del auto-merge.** Entre que una PR se abre y el workflow
+3. **Ventana estrecha del auto-merge.** Entre que una PR se abre y el workflow
    arranca, un armado previo podria disparar. Cerrarla exige no armar nunca el
    auto-merge nativo y depender solo del squash directo mas los re-disparos por
    `check_run`.
-5. **Sin traza de cambios en watchlist.** `WatchlistItem` no tiene columna
+4. **Sin traza de cambios en watchlist.** `WatchlistItem` no tiene columna
    `updated_at` ni hay tabla de auditoria. Cambiar un flag que decide si el bot
    opera una moneda no deja ningun rastro. Salio al investigar BTC.
+
+## #498 punto 3: CERRADO (19-ago)
+
+`AUTO_MERGE_TOKEN` nunca llego a existir; se resolvio mejor, con una **GitHub App**
+(`atp-auto-merge-ccruz0`, App ID 4636153) instalada solo en este repo. Permisos:
+Contents write, Pull requests write, Actions write, Checks read, Metadata read.
+Mas acotado que un PAT personal, que habria dado acceso a toda la cuenta.
+
+`auto-merge.yml` mintea el token con `actions/create-github-app-token@v1`
+(secretos `AUTO_MERGE_APP_ID` y `AUTO_MERGE_APP_PRIVATE_KEY`). Un token de
+instalacion de App no esta sujeto a la guarda anti-recursion de GitHub, asi que
+el push del merge SI despierta a `deploy-backend`.
+
+**Sin fallback a GITHUB_TOKEN a proposito**: uno silencioso reintroduciria el
+fallo invisible de no desplegar.
+
+### Bug preexistente que destapo la prueba (#510)
+
+`try_squash_merge` intenta REST y cae a `gh pr merge` si falla. Solo REST nombra
+la regla que salta; el CLI colapsa todo en *"the base branch policy prohibits the
+merge"*. Como el error propagado era el del CLI,
+`is_unresolved_conversation_block` no encontraba nunca su cadena y **la limpieza
+de hilos de bots no se disparaba jamas**. #510 estuvo 600s reintentando sin
+resolver el hilo de Bugbot que lo bloqueaba. Llevaba roto desde siempre,
+enmascarado porque un push posterior dejaba el hilo obsoleto. Ahora el GhError
+lleva los dos mensajes.
+
+### Verificacion de las dos direcciones
+
+- **#510** (solo `.github/` y `scripts/`) -> mergeada por el bot, **no** desplego.
+  El filtro de rutas no casa, que es lo correcto.
+- **#511** (toca `backend/`) -> mergeada por el bot y **desplego sola**,
+  `event=push`.
 
 ## BTC: investigado y cerrado, no era un bug
 
@@ -95,7 +130,7 @@ asignaciones de `False` van seguidas de un `return` inmediato (lineas 272/273,
 278/279, 286/287, 296/297), asi que ningun `False` sobrevive. Es un AND por
 salida temprana: menos legible, equivalente.
 
-## Lo que encontro Bugbot (4 de 4 reales)
+## Lo que encontro Bugbot (5 de 5 reales)
 
 Merece anotarse porque cambia como conviene trabajar aqui:
 
@@ -109,6 +144,11 @@ Merece anotarse porque cambia como conviene trabajar aqui:
    ruleset con el armado viejo vivo. El mismo fallo que la PR venia a cerrar.
 4. **#507** — el residuo de un corto salia etiquetado LONG: el lot sintetico no
    tiene `buy_order_id` y la resolucion de lado cae por defecto a BUY.
+5. **#510** — aviso de severidad alta: la App es un actor distinto de GitHub
+   Actions y podria quedar fuera del bypass del ruleset. El ruleset
+   `protect-main-production` tiene bypass solo para el rol Admin (actor_id 5) y
+   **no** incluye la regla `update`, asi que ese modo de fallo concreto no esta
+   activo hoy. A vigilar si se anade "Restrict updates".
 
 Dos de los cuatro estaban en codigo que yo habia declarado verificado. La
 barrera automatica acerto donde el criterio fallo.
