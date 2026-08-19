@@ -34,6 +34,7 @@ from app.services.watchlist_selector import (
 )
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.watchlist_signal_state import WatchlistSignalState
+from app.models.signal_indicator_snapshot import SignalIndicatorSnapshot
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
 from app.utils.indicator_format import format_indicator_value as _iv
@@ -1235,6 +1236,67 @@ class SignalMonitorService:
             )
         except Exception as err:
             logger.warning(f"Failed to upsert watchlist_signal_state for {symbol}: {err}")
+
+    def _record_signal_snapshot(
+        self,
+        db,
+        *,
+        symbol: str,
+        side: Optional[str],
+        strategy_state: Optional[dict] = None,
+        indicators: Optional[dict] = None,
+        correlation_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+    ) -> None:
+        """Append one row per EMITTED signal with the market state behind it.
+
+        Deliberately not called on every evaluation: ~29 symbols per cycle would
+        grow without bound and rewrite the same rows forever, which is the
+        portfolio_loans failure (#504). Signals are rare, so this stays small.
+
+        Never raises: a diagnostics table must not be able to block a trade.
+        """
+        try:
+            normalized = (side or "NONE").upper()
+            if normalized not in ("BUY", "SELL"):
+                return
+            ind = indicators or {}
+            reasons = (strategy_state or {}).get("reasons") or {}
+
+            def _f(value):
+                try:
+                    return float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            db.add(SignalIndicatorSnapshot(
+                symbol=normalize_symbol_for_exchange(symbol),
+                side=normalized,
+                strategy_key=(strategy_state or {}).get("strategy_key"),
+                rsi_buy_below=_f(ind.get("rsi_buy_below")),
+                volume_min_ratio=_f(ind.get("volume_min_ratio")),
+                price=_f(ind.get("price")),
+                rsi=_f(ind.get("rsi")),
+                ma200=_f(ind.get("ma200")),
+                ma50=_f(ind.get("ma50")),
+                ema10=_f(ind.get("ema10")),
+                atr=_f(ind.get("atr")),
+                volume_ratio=_f(ind.get("volume_ratio")),
+                rsi_ok=reasons.get("buy_rsi_ok"),
+                ma_ok=reasons.get("buy_ma_ok"),
+                trend_filters_ok=reasons.get("buy_trend_filters_ok"),
+                rsi_confirmation_ok=reasons.get("buy_rsi_confirmation_ok"),
+                candle_confirmation_ok=reasons.get("buy_candle_confirmation_ok"),
+                correlation_id=correlation_id,
+                order_id=order_id,
+            ))
+            db.flush()
+            logger.info(
+                "[SIGNAL_SNAPSHOT] symbol=%s side=%s rsi=%s price=%s correlation_id=%s",
+                symbol, normalized, ind.get("rsi"), ind.get("price"), correlation_id,
+            )
+        except Exception as err:
+            logger.warning("Failed to record signal snapshot for %s: %s", symbol, err)
 
     def _print_trade_decision_trace(
         self,
