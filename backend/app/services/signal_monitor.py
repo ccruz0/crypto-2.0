@@ -2015,6 +2015,11 @@ class SignalMonitorService:
         from app.utils.trading_guardrails import can_place_real_order
 
         amount_usd = float(getattr(watchlist_item, "trade_amount_usd", None) or 0.0)
+        # Mismo recorte que aplicaran los colocadores, para que el guard no
+        # rechace por un tamano que nunca se va a enviar.
+        from app.utils.order_sizing import clamp_order_usd_to_limit
+
+        amount_usd, _ = clamp_order_usd_to_limit(amount_usd, symbol=symbol, side=side)
         return can_place_real_order(
             db=db,
             symbol=symbol,
@@ -7502,6 +7507,15 @@ class SignalMonitorService:
             raise ValueError(error_message)
         
         amount_usd = _to_float(getattr(watchlist_item, "trade_amount_usd", None))
+        # Recortar al limite de riesgo en el ORIGEN del importe, no en la
+        # comprobacion: todo lo de abajo (system_core, guardrails, colocacion)
+        # consume `amount_usd`, y recortar solo en el check dejaria pasar una
+        # orden mayor que el limite — peor que rechazarla.
+        from app.utils.order_sizing import clamp_order_usd_to_limit
+
+        amount_usd, _cap_note = clamp_order_usd_to_limit(
+            amount_usd, symbol=symbol, side="BUY"
+        )
         
         # Read trade_on_margin from database FIRST - CRITICAL for margin trading
         # This must be read BEFORE balance check to avoid blocking margin orders
@@ -9247,6 +9261,15 @@ class SignalMonitorService:
 
         # Get trade amount and margin settings (NO validation - signal was already sent)
         amount_usd = getattr(watchlist_item, 'trade_amount_usd', None) or 100.0  # Default fallback
+        # Recortar al limite de riesgo en el ORIGEN del importe, no en la
+        # comprobacion: todo lo de abajo (system_core, guardrails, colocacion)
+        # consume `amount_usd`, y recortar solo en el check dejaria pasar una
+        # orden mayor que el limite — peor que rechazarla.
+        from app.utils.order_sizing import clamp_order_usd_to_limit
+
+        amount_usd, _cap_note = clamp_order_usd_to_limit(
+            amount_usd, symbol=symbol, side=side
+        )
         user_wants_margin = getattr(watchlist_item, 'trade_on_margin', False) or False
 
         # Week 5: trading safety invariants (fail-fast)
