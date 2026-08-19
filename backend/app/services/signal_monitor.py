@@ -2921,6 +2921,26 @@ class SignalMonitorService:
                 last_trade_at_utc=None if current_state == "WAIT" else self._UNSET,
                 correlation_id=evaluation_id,
             )
+            # Snapshot de los indicadores detras de la senal. Va aqui, junto al
+            # upsert canonico de estado, porque este punto se recorre para CADA
+            # simbolo del watchlist sea cual sea su preset: si auto deja de
+            # emitir y otro preset si emite, se registran igual. El helper filtra
+            # a BUY/SELL, asi que las evaluaciones en WAIT no escriben nada.
+            self._record_signal_snapshot(
+                db,
+                symbol=normalized_symbol,
+                side=current_state,
+                strategy_state=(signals or {}).get("strategy"),
+                indicators={
+                    "price": current_price,
+                    "rsi": rsi,
+                    "ma200": ma200,
+                    "ma50": ma50,
+                    "ema10": ema10,
+                    "atr": atr,
+                },
+                correlation_id=evaluation_id,
+            )
             if current_state != "WAIT":
                 if not watchlist_item.alert_enabled:
                     self._upsert_watchlist_signal_state(
