@@ -108,3 +108,36 @@ def test_never_raises_on_bad_input(db_session):
     rows = db_session.query(SignalIndicatorSnapshot).all()
     assert len(rows) == 1
     assert rows[0].rsi is None and rows[0].price is None
+
+
+def test_helper_is_actually_wired_into_the_evaluation_loop():
+    """El helper existia pero no lo llamaba nadie: registraba cero de cero presets.
+
+    Es el mismo modo de fallo que ghost_mixed_trimmed (#505): codigo correcto
+    que nunca se ejecuta. Este test fija que el punto de llamada existe.
+    """
+    import inspect
+    from app.services import signal_monitor as sm
+
+    src = inspect.getsource(sm)
+    llamadas = src.count("self._record_signal_snapshot(")
+    assert llamadas >= 1, "el snapshot no se invoca desde el bucle de evaluacion"
+
+
+def test_call_site_is_preset_agnostic():
+    """Debe colgar del upsert canonico de estado, que recorre TODOS los simbolos.
+
+    Si colgara de una rama especifica de `auto`, los presets que si emiten
+    quedarian sin registrar — que es justo el dato que hace falta.
+    """
+    import inspect
+    from app.services import signal_monitor as sm
+
+    src = inspect.getsource(sm)
+    idx = src.index("self._record_signal_snapshot(")
+    ventana = src[max(0, idx - 2000):idx]
+    # El upsert canonico persiste el estado de cada simbolo en cada vuelta.
+    assert "_upsert_watchlist_signal_state(" in ventana
+    # Y no debe estar dentro de un filtro por preset.
+    assert 'strategy_key == "auto"' not in ventana
+    assert "startswith('auto')" not in ventana
