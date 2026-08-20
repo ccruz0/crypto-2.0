@@ -1499,6 +1499,12 @@ class ExchangeSyncService:
                 price = parent.avg_price if parent.avg_price else parent.price
                 if price is not None:
                     return float(price)
+            # Parent linkage is known but the parent row is missing or has no
+            # price yet (the entry order may not be synced at notification
+            # time). Return None instead of falling through to the heuristic
+            # below, which would borrow the entry price of a previous,
+            # already-closed position and report a bogus P&L.
+            return None
 
         side = order.side.value if hasattr(order.side, "value") else str(order.side or "")
         side = side.upper()
