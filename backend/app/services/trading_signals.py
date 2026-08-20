@@ -879,10 +879,17 @@ def calculate_trading_signals(
     ma_checks_cfg = strategy_rules.get("maChecks", {}) if isinstance(strategy_rules, dict) else {}
     requires_ma_reversal = bool(ma_checks_cfg.get("ma50", True))
     
-    # Check for MA trend reversal (MA50 < EMA10 with >= 0.5% difference)
+    # Check for MA trend reversal: EMA10 crossing BELOW MA50 (fast under slow),
+    # with >= 0.5% separation.
+    #
+    # WARNING / historial: esta comparacion era `ma50 < ema10`, que es la
+    # alineacion ALCISTA. Como confirmacion para un corto estaba invertida: la
+    # puerta se abria mas cuanto mas fuerte era la subida. Medido sobre
+    # signal_indicator_snapshots (19-20 ago 2026): 14203 de 14810 señales SELL
+    # (95,9%) pasaban el filtro con estructura alcista.
     ma_reversal = False
     if ma50 is not None and ema10 is not None:
-        if ma50 < ema10:
+        if ema10 < ma50:
             price_diff = abs(ma50 - ema10)
             avg_price = (ma50 + ema10) / 2
             percent_diff = (price_diff / avg_price) * 100 if avg_price > 0 else 0
@@ -927,7 +934,9 @@ def calculate_trading_signals(
     #
     # NOTE: Frontend checks if MA50 checks are active before requiring MA reversal.
     # For now, we use MA reversal OR price below MA10w as trend reversal signal.
-    # This is more conservative than requiring only MA reversal.
+    # OJO: este OR es MENOS estricto que exigir solo MA reversal — basta con
+    # que se cumpla uno de los dos caminos. Si debe ser AND es una decision
+    # de estrategia, no de implementacion.
     if requires_ma_reversal:
         trend_reversal = ma_reversal or price_below_ma10w
     else:
@@ -953,7 +962,7 @@ def calculate_trading_signals(
         sell_conditions.append(True)
         if requires_ma_reversal:
             if ma_reversal:
-                sell_reasons.append(f"MA trend reversal: MA50 {_iv(ma50)} < EMA10 {_iv(ema10)}")
+                sell_reasons.append(f"MA trend reversal: EMA10 {_iv(ema10)} < MA50 {_iv(ma50)}")
             if price_below_ma10w:
                 sell_reasons.append(f"Price {_iv(price)} < MA10w {_iv(ma10w)}")
         else:
