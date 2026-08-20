@@ -421,6 +421,18 @@ def count_open_positions_for_symbol(
         round(avg_position_size, 4) if avg_position_size > 0 else 0,
     )
 
+    # Shadow only (PASO B1): records what the lot-based count would have said
+    # and what it cost. It cannot change the value returned here — the hook
+    # sits after the result is computed and swallows everything. Placing it
+    # inside this function instead of at the guards covers every caller at
+    # once, and keeps trading_guardrails.py untouched.
+    try:
+        from app.services.position_count_shadow import record_shadow_count
+
+        record_shadow_count(db, symbol, total_open_positions)
+    except Exception:
+        pass
+
     return total_open_positions
 
 
