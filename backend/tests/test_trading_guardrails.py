@@ -216,3 +216,50 @@ class TestMaxUsdPerOrder:
                             assert allowed is True
                             assert reason is None
 
+
+
+class TestDailyLimitFailsClosed:
+    """El límite diario por símbolo es el único freno vivo (#523).
+
+    MAX_OPEN_ORDERS_TOTAL compara contra count_total_open_positions(), que
+    netea las entradas del bot contra todos los cierres del libro y está
+    clavado cerca de cero. Este conteo diario es el único que sigue midiendo
+    lo que dice medir, así que si su consulta revienta hay que bloquear, no
+    dejar pasar.
+    """
+
+    def _explode(self, *_a, **_kw):
+        raise RuntimeError("boom: la consulta del límite diario falló")
+
+    def test_query_error_blocks_the_entry(self, mock_db):
+        from app.utils.trading_guardrails import _check_risk_limits
+
+        with patch("app.utils.trading_guardrails.count_total_open_positions", return_value=0):
+            with patch("app.utils.trading_guardrails._resolve_max_orders_per_symbol_per_day",
+                       side_effect=self._explode):
+                allowed, reason = _check_risk_limits(mock_db, "BTC_USD", 50.0, "BUY")
+
+        assert allowed is False
+        assert "límite diario" in (reason or "")
+
+    def test_block_reason_reaches_telegram(self, mock_db):
+        """Un bloqueo silencioso sería indistinguible de que no pasó nada."""
+        from app.utils.trading_guardrails import should_notify_trade_block_to_telegram
+
+        assert should_notify_trade_block_to_telegram(
+            "blocked: error comprobando el límite diario por símbolo"
+        ) is True
+
+    def test_protective_orders_are_never_blocked_by_this(self, mock_db):
+        """Fallar cerrado no puede dejar una posición viva sin protección."""
+        from app.utils.trading_guardrails import _check_risk_limits
+
+        with patch("app.utils.trading_guardrails.count_total_open_positions", return_value=0):
+            with patch("app.utils.trading_guardrails._resolve_max_orders_per_symbol_per_day",
+                       side_effect=self._explode):
+                allowed, reason = _check_risk_limits(
+                    mock_db, "BTC_USD", 50.0, "SELL",
+                    ignore_daily_limit=True, is_protective_order=True,
+                )
+
+        assert allowed is True, f"la protección quedó bloqueada: {reason}"
