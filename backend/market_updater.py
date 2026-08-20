@@ -307,7 +307,7 @@ def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float,
             "atr": current_price * 0.02 if current_price > 0 else 0.0,  # 2% default
             "volume_24h": 0.0,
             "avg_volume": 0.0,
-            "volume_ratio": 0.0
+            "volume_ratio": None
         }
     
     # Extract price arrays
@@ -403,7 +403,7 @@ def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float,
             "volume_24h": 0.0,
             "current_volume": 0.0,
             "avg_volume": 0.0,
-            "volume_ratio": 0.0
+            "volume_ratio": None
         }
 
 
@@ -704,7 +704,7 @@ async def update_market_data():
                             if ohlcv_data_1h:
                                 indicators = calculate_technical_indicators(ohlcv_data_1h, current_price, ohlcv_data_daily=ohlcv_data_1d, ohlcv_data_volume=ohlcv_data_5m)
                                 # Log at INFO level so it's visible in production logs
-                                logger.info(f"✅ Indicators for {symbol}: RSI={indicators.get('rsi', 0):.1f}, MA50={indicators.get('ma50', 0):.2f}, MA10w={indicators.get('ma10w', 0):.2f}, Volume ratio={indicators.get('volume_ratio', 0):.2f}x (candles: {len(ohlcv_data_1h)})")
+                                logger.info(f"✅ Indicators for {symbol}: RSI={indicators.get('rsi', 0):.1f}, MA50={indicators.get('ma50', 0):.2f}, MA10w={indicators.get('ma10w', 0):.2f}, Volume ratio={('%.2f' % indicators['volume_ratio']) if indicators.get('volume_ratio') is not None else 'n/a'}x (candles: {len(ohlcv_data_1h)})")
                             else:
                                 logger.warning(f"⚠️ No OHLCV data for {symbol}, using defaults (price={current_price})")
                                 # Use defaults
@@ -808,7 +808,7 @@ async def update_market_data():
                 "atr": float(indicators.get("atr", current_price * 0.02 if current_price > 0 else 0.0)),
                 "current_volume": float(indicators.get("current_volume", 0)),
                 "avg_volume": float(indicators.get("avg_volume", 0)),
-                "volume_ratio": float(indicators.get("volume_ratio", 0)),
+                "volume_ratio": float(indicators["volume_ratio"]) if indicators.get("volume_ratio") is not None else None,
             }
             enriched_coins.append(enriched_coin)
         
