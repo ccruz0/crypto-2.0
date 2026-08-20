@@ -305,3 +305,93 @@ def test_dry_run_writes_nothing(db):
     assert res["dry_run"] is True
     assert res["would_create"] == 1
     assert db.query(wd_models.WatchdogAnomaly).count() == 0
+
+
+# ---------------------------------------------------------------- rule 5 ---
+# Protection type mismatch (#521): the books say STOP_LOSS, the exchange holds
+# a plain LIMIT. Only the exchange can reveal it, so these tests stub it.
+
+
+def _stub_types(monkeypatch, mapping):
+    """Make the exchange answer `mapping[order_id]`; None means unreadable."""
+    monkeypatch.setattr(lw, "_exchange_order_type", lambda oid: mapping.get(str(oid)))
+
+
+def _protected_position(db):
+    _order(db, "ENTRY1")
+    _order(db, "SL1", order_type="STOP_LIMIT", order_role="STOP_LOSS", side=OrderSideEnum.SELL,
+           status=OrderStatusEnum.ACTIVE, price=95.0, parent_order_id="ENTRY1")
+
+
+def test_fake_stop_on_live_position_is_high_severity(db, monkeypatch):
+    _protected_position(db)
+    _stub_types(monkeypatch, {"SL1": "LIMIT"})
+    findings = lw.detect_protection_type_mismatch(db, NOW)
+    assert "protection_type_mismatch" in _kinds(findings)
+    bad = [f for f in findings if f["kind"] == "protection_type_mismatch"][0]
+    assert bad["severity"] == "high"
+    assert bad["evidence"]["order_type_exchange"] == "LIMIT"
+    assert bad["evidence"]["parent_position_live"] is True
+
+
+def test_real_stop_limit_is_clean(db, monkeypatch):
+    _protected_position(db)
+    _stub_types(monkeypatch, {"SL1": "STOP_LIMIT"})
+    assert lw.detect_protection_type_mismatch(db, NOW) == []
+
+
+def test_take_profit_limit_is_clean(db, monkeypatch):
+    _order(db, "ENTRY1")
+    _order(db, "TP1", order_type="TAKE_PROFIT_LIMIT", order_role="TAKE_PROFIT",
+           side=OrderSideEnum.SELL, status=OrderStatusEnum.ACTIVE, price=110.0,
+           parent_order_id="ENTRY1")
+    _stub_types(monkeypatch, {"TP1": "TAKE_PROFIT_LIMIT"})
+    assert lw.detect_protection_type_mismatch(db, NOW) == []
+
+
+def test_fake_stop_without_live_parent_is_medium(db, monkeypatch):
+    # Parent cancelled -> nothing is exposed, so it must not page as high.
+    _order(db, "ENTRY1", status=OrderStatusEnum.CANCELLED, cumulative_quantity=0.0)
+    _order(db, "SL1", order_type="STOP_LIMIT", order_role="STOP_LOSS", side=OrderSideEnum.SELL,
+           status=OrderStatusEnum.ACTIVE, price=95.0, parent_order_id="ENTRY1")
+    _stub_types(monkeypatch, {"SL1": "LIMIT"})
+    bad = [f for f in lw.detect_protection_type_mismatch(db, NOW)
+           if f["kind"] == "protection_type_mismatch"][0]
+    assert bad["severity"] == "medium"
+    assert bad["evidence"]["parent_position_live"] is False
+
+
+def test_dead_protection_legs_are_not_checked(db, monkeypatch):
+    # A cancelled SL protects nothing; verifying it would only make noise.
+    _order(db, "ENTRY1")
+    _order(db, "SL1", order_type="STOP_LIMIT", order_role="STOP_LOSS", side=OrderSideEnum.SELL,
+           status=OrderStatusEnum.CANCELLED, price=95.0, parent_order_id="ENTRY1")
+    _stub_types(monkeypatch, {"SL1": "LIMIT"})
+    assert lw.detect_protection_type_mismatch(db, NOW) == []
+
+
+def test_unreadable_exchange_reports_instead_of_passing(db, monkeypatch):
+    # Silence must never be mistaken for a clean result.
+    _protected_position(db)
+    _stub_types(monkeypatch, {})
+    findings = lw.detect_protection_type_mismatch(db, NOW)
+    assert "protection_type_unverified" in _kinds(findings)
+    assert "protection_type_mismatch" not in _kinds(findings)
+
+
+def test_truncation_is_reported_not_silent(db, monkeypatch):
+    _order(db, "ENTRY1")
+    for i in range(3):
+        _order(db, f"SL{i}", order_type="STOP_LIMIT", order_role="STOP_LOSS",
+               side=OrderSideEnum.SELL, status=OrderStatusEnum.ACTIVE, price=95.0,
+               parent_order_id="ENTRY1")
+    monkeypatch.setenv("WATCHDOG_MAX_TYPE_CHECKS", "1")
+    _stub_types(monkeypatch, {"SL0": "STOP_LIMIT", "SL1": "STOP_LIMIT", "SL2": "STOP_LIMIT"})
+    findings = lw.detect_protection_type_mismatch(db, NOW)
+    trunc = [f for f in findings if f["kind"] == "protection_type_check_truncated"]
+    assert trunc and trunc[0]["evidence"]["skipped"] == 2
+
+
+def test_detector_is_registered_in_the_run(db):
+    # A detector that exists but is never called is the #515 failure mode.
+    assert lw.detect_protection_type_mismatch in lw.DETECTORS

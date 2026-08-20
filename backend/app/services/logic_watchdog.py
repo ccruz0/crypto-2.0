@@ -47,6 +47,11 @@ DEAD_STATUSES = (
     OrderStatusEnum.EXPIRED,
 )
 
+# Exchange order types that actually trigger. An order booked as protection
+# whose real type is outside these sets does not protect anything (#521).
+_SL_EXCHANGE_TYPES = ("STOP_LOSS", "STOP_LIMIT", "STOP_MARKET", "STOP_LOSS_LIMIT")
+_TP_EXCHANGE_TYPES = ("TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT_MARKET")
+
 
 # --------------------------------------------------------------------------
 # config
@@ -75,6 +80,9 @@ MIN_POSITION_USD = lambda: _env_float("WATCHDOG_MIN_POSITION_USD", 5.0)     # no
 MAX_ALERTS_PER_RUN = lambda: _env_int("WATCHDOG_MAX_ALERTS_PER_RUN", 5)     # noqa: E731
 PRICE_TOLERANCE = lambda: _env_float("WATCHDOG_PRICE_TOLERANCE", 0.005)     # noqa: E731
 QTY_TOLERANCE = lambda: _env_float("WATCHDOG_QTY_TOLERANCE", 0.02)          # noqa: E731
+# One exchange call per live protection leg. Bounded so a bloated book cannot
+# stall the run; whatever the bound drops is reported, never dropped silently.
+MAX_TYPE_CHECKS = lambda: _env_int("WATCHDOG_MAX_TYPE_CHECKS", 60)          # noqa: E731
 
 
 DDL = """
@@ -723,11 +731,172 @@ def detect_orphans_and_oco(db, now: datetime) -> list[dict]:
     return findings
 
 
+def _exchange_order_type(order_id: str) -> Optional[str]:
+    """Real order type as the exchange holds it, or None if it cannot be read.
+
+    Spot ``get-order-detail`` returns empty for trigger ids, so fall back to
+    advanced detail — the same two-step ``exchange_sync`` already relies on.
+    """
+    try:
+        from app.services.brokers.crypto_com_trade import trade_client
+    except Exception as e:  # pragma: no cover - import guard
+        logger.error(f"[WATCHDOG] cannot import trade_client: {e}")
+        return None
+
+    for fetch in (trade_client.get_order_detail, trade_client.get_advanced_order_detail):
+        try:
+            raw = fetch(str(order_id))
+        except Exception:
+            continue
+        result = (raw or {}).get("result") or {}
+        data = result.get("data")
+        if isinstance(data, list) and data:
+            result = data[0]
+        order_type = str(result.get("type") or result.get("order_type") or "").strip().upper()
+        if order_type:
+            return order_type
+    return None
+
+
+def _parent_position_is_live(db, order: ExchangeOrder) -> bool:
+    """True when the entry this leg protects still holds quantity."""
+    parent_id = getattr(order, "parent_order_id", None)
+    if not parent_id:
+        return False
+    parent = (
+        db.query(ExchangeOrder)
+        .filter(ExchangeOrder.exchange_order_id == str(parent_id))
+        .first()
+    )
+    if parent is None or parent.status != OrderStatusEnum.FILLED:
+        return False
+    return (_filled_qty(parent) or 0.0) > 0.0
+
+
+def detect_protection_type_mismatch(db, now: datetime) -> list[dict]:
+    """A live protection leg whose real exchange type is not protective.
+
+    #521: an order booked as ``STOP_LOSS`` that the exchange actually holds as
+    a plain LIMIT never triggers. The position reads as protected and is not,
+    and nothing in the books can reveal it: ``order_role`` is what the bot
+    wrote and ``order_type`` is what the bot intended — only the exchange knows
+    what it created. So this detector asks the exchange, one call per live leg.
+    """
+    live_legs = (
+        db.query(ExchangeOrder)
+        .filter(
+            ExchangeOrder.order_role.in_(("STOP_LOSS", "TAKE_PROFIT")),
+            ExchangeOrder.status.in_(ACTIVE_STATUSES),
+        )
+        .order_by(ExchangeOrder.symbol.asc(), ExchangeOrder.id.asc())
+        .all()
+    )
+
+    budget = MAX_TYPE_CHECKS()
+    checked = live_legs[:budget] if budget > 0 else live_legs
+    skipped = len(live_legs) - len(checked)
+
+    findings: list[dict] = []
+    unverified: list[str] = []
+
+    for leg in checked:
+        order_id = str(getattr(leg, "exchange_order_id", "") or "")
+        role = (getattr(leg, "order_role", "") or "").upper()
+        if not order_id or role not in ("STOP_LOSS", "TAKE_PROFIT"):
+            continue
+
+        real_type = _exchange_order_type(order_id)
+        if real_type is None:
+            unverified.append(f"{leg.symbol}:{order_id}")
+            continue
+
+        allowed = _SL_EXCHANGE_TYPES if role == "STOP_LOSS" else _TP_EXCHANGE_TYPES
+        if real_type in allowed:
+            continue
+
+        position_live = _parent_position_is_live(db, leg)
+        # A fake stop on a live position is an unprotected position, not a
+        # bookkeeping nit — that is the #521 case and it pages.
+        severity = "high" if (role == "STOP_LOSS" and position_live) else "medium"
+        findings.append(
+            _finding(
+                kind="protection_type_mismatch",
+                severity=severity,
+                symbol=leg.symbol,
+                anchor=order_id,
+                title=f"{role} falso en {leg.symbol}: el exchange lo tiene como {real_type}",
+                detail=(
+                    f"La orden <code>{order_id}</code> ({leg.symbol}) figura en los libros como "
+                    f"<b>{role}</b>, pero el exchange la tiene como <b>{real_type}</b>.\n"
+                    f"Un {role} que no es de tipo protector <b>no se dispara</b>: "
+                    f"la posición parece protegida y no lo está.\n"
+                    f"Posición del padre: <b>{'VIVA' if position_live else 'no viva'}</b>."
+                ),
+                evidence={
+                    "order_id": order_id,
+                    "symbol": leg.symbol,
+                    "side": str(leg.side),
+                    "order_role": role,
+                    "order_type_books": getattr(leg, "order_type", None),
+                    "order_type_exchange": real_type,
+                    "status": str(leg.status),
+                    "parent_order_id": getattr(leg, "parent_order_id", None),
+                    "parent_position_live": position_live,
+                },
+                suspects=[
+                    "app/services/tp_sl_order_creator.py (creación de la pata de protección)",
+                    "app/services/brokers/crypto_com_trade.py::_create_order_try_variants",
+                ],
+            )
+        )
+
+    # Never report a clean run that was actually a partial one.
+    if unverified:
+        findings.append(
+            _finding(
+                kind="protection_type_unverified",
+                severity="medium",
+                symbol=None,
+                anchor=f"{now.date().isoformat()}:{len(unverified)}",
+                title=f"{len(unverified)} protecciones sin poder verificar contra el exchange",
+                detail=(
+                    f"El exchange no devolvió tipo para {len(unverified)} patas de protección "
+                    f"vivas, así que <b>no se puede afirmar que sean correctas</b>.\n"
+                    f"Órdenes: <code>{', '.join(unverified[:20])}</code>"
+                    + (" …" if len(unverified) > 20 else "")
+                ),
+                evidence={"unverified": unverified[:50], "count": len(unverified)},
+                suspects=["app/services/brokers/crypto_com_trade.py::get_advanced_order_detail"],
+            )
+        )
+
+    if skipped > 0:
+        findings.append(
+            _finding(
+                kind="protection_type_check_truncated",
+                severity="medium",
+                symbol=None,
+                anchor=f"{now.date().isoformat()}:{skipped}",
+                title=f"{skipped} protecciones vivas quedaron sin comprobar (tope por ejecución)",
+                detail=(
+                    f"Hay {len(live_legs)} patas de protección vivas y el tope por ejecución es "
+                    f"{budget}, así que <b>{skipped} no se comprobaron</b>. Subir "
+                    f"<code>WATCHDOG_MAX_TYPE_CHECKS</code> si esto se repite."
+                ),
+                evidence={"live_legs": len(live_legs), "budget": budget, "skipped": skipped},
+                suspects=["app/services/logic_watchdog.py::detect_protection_type_mismatch"],
+            )
+        )
+
+    return findings
+
+
 DETECTORS = (
     detect_missing_protection,
     detect_failure_strings,
     detect_price_sanity,
     detect_orphans_and_oco,
+    detect_protection_type_mismatch,
 )
 
 
