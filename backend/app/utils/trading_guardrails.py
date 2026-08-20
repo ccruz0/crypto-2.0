@@ -444,9 +444,17 @@ def _check_risk_limits(
                 logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
                 return False, reason
         except Exception as e:
+            # Fail CLOSED. This used to let the order through, justified as
+            # "less critical than total limit" — true while the total limit
+            # worked. It no longer counts anything: MAX_OPEN_ORDERS_TOTAL
+            # compares against count_total_open_positions(), which nets bot
+            # entries against every close in the book and sits pinned near
+            # zero (#523). This daily count is the only brake still measuring
+            # what it claims to, so failing open here removes the last one.
             logger.error(f"Error checking MAX_ORDERS_PER_SYMBOL_PER_DAY: {e}")
-            # Conservative: allow but log error (this is less critical than total limit)
-            logger.warning("⚠️ Could not check per-symbol daily limit, allowing order")
+            reason = "blocked: error comprobando el límite diario por símbolo"
+            logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+            return False, reason
     
     # MAX_USD_PER_ORDER check (optional skip for protective orders)
     if not ignore_usd_limit:
