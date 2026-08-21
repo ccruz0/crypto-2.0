@@ -1,19 +1,35 @@
-# Phase 2 (P2-R5) CI gate.
+# Phase 2 (P2-R5) CI gate + Signals/SL-TP surface (added 2026-08-21).
 #
 # SCOPE — READ BEFORE TRUSTING THIS GATE AS "THE TESTS":
 # This is a CURATED subset, not the repository's full test suite. The full
 # suite includes environment-dependent tests (live DB, docker, network) that
 # fail on a bare GitHub runner and were already failing on main before Phase 2
 # (documented in the Phase 2 delivery evidence: pre_existing_failures_on_main.txt).
-# This gate runs only the deterministic Jarvis/planner/router/cost-tracker
-# surface that Phase 2 touches, plus lint on app/jarvis. It intentionally does
-# NOT run backend/tests in full. The 3 deselected tests below fail on
-# untouched main too (pre-existing test-fake drift, tracked for Phase 3) —
-# they are excluded so this gate stays green and meaningful, not because they
-# don't matter.
 #
-# Job name and step names spell this out on purpose so the scope is visible
-# in the Actions tab itself, not just in this comment.
+# Two curated surfaces run here:
+#   1. Jarvis/planner/router/cost-tracker (Phase 2, unchanged).
+#   2. Signals & SL/TP (added 2026-08-21) — 47 tests, verified green twice in a
+#      row against the production image before being added.
+#
+# WHY THE SIGNALS SURFACE MATTERS:
+# backend/app/services/signal_monitor.py decides every real-money order and is
+# NOT covered by path-guard. Until 2026-08-21 no CI gate executed any signal
+# test at all. This job closes part of that hole.
+#
+# KNOWN-RED, DELIBERATELY EXCLUDED (measured 2026-08-21, NOT speculation):
+#   tests/test_buy_signal_logic.py          — 7 failures
+#   tests/test_trading_signals_canonical.py — 3 failures
+#     Both fail on `buy_volume_ok` returning False where the test expects None
+#     ("not evaluated" vs "evaluated and failed"). The test encodes the correct
+#     intent; the code drifted. Fixing this is a business-rules decision, not a
+#     CI one. THESE ARE THE TWO FILES COVERING should_trigger_buy_signal —
+#     the most important function in the repo is still uncovered by this gate.
+#   tests/test_signal_monitor_alert_flags.py       — 4 failures
+#   tests/test_exchange_sync_build_strategy_key.py — 1 failure
+#   tests/test_trading_config_path.py              — 1 failure
+#
+# Do NOT add files to the signals job without running them first. A red gate
+# teaches everyone to ignore the gate.
 
 name: backend-ci
 
@@ -71,3 +87,40 @@ jobs:
             --deselect tests/test_jarvis_orchestrator_goal_retry.py::test_google_ads_stays_shallow_after_retry_waits_for_input_not_done \
             --deselect tests/test_jarvis_orchestrator_goal_retry.py::test_planner_requires_input_sends_natural_clarification_not_rigid_block \
             --deselect tests/test_jarvis_ops_agent.py::test_orchestrator_includes_ops_output_and_logs_to_notion
+
+  signals-and-sltp-surface-partial:
+    name: "Signals & SL/TP surface (13 files, 47 tests — does NOT cover should_trigger_buy_signal)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-timeout
+
+      - name: Signals & SL/TP tests (verified green twice on 2026-08-21)
+        run: |
+          python -m pytest -q --timeout=90 \
+            tests/test_signal_indicator_snapshot.py \
+            tests/test_sell_trend_filter_direction.py \
+            tests/test_buy_decision_index_alignment.py \
+            tests/test_signal_indicators.py \
+            tests/test_strategy_consistency.py \
+            tests/test_sl_tp_price_adjust.py \
+            tests/test_signal_order_policy.py \
+            tests/test_resolve_strategy_profile.py \
+            tests/test_signal_monitor_rsi_fstring.py \
+            tests/test_signal_monitor_limits.py \
+            tests/test_legacy_sell_guardrails.py \
+            tests/test_governance_trading_only_guard.py \
+            tests/test_clamp_sell_alert.py
