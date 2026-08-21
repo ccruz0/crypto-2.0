@@ -6144,11 +6144,18 @@ function resolveDecisionIndexColor(value: number): string {
                   <div className="border-l-4 border-red-500 pl-4">
                     <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">Stop Loss / Take Profit</h4>
                     <div className="space-y-1 text-sm">
-                      <div className="text-gray-600 dark:text-gray-400">
-                        SL Fallback: <span className="font-semibold text-gray-900 dark:text-white">{currentRules.sl?.fallbackPct ?? 'N/A'}%</span>
+                      <div className="text-gray-500 dark:text-gray-500">
+                        SL Fallback: <span className="font-semibold line-through">{currentRules.sl?.fallbackPct ?? 'N/A'}%</span>
+                        <span className="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">no aplicado</span>
                       </div>
-                      <div className="text-gray-600 dark:text-gray-400">
-                        Risk:Reward: <span className="font-semibold text-gray-900 dark:text-white">{currentRules.tp?.rr ?? 'N/A'}</span>
+                      <div className="text-gray-500 dark:text-gray-500">
+                        Risk:Reward: <span className="font-semibold line-through">{currentRules.tp?.rr ?? 'N/A'}</span>
+                        <span className="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">no aplicado</span>
+                      </div>
+                      <div className="mt-2 text-xs text-amber-700 dark:text-amber-400 leading-snug">
+                        Estos dos valores <strong>no llegan a las ordenes reales</strong>. El SL y el TP
+                        efectivos son <code>sl_percentage</code> / <code>tp_percentage</code> por simbolo,
+                        visibles en la pestana Watchlist. Verificado 21-ago-2026.
                       </div>
                     </div>
                   </div>
@@ -6193,7 +6200,10 @@ function resolveDecisionIndexColor(value: number): string {
                   {/* Trend Filters */}
                   {currentRules.trendFilters && (
                     <div className="border-l-4 border-indigo-500 pl-4">
-                      <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">Trend Filters</h4>
+                      <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Trend Filters
+                        <span className="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300">solo compras</span>
+                      </h4>
                       <div className="space-y-1 text-sm">
                         <div className="text-gray-600 dark:text-gray-400">
                           Price above MA200: <span className={`font-semibold ${currentRules.trendFilters.require_price_above_ma200 ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
@@ -6204,6 +6214,10 @@ function resolveDecisionIndexColor(value: number): string {
                           EMA10 above MA50: <span className={`font-semibold ${currentRules.trendFilters.require_ema10_above_ma50 ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
                             {currentRules.trendFilters.require_ema10_above_ma50 ? '✓ Required' : '✗ Optional'}
                           </span>
+                        </div>
+                        <div className="mt-2 text-xs text-sky-700 dark:text-sky-400 leading-snug">
+                          Estos filtros <strong>solo se aplican a las compras</strong>. Las ventas en corto
+                          no los evaluan. Verificado 21-ago-2026.
                         </div>
                       </div>
                     </div>
