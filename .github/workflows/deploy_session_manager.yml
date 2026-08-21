@@ -1,4 +1,9 @@
-# Single source of truth for deploy: push to main runs this (SSM). No SSH deploy on push.
+# Despliega los cambios de INFRAESTRUCTURA y CONFIGURACION en el host (compose on-host).
+# NO despliega frontend ni backend: esos van por imagen de ECR en deploy-frontend.yml /
+# deploy-backend.yml y estan excluidos en el paths-ignore de abajo.
+# (Antes esta cabecera decia "single source of truth for deploy", lo cual era falso
+#  desde que frontend/ y backend/ se excluyeron. Corregido 2026-08-21.)
+# No hay deploy por SSH en push: deploy.yml (Legacy SSH) es solo workflow_dispatch.
 name: Deploy to AWS EC2 (Session Manager)
 
 on:
@@ -19,6 +24,16 @@ on:
       - '**/*.md'
       - '.github/workflows/deploy-backend.yml'
       - '.github/workflows/deploy-frontend.yml'
+      # Ficheros que no afectan al runtime del host: no deben disparar el rebuild
+      # on-host (pesado y propenso a OOM). Anadido 2026-08-21 tras comprobar que un
+      # cambio en .gitignore lanzo una reconstruccion completa en produccion.
+      - '.gitignore'
+      - '.gitattributes'
+      - '.editorconfig'
+      - 'LICENSE'
+      - '.claude/**'
+      - '.cursor/**'
+      - '.vscode/**'
   workflow_dispatch:
 
 # Shared with deploy-backend.yml — serialize all host compose deploys (never cancel mid-flight).
