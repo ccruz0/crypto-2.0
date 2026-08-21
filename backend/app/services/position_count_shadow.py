@@ -86,7 +86,7 @@ def _load_wallet_by_base(force: bool = False) -> Tuple[Dict[str, Decimal], bool]
         from app.services.brokers.crypto_com_trade import trade_client
 
         summary = trade_client.get_account_summary()
-        accounts = ((summary or {}).get("result") or {}).get("accounts") or []
+        accounts = (summary or {}).get("accounts") or []
         balances: Dict[str, Decimal] = {}
         for account in accounts:
             currency = str(account.get("currency") or "").upper()
