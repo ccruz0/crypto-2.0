@@ -15,7 +15,7 @@ python-multipart>=0.0.9
 python-dotenv==1.0.1
 
 # HTTP client
-httpx==0.27.2
+httpx==0.28.1
 # Note: aiohttp is constrained by alpaca-trade-api to 3.8.2 (security limitation)
 # aiohttp>=3.9.5  # Removed due to alpaca-trade-api 3.1.1 dependency conflict
 requests==2.32.3
