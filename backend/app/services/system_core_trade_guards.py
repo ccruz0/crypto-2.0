@@ -31,6 +31,13 @@ _RSI_BUY_MAX = float(os.getenv("SYSTEM_CORE_RSI_BUY_MAX", "40"))
 # Dust: net filled remnant below these thresholds does not count as an open position for one-per-coin.
 _MIN_POSITION_QTY = float(os.getenv("SYSTEM_CORE_MIN_POSITION_QTY", "0"))
 _MIN_POSITION_USD = float(os.getenv("SYSTEM_CORE_MIN_POSITION_USD", "5"))
+# Regime filter para cortos (2026-08-22, decision de Carlos): un corto solo se
+# abre con el precio POR DEBAJO de su MA200 (espejo del gate de compra).
+# Kill-switch sin deploy: SHORT_REQUIRE_PRICE_BELOW_MA200=false.
+_SHORT_REGIME_ON = (
+    os.getenv("SHORT_REQUIRE_PRICE_BELOW_MA200", "true").strip().lower()
+    not in ("0", "false", "no", "off")
+)
 
 
 def system_core_guards_enabled() -> bool:
@@ -274,6 +281,42 @@ def check_system_core_buy_allowed(
     return True, ""
 
 
+def _short_regime_block(db: Session, sym: str, base: str, price: float) -> Tuple[bool, str]:
+    """Regime filter para cortos: exige price < MA200 para abrir un corto.
+
+    Decision de Carlos, 2026-08-22. Motivo medido: 37/38 entradas del
+    19-21 ago fueron cortos con price>ma200 en pleno rally, y el mercado
+    barrio el libro (11 stops en 24h, -177 USD). Es el espejo del gate de
+    compra (que bloquea BUY con price<=ma200).
+
+    FAIL-CLOSED: sin MA200 valida no se abre el corto (a diferencia de los
+    checks de posicion, que son fail-open). Un filtro de regimen que falla
+    abierto no filtra nada, como demostro el contador de posiciones (#523).
+    """
+    try:
+        row = db.execute(
+            text(
+                "SELECT ma200 FROM market_data "
+                "WHERE symbol IN (:s, :b, :b_usd, :b_usdt) AND ma200 IS NOT NULL "
+                "ORDER BY CASE symbol WHEN :s THEN 0 WHEN :b_usd THEN 1 WHEN :b_usdt THEN 2 ELSE 3 END "
+                "LIMIT 1"
+            ),
+            {"s": sym, "b": base, "b_usd": f"{base}_USD", "b_usdt": f"{base}_USDT"},
+        ).fetchone()
+        ma200 = float(row[0]) if row is not None and row[0] is not None else None
+    except Exception as e:
+        logger.warning("short_regime: ma200 lookup failed for %s: %s", sym, e)
+        ma200 = None
+
+    if ma200 is None or ma200 <= 0:
+        return True, f"short_regime_ma200_unavailable symbol={sym}"
+    if price is None or price <= 0:
+        return True, f"short_regime_price_unavailable symbol={sym}"
+    if price >= ma200:
+        return True, f"short_regime_price_above_ma200 price={price} ma200={ma200}"
+    return False, ""
+
+
 def check_system_core_short_entry_allowed(
     db: Session,
     symbol: str,
@@ -292,6 +335,9 @@ def check_system_core_short_entry_allowed(
     and must not treat an existing long as "already in a trade". Amount/drawdown/max-open
     still apply.
 
+    Regime filter (2026-08-22): ademas de los limites de exposicion, un corto
+    exige price < MA200 (fail-closed). Ver _short_regime_block.
+
     Returns (allowed, reason). When guards are disabled, always (True, "").
     """
     if not _GUARDS_ON:
@@ -299,6 +345,11 @@ def check_system_core_short_entry_allowed(
 
     sym = (symbol or "").strip().upper()
     base = sym.split("_")[0] if "_" in sym else sym
+
+    if _SHORT_REGIME_ON:
+        blocked, regime_reason = _short_regime_block(db, sym, base, price)
+        if blocked:
+            return False, regime_reason
 
     if amount_usd > _MAX_PER_TRADE + 1e-6:
         return False, f"system_core_max_trade_usd amount={amount_usd} max={_MAX_PER_TRADE}"
