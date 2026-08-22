@@ -15,7 +15,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { getApiUrl } from '@/lib/api';
+import { getApiUrl } from '@/lib/environment';
 
 const LABELS: Record<string, string> = {
   'atp-reglas-negocio': 'Reglas de Negocio',
