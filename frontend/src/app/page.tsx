@@ -9,6 +9,7 @@ import { MonitoringNotificationsProvider, useMonitoringNotifications } from '@/a
 import { PriceStreamProvider } from '@/app/context/PriceStreamContext';
 import { parseDashboardTabParam } from '@/utils/dashboardTabs';
 import MonitoringPanel from '@/app/components/MonitoringPanel';
+import AgentActivityPanel from '@/app/components/AgentActivityPanel';
 import ErrorBoundary from '@/app/components/ErrorBoundary';
 import StrategyConfigModal from '@/app/components/StrategyConfigModal';
 import GlobalSettingsModal from '@/app/components/GlobalSettingsModal';
@@ -6418,11 +6419,18 @@ function resolveDecisionIndexColor(value: number): string {
           {activeTab === 'monitoring' && (
             <div>
               <h2 className="text-xl font-semibold mb-4">Monitoring</h2>
-              <MonitoringPanel 
-                telegramMessages={telegramMessages}
-                telegramMessagesLoading={telegramMessagesLoading}
-                onRequestTelegramRefresh={fetchTelegramMessages}
-              />
+              <div className="flex flex-col xl:flex-row gap-6 items-start">
+                <div className="flex-1 min-w-0">
+                  <MonitoringPanel 
+                    telegramMessages={telegramMessages}
+                    telegramMessagesLoading={telegramMessagesLoading}
+                    onRequestTelegramRefresh={fetchTelegramMessages}
+                  />
+                </div>
+                <div className="w-full xl:w-96 shrink-0 xl:sticky xl:top-4">
+                  <AgentActivityPanel />
+                </div>
+              </div>
             </div>
           )}
 
