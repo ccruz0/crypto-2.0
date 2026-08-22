@@ -123,4 +123,5 @@ jobs:
             tests/test_signal_monitor_limits.py \
             tests/test_legacy_sell_guardrails.py \
             tests/test_governance_trading_only_guard.py \
-            tests/test_clamp_sell_alert.py
+            tests/test_clamp_sell_alert.py \
+            tests/test_short_regime_ma200.py

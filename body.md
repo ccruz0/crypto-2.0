@@ -1,11 +1,27 @@
 ## Que hace
 
-El PR #537 monto el panel de agentes en MonitoringTab.tsx, pero ese componente es CODIGO MUERTO: page.tsx:6421 renderiza MonitoringPanel directamente, asi que el panel nunca aparecia. Este PR lo monta donde de verdad se renderiza la pestana Monitoring, en page.tsx: layout de dos columnas (monitoring a la izquierda, AgentActivityPanel a la derecha, sticky, ancho xl:w-96).
+Filtro de regimen para cortos, decision de Carlos (22-ago): un corto solo se abre si price < MA200 — espejo del gate de compra, que bloquea BUY con price <= ma200. Implementado en check_system_core_short_entry_allowed (system_core_trade_guards.py), cuyo docstring admitia que los gates RSI/MA200 eran solo de BUY.
 
-## Verificacion
+## Motivo medido (rev-20260822-cortos-en-alcista)
 
-page.tsx parseado con @babel/parser (jsx+typescript): PAGE-PARSE-OK. Sintaxis, no tipos (la imagen de produccion no trae tsc).
+- 37 de 38 entradas del 19-21 ago fueron cortos con price>ma200 en pleno rally.
+- El mercado barrio el libro: 11 stops en 24h, -177,84 USD.
+- La senal SELL nacio como salida de swing largo; el PR #479 la convirtio en apertura de cortos sin filtro de regimen.
 
-## Nota
+## Semantica
 
-MonitoringTab.tsx queda como estaba en #537 (con el panel); si algun dia page.tsx delega en el, no habra doble montaje porque solo uno de los dos se renderiza. Limpiar el componente muerto es tarea aparte.
+- FAIL-CLOSED: sin MA200 valida (o precio invalido) el corto NO se abre. Un filtro de regimen fail-open no filtra nada, como demostro el contador de posiciones (#523).
+- Kill-switch sin tocar codigo: SHORT_REQUIRE_PRICE_BELOW_MA200=false (requiere reinicio del contenedor para tomar la var).
+- Fallback de simbolo: exacto → BASE_USD → BASE_USDT en market_data.
+
+## Verificacion previa (protocolo multiangulo, rev-20260822-filtro-regimen)
+
+- Un unico llamador del gate en el repo (signal_monitor.py:9410) y respeta el bloqueo; el precio no llega 0/None por ese camino (guardia en :2690).
+- SQL probada contra la BD real: BONK y BTC bloqueados; GRAM tambien (su ma200 existe).
+- Efecto inmediato: bloquea 45-46 de 47 cortos posibles hoy. El unico shorteable seria MATIC_USDT, con datos sospechosos (posible artefacto post-migracion) — vigilar.
+- Tests: 9 passed contra la imagen de produccion (6 nuevos + los 3 de test_signal_monitor_short_entry_cap, sin regresion). El test nuevo se anade a backend-ci.
+- Env en produccion: los flags caen a true por defecto; el filtro queda vivo al desplegar.
+
+## Riesgo conocido, pre-existente
+
+El bloque llamador esta en un try/except que ante una excepcion procede sin guards. Este PR no lo agranda: el helper captura sus propios errores y bloquea. Queda documentado para arreglo aparte.
