@@ -579,6 +579,7 @@ def _iter_naked_entry_parents(
 
     from app.services.sl_tp_protection import (
         get_active_protection_order,
+        get_filled_protection_order,
         has_complete_sl_tp_protection,
         has_filled_sl_tp_protection,
     )
@@ -601,6 +602,15 @@ def _iter_naked_entry_parents(
         if has_complete_sl_tp_protection(db, pid):
             return False
         if has_filled_sl_tp_protection(db, pid):
+            return False
+        # OCO real: solo una pata se llena (la otra se cancela), asi que
+        # exigir SL y TP FILLED a la vez es imposible. Cualquier pata FILLED
+        # significa que la posicion de este parent ya se cerro: es historial,
+        # no un parent desnudo (fix del ruido del HOURLY SL/TP AUDIT).
+        if (
+            get_filled_protection_order(db, pid, "STOP_LOSS") is not None
+            or get_filled_protection_order(db, pid, "TAKE_PROFIT") is not None
+        ):
             return False
         has_sl = get_active_protection_order(db, pid, "STOP_LOSS") is not None
         has_tp = get_active_protection_order(db, pid, "TAKE_PROFIT") is not None
