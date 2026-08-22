@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           REMOTE=$(cat <<EOF
-          set -euo pipefail
+          set -eu
           sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 checkout -q origin/main -- scripts/build_trade_outcomes.py
           CONTAINER=\$(docker ps -q --filter "name=backend-aws-1" | head -1)
           test -n "\$CONTAINER"
