@@ -53,7 +53,7 @@ jobs:
             PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=false"
             EXTRA_FLAGS="--dry-run"
           else
-            PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=true"
+            PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=false"
             EXTRA_FLAGS=""
           fi
           echo "event=${{ github.event_name }} DRY_RUN=$DRY_RUN DAYS=$DAYS"
