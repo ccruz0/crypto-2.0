@@ -38,6 +38,16 @@ _SHORT_REGIME_ON = (
     os.getenv("SHORT_REQUIRE_PRICE_BELOW_MA200", "true").strip().lower()
     not in ("0", "false", "no", "off")
 )
+# Regime filter de mercado para largos (2026-08-23, decision de Carlos):
+# ninguna COMPRA en alts con BTC por debajo de su MA200 diaria. Medido en
+# 4 anos / 13 alts: retorno medio diario de las alts ~0% con BTC>MA200
+# frente a ~-22% anualizado con BTC<MA200. Vive en la puerta comun de
+# compra para cortar CUALQUIER ruta de entrada (incluida Auto).
+# Kill-switch sin deploy: LONG_REQUIRE_BTC_ABOVE_MA200=false.
+_LONG_BTC_REGIME_ON = (
+    os.getenv("LONG_REQUIRE_BTC_ABOVE_MA200", "true").strip().lower()
+    not in ("0", "false", "no", "off")
+)
 
 
 def system_core_guards_enabled() -> bool:
@@ -250,6 +260,11 @@ def check_system_core_buy_allowed(
     sym = (symbol or "").strip().upper()
     base = sym.split("_")[0] if "_" in sym else sym
 
+    if _LONG_BTC_REGIME_ON:
+        blocked, regime_reason = _long_btc_regime_block(db)
+        if blocked:
+            return False, regime_reason
+
     if amount_usd > _MAX_PER_TRADE + 1e-6:
         return False, f"system_core_max_trade_usd amount={amount_usd} max={_MAX_PER_TRADE}"
 
@@ -314,6 +329,43 @@ def _short_regime_block(db: Session, sym: str, base: str, price: float) -> Tuple
         return True, f"short_regime_price_unavailable symbol={sym}"
     if price >= ma200:
         return True, f"short_regime_price_above_ma200 price={price} ma200={ma200}"
+    return False, ""
+
+
+def _long_btc_regime_block(db: Session) -> Tuple[bool, str]:
+    """Regime filter de mercado para COMPRAS: exige BTC > MA200 de BTC.
+
+    Decision de Carlos, 2026-08-23. Motivo medido (4 anos, 13 alts): el
+    retorno medio diario de las alts es ~0% con BTC sobre su MA200 diaria
+    y ~-22% anualizado con BTC por debajo. No predice giros; recorta el
+    regimen toxico para cualquier ruta de compra (incluida Auto).
+
+    FAIL-CLOSED: sin precio o MA200 validos de BTC no se compra, igual que
+    _short_regime_block. Kill-switch: LONG_REQUIRE_BTC_ABOVE_MA200=false.
+    """
+    try:
+        row = db.execute(
+            text(
+                "SELECT price, ma200 FROM market_data "
+                "WHERE symbol IN ('BTC_USD', 'BTC_USDT') "
+                "AND ma200 IS NOT NULL AND price IS NOT NULL "
+                "ORDER BY CASE symbol WHEN 'BTC_USD' THEN 0 ELSE 1 END "
+                "LIMIT 1"
+            )
+        ).fetchone()
+        btc_price = float(row[0]) if row is not None and row[0] is not None else None
+        btc_ma200 = float(row[1]) if row is not None and row[1] is not None else None
+    except Exception as e:
+        logger.warning("long_btc_regime: BTC price/ma200 lookup failed: %s", e)
+        btc_price = None
+        btc_ma200 = None
+
+    if btc_ma200 is None or btc_ma200 <= 0:
+        return True, "long_btc_regime_ma200_unavailable"
+    if btc_price is None or btc_price <= 0:
+        return True, "long_btc_regime_price_unavailable"
+    if btc_price <= btc_ma200:
+        return True, f"long_btc_regime_btc_below_ma200 btc_price={btc_price} btc_ma200={btc_ma200}"
     return False, ""
 
 
