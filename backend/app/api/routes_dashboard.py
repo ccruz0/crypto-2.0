@@ -946,32 +946,24 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
 
                 open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
 
-                from sqlalchemy import or_
+                # Ghost = fila que la DB cree ABIERTA y el exchange no reporta.
+                # Las filas terminales (FILLED/CANCELLED/...) son historial, no
+                # ghosts: el or_() anterior arrastraba las 500 filas SL/TP mas
+                # recientes fuera cual fuera su status y el dashboard reportaba
+                # ~498 ghosts falsos con la DB limpia (7 abiertas = 7 en el
+                # exchange, 23-ago-2026).
+                from app.services.ghost_order_detection import (
+                    find_ghost_orders,
+                    query_open_db_orders,
+                )
 
-                db_orders = db.query(ExchangeOrder).filter(
-                    or_(
-                        ExchangeOrder.status.in_(open_statuses),
-                        ExchangeOrder.order_role.in_(['STOP_LOSS', 'TAKE_PROFIT']),  # type: ignore[reportGeneralTypeIssues]
-                        ExchangeOrder.order_type.in_(['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'])
-                    )
-                ).order_by(
-                    func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
-                ).limit(500).all()
+                db_orders = query_open_db_orders(db)
 
                 db_order_ids = {str(order.exchange_order_id) for order in db_orders}
                 db_symbols = {str(getattr(o, "symbol", "") or "") for o in db_orders if getattr(o, "symbol", None)}
                 log.info(f"[OPEN_ORDERS] Database has {len(db_orders)} orders with open status. Order IDs: {sorted(db_order_ids)[:10]}... Symbols: {sorted(db_symbols)}")
 
-                ghost_orders = []
-                for db_order in db_orders:
-                    order_id_str = str(db_order.exchange_order_id)
-                    if order_id_str not in cached_order_ids:
-                        ghost_orders.append({
-                            "order_id": order_id_str,
-                            "symbol": db_order.symbol,
-                            "status": db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status),
-                            "side": db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
-                        })
+                ghost_orders = find_ghost_orders(db_orders, cached_order_ids)
 
                 if ghost_orders:
                     log.warning(f"[GHOST_ORDERS] Detected {len(ghost_orders)} ghost orders in database that don't exist in Crypto.com: {ghost_orders[:5]}")
