@@ -122,7 +122,10 @@ _DEFAULT_CONFIG = {
     "version": 1,
     "defaults": {
         "timeframe": "4h",
-        "preset": "swing",
+        # Fallback preset for coins with no explicit entry in `coins`.
+        # "auto" (not "swing") so a newly enabled coin inherits the audited,
+        # frozen Learned band instead of an unwritten swing profile.
+        "preset": "auto",
         "alert_cooldown_minutes": 0.1667,
         "alert_min_price_change_pct": 1.0
     },
