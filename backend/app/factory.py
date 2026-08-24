@@ -735,8 +735,8 @@ def create_app(role: str = "legacy") -> FastAPI:
                         logger.warning("Watchlist is empty - initializing with portfolio symbols...")
                     
                         # Default symbols to add if portfolio is also empty
-                        default_symbols = ["BTC_USD", "BTC_USDT", "ETH_USDT", "SOL_USD", "ALGO", "DOT_USD",
-                                         "AAVE_USD", "XRP", "DOGE_USD", "DGB_USD", "BONK_USD"]
+                        default_symbols = ["BTC_USD", "ETH_USD", "SOL_USD", "ALGO_USD", "DOT_USD",
+                                         "AAVE_USD", "XRP_USD", "DOGE_USD", "DGB_USD", "BONK_USD"]
                     
                         symbols_to_add = []
                         if portfolio_symbols:
@@ -827,7 +827,7 @@ def create_app(role: str = "legacy") -> FastAPI:
                             logger.debug(f"Watchlist already has {count} items and all portfolio coins are present - no sync needed")
 
                         # Ensure required trade pairs and recently traded symbols are on the watchlist.
-                        required_trade_symbols = {"BTC_USD", "BTC_USDT", "ETH_USDT"}
+                        required_trade_symbols = {"BTC_USD", "ETH_USD"}
                         missing_required = required_trade_symbols - existing_symbols
                         try:
                             from app.models.exchange_order import ExchangeOrder
