@@ -23,6 +23,7 @@ BALI_TZ = pytz.timezone('Asia/Makassar')  # Makassar is the same timezone as Bal
 # Friendly labels for decision reason codes in the daily rollup.
 _REASON_CODE_LABELS = {
     "GUARDRAIL_BLOCKED": "Bloqueado por guardrail",
+    "REGIME_FILTER_BLOCKED": "Filtro de regimen: tu propia regla bloqueo la orden",
     "ONE_ACTIVE_TRADE_PER_COIN": "Máx. 1 trade activo por moneda (límite per-coin)",
     "SYSTEM_CORE_MAX_OPEN_TRADES": "Máx. trades abiertos (portfolio)",
     "SYSTEM_CORE_RSI": "RSI fuera de rango (system_core)",

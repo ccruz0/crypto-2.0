@@ -35,6 +35,9 @@ class ReasonCode(str, Enum):
     INVALID_TRADE_AMOUNT = "INVALID_TRADE_AMOUNT"
     RECENT_ORDERS_COOLDOWN = "RECENT_ORDERS_COOLDOWN"
     GUARDRAIL_BLOCKED = "GUARDRAIL_BLOCKED"
+    # Regime filters (PR #540 shorts, PR #554 longs). NOT exchange errors:
+    # these are Carlos's own risk rules blocking the order before it is sent.
+    REGIME_FILTER_BLOCKED = "REGIME_FILTER_BLOCKED"
     # system_core position / exposure gates (not exchange errors)
     ONE_ACTIVE_TRADE_PER_COIN = "ONE_ACTIVE_TRADE_PER_COIN"
     SYSTEM_CORE_MAX_OPEN_TRADES = "SYSTEM_CORE_MAX_OPEN_TRADES"
@@ -185,6 +188,9 @@ _REASON_CODE_ES_LABELS = {
     ReasonCode.INSTRUMENT_SHORT_SELL_DISABLED.value: (
         "Watchlist Margin YES; el exchange no permite SHORT"
     ),
+    ReasonCode.REGIME_FILTER_BLOCKED.value: (
+        "Filtro de régimen: tu propia regla bloqueó la orden (no es un error del exchange)"
+    ),
 }
 
 
@@ -198,6 +204,13 @@ def classify_system_core_error(error_msg: str) -> Optional[str]:
         if error_lower.startswith(prefix):
             error_lower = error_lower[len(prefix) :].strip()
 
+    # Regime filters do NOT carry the system_core_ prefix, so they must be
+    # matched explicitly. Before this, they fell through to the terminal
+    # EXCHANGE_ERROR_UNKNOWN default and were reported as exchange failures
+    # (real case: 3 correct short blocks on 2026-08-23 reported as
+    # "Exchange Error Unknown"). See atp-ordenes-fallando-24ago-veredicto.md.
+    if "short_regime_" in error_lower or "long_btc_regime_" in error_lower:
+        return ReasonCode.REGIME_FILTER_BLOCKED.value
     if "system_core_one_active_trade_per_coin" in error_lower:
         return ReasonCode.ONE_ACTIVE_TRADE_PER_COIN.value
     if "system_core_max_open_trades" in error_lower:
@@ -239,7 +252,10 @@ def format_order_failed_telegram(
     Guardrail / system_core blocks show a humanized Error line plus a technical
     detail line (raw reason). Exchange and other errors keep the raw Error line.
     """
-    from app.utils.guardrail_messages import order_failed_telegram_error_section
+    from app.utils.guardrail_messages import (
+        is_guardrail_family_reason,
+        order_failed_telegram_error_section,
+    )
 
     es = reason_code_es_label(reason_code, error_msg)
     error_section, _ = order_failed_telegram_error_section(
@@ -248,14 +264,28 @@ def format_order_failed_telegram(
         reason_code,
         side=side,
     )
+    # Un bloqueo por regla propia NO es un fallo: es el sistema haciendo su
+    # trabajo. Cabecera con escudo para que jamas se confunda con un error real
+    # del exchange que si exige intervencion. Ver atp-ordenes-fallando-24ago.
+    blocked_by_policy = is_guardrail_family_reason(reason_code, error_msg)
+    header = (
+        "🛡️ <b>ORDEN BLOQUEADA POR REGLA PROPIA</b>"
+        if blocked_by_policy
+        else "❌ <b>ORDER FAILED</b>"
+    )
+    footer = (
+        "<i>El sistema funcionó como lo configuraste: no se envió nada al exchange.</i>"
+        if blocked_by_policy
+        else "<i>Señal enviada; la orden no se creó.</i>"
+    )
     return (
-        f"❌ <b>ORDER FAILED</b>\n\n"
+        f"{header}\n\n"
         f"📊 Symbol: <b>{symbol}</b>\n"
         f"🔄 Side: {side}\n"
         f"{error_section}\n"
         f"📋 Reason Code: {reason_code}\n"
         f"🇪🇸 Motivo: {es}\n\n"
-        f"<i>Señal enviada; la orden no se creó.</i>"
+        f"{footer}"
     )
 
 
