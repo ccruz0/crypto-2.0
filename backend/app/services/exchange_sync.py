@@ -2582,7 +2582,14 @@ class ExchangeSyncService:
             cancelled_order_type = cancelled_sibling.order_type or "UNKNOWN"
             cancelled_order_price = cancelled_sibling.price or 0
             cancelled_order_qty = cancelled_sibling.quantity or 0
-            cancelled_order_time = cancelled_sibling.exchange_update_time or cancelled_sibling.updated_at or datetime.now(timezone.utc)
+            # `updated_at` primero: la ruta de cancelacion lo pone a utcnow() justo
+            # antes de notificar, mientras que `exchange_update_time` conserva la hora
+            # de CREACION hasta que un sync posterior la refresque. Al preferir este
+            # ultimo, el mensaje mostraba la hora de creacion etiquetada como hora de
+            # cancelacion. Caso ATOM_USD 24-ago-2026: TP creado 09:24:43 y cancelado
+            # 23:01:45; el mensaje dijo "Cancelled: 09:24:43", 14h antes del fill del
+            # SL hermano, sugiriendo que el OCO no habia actuado.
+            cancelled_order_time = cancelled_sibling.updated_at or cancelled_sibling.exchange_update_time or datetime.now(timezone.utc)
             
             # Format times
             filled_time_str = filled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if filled_order_time else "N/A"
