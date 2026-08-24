@@ -216,7 +216,7 @@ class TelegramNotifier:
     def _format_timestamp(self) -> str:
         """Format current timestamp using configured timezone (Bali time)"""
         ts = datetime.now(self.timezone)
-        return ts.strftime("%Y-%m-%d %H:%M:%S WIB")
+        return ts.strftime("%Y-%m-%d %H:%M:%S %Z")
     
     def _create_message_hash(self, symbol: str, price: float, reason: str, side: str = "BUY") -> str:
         """

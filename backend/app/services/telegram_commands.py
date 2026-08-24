@@ -2251,7 +2251,7 @@ def send_status_message(chat_id: str, db: Optional[Session] = None) -> bool:
                     if last_item and getattr(last_item, "created_at", None):
                         tz = pytz.timezone("Asia/Makassar")  # Bali time (UTC+8)
                         if isinstance(last_item.created_at, datetime):
-                            last_update = last_item.created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
+                            last_update = last_item.created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
                         else:
                             last_update = str(last_item.created_at)
                 except:
@@ -2284,7 +2284,7 @@ def send_status_message(chat_id: str, db: Optional[Session] = None) -> bool:
         
         # Build status message
         tz = pytz.timezone("Asia/Makassar")  # Bali time (UTC+8)
-        now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
+        now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
         
         # Build auto trading section
         if auto_trading_coins:
@@ -2644,9 +2644,9 @@ No signals generated yet."""
                 created_at = getattr(signal, "created_at", None)
                 last_update_at = getattr(signal, "last_update_at", None)
                 if isinstance(created_at, datetime):
-                    ts = created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
+                    ts = created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
                 elif isinstance(last_update_at, datetime):
-                    ts = last_update_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
+                    ts = last_update_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
                 else:
                     ts = "N/A"
                 
