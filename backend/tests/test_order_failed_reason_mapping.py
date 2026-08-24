@@ -26,7 +26,13 @@ def test_telegram_copy_includes_spanish_per_coin_limit():
     assert "Máx. 1 trade activo" in text
     assert "per-coin" in text.lower() or "por moneda" in text.lower()
     assert "EXCHANGE_ERROR_UNKNOWN" not in text
-    assert "Señal enviada" in text
+    # 24-ago-2026: este bloqueo es una regla propia, no un fallo. El pie
+    # "Senal enviada; la orden no se creo" era falso (nunca se envio nada al
+    # exchange) y la cabecera decia ORDER FAILED. Ahora ambos son honestos.
+    # Ver claude/atp-ordenes-fallando-24ago-veredicto.md.
+    assert "ORDER FAILED" not in text
+    assert "ORDEN BLOQUEADA POR REGLA PROPIA" in text
+    assert "no se envio nada al exchange" in text.lower().replace("ó", "o")
 
 
 def test_instrument_short_sell_disabled_not_insufficient_funds():
