@@ -1051,7 +1051,7 @@ def calculate_trading_signals(
         "sell_volume_ok": strategy_state["reasons"].get("sell_volume_ok"),
     }
     logger.info(
-        "[DEBUG_STRATEGY_FINAL] symbol=%s | decision=%s | buy_signal=%s | sell_signal=%s | index=%s | buy_rsi_ok=%s | buy_volume_ok=%s | buy_ma_ok=%s | buy_target_ok=%s | buy_price_ok=%s | sell_rsi_ok=%s | sell_trend_ok=%s | sell_volume_ok=%s | volume_ratio=%.4f | min_volume_ratio=%.4f",
+        "[DEBUG_STRATEGY_FINAL] symbol=%s | decision=%s | buy_signal=%s | sell_signal=%s | index=%s | buy_rsi_ok=%s | buy_volume_ok=%s | buy_ma_ok=%s | buy_target_ok=%s | buy_price_ok=%s | buy_trend_filters_ok=%s | buy_rsi_confirmation_ok=%s | buy_candle_confirmation_ok=%s | should_buy=%s | sell_rsi_ok=%s | sell_trend_ok=%s | sell_volume_ok=%s | volume_ratio=%.4f | min_volume_ratio=%.4f | summary=%s",
         symbol,
         strategy_state.get("decision"),
         result.get("buy_signal"),
@@ -1062,11 +1062,16 @@ def calculate_trading_signals(
         buy_flags.get("buy_ma_ok"),
         buy_flags.get("buy_target_ok"),
         buy_flags.get("buy_price_ok"),
+        strategy_state["reasons"].get("buy_trend_filters_ok"),
+        strategy_state["reasons"].get("buy_rsi_confirmation_ok"),
+        strategy_state["reasons"].get("buy_candle_confirmation_ok"),
+        decision.should_buy,
         sell_flags.get("sell_rsi_ok"),
         sell_flags.get("sell_trend_ok"),
         sell_flags.get("sell_volume_ok"),
         volume_ratio_val if volume_ratio_val is not None else -1.0,
         min_volume_ratio,
+        strategy_state.get("summary"),
     )
     
     return result
