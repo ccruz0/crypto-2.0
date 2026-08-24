@@ -238,6 +238,10 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
     elif symbol_u.endswith("_USD"):
         variants.add(symbol_u.replace("_USD", "_USDT"))
 
+    # Declaradas fuera del try: si el fetch en vivo lanza, el bloque de DB
+    # de mas abajo las lee igualmente.
+    live_has_sl = False
+    live_has_tp = False
     try:
         from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 
@@ -273,10 +277,19 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
                 "take" in otype and "profit" in otype
             ):
                 has_tp = True
-        # Prefer the live exchange view when it sees protection. If it sees none,
-        # still fall through to the DB — open-order fetches can briefly miss rows.
-        if has_sl or has_tp:
-            return {"has_sl": has_sl, "has_tp": has_tp}
+        # Prefer the live exchange view only when it sees BOTH protections.
+        #
+        # Antes bastaba con ver UNA (`has_sl or has_tp`) para devolver sin
+        # consultar la DB. El fetch en vivo puede perder una sola pata, y en ese
+        # caso se reportaba la otra como ausente sin llegar nunca al respaldo que
+        # tenia el dato correcto. Caso BONK_USD 24-ago-2026: la alerta diaria dijo
+        # "SL falta / TP activo" mientras exchange_orders tenia STOP_LOSS ACTIVE.
+        #
+        # Con una sola vista parcial, seguimos a la DB y combinamos: una
+        # proteccion vista por cualquiera de las dos fuentes cuenta como presente.
+        if has_sl and has_tp:
+            return {"has_sl": True, "has_tp": True}
+        live_has_sl, live_has_tp = has_sl, has_tp
     except Exception as e:
         logger.warning("posrev: exchange protection check failed for %s: %s", symbol, e)
 
@@ -318,7 +331,10 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
             )
             .count()
         )
-        return {"has_sl": sl_n > 0, "has_tp": tp_n > 0}
+        return {
+            "has_sl": (sl_n > 0) or live_has_sl,
+            "has_tp": (tp_n > 0) or live_has_tp,
+        }
     except Exception as e:
         logger.warning("posrev: DB protection check failed for %s: %s", symbol, e)
         return {"has_sl": False, "has_tp": False}
