@@ -8568,6 +8568,30 @@ class SignalMonitorService:
                         safe_cumulative_val = to_python_float(result.get("cumulative_value")) if result.get("cumulative_value") else None
                         safe_avg_price = to_python_float(result.get("avg_price")) if result.get("avg_price") else None
 
+                        # ---------------------------------------------------------------
+                        # CODIGO INACTIVO (verificado 24-ago-2026). No se ejecuta.
+                        #
+                        # Vive dentro de _create_buy_order_impl / _create_sell_order_impl,
+                        # apagados por resolve_legacy_buy_order_gate (signal_order_policy):
+                        # sus tres ramas devuelven False mientras
+                        # SIGNAL_ORDER_REQUIRES_ALERT sea true, que es el default.
+                        # La ruta viva es el orquestador (_place_order_from_signal,
+                        # source="orchestrator"), que NO crea TradeSignal: crea OrderIntent.
+                        #
+                        # Medido: trade_signals tiene 62 filas frente a 2641 ordenes;
+                        # exchange_orders.trade_signal_id relleno en 23 (0,9%), todas de
+                        # julio. En 233.618 lineas de log, cero apariciones del mensaje de
+                        # exito de mas abajo.
+                        #
+                        # La atribucion de origen NO depende de esto: execution_origin.py
+                        # usa trade_signal_id OR has_order_intent OR has_trade_signal_link,
+                        # y OrderIntent (3.162 filas) cubre el hueco. Sin falsos "Manual"
+                        # desde el 9-ago-2026.
+                        #
+                        # Se conserva porque SIGNAL_ORDER_REQUIRES_ALERT=false lo reactiva.
+                        # Antes de retirarlo, decidir si ese camino de vuelta se mantiene.
+                        # Detalle: claude/atp-trade-signals-62-filas-causa.md
+                        # ---------------------------------------------------------------
                         # CRITICAL FIX: Create TradeSignal record and assign trade_signal_id to link automatic order
                         # This prevents automatic orders from being marked as "Manual" in Telegram notifications
                         trade_signal_id = None
@@ -11133,6 +11157,30 @@ class SignalMonitorService:
                     ).first()
                     
                     if not existing_order:
+                        # ---------------------------------------------------------------
+                        # CODIGO INACTIVO (verificado 24-ago-2026). No se ejecuta.
+                        #
+                        # Vive dentro de _create_buy_order_impl / _create_sell_order_impl,
+                        # apagados por resolve_legacy_buy_order_gate (signal_order_policy):
+                        # sus tres ramas devuelven False mientras
+                        # SIGNAL_ORDER_REQUIRES_ALERT sea true, que es el default.
+                        # La ruta viva es el orquestador (_place_order_from_signal,
+                        # source="orchestrator"), que NO crea TradeSignal: crea OrderIntent.
+                        #
+                        # Medido: trade_signals tiene 62 filas frente a 2641 ordenes;
+                        # exchange_orders.trade_signal_id relleno en 23 (0,9%), todas de
+                        # julio. En 233.618 lineas de log, cero apariciones del mensaje de
+                        # exito de mas abajo.
+                        #
+                        # La atribucion de origen NO depende de esto: execution_origin.py
+                        # usa trade_signal_id OR has_order_intent OR has_trade_signal_link,
+                        # y OrderIntent (3.162 filas) cubre el hueco. Sin falsos "Manual"
+                        # desde el 9-ago-2026.
+                        #
+                        # Se conserva porque SIGNAL_ORDER_REQUIRES_ALERT=false lo reactiva.
+                        # Antes de retirarlo, decidir si ese camino de vuelta se mantiene.
+                        # Detalle: claude/atp-trade-signals-62-filas-causa.md
+                        # ---------------------------------------------------------------
                         # CRITICAL FIX: Create TradeSignal record and assign trade_signal_id to link automatic order
                         # This prevents automatic orders from being marked as "Manual" in Telegram notifications
                         trade_signal_id = None
