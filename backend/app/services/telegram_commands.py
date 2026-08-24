@@ -1133,7 +1133,7 @@ def _parse_pending_value(state: Dict[str, Any], raw_value: str) -> Tuple[Optiona
         elif value_type == "symbol":
             val = normalized.upper()
             if "_" not in val:
-                val = f"{val}_USDT"
+                val = f"{val}_USD"
         else:  # string
             val = normalized
     except ValueError:
@@ -4302,8 +4302,8 @@ Choose a coin from your watchlist ({len(coins)} coins):"""
         
         symbol = parts[1].upper()
         if "_" not in symbol:
-            # Try to add _USDT if not present
-            symbol = f"{symbol}_USDT"
+            # Try to add _USD if not present
+            symbol = f"{symbol}_USD"
         
         if not db:
             return send_command_response(chat_id, "❌ Database not available")
@@ -4378,7 +4378,7 @@ def handle_create_sl_tp_command(chat_id: str, text: str, db: Optional[Session] =
             # Create SL/TP for specific symbol
             symbol = parts[1].upper()
             if "_" not in symbol:
-                symbol = f"{symbol}_USDT"
+                symbol = f"{symbol}_USD"
             
             # Explicit operator action (command or position-review button) must
             # override skip_sl_tp_reminder — same as the bulk create path below.
@@ -4456,7 +4456,7 @@ def handle_create_sl_command(chat_id: str, text: str, db: Optional[Session] = No
         
         symbol = parts[1].upper()
         if "_" not in symbol:
-            symbol = f"{symbol}_USDT"
+            symbol = f"{symbol}_USD"
         
         # Explicit operator action overrides skip_sl_tp_reminder (position-review buttons).
         result = sl_tp_checker_service.create_sl_for_position(db, symbol, force=True)
@@ -4501,7 +4501,7 @@ def handle_create_tp_command(chat_id: str, text: str, db: Optional[Session] = No
         
         symbol = parts[1].upper()
         if "_" not in symbol:
-            symbol = f"{symbol}_USDT"
+            symbol = f"{symbol}_USD"
         
         # Explicit operator action overrides skip_sl_tp_reminder (position-review buttons).
         result = sl_tp_checker_service.create_tp_for_position(db, symbol, force=True)
@@ -4543,8 +4543,8 @@ def handle_add_coin_command(chat_id: str, text: str, db: Optional[Session] = Non
         
         # Validate symbol format
         if "_" not in symbol:
-            # Try to add _USDT if not present
-            symbol = f"{symbol}_USDT"
+            # Try to add _USD if not present
+            symbol = f"{symbol}_USD"
         
         # Split symbol into base and quote currency
         try:
@@ -4634,7 +4634,7 @@ def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Optional[Ses
             # Skip reminder for specific symbol
             symbol = parts[1].upper()
             if "_" not in symbol:
-                symbol = f"{symbol}_USDT"
+                symbol = f"{symbol}_USD"
             
             success = sl_tp_checker_service.skip_reminder_for_symbol(db, symbol)
             

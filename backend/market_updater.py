@@ -48,12 +48,10 @@ _non_custom_offset = 0
 
 # Default list of major cryptocurrencies that should always be tracked
 DEFAULT_TRACKED_SYMBOLS = [
-    "BTC_USDT", "BTC_USD", "ETH_USDT", "ETH_USD",
-    "DOGE_USDT", "ADA_USDT", "TON_USDT", "SOL_USDT",
-    "BNB_USDT", "XRP_USDT", "DOT_USDT", "LINK_USDT",
-    "MATIC_USDT", "AVAX_USDT", "ALGO_USDT", "UNI_USDT",
-    "ATOM_USDT", "ETC_USDT", "LTC_USDT", "BCH_USDT",
-    "XLM_USDT", "FIL_USDT", "TRX_USDT"
+    "BTC_USD", "ETH_USD", "SOL_USD", "DOT_USD", "DOGE_USD",
+    "ALGO_USD", "AAVE_USD", "SUI_USD", "APT_USD", "HBAR_USD",
+    "BONK_USD", "XLM_USD", "ATOM_USD", "DGB_USD", "AKT_USD",
+    "XRP_USD", "GRAM_USD", "BCH_USD", "CRO_USD",
 ]
 
 # Import after path setup
