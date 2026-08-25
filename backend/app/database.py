@@ -2196,6 +2196,21 @@ def ensure_optional_columns(db_engine=None):
     except Exception as table_err:
         logger.warning(f"Could not ensure market_data/market_price tables: {table_err}")
 
+    # Historico de velas OHLCV. Separado de market_data a proposito: aquella
+    # tiene UNIQUE(symbol) y guarda solo el estado actual; esta es la serie
+    # temporal que hace falta para backtestear sin depender de las 300 velas
+    # que devuelve la API publica.
+    try:
+        from app.models.candle import Candle
+        tbl = getattr(Candle, "__table__", None)
+        tname = getattr(Candle, "__tablename__", "candles")
+        if tbl is not None and not table_exists(engine_to_use, tname):
+            logger.warning(f"Table {tname} does not exist - creating it")
+            Base.metadata.create_all(bind=engine_to_use, tables=[tbl])
+            logger.info(f"[BOOT] Created table {tname}")
+    except Exception as table_err:
+        logger.warning(f"Could not ensure candles table: {table_err}")
+
     # Ensure order_intents table exists. If create_all fails (e.g. orphan index), try drop+retry;
     # if that still fails, create table and indexes via raw SQL with IF NOT EXISTS.
     order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
