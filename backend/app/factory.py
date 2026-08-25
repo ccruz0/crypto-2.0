@@ -693,6 +693,19 @@ def create_app(role: str = "legacy") -> FastAPI:
                         logger.info("Position review daily loop started")
                     except Exception as e:
                         logger.error("Failed to start position review loop: %s", e, exc_info=True)
+
+                # Registro historico de velas OHLCV. Solo escribe en `candles`;
+                # ninguna ruta de trading lee de ahi. Bajo _run_poller para que
+                # canary y standby no dupliquen el barrido (la BD deduplica de
+                # todas formas, pero duplicar el trabajo es gasto inutil).
+                if _run_poller:
+                    try:
+                        from app.services.candle_recorder import start_candle_recorder_loop
+
+                        asyncio.create_task(start_candle_recorder_loop())
+                        logger.info("Candle recorder loop started")
+                    except Exception as e:
+                        logger.error("Failed to start candle recorder loop: %s", e, exc_info=True)
             except Exception as e:
                 logger.error(f"Background init error: {e}", exc_info=True)
     
