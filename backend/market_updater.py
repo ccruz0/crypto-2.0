@@ -177,9 +177,14 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
             # This prevents creating invalid symbols like "BTC_UNKNOWN_USDT"
             logger.debug(f"Symbol {symbol} has non-standard pair, using as-is (no normalization)")
         elif symbol.upper().endswith("_USD"):
-            # Convert _USD to _USDT for Crypto.com (they use USDT pairs)
-            normalized_symbol = symbol.replace("_USD", "_USDT")
-            logger.debug(f"Normalized symbol {symbol} to {normalized_symbol} for Crypto.com API")
+            # Fase C (25-ago-2026): la senal se calcula sobre el MISMO libro que se
+            # opera. Antes se convertia _USD -> _USDT aqui, de modo que un par que
+            # se ejecutaba en USD derivaba sus indicadores del libro USDT.
+            # Divergencia medida (1h, 200 velas, 10 monedas): ruido en liquidas
+            # (dRSI <= 0.35) pero 4.47 puntos de RSI en APT_USD.
+            # Se conserva el par tal cual; si el libro USD no devuelve velas, mas
+            # abajo se reintenta con el gemelo USDT antes de ir a Binance.
+            normalized_symbol = symbol
         
         # Use Crypto.com Exchange API v1 (not v2)
         # Exchange v1 accepts `count` (max 300). Without it the API defaults to ~25
@@ -197,6 +202,25 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
         result = response.json()
         
         # Check if Crypto.com returned an error (e.g., invalid instrument)
+        # Fase C: si el libro USD no sirve velas, reintentar una vez con el gemelo
+        # USDT antes de caer a Binance (cubre pares sin libro USD en Crypto.com).
+        if (
+            symbol.upper().endswith("_USD")
+            and normalized_symbol == symbol
+            and isinstance(result, dict)
+            and (result.get("code") not in (0, None) or not result.get("result", {}).get("data"))
+        ):
+            twin = symbol.replace("_USD", "_USDT")
+            logger.debug(f"USD book empty for {symbol}; retrying with twin {twin}")
+            try:
+                params["instrument_name"] = twin
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                result = response.json()
+                normalized_symbol = twin
+            except Exception as twin_exc:
+                logger.debug(f"Twin retry failed for {twin}: {twin_exc}")
+
         if "code" in result and result.get("code") != 0:
             error_code = result.get("code")
             error_msg = result.get("message", "")
