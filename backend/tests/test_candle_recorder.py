@@ -167,3 +167,28 @@ async def test_bucle_no_registra_con_watchlist_vacia():
         except asyncio.CancelledError:
             pass
     rec.assert_not_called()
+
+
+def test_record_all_propaga_el_count():
+    """RECORD_COUNT se anunciaba en el log pero no llegaba a la peticion:
+    con CANDLE_RECORD_COUNT=50 el log decia 50 y se pedian 300."""
+    db = MagicMock()
+    with patch.object(cr, "record_symbol", return_value=1) as rs:
+        cr.record_all(db, ["BTC_USD"], timeframes=["1h"], count=50)
+    assert rs.call_args.kwargs.get("count") == 50
+
+
+@pytest.mark.asyncio
+async def test_bucle_pasa_record_count_al_barrido():
+    import asyncio
+    with patch.object(cr, "_symbols_from_watchlist", return_value=["BTC_USD"]), \
+         patch.object(cr, "record_all", return_value={"1h": 1}) as ra, \
+         patch.object(cr, "RECORD_INTERVAL_SECONDS", 0.01), \
+         patch.object(cr, "RECORD_COUNT", 77), \
+         patch("app.database.SessionLocal", MagicMock()):
+        task = asyncio.create_task(cr.start_candle_recorder_loop())
+        await asyncio.sleep(0.03)
+        task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
+    assert ra.call_args.kwargs.get("count") == 77

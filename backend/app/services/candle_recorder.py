@@ -145,6 +145,8 @@ def record_all(
     db: Session,
     symbols: List[str],
     timeframes: Iterable[str] = TIMEFRAMES,
+    *,
+    count: int = MAX_COUNT,
 ) -> Dict[str, int]:
     """Recorre simbolos x timeframes. Devuelve {timeframe: filas_nuevas}."""
     totals: Dict[str, int] = {}
@@ -152,7 +154,7 @@ def record_all(
         inserted = 0
         for symbol in symbols:
             try:
-                inserted += record_symbol(db, symbol, tf)
+                inserted += record_symbol(db, symbol, tf, count=count)
             except Exception as exc:
                 # Un simbolo que falla no debe abortar el barrido completo.
                 logger.warning("[CANDLES] %s %s fallo: %s", symbol, tf, exc)
@@ -209,7 +211,7 @@ async def start_candle_recorder_loop() -> None:
                 if not symbols:
                     logger.info("[CANDLES] watchlist vacia, no hay nada que registrar")
                 else:
-                    totals = record_all(db, symbols)
+                    totals = record_all(db, symbols, count=RECORD_COUNT)
                     logger.info(
                         "[CANDLES] barrido completo: %d simbolos, nuevas=%s",
                         len(symbols),
