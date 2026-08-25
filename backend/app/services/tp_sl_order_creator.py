@@ -527,6 +527,20 @@ def create_oco_protection_orders(
                 tp_percentage = float(wl.tp_percentage)
             if wl and wl.sl_percentage is not None and float(wl.sl_percentage) > 0:
                 sl_percentage = float(wl.sl_percentage)
+            # OBS #565: de donde sale el % efectivo del stop. Si sl_percentage
+            # llega None al guard, ensure_valid_sl_trigger cae a
+            # _DEFAULT_SL_PCT = 10.0 y recalcula sobre el precio de mercado.
+            # Sin esta traza no se puede saber si la fila no existia, si el
+            # valor era NULL/0, o si el simbolo no casaba (lookup exacto).
+            logger.info(
+                "[SL_PCT_SOURCE] ruta=OCO symbol=%s entry_side=%s wl_encontrada=%s "
+                "wl_sl_raw=%s sl_percentage_efectivo=%s",
+                symbol,
+                entry_side,
+                wl is not None,
+                getattr(wl, "sl_percentage", None) if wl else None,
+                sl_percentage,
+            )
         except Exception as wl_err:
             logger.debug(
                 "[%s_OCO] watchlist pct lookup failed for %s: %s",
@@ -1254,15 +1268,35 @@ def create_stop_loss_order(
         )
         return {"order_id": None, "error": f"SL/TP blocked: {cover_block}"}
 
+    _sl_pct_origen = "argumento" if sl_percentage is not None else "watchlist"
+    _wl_encontrada = None
+    _wl_sl_raw = None
     if sl_percentage is None:
         try:
             from app.models.watchlist import WatchlistItem
 
             wl = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+            _wl_encontrada = wl is not None
+            _wl_sl_raw = getattr(wl, "sl_percentage", None) if wl else None
             if wl and wl.sl_percentage is not None and float(wl.sl_percentage) > 0:
                 sl_percentage = float(wl.sl_percentage)
         except Exception as wl_err:
             logger.debug("Could not read watchlist sl_percentage for %s: %s", symbol, wl_err)
+    # OBS #565: ver comentario en la ruta OCO. sl_percentage=None aqui significa
+    # que el guard usara _DEFAULT_SL_PCT = 10.0 sobre el precio de mercado.
+    logger.info(
+        "[SL_PCT_SOURCE] ruta=SL symbol=%s entry_side=%s origen=%s "
+        "wl_encontrada=%s wl_sl_raw=%s sl_percentage_efectivo=%s "
+        "sl_price_entrante=%s entry_price=%s",
+        symbol,
+        entry_side,
+        _sl_pct_origen,
+        _wl_encontrada,
+        _wl_sl_raw,
+        sl_percentage,
+        sl_price,
+        entry_price,
+    )
 
     # Reject stale absolute SL on the wrong side of market (INVALID_TRIGGER_PRICE)
     ticker = None if dry_run else fetch_ticker_prices(symbol)
