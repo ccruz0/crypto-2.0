@@ -45,7 +45,12 @@ _EXTRA_STABLES = {
     if c.strip()
 }
 FIAT_CURRENCIES = _STABLE_AND_FIAT | _EXTRA_STABLES
-DUST_USD = float(os.getenv("POSITION_REVIEW_DUST_USD", "1.0"))
+# Umbral de polvo. Subido de 1.0 a 5.0 el 25-ago-2026: con 1.0 se alertaba de
+# restos de posiciones ya cerradas (DOT_USD 1,66 USD; DOGE_USD 1,17 USD;
+# SUI_USD ~2 USD, resto de una posicion de 1.381 unidades cerrada por TP el
+# 20-ago). Ninguna era una posicion real desprotegida. Sigue siendo
+# configurable por entorno para poder bajarlo sin desplegar.
+DUST_USD = float(os.getenv("POSITION_REVIEW_DUST_USD", "5.0"))
 SNOOZE_DAYS = int(os.getenv("POSITION_REVIEW_SNOOZE_DAYS", "30"))
 REVIEW_HOUR_UTC = int(os.getenv("POSITION_REVIEW_HOUR_UTC", "9"))  # daily send hour (UTC)
 
