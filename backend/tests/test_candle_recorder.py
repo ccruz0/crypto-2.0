@@ -100,3 +100,70 @@ def test_record_all_continua_si_un_simbolo_falla():
         totals = cr.record_all(db, ["BUENO", "MALO", "OTRO"], timeframes=["1h"])
     assert totals["1h"] == 10   # los dos buenos, el malo no aborta
     db.rollback.assert_called_once()
+
+
+# --- Bucle de ingesta -------------------------------------------------------
+
+def test_symbols_from_watchlist_ordenados_y_sin_duplicados():
+    db = MagicMock()
+    db.query.return_value.distinct.return_value.all.return_value = [
+        ("ETH_USD",), ("BTC_USD",), ("ETH_USD",), (None,),
+    ]
+    with patch.dict("sys.modules", {"app.models.watchlist": MagicMock()}):
+        out = cr._symbols_from_watchlist(db)
+    assert out == ["BTC_USD", "ETH_USD"]
+
+
+def test_symbols_from_watchlist_devuelve_vacio_si_falla():
+    """Preferimos no registrar antes que inventar una lista fija."""
+    db = MagicMock()
+    db.query.side_effect = RuntimeError("sin tabla")
+    assert cr._symbols_from_watchlist(db) == []
+
+
+@pytest.mark.asyncio
+async def test_bucle_sobrevive_a_una_excepcion():
+    """Si una iteracion revienta, el bucle NO debe morir: el registro es de
+    largo plazo y una caida silenciosa lo dejaria sin datos durante dias."""
+    import asyncio
+
+    llamadas = {"n": 0}
+
+    def _boom(db):
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            raise RuntimeError("fallo transitorio")
+        return ["BTC_USD"]
+
+    with patch.object(cr, "_symbols_from_watchlist", side_effect=_boom), \
+         patch.object(cr, "record_all", return_value={"1h": 3}), \
+         patch.object(cr, "RECORD_INTERVAL_SECONDS", 0.01), \
+         patch("app.database.SessionLocal", MagicMock()):
+        task = asyncio.create_task(cr.start_candle_recorder_loop())
+        await asyncio.sleep(0.06)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    # Sobrevivio al fallo de la primera iteracion y siguio llamando.
+    assert llamadas["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_bucle_no_registra_con_watchlist_vacia():
+    import asyncio
+
+    with patch.object(cr, "_symbols_from_watchlist", return_value=[]), \
+         patch.object(cr, "record_all") as rec, \
+         patch.object(cr, "RECORD_INTERVAL_SECONDS", 0.01), \
+         patch("app.database.SessionLocal", MagicMock()):
+        task = asyncio.create_task(cr.start_candle_recorder_loop())
+        await asyncio.sleep(0.03)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    rec.assert_not_called()

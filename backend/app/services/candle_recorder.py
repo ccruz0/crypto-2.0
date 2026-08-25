@@ -8,6 +8,7 @@ NO toca ninguna ruta de trading. Solo escribe en `candles`.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, Iterable, List, Optional
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -159,3 +160,66 @@ def record_all(
         totals[tf] = inserted
         logger.info("[CANDLES] %s: %d velas nuevas", tf, inserted)
     return totals
+
+# --- Bucle de ingesta periodica ---------------------------------------------
+
+# Cada cuanto se ejecuta el barrido completo. Una hora es el minimo util: el
+# timeframe mas corto que se registra es 1h, asi que barrer mas a menudo solo
+# reescribiria la misma vela abierta.
+RECORD_INTERVAL_SECONDS = int(os.getenv("CANDLE_RECORD_INTERVAL_SECONDS", "3600"))
+
+# Cuantas velas se piden en cada barrido. 300 es el maximo de la API y sirve
+# tambien como relleno: si el job estuvo caido un dia, el siguiente barrido
+# recupera el hueco sin intervencion.
+RECORD_COUNT = int(os.getenv("CANDLE_RECORD_COUNT", "300"))
+
+
+def _symbols_from_watchlist(db: Session) -> List[str]:
+    """Simbolos a registrar: los de la watchlist.
+
+    Si la watchlist esta vacia devuelve [] y el barrido no hace nada — es
+    preferible no registrar a inventar una lista fija que se desincronice de
+    lo que el bot realmente opera.
+    """
+    try:
+        from app.models.watchlist import WatchlistItem
+
+        rows = db.query(WatchlistItem.symbol).distinct().all()
+        return sorted({r[0] for r in rows if r and r[0]})
+    except Exception as exc:
+        logger.warning("[CANDLES] no se pudo leer la watchlist: %s", exc)
+        return []
+
+
+async def start_candle_recorder_loop() -> None:
+    """Registra velas cada RECORD_INTERVAL_SECONDS. Nunca muere por una excepcion."""
+    import asyncio
+
+    from app.database import SessionLocal
+
+    logger.info(
+        "[CANDLES] bucle de registro iniciado (cada %ds, %d velas, timeframes=%s)",
+        RECORD_INTERVAL_SECONDS, RECORD_COUNT, ",".join(TIMEFRAMES),
+    )
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                symbols = _symbols_from_watchlist(db)
+                if not symbols:
+                    logger.info("[CANDLES] watchlist vacia, no hay nada que registrar")
+                else:
+                    totals = record_all(db, symbols)
+                    logger.info(
+                        "[CANDLES] barrido completo: %d simbolos, nuevas=%s",
+                        len(symbols),
+                        totals,
+                    )
+            finally:
+                db.close()
+        except asyncio.CancelledError:  # pragma: no cover
+            logger.info("[CANDLES] bucle cancelado")
+            raise
+        except Exception as exc:  # pragma: no cover - el bucle debe sobrevivir
+            logger.error("[CANDLES] iteracion fallida: %s", exc, exc_info=True)
+        await asyncio.sleep(RECORD_INTERVAL_SECONDS)
