@@ -326,6 +326,22 @@ def ensure_valid_sl_trigger(
 
     pct = derive_sl_percentage(entry_side, entry_price, sl_price, sl_percentage)
     repaired = compute_market_relative_sl(entry_side, ref, pct)
+    # OBS #565: marcar explicitamente cuando el porcentaje NO vino de la
+    # configuracion y se esta usando el default de la casa (10 %). Es el caso
+    # que produjo 24 stops de cortos a -10 % en 15 dias (ver veredicto
+    # atp-stop-loss-10pct-cortos-veredicto).
+    if sl_percentage is None or sl_percentage <= 0:
+        logger.warning(
+            "[SL_PCT_DEFAULT] entry_side=%s sin sl_percentage configurado; "
+            "derive_sl_percentage devolvio %.4g%% (entry_price=%s sl_price=%s) "
+            "y el stop se recalcula sobre market_ref=%s -> %s",
+            entry_side,
+            pct,
+            entry_price,
+            sl_price,
+            ref,
+            repaired,
+        )
     reason = (
         f"stale/invalid SL {sl_price} vs market_ref {ref} "
         f"(entry_side={entry_side}); recomputed to {repaired} using {pct:.4g}%"
