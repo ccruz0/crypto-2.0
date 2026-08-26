@@ -29,7 +29,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.telegram_message import TelegramMessage
@@ -675,38 +675,77 @@ def detect_orphans_and_oco(db, now: datetime) -> list[dict]:
             )
 
     # -- OCO leak: one leg filled, sibling still alive ----------------------
+    # Se emparejan por oco_group_id cuando existe, y por parent_order_id + rol
+    # opuesto cuando no. Filtrar solo por oco_group_id dejaba ciego al detector
+    # en la mayoria de las filas: censo del 26-ago-2026 sobre 767 FILLED en
+    # produccion -> 179 de 276 TAKE_PROFIT y 50 de 81 STOP_LOSS tienen
+    # oco_group_id NULL. Es el mismo emparejamiento en dos pasos que ya hacen
+    # exchange_sync._find_oco_siblings (~2730), sl_tp_checker (~1082) y
+    # routes_orders (~1783); este detector era el unico sin el, y es el que
+    # dispara la alerta de doble ejecucion.
     filled_legs = (
         db.query(ExchangeOrder)
         .filter(
             ExchangeOrder.status == OrderStatusEnum.FILLED,
-            ExchangeOrder.oco_group_id.isnot(None),
+            or_(
+                ExchangeOrder.oco_group_id.isnot(None),
+                ExchangeOrder.parent_order_id.isnot(None),
+            ),
             ExchangeOrder.exchange_update_time >= now - timedelta(hours=WINDOW_HOURS()),
             ExchangeOrder.exchange_update_time <= now - grace,
         )
         .all()
     )
+    seen_pairs: set = set()
     for leg in filled_legs:
-        if _role_of(leg) is None:
+        leg_role = _role_of(leg)
+        if leg_role is None:
             continue
-        siblings = (
-            db.query(ExchangeOrder)
-            .filter(
-                ExchangeOrder.oco_group_id == leg.oco_group_id,
-                ExchangeOrder.exchange_order_id != leg.exchange_order_id,
-                ExchangeOrder.status.in_(ACTIVE_STATUSES),
+        if leg.oco_group_id:
+            siblings = (
+                db.query(ExchangeOrder)
+                .filter(
+                    ExchangeOrder.oco_group_id == leg.oco_group_id,
+                    ExchangeOrder.exchange_order_id != leg.exchange_order_id,
+                    ExchangeOrder.status.in_(ACTIVE_STATUSES),
+                )
+                .all()
             )
-            .all()
-        )
+        else:
+            # Sin grupo OCO: el hermano es la pata del rol CONTRARIO que cuelga
+            # de la misma entrada. Exigir rol opuesto evita emparejar dos
+            # protecciones del mismo tipo creadas en reintentos sucesivos.
+            # _role_of normaliza a "SL" / "TP", no a los valores crudos de
+            # order_role. Compararlo contra "STOP_LOSS"/"TAKE_PROFIT" no casa
+            # nunca y deja el detector igual de ciego que antes.
+            opposite = "SL" if leg_role == "TP" else "TP"
+            siblings = [
+                cand
+                for cand in db.query(ExchangeOrder)
+                .filter(
+                    ExchangeOrder.parent_order_id == leg.parent_order_id,
+                    ExchangeOrder.exchange_order_id != leg.exchange_order_id,
+                    ExchangeOrder.status.in_(ACTIVE_STATUSES),
+                )
+                .all()
+                if _role_of(cand) == opposite
+            ]
         for sib in siblings:
+            # Las dos patas de un par pueden llegar aqui por separado; un
+            # hallazgo por pareja, no dos.
+            pair_key = (leg.exchange_order_id, sib.exchange_order_id)
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
             findings.append(
                 _finding(
                     kind="OCO_SIBLING_NOT_CANCELLED",
                     severity="high",
                     symbol=leg.symbol,
-                    anchor=f"{leg.oco_group_id}:{sib.exchange_order_id}",
+                    anchor=f"{leg.oco_group_id or ('parent:' + str(leg.parent_order_id))}:{sib.exchange_order_id}",
                     title="Pata OCO no cancelada tras ejecutarse la otra",
                     detail=(
-                        f"En el grupo OCO <code>{leg.oco_group_id}</code> ({leg.symbol}) se ejecutó "
+                        f"En el grupo OCO <code>{leg.oco_group_id or 'sin grupo, enlazadas por entrada ' + str(leg.parent_order_id)}</code> ({leg.symbol}) se ejecutó "
                         f"el {_role_of(leg)} <code>{leg.exchange_order_id}</code>, pero el "
                         f"{_role_of(sib)} <code>{sib.exchange_order_id}</code> sigue "
                         f"<b>{sib.status}</b>.\n"
