@@ -230,5 +230,9 @@ def brief_actions_mark_sent(
 
 # Mounted without require_brief_key on purpose: Telegram cannot send that header.
 # The webhook authenticates with the secret token set via setWebhook, checked
-# inside the handler, which fails closed when the secret is unset.
-router.include_router(brief_webhook_router)
+# inside the handler before the body is read, and fails closed when unset.
+#
+# It DOES go through _brief_guards, unlike the first version. Being the only
+# public endpoint in this router, leaving it outside the rate limit made it the
+# cheapest way to put load on the process that runs the trading loop.
+router.include_router(brief_webhook_router, dependencies=[Depends(_brief_guards)])

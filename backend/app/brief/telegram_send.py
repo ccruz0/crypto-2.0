@@ -25,13 +25,19 @@ def resolve_bot_token() -> str:
 
 
 def resolve_brief_bot_token() -> str:
-    """The brief's own bot, falling back to the ATP one while it does not exist.
+    """The brief's own bot. Empty string when it is not configured — NO fallback.
 
-    They must stay separate. telegram_commands polls @ATP_control_bot for the
-    trading commands and Telegram forbids a webhook and getUpdates on the same
-    token, so the bot that carries the button webhook cannot be that one.
+    An earlier version fell back to the ATP token, which is a trap in both
+    directions: the buttons would go out under @ATP_control_bot and silently do
+    nothing, and registering a webhook on that token to "fix" it would kill the
+    trading command poller (Telegram forbids webhook and getUpdates together,
+    and telegram_commands deletes webhooks on startup anyway).
+
+    So the brief message still goes out under whichever token is available, but
+    the KEYBOARD is only attached when this returns non-empty. Buttons that
+    cannot work are not shown.
     """
-    return (os.getenv("BRIEF_TELEGRAM_BOT_TOKEN") or "").strip() or resolve_bot_token()
+    return (os.getenv("BRIEF_TELEGRAM_BOT_TOKEN") or "").strip()
 
 
 def resolve_chat_id() -> str:
@@ -78,8 +84,15 @@ def send_brief_message(
     """Send text via Bot API to BRIEF_TELEGRAM_CHAT_ID (fallback TELEGRAM_CHAT_ID). Never logs token or body."""
     from app.utils.http_client import http_post
 
-    token = resolve_brief_bot_token()
+    brief_token = resolve_brief_bot_token()
+    token = brief_token or resolve_bot_token()
     chat_id = resolve_chat_id()
+    if reply_markup is not None and not brief_token:
+        # Without the brief's own bot the callbacks would land in the trading
+        # poller and nothing would happen. Send the message, drop the keyboard,
+        # say so loudly.
+        logger.warning("brief_send_markup_dropped reason=brief_bot_token_unset")
+        reply_markup = None
     if not token or not chat_id:
         raise RuntimeError("telegram_bot_not_configured")
 

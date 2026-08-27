@@ -1,43 +1,54 @@
 """Telegram callback webhook for the brief approval buttons.
 
-WHAT THIS DOES, AND WHAT IT DELIBERATELY DOES NOT
--------------------------------------------------
+WHAT THIS DOES
+--------------
 Tapping a button records an approval. It does NOT send mail. The send still
-happens in a Claude session, which reads the store, checks the draft still
-matches what was approved, re-reads the thread, and sends.
+happens in a Claude session that reads the store afterwards.
 
-That boundary is the whole point. An earlier version had the webhook send the
-mail itself and an independent review found two ways it could reach the wrong
-recipient and one way it could stall the trading backend for two minutes. With
-no Graph call in this path, none of those failure modes exist: the handler does
-two Telegram calls of at most ten seconds each and touches one small file.
+WHAT THIS DOES **NOT** SOLVE — read this before assuming it is safe
+-------------------------------------------------------------------
+Moving the send out of this path removes the failure modes that *this code*
+could cause. It does not remove them from the system. Two findings from the
+review of the first attempt (#577) now live in the sending session and remain
+OPEN there:
+
+  * Graph's /reply answers the original sender and honours Reply-To, so it can
+    reach an address that is not `action.to`. Nothing in this backend compares
+    the address actually written to against the one that was approved.
+  * /reply returns 202; treating a later 5xx as "not sent" and falling back to
+    sendMail duplicates the mail.
+
+Whoever writes the sending side must handle both. This module cannot.
 
 WHY ITS OWN BOT
 ---------------
 Telegram allows a webhook or getUpdates on a token, never both. This backend
-polls @ATP_control_bot for the trading commands (RUN_TELEGRAM_POLLER=true) and
-telegram_commands deletes any webhook on startup. So the brief uses its own bot,
-BRIEF_TELEGRAM_BOT_TOKEN. Both are admins of the same channel; the chat id is
-unchanged.
+polls @ATP_control_bot for the trading commands and telegram_commands deletes
+any webhook on startup. So the brief needs its own bot. There is deliberately no
+fallback here: if BRIEF_TELEGRAM_BOT_TOKEN is unset this module refuses to act
+rather than reaching for the trading bot's token.
 
-Handlers are sync on purpose: http_client exposes async_http_get but no async
-POST, and every outbound request must go through it (egress guard). A sync
-handler runs in FastAPI's threadpool and cannot block the event loop.
+CONCURRENCY
+-----------
+The handler is async so it can authenticate BEFORE the body is read — a typed
+body parameter would make FastAPI parse an unauthenticated request first. Every
+blocking call (the store, the Telegram POSTs) is pushed to the threadpool, so
+the event loop the trading backend runs on is never held.
 """
 
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from app.brief import actions_store
 from app.brief.actions_store import ActionStatus
-from app.brief.telegram_send import resolve_brief_bot_token, resolve_chat_id
-from app.utils.http_client import http_post
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +56,30 @@ router = APIRouter()
 
 _TIMEOUT = 10
 _PREFIX = "a:"
+_MAX_BODY = 64 * 1024  # a callback_query update is ~1 KB; 64 KB is generous
+
+
+class BriefBotNotConfigured(RuntimeError):
+    """BRIEF_TELEGRAM_BOT_TOKEN is not set. We do not fall back to the ATP bot."""
+
+
+def _brief_token() -> str:
+    token = (os.getenv("BRIEF_TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        raise BriefBotNotConfigured("BRIEF_TELEGRAM_BOT_TOKEN unset")
+    return token
 
 
 def _api(method: str) -> str:
-    return f"https://api.telegram.org/bot{resolve_brief_bot_token()}/{method}"
+    return f"https://api.telegram.org/bot{_brief_token()}/{method}"
 
 
-def _answer(callback_id: str, text: str, alert: bool = False) -> None:
-    """answerCallbackQuery. Never raises: a failure here costs a spinner, nothing more."""
+def _answer_sync(callback_id: str, text: str, alert: bool = False) -> None:
+    """answerCallbackQuery. Never raises: a failure here costs a spinner."""
     if not callback_id:
         return
+    from app.utils.http_client import http_post
+
     try:
         http_post(
             _api("answerCallbackQuery"),
@@ -66,47 +91,40 @@ def _answer(callback_id: str, text: str, alert: bool = False) -> None:
         logger.warning("brief_callback_answer_failed error=%s", type(exc).__name__)
 
 
-def _mark_message(message: dict[str, Any], suffix: str) -> None:
+def _mark_message_sync(message: dict[str, Any], suffix: str) -> None:
     """Append a line and drop the keyboard. Never raises.
 
-    parse_mode is HTML to match how the brief sends these messages: `text` comes
-    back from Telegram without entities, so re-posting it without the mode would
-    strip the formatting off the whole message.
+    Sent WITHOUT parse_mode on purpose. Telegram returns `text` already
+    rendered, with the original entities in a separate array this code does not
+    carry, so re-posting with parse_mode cannot restore the bold — it can only
+    fail on a stray '<' or '&' from a subject line. The formatting is lost
+    either way; this at least always retires the keyboard.
     """
+    from app.utils.http_client import http_post
+
     chat_id = (message.get("chat") or {}).get("id")
     message_id = message.get("message_id")
     if not chat_id or not message_id:
         return
     original = str(message.get("text") or "")
-    body = (original + suffix)[:4096]
+    # Trim the ORIGINAL, not the result: truncating the tail would drop the
+    # suffix on a message near the 4096 limit, leaving the text unchanged.
+    # Telegram answers "message is not modified" to that and the keyboard stays
+    # live, so the button could be tapped again.
+    room = 4096 - len(suffix)
+    body = (original[:room] if room > 0 else "") + suffix
     try:
-        resp = http_post(
+        http_post(
             _api("editMessageText"),
             json={
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": body,
-                "parse_mode": "HTML",
                 "reply_markup": {"inline_keyboard": []},
             },
             timeout=_TIMEOUT,
             calling_module="brief.telegram_webhook.edit",
         )
-        if resp.status_code >= 400:
-            # Most likely "message is not modified" or an HTML parse error on
-            # text Telegram gave us back plain. Retry once without parse_mode so
-            # the keyboard still goes away and the tap is not left ambiguous.
-            http_post(
-                _api("editMessageText"),
-                json={
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": body,
-                    "reply_markup": {"inline_keyboard": []},
-                },
-                timeout=_TIMEOUT,
-                calling_module="brief.telegram_webhook.edit_plain",
-            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("brief_callback_edit_failed error=%s", type(exc).__name__)
 
@@ -114,100 +132,139 @@ def _mark_message(message: dict[str, Any], suffix: str) -> None:
 def _secret_ok(request: Request) -> bool:
     """The only authentication this endpoint has, and it must be public.
 
-    Fails closed when unset. The header is compared as bytes because Starlette
-    decodes headers as latin-1 and hmac.compare_digest raises TypeError on
-    non-ASCII str — an unauthenticated 500 that anyone could trigger at will.
+    Fails closed when unset. Compared as bytes: Starlette decodes headers as
+    latin-1 and hmac.compare_digest raises TypeError on non-ASCII str, which
+    would be an unauthenticated 500 anyone could trigger at will.
     """
     expected = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
     if not expected:
-        logger.error("brief_webhook_secret_unset rejecting=all")
         return False
     got = request.headers.get("X-Telegram-Bot-Api-Secret-Token") or ""
     return hmac.compare_digest(got.encode("utf-8", "replace"), expected.encode("utf-8"))
 
 
-def _allowed_user() -> str:
-    return (
+def _allowed_users() -> set[str]:
+    """Who may approve. Comma-separated is accepted: TELEGRAM_AUTH_USER_ID is a
+    list in some deployments and a single id in others."""
+    raw = (
         (os.getenv("BRIEF_TELEGRAM_APPROVER_ID") or "").strip()
         or (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
     )
+    return {p.strip() for p in raw.split(",") if p.strip()}
 
 
 def _parse(data: str) -> Optional[tuple[str, str]]:
-    """callback_data is 'a:<opaque id>:<ok|no>'. Never a position."""
+    """callback_data is 'a:<opaque hex id>:<ok|no>'. Never a position."""
     if not data.startswith(_PREFIX):
         return None
     parts = data.split(":")
     if len(parts) != 3 or parts[2] not in ("ok", "no"):
         return None
-    action_id = parts[1]
-    if not action_id or len(action_id) > 32 or not all(c in "0123456789abcdef" for c in action_id):
+    if not is_valid_action_id(parts[1]):
         return None
-    return action_id, parts[2]
+    return parts[1], parts[2]
+
+
+def is_valid_action_id(value: str) -> bool:
+    return bool(value) and len(value) <= 32 and all(c in "0123456789abcdef" for c in value)
 
 
 @router.post("/telegram-webhook")
-def telegram_webhook(request: Request, update: dict[str, Any]) -> dict[str, Any]:
+async def telegram_webhook(request: Request) -> dict[str, Any]:
+    # Authenticate BEFORE touching the body. A typed body parameter would make
+    # FastAPI read and parse an unauthenticated request first, which on a public
+    # endpoint sharing a process with the trading backend is a memory exhaustion
+    # vector.
     if not _secret_ok(request):
         raise HTTPException(status_code=401)
 
-    callback = (update or {}).get("callback_query")
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > _MAX_BODY:
+        raise HTTPException(status_code=413)
+    raw = await request.body()
+    if len(raw) > _MAX_BODY:
+        raise HTTPException(status_code=413)
+    try:
+        update = json.loads(raw or b"{}")
+    except (ValueError, UnicodeDecodeError):
+        return {"ok": True}
+    if not isinstance(update, dict):
+        return {"ok": True}
+
+    callback = update.get("callback_query")
     if not callback:
         return {"ok": True}  # any other update type is ignored
+
+    try:
+        _brief_token()
+    except BriefBotNotConfigured:
+        logger.error("brief_callback_no_bot_token: refusing (will not use the ATP token)")
+        return {"ok": True}
 
     callback_id = str(callback.get("id") or "")
     message = callback.get("message") or {}
     chat_id = str((message.get("chat") or {}).get("id") or "")
-    user = callback.get("from") or {}
-    user_id = str(user.get("id") or "")
+    user_id = str((callback.get("from") or {}).get("id") or "")
 
-    # Fails closed: an unset chat id would otherwise accept callbacks from anywhere.
-    expected_chat = resolve_chat_id()
+    expected_chat = (os.getenv("BRIEF_TELEGRAM_CHAT_ID") or "").strip()
     if not expected_chat or chat_id != expected_chat:
         logger.warning("brief_callback_wrong_chat chat_id=%s", chat_id)
         return {"ok": True}
 
-    # A channel can have several members. Approving a mail that goes out over
-    # Carlos's name is his call, not any reader's.
-    allowed = _allowed_user()
+    allowed = _allowed_users()
     if not allowed:
         logger.error("brief_callback_approver_unset rejecting=all")
-        _answer(callback_id, "Aprobador no configurado", alert=True)
+        await run_in_threadpool(_answer_sync, callback_id, "Aprobador no configurado", True)
         return {"ok": True}
-    if user_id != allowed:
+    if user_id not in allowed:
         logger.warning("brief_callback_wrong_user user_id=%s", user_id)
-        _answer(callback_id, "Solo Carlos puede aprobar estas acciones", alert=True)
+        await run_in_threadpool(
+            _answer_sync, callback_id, "Solo Carlos puede aprobar estas acciones", True
+        )
         return {"ok": True}
 
     parsed = _parse(str(callback.get("data") or ""))
     if not parsed:
+        # Always answer: an unanswered callback leaves the spinner turning and
+        # Carlos with no idea whether the tap registered.
+        await run_in_threadpool(_answer_sync, callback_id, "Boton no reconocido", True)
         return {"ok": True}
     action_id, verb = parsed
 
-    status = ActionStatus.APPROVED if verb == "ok" else ActionStatus.DISCARDED
+    wanted = ActionStatus.APPROVED if verb == "ok" else ActionStatus.DISCARDED
     try:
-        action = actions_store.resolve(action_id, status, by=user_id)
+        action = await run_in_threadpool(actions_store.resolve, action_id, wanted, user_id)
     except Exception:  # noqa: BLE001
         # Never let a store failure escape: a 5xx makes Telegram retry the same
         # update, and retries on a state change are how double-actions happen.
         logger.exception("brief_action_resolve_failed")
-        _answer(callback_id, "No se pudo guardar, intentalo de nuevo", alert=True)
+        await run_in_threadpool(
+            _answer_sync, callback_id, "No se pudo guardar, intentalo de nuevo", True
+        )
         return {"ok": True}
 
     if action is None:
-        _answer(callback_id, "Esa accion ya no existe (brief de otro dia)", alert=True)
+        await run_in_threadpool(
+            _answer_sync, callback_id, "Esa accion ya no existe (brief de otro dia)", True
+        )
         return {"ok": True}
 
-    current = action.get("status")
-    if current in (ActionStatus.SENT.value, ActionStatus.FAILED.value):
-        _answer(callback_id, f"Esa accion ya esta {current}", alert=True)
+    # Report what the store ACTUALLY holds, not what was asked for. resolve()
+    # refuses to walk back a sent/failed/discarded action and returns it
+    # unchanged; announcing "approved" over that would tell Carlos a mail is
+    # going out when it is not.
+    final = str(action.get("status") or "")
+    if final != wanted.value:
+        await run_in_threadpool(
+            _answer_sync, callback_id, f"No se pudo cambiar: sigue como '{final}'", True
+        )
         return {"ok": True}
 
-    if status == ActionStatus.DISCARDED:
-        _answer(callback_id, "Descartada")
-        _mark_message(message, "\n\n❌ <b>Descartada</b>")
+    if wanted == ActionStatus.DISCARDED:
+        await run_in_threadpool(_answer_sync, callback_id, "Descartada")
+        await run_in_threadpool(_mark_message_sync, message, "\n\n❌ Descartada")
     else:
-        _answer(callback_id, "Aprobada — la enviare en cuanto la lea")
-        _mark_message(message, "\n\n✅ <b>Aprobada</b> · pendiente de envio")
+        await run_in_threadpool(_answer_sync, callback_id, "Aprobada — la enviare en cuanto la lea")
+        await run_in_threadpool(_mark_message_sync, message, "\n\n✅ Aprobada · pendiente de envio")
 
     return {"ok": True}

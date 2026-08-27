@@ -15,8 +15,11 @@ Design notes that are load-bearing, not decoration:
   button reference an id that no longer exists, which is a clean "no longer
   found" instead of a wrong send.
 
-* `draft_sha` is stored so the session that finally sends can verify the draft
-  is byte-identical to the one Carlos saw when he approved.
+* `draft_sha` is a fingerprint of the draft as posted. It is NOT proof of what
+  Carlos saw: he read the Telegram message, not this field, and reading the sha
+  back from the same endpoint that served the draft proves nothing on its own.
+  Its only real use is comparing this copy against claude/brief-acciones.md
+  before sending, to catch the two drifting apart.
 
 Path: BRIEF_ACTIONS_PATH (default /data/brief/actions.json). /data is a
 persistent volume; it holds the Telethon session.
@@ -130,9 +133,13 @@ def _read() -> dict[str, Any]:
 
 
 def _write(data: dict[str, Any]) -> None:
-    """Atomic replace. Permissions are left to the umask on create and are never
-    changed on an existing file: tightening them once locked the app out of its
-    own mailbox config."""
+    """Atomic replace, owner-only.
+
+    This file holds full email drafts, subjects and recipients, so it is created
+    0600. That is safe here because only this process reads it, unlike
+    brief_mailboxes.json, where tightening the mode locked the app out of its
+    own config.
+    """
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".actions-", suffix=".tmp")
@@ -141,7 +148,7 @@ def _write(data: dict[str, Any]) -> None:
             json.dump(data, fh, ensure_ascii=False, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(tmp, 0o644)
+        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     except Exception:
         try:
@@ -159,7 +166,14 @@ def replace_today(payload: BriefActionsPayload) -> list[dict[str, Any]]:
     buttons from an earlier run answer "no longer found" instead of resolving to
     a different action.
     """
-    date = (payload.date or "").strip() or today_bali()
+    # The date is decided HERE, never by the caller. The brief runs between
+    # 00:00 and 08:00 Bali, which is the previous day in UTC: a caller sending a
+    # UTC date would write a store that _today_actions() rejects on the very
+    # next read, leaving every button dead with no error anywhere.
+    date = today_bali()
+    claimed = (payload.date or "").strip()
+    if claimed and claimed != date:
+        logger.warning("brief_actions_date_ignored claimed=%s using=%s", claimed, date)
     actions = []
     for item in payload.actions:
         actions.append(
@@ -182,18 +196,6 @@ def _today_actions(data: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
     if not data or data.get("date") != today_bali():
         return None
     return data.get("actions") or []
-
-
-def get_by_id(action_id: str) -> Optional[dict[str, Any]]:
-    if not action_id:
-        return None
-    actions = _today_actions(_read())
-    if actions is None:
-        return None
-    for raw in actions:
-        if secrets.compare_digest(str(raw.get("id") or ""), action_id):
-            return raw
-    return None
 
 
 def resolve(action_id: str, status: ActionStatus, by: str) -> Optional[dict[str, Any]]:
@@ -224,7 +226,13 @@ def resolve(action_id: str, status: ActionStatus, by: str) -> Optional[dict[str,
 
 
 def mark_sent(action_id: str, ok: bool, detail: str = "") -> bool:
-    """Called by the Claude session after it actually sends (or fails)."""
+    """Called by the Claude session after it actually sends (or fails).
+
+    Refuses anything that was not APPROVED. Without that the store cannot be
+    used as an audit trail: a 'sent' would not imply a button was ever tapped.
+    """
+    if not action_id or len(action_id) > 32 or not all(c in "0123456789abcdef" for c in action_id):
+        return False
     with _locked():
         data = _read()
         actions = _today_actions(data)
@@ -233,6 +241,12 @@ def mark_sent(action_id: str, ok: bool, detail: str = "") -> bool:
         for raw in actions:
             if not secrets.compare_digest(str(raw.get("id") or ""), action_id):
                 continue
+            if raw.get("status") != ActionStatus.APPROVED.value:
+                logger.warning(
+                    "brief_mark_sent_refused status=%s (solo se envia lo aprobado)",
+                    raw.get("status"),
+                )
+                return False
             raw["status"] = (ActionStatus.SENT if ok else ActionStatus.FAILED).value
             raw["resolved_at"] = _now()
             if detail:
