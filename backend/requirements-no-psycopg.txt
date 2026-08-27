@@ -39,6 +39,12 @@ pydantic-settings==2.14.2
 
 # Data analysis
 numpy==2.1.1
+# pandas entraba como dependencia transitiva hasta el bump de uvicorn del
+# 27-ago-2026 (#547), que cambio la resolucion y lo dejo fuera de la imagen.
+# signal_monitor se quedo sin datos de precio para todos los simbolos. Va
+# pinneado porque esta en la ruta critica del bot, no puede depender de que
+# otro paquete lo arrastre.
+pandas==3.0.5
 pytz==2024.2
 
 # Trading APIs
