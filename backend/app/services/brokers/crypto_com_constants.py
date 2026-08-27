@@ -23,10 +23,6 @@ if _USE_IP:
 
 REST_BASE = "https://api.crypto.com/exchange/v1"
 
-# WebSocket URLs (for future use)
-WS_USER = "wss://stream.crypto.com/exchange/v1/user"
-WS_MARKET = "wss://stream.crypto.com/exchange/v1/market"
-
 # Request Content-Type
 CONTENT_TYPE_JSON = "application/json"
 

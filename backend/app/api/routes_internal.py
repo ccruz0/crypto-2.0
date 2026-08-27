@@ -76,29 +76,6 @@ def diag():
             "failover": False
         }
 
-@router.get("/internal/websocket/status")
-def websocket_status():
-    """WebSocket connection status (no auth required)"""
-    try:
-        from app.services.websocket_manager import is_websocket_connected
-        from app.services.brokers.crypto_com_websocket import get_ws_client
-        from app.utils.http_client import http_get, http_post
-        
-        connected = is_websocket_connected()
-        ws_client = get_ws_client()
-        
-        return {
-            "websocket_enabled": os.getenv("USE_WEBSOCKET", "false").lower() == "true",
-            "connected": connected,
-            "subscribed": ws_client.subscribed if connected else False,
-            "ws_url": ws_client.ws_url if connected else None
-        }
-    except Exception as e:
-        return {
-            "websocket_enabled": os.getenv("USE_WEBSOCKET", "false").lower() == "true",
-            "connected": False,
-            "error": str(e)
-        }
 
 @router.get("/internal/crypto/ping-private")
 def ping_private(db: Session = Depends(get_db), user=Depends(get_current_user)):
