@@ -48,7 +48,7 @@ def _find_by_internet_id(mailbox: str, internet_message_id: str, token: str) -> 
     url = (
         f"{_GRAPH}/users/{_user(mailbox)}/messages"
         f"?$filter=internetMessageId eq '{quote(safe)}'"
-        f"&$select=id,conversationId,receivedDateTime&$top=1"
+        f"&$select=id,conversationId,receivedDateTime,from&$top=1"
     )
     resp = http_get(url, headers=_headers(token), timeout=_TIMEOUT, calling_module="brief.graph_mail_send.find")
     if resp.status_code >= 400:
@@ -59,6 +59,22 @@ def _find_by_internet_id(mailbox: str, internet_message_id: str, token: str) -> 
     except Exception:  # noqa: BLE001
         return None
     return items[0] if items else None
+
+
+def _reply_would_reach(original: dict[str, Any], to: list[str]) -> bool:
+    """Would Graph's /reply land on exactly the intended recipients?
+
+    /reply answers the ORIGINAL SENDER and ignores our `to` list. That is right
+    for a plain reply and wrong for anything else: a forwarded thread, a
+    corrected address, or several recipients would silently go to the wrong
+    person. Only take the reply path when the sender is precisely the single
+    address we mean to write to.
+    """
+    sender = str(
+        ((original.get("from") or {}).get("emailAddress") or {}).get("address") or ""
+    ).strip().lower()
+    wanted = {addr.strip().lower() for addr in to if addr and addr.strip()}
+    return bool(sender) and wanted == {sender}
 
 
 def thread_has_replies_since(thread_ref: str, mailbox: str = _RAHYANG) -> bool:
@@ -132,6 +148,10 @@ def send_mail_as(
 
     if thread_ref:
         original = _find_by_internet_id(mailbox, thread_ref, token)
+        if original and not _reply_would_reach(original, to):
+            # Threading is a nicety; sending to the right person is not.
+            logger.info("brief_reply_skipped reason=recipient_mismatch mailbox=%s", mailbox)
+            original = None
         if original:
             # /reply creates and sends in one call. The draft+PATCH+send dance
             # needs a real PATCH, and http_client only exposes GET and POST.
