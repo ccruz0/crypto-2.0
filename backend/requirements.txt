@@ -42,7 +42,7 @@ aiohttp==3.8.3
 
 # Data validation
 pydantic==2.9.2
-pydantic-settings==2.14.2
+pydantic-settings==2.15.0
 
 # Data analysis
 numpy==2.1.1
