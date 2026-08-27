@@ -1,4 +1,9 @@
-"""Bot API sender for POST /brief/send (reuses TELEGRAM_BOT_TOKEN)."""
+"""Bot API sender for POST /brief/send.
+
+Prefers BRIEF_TELEGRAM_BOT_TOKEN (the brief's own bot, which owns the webhook
+for the action buttons) and falls back to TELEGRAM_BOT_TOKEN so the brief keeps
+going out unchanged until that bot is configured.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +22,16 @@ def resolve_bot_token() -> str:
         (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
         or (os.getenv("TELEGRAM_BOT_TOKEN_AWS") or "").strip()
     )
+
+
+def resolve_brief_bot_token() -> str:
+    """The brief's own bot, falling back to the ATP one while it does not exist.
+
+    They must stay separate: @ATP_control_bot is polled by telegram_commands for
+    the trading commands, and Telegram forbids a webhook and getUpdates on the
+    same token. The brief bot is the one that carries the callback webhook.
+    """
+    return (os.getenv("BRIEF_TELEGRAM_BOT_TOKEN") or "").strip() or resolve_bot_token()
 
 
 def resolve_chat_id() -> str:
@@ -55,11 +70,15 @@ def split_telegram_text(text: str, limit: int = _TELEGRAM_MAX) -> list[str]:
     return parts or [""]
 
 
-def send_brief_message(text: str, parse_mode: Optional[str] = "HTML") -> dict[str, Any]:
+def send_brief_message(
+    text: str,
+    parse_mode: Optional[str] = "HTML",
+    reply_markup: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Send text via Bot API to BRIEF_TELEGRAM_CHAT_ID (fallback TELEGRAM_CHAT_ID). Never logs token or body."""
     from app.utils.http_client import http_post
 
-    token = resolve_bot_token()
+    token = resolve_brief_bot_token()
     chat_id = resolve_chat_id()
     if not token or not chat_id:
         raise RuntimeError("telegram_bot_not_configured")
@@ -83,6 +102,11 @@ def send_brief_message(text: str, parse_mode: Optional[str] = "HTML") -> dict[st
         }
         if mode:
             payload["parse_mode"] = mode
+        # Buttons belong to the message as a whole, so they ride on the last
+        # chunk only. Putting them on every part would show one keyboard per
+        # fragment, and each would answer for the same action.
+        if reply_markup is not None and i == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
         resp = http_post(
             url,
             json=payload,

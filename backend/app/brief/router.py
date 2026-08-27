@@ -14,7 +14,9 @@ from app.brief.calendar_ics import fetch_calendar
 from app.brief.mail import fetch_mail
 from app.brief.rate_limit import enforce_brief_rate_limit
 from app.brief.telegram_read import TelegramSessionMissing, fetch_telegram
+from app.brief.actions_store import BriefActionsPayload, replace_today
 from app.brief.telegram_send import send_brief_message
+from app.brief.telegram_webhook import router as brief_webhook_router
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +27,20 @@ def _brief_guards() -> None:
     enforce_brief_rate_limit()
 
 
+class InlineButton(BaseModel):
+    text: str = Field(..., min_length=1)
+    # Telegram caps callback_data at 64 bytes; "action:<N>:<send|cancel>" fits.
+    callback_data: str = Field(..., min_length=1, max_length=64)
+
+
+class InlineKeyboard(BaseModel):
+    inline_keyboard: list[list[InlineButton]]
+
+
 class BriefSendBody(BaseModel):
     text: str = Field(..., min_length=1)
     parse_mode: Optional[Literal["HTML", "Markdown", "MarkdownV2"]] = "HTML"
+    reply_markup: Optional[InlineKeyboard] = None
 
 
 @router.get("/mail")
@@ -111,7 +124,15 @@ def brief_send(
 ) -> dict[str, Any]:
     """Send a brief message to BRIEF_TELEGRAM_CHAT_ID (fallback TELEGRAM_CHAT_ID)."""
     try:
-        result = send_brief_message(body.text, parse_mode=body.parse_mode)
+        result = send_brief_message(
+            body.text,
+            parse_mode=body.parse_mode,
+            reply_markup=(
+                body.reply_markup.model_dump(exclude_none=True)
+                if body.reply_markup is not None
+                else None
+            ),
+        )
         metrics.inc_send_parts(int(result.get("parts") or 0))
         metrics.inc_request("send", "ok")
         return result
@@ -128,3 +149,29 @@ def brief_send(
         metrics.inc_request("send", "error")
         logger.exception("brief_send_unhandled")
         raise
+
+
+@router.post("/actions")
+def brief_actions(
+    body: BriefActionsPayload,
+    _: None = Depends(require_brief_key),
+    __: None = Depends(_brief_guards),
+) -> dict[str, Any]:
+    """Store today's proposed actions so the buttons have something to execute.
+
+    The backend cannot read claude/brief-acciones.md, so the brief posts the same
+    content here right after writing that doc.
+    """
+    try:
+        stored = replace_today(body)
+        metrics.inc_request("actions", "ok")
+        return {"ok": True, "stored": stored}
+    except Exception:
+        metrics.inc_request("actions", "error")
+        logger.exception("brief_actions_unhandled")
+        raise
+
+
+# Mounted without require_brief_key on purpose: Telegram cannot send that header.
+# It authenticates with the secret token set via setWebhook, checked inside.
+router.include_router(brief_webhook_router)
