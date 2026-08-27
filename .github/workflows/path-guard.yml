@@ -1,4 +1,5 @@
 # Path Guard — CI security gate for protected paths.
+# Cubre trading, secretos y los workflows que despliegan a produccion.
 # PRs that touch protected paths (trading, secrets, deploy) ALWAYS fail; no label bypass.
 # See: docs/openclaw/ARCHITECTURE.md §8, docs/openclaw/LABEL_BYPASS_AUDIT_REPORT.md
 #
@@ -52,7 +53,21 @@ jobs:
             "nginx/dashboard.conf"
             "docker-compose.yml"
             "backend/Dockerfile.aws"
+            # deploy.yml es LEGACY (solo workflow_dispatch, SSH). Se conserva por
+            # si se reactiva, pero NO es el camino de despliegue real desde hace
+            # tiempo. Durante ese tiempo fue el UNICO workflow protegido: la
+            # puerta vigilaba una puerta tapiada.
             ".github/workflows/deploy.yml"
+            # Los tres que SI despliegan a produccion en cada push a main.
+            # Agravante: cada uno se incluye a si mismo en sus `paths`, asi que
+            # editarlos dispara un despliegue inmediato. Verificado 27-ago-2026
+            # leyendo el bloque `on:` de cada fichero, sin comentarios.
+            ".github/workflows/deploy-backend.yml"
+            ".github/workflows/deploy-frontend.yml"
+            ".github/workflows/deploy_session_manager.yml"
+            # Renderiza el entorno y los secretos dentro del contenedor de
+            # produccion. Un cambio aqui decide que credenciales ve el bot.
+            "scripts/aws/render_runtime_env.sh"
           )
           VIOLATIONS=""
           while IFS= read -r file; do
