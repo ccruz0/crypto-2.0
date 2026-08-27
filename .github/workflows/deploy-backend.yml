@@ -72,6 +72,27 @@ jobs:
           aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${REGISTRY}
           CUR=\$(docker inspect --format='{{.Config.Image}}' \$(docker compose -f ${COMPOSE_DIR}/docker-compose.yml ps -q backend-aws) 2>/dev/null || true)
           [ -n "\$CUR" ] && docker tag "\$CUR" atp-backend-rollback:predeploy || true
+          # Guardian de disco ANTES del pull. Este workflow baja una imagen nueva
+          # de ~1,4 GB al host en cada push y era el UNICO deploy sin guardian:
+          # deploy_session_manager.yml:187 ya lo llamaba, este no. El 27-ago-2026
+          # el pull murio con "no space left on device" (disco al 100%, 294 MB
+          # libres, 14 imagenes atp-backend acumuladas) teniendo el script ya en
+          # el repo, escrito exactamente para esto.
+          #
+          # Va DESPUES de etiquetar el rollback a proposito: asi la imagen que
+          # sirve ahora queda referenciada y ninguna fase del guardian la toca.
+          # El script nunca borra volumenes ni imagenes en uso por un contenedor.
+          #
+          # Best-effort, igual que en el workflow hermano: si no hay espacio
+          # suficiente ni despues de limpiar, se intenta el pull igualmente y es
+          # el pull quien falla, con el stack anterior aun sirviendo.
+          if [ -x ${COMPOSE_DIR}/scripts/aws/predeploy_disk_guard.sh ]; then
+            MIN_FREE_GB=6 bash ${COMPOSE_DIR}/scripts/aws/predeploy_disk_guard.sh \
+              || echo "WARNING: disk guard reporto espacio insuficiente; se intenta el pull igualmente"
+          else
+            echo "WARNING: predeploy_disk_guard.sh no esta en el host; se omite el guardian"
+          fi
+          df -h / | tail -1
           docker pull ${IMAGE}
           BACKEND_IMAGE=${IMAGE} docker compose -f ${COMPOSE_DIR}/docker-compose.yml --profile aws up -d --no-deps backend-aws backend-aws-canary
           # Recreate market-updater so new image + config volume mount apply.
