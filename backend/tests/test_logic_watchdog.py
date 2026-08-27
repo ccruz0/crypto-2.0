@@ -395,3 +395,94 @@ def test_truncation_is_reported_not_silent(db, monkeypatch):
 def test_detector_is_registered_in_the_run(db):
     # A detector that exists but is never called is the #515 failure mode.
     assert lw.detect_protection_type_mismatch in lw.DETECTORS
+
+
+# ------------------------------------------------- rule 4: fuga OCO sin grupo
+# Control negativo: los tres primeros de este bloque FALLAN sobre main sin el
+# cambio, porque detect_orphans_and_oco solo emparejaba por oco_group_id.
+# Censo del 26-ago-2026 en produccion: 179 de 276 TAKE_PROFIT y 50 de 81
+# STOP_LOSS FILLED tienen oco_group_id NULL, asi que el detector estaba ciego
+# en la mayoria de las filas.
+
+
+def _pareja_proteccion(db, *, oco_group_id=None, sib_status=OrderStatusEnum.ACTIVE,
+                       sib_role="STOP_LOSS", parent="ENTRY_OCO"):
+    """Entrada FILLED + TP ejecutado + hermano que sigue vivo."""
+    _order(db, parent, order_role=None)
+    _order(
+        db, f"TP_EJECUTADO_{parent}",
+        side=OrderSideEnum.SELL,
+        order_role="TAKE_PROFIT",
+        status=OrderStatusEnum.FILLED,
+        parent_order_id=parent,
+        oco_group_id=oco_group_id,
+        exchange_update_time=NOW - timedelta(hours=1),
+    )
+    _order(
+        db, f"SL_COLGANDO_{parent}",
+        side=OrderSideEnum.SELL,
+        order_role=sib_role,
+        status=sib_status,
+        parent_order_id=parent,
+        oco_group_id=oco_group_id,
+        exchange_update_time=NOW - timedelta(hours=1),
+    )
+
+
+def test_fuga_oco_detectada_con_grupo(db):
+    """Caso que ya funcionaba antes: no debe romperse."""
+    _pareja_proteccion(db, oco_group_id="oco_123")
+    assert "OCO_SIBLING_NOT_CANCELLED" in _kinds(lw.detect_orphans_and_oco(db, NOW))
+
+
+def test_fuga_oco_detectada_sin_grupo_por_padre(db):
+    """El caso ciego: sin oco_group_id, empareja por parent_order_id."""
+    _pareja_proteccion(db, oco_group_id=None)
+    findings = lw.detect_orphans_and_oco(db, NOW)
+    assert "OCO_SIBLING_NOT_CANCELLED" in _kinds(findings)
+    fuga = [f for f in findings if f["kind"] == "OCO_SIBLING_NOT_CANCELLED"][0]
+    assert fuga["evidence"]["dangling_order_id"] == "SL_COLGANDO_ENTRY_OCO"
+    assert fuga["evidence"]["executed_order_id"] == "TP_EJECUTADO_ENTRY_OCO"
+
+
+def test_sin_grupo_dos_fugas_no_colisionan_de_huella(db):
+    """El anchor se vuelve fingerprint; dos fugas distintas no deben compartirlo.
+
+    Sin incluir el parent_order_id en el anchor, ambas darian
+    "None:<sibling>" y una de las dos desapareceria al deduplicar.
+    """
+    _pareja_proteccion(db, oco_group_id=None, parent="ENTRY_A")
+    _pareja_proteccion(db, oco_group_id=None, parent="ENTRY_B")
+    fugas = [f for f in lw.detect_orphans_and_oco(db, NOW)
+             if f["kind"] == "OCO_SIBLING_NOT_CANCELLED"]
+    assert len(fugas) == 2, [f["evidence"] for f in fugas]
+    assert len({f["fingerprint"] for f in fugas}) == 2
+
+
+def test_sin_grupo_no_empareja_dos_patas_del_mismo_rol(db):
+    """Dos TP colgando de la misma entrada no son hermanos OCO."""
+    _pareja_proteccion(db, oco_group_id=None, sib_role="TAKE_PROFIT")
+    assert "OCO_SIBLING_NOT_CANCELLED" not in _kinds(lw.detect_orphans_and_oco(db, NOW))
+
+
+def test_hermano_ya_cancelado_no_es_fuga(db):
+    """Si el hermano se cancelo bien, no hay hallazgo."""
+    _pareja_proteccion(db, oco_group_id=None, sib_status=OrderStatusEnum.CANCELLED)
+    assert "OCO_SIBLING_NOT_CANCELLED" not in _kinds(lw.detect_orphans_and_oco(db, NOW))
+
+
+def test_una_fuga_produce_un_solo_hallazgo(db):
+    """Las dos patas pueden entrar por separado: un hallazgo por pareja."""
+    _pareja_proteccion(db, oco_group_id=None)
+    fugas = [f for f in lw.detect_orphans_and_oco(db, NOW)
+             if f["kind"] == "OCO_SIBLING_NOT_CANCELLED"]
+    assert len(fugas) == 1, [f["anchor"] for f in fugas]
+
+
+def test_sin_grupo_y_sin_padre_no_se_empareja(db):
+    """Sin ninguna de las dos claves no hay forma de saber quien es hermano."""
+    _order(db, "TP_SUELTO", side=OrderSideEnum.SELL, order_role="TAKE_PROFIT",
+           status=OrderStatusEnum.FILLED, exchange_update_time=NOW - timedelta(hours=1))
+    _order(db, "SL_SUELTO", side=OrderSideEnum.SELL, order_role="STOP_LOSS",
+           status=OrderStatusEnum.ACTIVE, exchange_update_time=NOW - timedelta(hours=1))
+    assert "OCO_SIBLING_NOT_CANCELLED" not in _kinds(lw.detect_orphans_and_oco(db, NOW))

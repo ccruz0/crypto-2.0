@@ -32,6 +32,7 @@ def fetch_candles(
     timeframe: str,
     count: int = MAX_COUNT,
     *,
+    end_ts: Optional[int] = None,
     timeout: float = 15.0,
 ) -> List[Dict]:
     """Devuelve velas normalizadas, o [] si falla.
@@ -39,15 +40,23 @@ def fetch_candles(
     Devolver [] y no None es deliberado: el llamador itera sin comprobar, y un
     fallo de red no debe distinguirse de "no hay datos" para el bucle. El error
     se registra aqui.
+
+    `end_ts` (epoch ms) pide la ventana de `count` velas que TERMINA ahi, en vez
+    de la mas reciente. Es el unico parametro de la API que pagina hacia atras:
+    `start_ts`, `end_time` y un `count` mayor de 300 se ignoran en silencio y
+    devuelven la ventana por defecto. Comprobado el 26-ago-2026.
     """
+    params = {
+        "instrument_name": symbol,
+        "timeframe": timeframe,
+        "count": count,
+    }
+    if end_ts is not None:
+        params["end_ts"] = int(end_ts)
     try:
         response = http_get(
             CANDLE_URL,
-            params={
-                "instrument_name": symbol,
-                "timeframe": timeframe,
-                "count": count,
-            },
+            params=params,
             timeout=timeout,
             calling_module="candle_recorder",
         )
@@ -134,11 +143,82 @@ def record_symbol(
     timeframe: str,
     *,
     count: int = MAX_COUNT,
+    end_ts: Optional[int] = None,
 ) -> int:
-    candles = fetch_candles(symbol, timeframe, count=count)
+    candles = fetch_candles(symbol, timeframe, count=count, end_ts=end_ts)
     if not candles:
         return 0
     return store_candles(db, symbol, timeframe, candles)
+
+
+# Tope de peticiones por simbolo y timeframe en un relleno historico. Cada
+# peticion trae como mucho 300 velas, asi que 40 cubren ~33 anyos en diario y
+# ~1,4 anyos en 1h. Es un cortacircuitos, no un objetivo: el relleno para solo
+# cuando la API deja de devolver velas mas antiguas.
+MAX_BACKFILL_PAGES = int(os.getenv("CANDLE_BACKFILL_MAX_PAGES", "40"))
+
+
+def backfill_symbol(
+    db: Session,
+    symbol: str,
+    timeframe: str,
+    *,
+    count: int = MAX_COUNT,
+    max_pages: int = MAX_BACKFILL_PAGES,
+) -> int:
+    """Rellena hacia atras hasta agotar el instrumento. Devuelve filas nuevas.
+
+    Separado del barrido periodico a proposito: el bucle horario solo necesita
+    lo reciente, y pedirle que pagine cada hora seria releer el mismo historico
+    indefinidamente. Esto se ejecuta cuando se quiere profundidad, no siempre.
+
+    Se detiene cuando la API deja de devolver velas anteriores a la mas antigua
+    ya vista. Esa condicion, y no `max_pages`, es la que termina el bucle en
+    condiciones normales.
+    """
+    total = 0
+    end_ts: Optional[int] = None
+    oldest_seen: Optional[int] = None
+
+    for _ in range(max_pages):
+        candles = fetch_candles(symbol, timeframe, count=count, end_ts=end_ts)
+        if not candles:
+            break
+        oldest = candles[0]["open_time"]
+        # Si la ventana no retrocede, el instrumento se agoto: repetir la misma
+        # peticion daria las mismas velas para siempre.
+        if oldest_seen is not None and oldest >= oldest_seen:
+            break
+        oldest_seen = oldest
+        total += store_candles(db, symbol, timeframe, candles)
+        end_ts = oldest - 1
+
+    return total
+
+
+def backfill_all(
+    db: Session,
+    symbols: List[str],
+    timeframes: Iterable[str] = TIMEFRAMES,
+    *,
+    count: int = MAX_COUNT,
+    max_pages: int = MAX_BACKFILL_PAGES,
+) -> Dict[str, int]:
+    """Relleno historico de simbolos x timeframes. Un fallo no aborta el resto."""
+    totals: Dict[str, int] = {}
+    for tf in timeframes:
+        inserted = 0
+        for symbol in symbols:
+            try:
+                inserted += backfill_symbol(
+                    db, symbol, tf, count=count, max_pages=max_pages
+                )
+            except Exception as exc:
+                logger.warning("[CANDLES] backfill %s %s fallo: %s", symbol, tf, exc)
+                db.rollback()
+        totals[tf] = inserted
+        logger.info("[CANDLES] backfill %s: %d velas nuevas", tf, inserted)
+    return totals
 
 
 def record_all(
