@@ -956,12 +956,6 @@ def create_app(role: str = "legacy") -> FastAPI:
     async def shutdown_event():
         """Cleanup on application shutdown"""
         try:
-            from app.services.websocket_manager import stop_websocket
-            await stop_websocket()
-            logger.info("WebSocket stopped on shutdown")
-        except Exception as e:
-            logger.error(f"Error stopping WebSocket: {e}")
-        try:
             from app.services.price_stream import stop_price_stream
             stop_price_stream()
         except Exception as e:
