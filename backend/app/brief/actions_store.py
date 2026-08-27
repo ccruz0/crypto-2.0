@@ -7,13 +7,16 @@ the one that was approved.
 
 Design notes that are load-bearing, not decoration:
 
-* Every action gets an OPAQUE id, generated here. `callback_data` carries that
-  id, never the position. An earlier design used the action number: re-running
-  the brief on the same day renumbered the actions while old messages kept their
-  buttons, so tapping "send" on yesterday's message could execute a different
-  action entirely — another recipient, another draft. Opaque ids make a stale
-  button reference an id that no longer exists, which is a clean "no longer
-  found" instead of a wrong send.
+* Every action gets an OPAQUE id, generated here. The keyboard is built by the
+  server from these ids (see telegram_send.send_action_message); no caller ever
+  supplies callback_data. Two earlier designs failed here. The first put the
+  action NUMBER in callback_data: re-running the brief renumbered the actions
+  while old messages kept their buttons, so a stale tap could execute a
+  different action. The second used opaque ids but let the caller write the
+  keyboard, which fixed staleness and left mispairing wide open — a caller that
+  put action 5's id under the button labelled "action 2" would have Carlos
+  approve one thing and the session send another, invisibly, because the ids
+  are opaque. Building the keyboard here closes both.
 
 * `draft_sha` is a fingerprint of the draft as posted. It is NOT proof of what
   Carlos saw: he read the Telegram message, not this field, and reading the sha
@@ -63,7 +66,7 @@ class ActionStatus(str, Enum):
 
 
 class BriefActionIn(BaseModel):
-    """What the brief posts. No id: the server assigns it."""
+    """What the brief posts. No id and no keyboard: the server owns both."""
 
     number: int
     label: str = ""
@@ -77,7 +80,7 @@ class BriefActionIn(BaseModel):
 
 
 class BriefActionsPayload(BaseModel):
-    date: str = ""  # YYYY-MM-DD, Bali
+    date: str = ""  # YYYY-MM-DD, Bali. Recorded only; the server decides.
     actions: list[BriefActionIn] = Field(default_factory=list)
 
 
@@ -99,12 +102,16 @@ def draft_sha(draft: str) -> str:
 
 @contextmanager
 def _locked() -> Iterator[None]:
-    """Serialise read-modify-write across workers.
+    """Serialise read-modify-write across workers AND threads.
 
-    The store is a single small file touched a handful of times a day, so a
-    coarse lock is the right trade. Without it two concurrent taps could each
-    read 'pending' and both write — harmless here (approval is idempotent) but
-    it would silently lose the `resolved_by` of one of them.
+    Several uvicorn workers share this file, and within a worker the store is
+    touched from the threadpool, so more than one caller can be inside a
+    read-modify-write at once. Each entry opens its own descriptor, which is
+    what flock serialises on, so this covers both.
+
+    Without it two taps on DIFFERENT actions can interleave: both read the whole
+    file, both write it back, and the second write silently erases the first
+    action's resolution. That is a lost approval, not just a lost `resolved_by`.
     """
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,9 +143,11 @@ def _write(data: dict[str, Any]) -> None:
     """Atomic replace, owner-only.
 
     This file holds full email drafts, subjects and recipients, so it is created
-    0600. That is safe here because only this process reads it, unlike
-    brief_mailboxes.json, where tightening the mode locked the app out of its
-    own config.
+    0600. Every process that touches it — all the uvicorn workers — runs as the
+    same uid, so the mode is about keeping other accounts on the host out, not
+    about which process opens it. That distinction is the one that broke
+    brief_mailboxes.json: tightening ITS mode locked the app out of its own
+    config, because that file is read by a different uid.
     """
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,12 +168,13 @@ def _write(data: dict[str, Any]) -> None:
 
 
 def replace_today(payload: BriefActionsPayload) -> list[dict[str, Any]]:
-    """Store today's actions, assigning an opaque id to each.
+    """Store today's actions, assigning an opaque id to each. Returns them.
 
-    Returns [{"number": N, "id": "..."}] so the brief can build callback_data.
-    Any previously stored action for the day is dropped: its id disappears, so
-    buttons from an earlier run answer "no longer found" instead of resolving to
-    a different action.
+    Any previously stored action for the day is dropped, INCLUDING ones Carlos
+    had already approved: its id disappears, so buttons from an earlier run
+    answer "no longer found". That is deliberate — a second run means new
+    drafts — but it means the caller must not re-post actions after Carlos has
+    started tapping, or it silently revokes his approvals.
     """
     # The date is decided HERE, never by the caller. The brief runs between
     # 00:00 and 08:00 Bali, which is the previous day in UTC: a caller sending a
@@ -176,20 +186,44 @@ def replace_today(payload: BriefActionsPayload) -> list[dict[str, Any]]:
         logger.warning("brief_actions_date_ignored claimed=%s using=%s", claimed, date)
     actions = []
     for item in payload.actions:
+        # Server-owned fields go LAST so a future field on BriefActionIn cannot
+        # overwrite id/status/draft_sha by colliding with one of these names.
         actions.append(
             {
+                **item.model_dump(mode="json"),
                 "id": secrets.token_hex(8),
                 "status": ActionStatus.PENDING.value,
                 "draft_sha": draft_sha(item.draft),
+                "message_id": None,
                 "resolved_at": None,
                 "resolved_by": None,
-                **item.model_dump(mode="json"),
             }
         )
     with _locked():
         _write({"date": date, "stored_at": _now(), "actions": actions})
     logger.info("brief_actions_stored count=%s date=%s", len(actions), date)
-    return [{"number": a["number"], "id": a["id"]} for a in actions]
+    return actions
+
+
+def attach_message(action_id: str, message_id: int) -> bool:
+    """Record which Telegram message carries this action's buttons."""
+    if not is_valid_action_id(action_id):
+        return False
+    with _locked():
+        data = _read()
+        actions = _today_actions(data)
+        if actions is None:
+            return False
+        for raw in actions:
+            if secrets.compare_digest(str(raw.get("id") or ""), action_id):
+                raw["message_id"] = int(message_id)
+                _write(data)
+                return True
+    return False
+
+
+def is_valid_action_id(value: str) -> bool:
+    return bool(value) and len(value) <= 32 and all(c in "0123456789abcdef" for c in value)
 
 
 def _today_actions(data: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
@@ -203,7 +237,14 @@ def resolve(action_id: str, status: ActionStatus, by: str) -> Optional[dict[str,
 
     Idempotent by design: approving twice is a no-op that still returns the
     action, so a double tap reads as success rather than an error.
+
+    Only PENDING and APPROVED can be changed. Anything already sent, failed or
+    DISCARDED is returned untouched — including discarded, so a mistaken
+    ❌ cannot be undone from Telegram. The caller reports the real status back,
+    which is what tells Carlos the tap did not take effect.
     """
+    if not is_valid_action_id(action_id):
+        return None
     with _locked():
         data = _read()
         actions = _today_actions(data)
@@ -215,7 +256,7 @@ def resolve(action_id: str, status: ActionStatus, by: str) -> Optional[dict[str,
             if raw.get("status") == status.value:
                 return raw
             if raw.get("status") not in (ActionStatus.PENDING.value, ActionStatus.APPROVED.value):
-                return raw  # already sent or failed: never walk it back
+                return raw
             raw["status"] = status.value
             raw["resolved_at"] = _now()
             raw["resolved_by"] = by
@@ -228,10 +269,13 @@ def resolve(action_id: str, status: ActionStatus, by: str) -> Optional[dict[str,
 def mark_sent(action_id: str, ok: bool, detail: str = "") -> bool:
     """Called by the Claude session after it actually sends (or fails).
 
-    Refuses anything that was not APPROVED. Without that the store cannot be
-    used as an audit trail: a 'sent' would not imply a button was ever tapped.
+    Refuses anything that was not APPROVED, so a 'sent' in this file always has
+    a tap behind it. The converse does NOT hold: if Carlos discards an action
+    after the session has read it and before the session calls this, the mail
+    goes out and this refuses to record it. The store proves nothing was sent
+    without approval; it does not prove everything sent was recorded.
     """
-    if not action_id or len(action_id) > 32 or not all(c in "0123456789abcdef" for c in action_id):
+    if not is_valid_action_id(action_id):
         return False
     with _locked():
         data = _read()
@@ -257,8 +301,26 @@ def mark_sent(action_id: str, ok: bool, detail: str = "") -> bool:
 
 
 def list_today() -> dict[str, Any]:
+    """Today's actions.
+
+    `stale` distinguishes "the brief proposed nothing" from "the store holds
+    another day". Both return an empty list, and conflating them is how a set of
+    approved actions can sit unsent with nothing anywhere reporting a problem.
+    """
     data = _read()
     actions = _today_actions(data)
     if actions is None:
-        return {"date": today_bali(), "actions": []}
-    return {"date": data.get("date"), "stored_at": data.get("stored_at"), "actions": actions}
+        return {
+            "date": today_bali(),
+            "stored_at": data.get("stored_at"),
+            "stale": bool(data),
+            "stored_date": data.get("date"),
+            "actions": [],
+        }
+    return {
+        "date": data.get("date"),
+        "stored_at": data.get("stored_at"),
+        "stale": False,
+        "stored_date": data.get("date"),
+        "actions": actions,
+    }

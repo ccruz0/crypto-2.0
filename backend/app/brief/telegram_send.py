@@ -1,8 +1,15 @@
-"""Bot API sender for POST /brief/send.
+"""Bot API sender for the brief.
 
-Prefers BRIEF_TELEGRAM_BOT_TOKEN — the brief's own bot, the one that owns the
-callback webhook for the approval buttons — and falls back to TELEGRAM_BOT_TOKEN
-so the brief keeps going out unchanged while that bot is not configured yet.
+Two senders, on purpose:
+
+* send_brief_message() posts the brief itself, under TELEGRAM_BOT_TOKEN, exactly
+  as it did before the buttons existed. It never carries a keyboard.
+* send_action_message() posts ONE action with ONE keyboard, under
+  BRIEF_TELEGRAM_BOT_TOKEN. Only this function writes callback_data.
+
+Keeping them apart means configuring the brief bot cannot break the brief: if
+that bot is missing or cannot post to the channel, the actions fail and the
+brief still arrives.
 """
 
 from __future__ import annotations
@@ -24,20 +31,117 @@ def resolve_bot_token() -> str:
     )
 
 
+class ButtonsUnavailable(RuntimeError):
+    """The approval buttons cannot be posted with the current configuration."""
+
+
 def resolve_brief_bot_token() -> str:
-    """The brief's own bot. Empty string when it is not configured — NO fallback.
+    """The brief's own bot. Raises when it cannot be used — never falls back.
 
-    An earlier version fell back to the ATP token, which is a trap in both
-    directions: the buttons would go out under @ATP_control_bot and silently do
-    nothing, and registering a webhook on that token to "fix" it would kill the
-    trading command poller (Telegram forbids webhook and getUpdates together,
-    and telegram_commands deletes webhooks on startup anyway).
+    Two ways to get this wrong, both checked here:
 
-    So the brief message still goes out under whichever token is available, but
-    the KEYBOARD is only attached when this returns non-empty. Buttons that
-    cannot work are not shown.
+    * Unset. An earlier version fell back to the ATP token: the buttons went out
+      under @ATP_control_bot and did nothing, and registering a webhook on that
+      token to "fix" it would have killed the trading command poller (Telegram
+      forbids webhook and getUpdates on one token, and telegram_commands deletes
+      webhooks on startup anyway).
+    * Set to the ATP token by a copy-paste. Same outcome, harder to spot, so it
+      is refused rather than documented.
     """
-    return (os.getenv("BRIEF_TELEGRAM_BOT_TOKEN") or "").strip()
+    token = (os.getenv("BRIEF_TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        raise ButtonsUnavailable("BRIEF_TELEGRAM_BOT_TOKEN unset")
+    if token == (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
+        raise ButtonsUnavailable("BRIEF_TELEGRAM_BOT_TOKEN equals the trading bot token")
+    return token
+
+
+def resolve_brief_chat_id() -> str:
+    """Numeric chat id for action messages. No fallback, no @username.
+
+    The webhook only accepts a callback whose chat id equals
+    BRIEF_TELEGRAM_CHAT_ID, and Telegram reports chat ids as numbers. Posting to
+    "@canal" would produce live buttons whose every tap the webhook drops in
+    silence, so that is refused here instead.
+    """
+    raw = (os.getenv("BRIEF_TELEGRAM_CHAT_ID") or "").strip()
+    if not raw:
+        raise ButtonsUnavailable("BRIEF_TELEGRAM_CHAT_ID unset")
+    if not raw.lstrip("-").isdigit():
+        raise ButtonsUnavailable("BRIEF_TELEGRAM_CHAT_ID is not numeric")
+    return raw
+
+
+def render_action_text(action: dict[str, Any]) -> str:
+    """Plain text for one action message. Composed HERE, not by the caller.
+
+    No parse_mode anywhere in this path: a subject line with '<' or '&' would
+    otherwise fail the send, and the edit that retires the keyboard re-posts
+    this same text as plain, so there is nothing to lose.
+    """
+    to = ", ".join(str(x) for x in (action.get("to") or [])) or "(sin destinatario)"
+    account = str(action.get("account_id") or action.get("account") or "?")
+    lines = [
+        f"Accion {action.get('number')} - {action.get('label') or 'correo'}",
+        f"Cuenta: {account}",
+        f"Para: {to}",
+        f"Asunto: {action.get('subject') or '(sin asunto)'}",
+    ]
+    if action.get("has_pending"):
+        lines.append("AVISO: el borrador tiene huecos por rellenar.")
+    lines.append("")
+    lines.append(str(action.get("draft") or ""))
+    return "\n".join(lines)
+
+
+def send_action_message(action: dict[str, Any]) -> int:
+    """Post one action with its own keyboard. Returns the Telegram message_id.
+
+    One action per message is what makes the keyboard safe to clear on the first
+    tap. The earlier design hung every action's buttons off a single message, so
+    approving one retired all of them.
+
+    callback_data is built here from the id the store just generated. No caller
+    supplies it, which is what stops a button labelled "action 2" from carrying
+    action 5's id.
+    """
+    from app.utils.http_client import http_post
+
+    action_id = str(action.get("id") or "")
+    if not action_id or len(action_id) > 32 or not all(c in "0123456789abcdef" for c in action_id):
+        raise ButtonsUnavailable("action id is not an opaque hex id")
+
+    token = resolve_brief_bot_token()
+    chat_id = resolve_brief_chat_id()
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "Aprobar", "callback_data": f"a:{action_id}:ok"},
+                {"text": "Descartar", "callback_data": f"a:{action_id}:no"},
+            ]
+        ]
+    }
+
+    chunks = split_telegram_text(render_action_text(action))
+    message_id = 0
+    for i, chunk in enumerate(chunks):
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+        # Keyboard on the LAST chunk only: it answers for the whole action, and
+        # this message holds exactly one action.
+        if i == len(chunks) - 1:
+            payload["reply_markup"] = keyboard
+        resp = http_post(
+            url,
+            json=payload,
+            timeout=20.0,
+            calling_module="brief.telegram_send.action",
+        )
+        if resp.status_code >= 400:
+            raise ButtonsUnavailable(f"telegram sendMessage {resp.status_code}")
+        if i == len(chunks) - 1:
+            message_id = int(((resp.json() or {}).get("result") or {}).get("message_id") or 0)
+    return message_id
 
 
 def resolve_chat_id() -> str:
@@ -76,23 +180,17 @@ def split_telegram_text(text: str, limit: int = _TELEGRAM_MAX) -> list[str]:
     return parts or [""]
 
 
-def send_brief_message(
-    text: str,
-    parse_mode: Optional[str] = "HTML",
-    reply_markup: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    """Send text via Bot API to BRIEF_TELEGRAM_CHAT_ID (fallback TELEGRAM_CHAT_ID). Never logs token or body."""
+def send_brief_message(text: str, parse_mode: Optional[str] = "HTML") -> dict[str, Any]:
+    """Send the brief itself. Never carries a keyboard — see send_action_message.
+
+    Deliberately unchanged by the buttons work: same token, same chat, same
+    behaviour as before. Nothing about configuring the brief bot can stop the
+    brief from arriving.
+    """
     from app.utils.http_client import http_post
 
-    brief_token = resolve_brief_bot_token()
-    token = brief_token or resolve_bot_token()
+    token = resolve_bot_token()
     chat_id = resolve_chat_id()
-    if reply_markup is not None and not brief_token:
-        # Without the brief's own bot the callbacks would land in the trading
-        # poller and nothing would happen. Send the message, drop the keyboard,
-        # say so loudly.
-        logger.warning("brief_send_markup_dropped reason=brief_bot_token_unset")
-        reply_markup = None
     if not token or not chat_id:
         raise RuntimeError("telegram_bot_not_configured")
 
@@ -115,11 +213,6 @@ def send_brief_message(
         }
         if mode:
             payload["parse_mode"] = mode
-        # The keyboard belongs to the message as a whole, so it rides on the
-        # last chunk only. On every chunk it would show one keyboard per
-        # fragment, each answering for the same action.
-        if reply_markup is not None and i == len(chunks) - 1:
-            payload["reply_markup"] = reply_markup
         resp = http_post(
             url,
             json=payload,

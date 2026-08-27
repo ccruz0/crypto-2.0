@@ -6,7 +6,7 @@ import logging
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from app.brief.auth import require_brief_key
 from app.brief import metrics
@@ -16,7 +16,11 @@ from app.brief.rate_limit import enforce_brief_rate_limit
 from app.brief.telegram_read import TelegramSessionMissing, fetch_telegram
 from app.brief import actions_store
 from app.brief.actions_store import BriefActionsPayload
-from app.brief.telegram_send import send_brief_message
+from app.brief.telegram_send import (
+    ButtonsUnavailable,
+    send_action_message,
+    send_brief_message,
+)
 from app.brief.telegram_webhook import router as brief_webhook_router
 
 logger = logging.getLogger(__name__)
@@ -28,25 +32,6 @@ def _brief_guards() -> None:
     enforce_brief_rate_limit()
 
 
-class InlineButton(BaseModel):
-    text: str = Field(..., min_length=1, max_length=64)
-    # Telegram caps callback_data at 64 BYTES. "a:<16 hex>:<ok|no>" is 22 ASCII
-    # bytes, but the limit is validated on the encoded length so a non-ASCII
-    # payload cannot slip past a character count.
-    callback_data: str = Field(..., min_length=1)
-
-    @field_validator("callback_data")
-    @classmethod
-    def _fits_telegram_limit(cls, v: str) -> str:
-        if len(v.encode("utf-8")) > 64:
-            raise ValueError("callback_data exceeds 64 bytes")
-        return v
-
-
-class InlineKeyboard(BaseModel):
-    inline_keyboard: list[list[InlineButton]]
-
-
 class MarkSentBody(BaseModel):
     ok: bool
     detail: str = ""
@@ -55,7 +40,12 @@ class MarkSentBody(BaseModel):
 class BriefSendBody(BaseModel):
     text: str = Field(..., min_length=1)
     parse_mode: Optional[Literal["HTML", "Markdown", "MarkdownV2"]] = "HTML"
-    reply_markup: Optional[InlineKeyboard] = None
+    # No reply_markup. An earlier version accepted a keyboard from the caller
+    # with arbitrary callback_data, validating only its length. Nothing tied the
+    # button Carlos read to the action it carried, so a caller that paired them
+    # wrong would have him approve one mail and the session send another, with
+    # no visible sign — the ids are opaque. Keyboards are now built by
+    # telegram_send.send_action_message from ids the store just generated.
 
 
 @router.get("/mail")
@@ -139,15 +129,7 @@ def brief_send(
 ) -> dict[str, Any]:
     """Send a brief message to BRIEF_TELEGRAM_CHAT_ID (fallback TELEGRAM_CHAT_ID)."""
     try:
-        result = send_brief_message(
-            body.text,
-            parse_mode=body.parse_mode,
-            reply_markup=(
-                body.reply_markup.model_dump(exclude_none=True)
-                if body.reply_markup is not None
-                else None
-            ),
-        )
+        result = send_brief_message(body.text, parse_mode=body.parse_mode)
         metrics.inc_send_parts(int(result.get("parts") or 0))
         metrics.inc_request("send", "ok")
         return result
@@ -172,22 +154,48 @@ def brief_actions_store(
     _: None = Depends(require_brief_key),
     __: None = Depends(_brief_guards),
 ) -> dict[str, Any]:
-    """Store today's proposed actions and return their opaque ids.
+    """Store today's proposed actions AND post one Telegram message each.
 
-    The brief calls this right after writing claude/brief-acciones.md, which the
-    backend cannot read, and uses the returned ids to build callback_data. Ids
-    are assigned here rather than derived from the action number: a second run
-    on the same day would renumber the actions while old messages kept their
-    buttons.
+    Storing and posting are one endpoint on purpose. When they were two, the
+    caller received the ids and wrote the keyboard, which is what allowed a
+    button to carry the wrong action's id. Here the caller supplies content and
+    nothing else.
+
+    Posting is best-effort per action: an action that fails to post is reported
+    in `failed` and stays PENDING in the store, so it can still be handled by
+    hand. The ones already posted are not rolled back — their buttons are live
+    and Carlos may have tapped one before this call even returns.
     """
     try:
-        ids = actions_store.replace_today(body)
-        metrics.inc_request("actions", "ok")
-        return {"ok": True, "stored": len(ids), "ids": ids}
+        actions = actions_store.replace_today(body)
     except Exception:
         metrics.inc_request("actions", "error")
         logger.exception("brief_actions_store_unhandled")
         raise
+
+    posted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for action in actions:
+        try:
+            message_id = send_action_message(action)
+            actions_store.attach_message(action["id"], message_id)
+            posted.append({"number": action["number"], "id": action["id"]})
+        except ButtonsUnavailable as exc:
+            logger.warning("brief_action_not_posted number=%s reason=%s", action["number"], exc)
+            failed.append({"number": action["number"], "id": action["id"], "reason": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("brief_action_post_failed number=%s", action["number"])
+            failed.append(
+                {"number": action["number"], "id": action["id"], "reason": type(exc).__name__}
+            )
+
+    metrics.inc_request("actions", "ok" if not failed else "partial")
+    return {
+        "ok": not failed,
+        "stored": len(actions),
+        "posted": posted,
+        "failed": failed,
+    }
 
 
 @router.get("/actions")

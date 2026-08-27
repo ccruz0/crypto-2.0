@@ -18,7 +18,10 @@ OPEN there:
   * /reply returns 202; treating a later 5xx as "not sent" and falling back to
     sendMail duplicates the mail.
 
-Whoever writes the sending side must handle both. This module cannot.
+And one that this module creates by being asynchronous: between the session
+reading an approved action and calling /sent, Carlos can still discard it. The
+mail goes out and mark_sent refuses to record it. Whoever writes the sending
+side must handle all three. This module cannot.
 
 WHY ITS OWN BOT
 ---------------
@@ -48,7 +51,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from app.brief import actions_store
-from app.brief.actions_store import ActionStatus
+from app.brief.actions_store import ActionStatus, is_valid_action_id
 
 logger = logging.getLogger(__name__)
 
@@ -91,14 +94,26 @@ def _answer_sync(callback_id: str, text: str, alert: bool = False) -> None:
         logger.warning("brief_callback_answer_failed error=%s", type(exc).__name__)
 
 
+def _utf16_len(value: str) -> int:
+    """Telegram counts message length in UTF-16 code units, not characters."""
+    return len(value.encode("utf-16-le")) // 2
+
+
 def _mark_message_sync(message: dict[str, Any], suffix: str) -> None:
     """Append a line and drop the keyboard. Never raises.
 
-    Sent WITHOUT parse_mode on purpose. Telegram returns `text` already
-    rendered, with the original entities in a separate array this code does not
-    carry, so re-posting with parse_mode cannot restore the bold — it can only
-    fail on a stray '<' or '&' from a subject line. The formatting is lost
-    either way; this at least always retires the keyboard.
+    Sent WITHOUT parse_mode, and nothing is lost by that: the message being
+    edited is an action message composed by send_action_message, which posts
+    plain text with no parse_mode either. Re-posting it as plain text is exactly
+    what it already was.
+
+    Each action has its own message, so clearing this keyboard retires only this
+    action's buttons. The earlier design put every action's buttons on one
+    message, where the first tap disarmed all of them.
+
+    "Never raises" is the contract; it is not the same as "always retires the
+    keyboard". If the edit call fails, the buttons stay live and Carlos can tap
+    again — resolve() is idempotent, so the second tap is harmless.
     """
     from app.utils.http_client import http_post
 
@@ -108,11 +123,14 @@ def _mark_message_sync(message: dict[str, Any], suffix: str) -> None:
         return
     original = str(message.get("text") or "")
     # Trim the ORIGINAL, not the result: truncating the tail would drop the
-    # suffix on a message near the 4096 limit, leaving the text unchanged.
-    # Telegram answers "message is not modified" to that and the keyboard stays
-    # live, so the button could be tapped again.
-    room = 4096 - len(suffix)
-    body = (original[:room] if room > 0 else "") + suffix
+    # suffix on a message near the 4096 limit, so the text would come back
+    # byte-identical while the markup still changed. The edit would apply and
+    # the keyboard would go, but Carlos would get no visible confirmation.
+    room = 4096 - _utf16_len(suffix)
+    body = original if room > 0 else ""
+    while _utf16_len(body) > room:
+        body = body[:-1]  # each step drops at least one code unit
+    body += suffix
     try:
         http_post(
             _api("editMessageText"),
@@ -154,7 +172,7 @@ def _allowed_users() -> set[str]:
 
 
 def _parse(data: str) -> Optional[tuple[str, str]]:
-    """callback_data is 'a:<opaque hex id>:<ok|no>'. Never a position."""
+    """callback_data is 'a:<opaque hex id>:<ok|no>', written only by the server."""
     if not data.startswith(_PREFIX):
         return None
     parts = data.split(":")
@@ -163,10 +181,6 @@ def _parse(data: str) -> Optional[tuple[str, str]]:
     if not is_valid_action_id(parts[1]):
         return None
     return parts[1], parts[2]
-
-
-def is_valid_action_id(value: str) -> bool:
-    return bool(value) and len(value) <= 32 and all(c in "0123456789abcdef" for c in value)
 
 
 @router.post("/telegram-webhook")
@@ -206,6 +220,10 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     chat_id = str((message.get("chat") or {}).get("id") or "")
     user_id = str((callback.get("from") or {}).get("id") or "")
 
+    # Silent on purpose: a callback from another chat is not ours to answer, and
+    # answering would confirm the endpoint to whoever sent it. The buttons can
+    # only exist in the brief chat, because send_action_message refuses to post
+    # them without a numeric BRIEF_TELEGRAM_CHAT_ID.
     expected_chat = (os.getenv("BRIEF_TELEGRAM_CHAT_ID") or "").strip()
     if not expected_chat or chat_id != expected_chat:
         logger.warning("brief_callback_wrong_chat chat_id=%s", chat_id)
@@ -262,9 +280,9 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
 
     if wanted == ActionStatus.DISCARDED:
         await run_in_threadpool(_answer_sync, callback_id, "Descartada")
-        await run_in_threadpool(_mark_message_sync, message, "\n\n❌ Descartada")
+        await run_in_threadpool(_mark_message_sync, message, "\n\n[X] Descartada")
     else:
-        await run_in_threadpool(_answer_sync, callback_id, "Aprobada — la enviare en cuanto la lea")
-        await run_in_threadpool(_mark_message_sync, message, "\n\n✅ Aprobada · pendiente de envio")
+        await run_in_threadpool(_answer_sync, callback_id, "Aprobada - la enviare en cuanto la lea")
+        await run_in_threadpool(_mark_message_sync, message, "\n\n[OK] Aprobada - pendiente de envio")
 
     return {"ok": True}
