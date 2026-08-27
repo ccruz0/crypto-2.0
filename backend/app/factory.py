@@ -706,6 +706,18 @@ def create_app(role: str = "legacy") -> FastAPI:
                         logger.info("Candle recorder loop started")
                     except Exception as e:
                         logger.error("Failed to start candle recorder loop: %s", e, exc_info=True)
+
+                # Serie temporal de margen. Solo escribe en `margin_snapshots`.
+                # Bajo _run_poller por el mismo motivo que el de velas: canary
+                # y standby no deben duplicar muestras.
+                if _run_poller:
+                    try:
+                        from app.services.margin_recorder import start_margin_recorder_loop
+
+                        asyncio.create_task(start_margin_recorder_loop())
+                        logger.info("Margin recorder loop started")
+                    except Exception as e:
+                        logger.error("Failed to start margin recorder loop: %s", e, exc_info=True)
             except Exception as e:
                 logger.error(f"Background init error: {e}", exc_info=True)
     

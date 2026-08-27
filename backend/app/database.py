@@ -2211,6 +2211,21 @@ def ensure_optional_columns(db_engine=None):
     except Exception as table_err:
         logger.warning(f"Could not ensure candles table: {table_err}")
 
+    # Serie temporal del estado de margen. portfolio_snapshots guarda solo el
+    # valor total de la cartera, que no dice cuanta garantia queda antes de una
+    # liquidacion. Sin esta historia no se puede medir el peor dia conjunto
+    # contra el margen disponible.
+    try:
+        from app.models.margin_snapshot import MarginSnapshot
+        tbl = getattr(MarginSnapshot, "__table__", None)
+        tname = getattr(MarginSnapshot, "__tablename__", "margin_snapshots")
+        if tbl is not None and not table_exists(engine_to_use, tname):
+            logger.warning(f"Table {tname} does not exist - creating it")
+            Base.metadata.create_all(bind=engine_to_use, tables=[tbl])
+            logger.info(f"[BOOT] Created table {tname}")
+    except Exception as table_err:
+        logger.warning(f"Could not ensure margin_snapshots table: {table_err}")
+
     # Ensure order_intents table exists. If create_all fails (e.g. orphan index), try drop+retry;
     # if that still fails, create table and indexes via raw SQL with IF NOT EXISTS.
     order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
