@@ -13,9 +13,27 @@ echo "Disk before: $BEFORE"
 echo "Pruning dangling images..."
 docker image prune -f 2>/dev/null || true
 
-# 2. Unused images older than 48h (keeps images for the running stack)
-echo "Pruning unused images >48h..."
-docker image prune -af --filter "until=48h" 2>/dev/null || true
+# 2. Unused images: keep the N most recent tags per repo, regardless of age.
+#
+# El filtro anterior era "until=48h" y NO servia: con el auto-merge desplegando
+# varias veces al dia, ninguna imagen llega a las 48h antes de que se acumulen
+# las siguientes. El 27-ago-2026 la limpieza de las 02:00 recupero exactamente
+# 0B con el disco al 90%, y a mediodia estaba al 92% con 3.9G libres.
+# A ~1.4GB por imagen, la ventana de 48h nunca las alcanza.
+#
+# Nunca se borra una imagen usada por un contenedor en marcha.
+KEEP_IMAGES="${KEEP_IMAGES:-3}"
+echo "Pruning unused images (keeping $KEEP_IMAGES most recent per repo)..."
+IN_USE=$(docker ps --format '{{.Image}}' | sort -u)
+for REPO in $(docker images --format '{{.Repository}}' | grep -v '^<none>$' | sort -u); do
+  for TAG in $(docker images "$REPO" --format '{{.Tag}}' | tail -n +$((KEEP_IMAGES + 1))); do
+    [ "$TAG" = "<none>" ] && continue
+    IMG="$REPO:$TAG"
+    if echo "$IN_USE" | grep -qF "$IMG"; then continue; fi
+    echo "  rmi $IMG"
+    docker rmi "$IMG" >/dev/null 2>&1 || true
+  done
+done
 
 # 3. Build cache older than 24h
 echo "Pruning build cache >24h..."
@@ -44,6 +62,11 @@ for _app_root in "$HOME/automated-trading-platform" "$HOME/crypto-2.0"; do
   fi
 done
 
+# 7b. npm caches (se regeneran solas; sumaban 1.75GB el 27-ago-2026)
+for _c in "$HOME/.npm/_cacache" /root/.npm/_cacache; do
+  [ -d "$_c" ] && { echo "Cleaning npm cache $_c..."; sudo rm -rf "$_c" 2>/dev/null || true; }
+done
+
 # 8. apt cache
 echo "Cleaning apt cache..."
 sudo apt-get clean 2>/dev/null || true
@@ -51,6 +74,10 @@ sudo apt-get clean 2>/dev/null || true
 # 9. Temp files older than 5 days
 echo "Cleaning temp files >5d..."
 sudo find /tmp -type f -atime +5 -delete 2>/dev/null || true
+# Directorios de trabajo abandonados (clones de git de automatismos viejos).
+# El -type f de arriba vacia los ficheros pero deja los directorios y, si algo
+# los ha leido, -atime no casa nunca. Se van por fecha de modificacion.
+sudo find /tmp -mindepth 1 -maxdepth 1 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null || true
 sudo find /var/tmp -type f -atime +5 -delete 2>/dev/null || true
 
 # 9b. Stale Jarvis coding-workflow sandboxes in /tmp (each can be hundreds of MB
