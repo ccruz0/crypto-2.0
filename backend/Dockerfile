@@ -5,8 +5,10 @@
 # ============================================================================
 #
 # ---------- 1) Builder: build wheels ----------
-# Note: Using Python 3.11 due to aiohttp 3.8.2 (required by alpaca-trade-api) compatibility
-# aiohttp 3.8.2 does not compile on Python 3.12
+# Python 3.11: la razon original era aiohttp 3.8.2, que no compila en 3.12 y
+# venia impuesto por alpaca-trade-api. Ese paquete se elimino el 27-ago-2026
+# (no lo importaba ningun modulo). Subir a 3.12 es ahora posible pero NO se ha
+# probado: es un cambio aparte, con su propia verificacion.
 
 FROM python:3.11-slim-bookworm AS builder
 
@@ -30,7 +32,7 @@ RUN pip install --upgrade pip wheel 'setuptools>=70.0.0' \
 RUN pip install pip-audit && pip-audit -r requirements.txt || true
 
 # ---------- 2) Runner: minimal runtime ----------
-# Note: Using Python 3.11 due to aiohttp 3.8.2 (required by alpaca-trade-api) compatibility
+# Python 3.11: ver la nota del builder. Cambiar de version es un paso aparte.
 
 FROM python:3.11-slim-bookworm AS runner
 
