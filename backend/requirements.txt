@@ -23,11 +23,22 @@ boto3>=1.34.0
 # Jarvis LangGraph MVP orchestration
 langgraph>=0.2.0,<0.4.0
 langchain-core>=0.3.0,<0.4.0
-# Note: aiohttp is constrained by alpaca-trade-api to 3.8.2 (security limitation)
-# aiohttp>=3.9.5  # Removed due to alpaca-trade-api 3.1.1 dependency conflict
 requests==2.32.3
-# Match alpaca-trade-api (<11) - must be <11 for compatibility
-websockets==10.4
+# aiohttp: pin explicito. Hasta el 27-ago-2026 estaba clavado en 3.8.x de forma
+# implicita por alpaca-trade-api; al eliminar ese paquete, pip resolvia 3.14.3
+# por su cuenta. Se fija a proposito para que quitar alpaca mueva UNA sola
+# dependencia (websockets) y no dos: si el despliegue falla, se sabe por que.
+# Subirlo es un paso aparte, con su propia verificacion, y levanta la
+# limitacion de seguridad que la serie 3.8 arrastraba.
+# Se fija 3.8.3 y no 3.8.2: pip marca 3.8.2 como *yanked* por sus propios
+# autores (limite superior de multidict demasiado restrictivo, corregido
+# justo en 3.8.3). Produccion corre hoy la version retirada.
+aiohttp==3.8.3
+# websockets: sin pin a proposito. Ningun modulo del backend lo importa
+# (verificado 27-ago-2026); lo arrastra uvicorn[standard] para servir /ws/prices
+# y es uvicorn quien debe decidir su version. El pin ==10.4 existia por
+# alpaca-trade-api, ya eliminado, y rompio el build el 17-ago-2026 al chocar
+# con uvicorn 0.51 (issue #490).
 
 # Data validation
 pydantic==2.9.2
@@ -43,7 +54,6 @@ joblib>=1.3.0,<1.5
 
 # Trading APIs
 ccxt==4.2.65
-alpaca-trade-api==3.1.1
 
 # Google Ads / protobuf (jarvis google_ads_mutations boot import)
 protobuf>=5.29.0
