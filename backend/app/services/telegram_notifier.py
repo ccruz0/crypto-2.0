@@ -38,6 +38,7 @@ from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
 from app.models.trading_settings import TradingSettings
 from app.utils.http_client import http_get, http_post, requests_exceptions
+from app.utils.indicator_format import format_indicator_value as _iv
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +278,7 @@ class TelegramNotifier:
             age_seconds = current_time - sent_time
             if age_seconds <= self.DUPLICATE_WINDOW_SECONDS:
                 duplicate_info = (
-                    f"Duplicate detected: Same {side} alert for {symbol} @ ${price:.4f} "
+                    f"Duplicate detected: Same {side} alert for {symbol} @ ${_iv(price)} "
                     f"was sent {age_seconds:.1f}s ago (within {self.DUPLICATE_WINDOW_SECONDS}s window, "
                     f"matches throttling time gate)"
                 )
@@ -301,7 +302,7 @@ class TelegramNotifier:
         current_time = time.time()
         message_hash = self._create_message_hash(symbol, price, reason, side)
         self.recent_messages[message_hash] = (current_time, symbol, price, side.upper())
-        logger.debug(f"📝 Registered sent message: {side} {symbol} @ ${price:.4f} (hash: {message_hash[:8]}...)")
+        logger.debug(f"📝 Registered sent message: {side} {symbol} @ ${_iv(price)} (hash: {message_hash[:8]}...)")
 
     def refresh_config(self) -> Dict[str, Any]:
         """
@@ -948,7 +949,7 @@ class TelegramNotifier:
 🟢 <b>BUY ORDER CREATED</b>
 
 📊 Symbol: <b>{symbol}</b>
-💵 Price: ${price:,.4f}
+💵 Price: ${_iv(price)}
 📦 Quantity: {quantity:,.6f}
 {margin_text}
 💸 Total: ${price * quantity:,.2f}
@@ -1004,7 +1005,7 @@ class TelegramNotifier:
 """
         else:
             # LIMIT orders or MARKET orders with known price
-            price_text = f"💵 Price: ${price:,.4f}"
+            price_text = f"💵 Price: ${_iv(price)}"
             total_value = price * quantity
             total_text = f"💸 <b>Total Value: ${total_value:,.2f} USD</b>"
         message = f"""
@@ -1133,13 +1134,13 @@ class TelegramNotifier:
                 if profit_loss >= 0:
                     profit_loss_text = f"""
 💰 <b>PROFIT REALIZED</b>
-   💵 Entry Price: ${entry_price:,.4f}
+   💵 Entry Price: ${_iv(entry_price)}
    💰 Profit: +${profit_loss:,.2f} (+{profit_loss_pct:,.2f}%)
    📊 Total: ${total_usd:,.2f}"""
                 else:
                     profit_loss_text = f"""
 💰 <b>LOSS REALIZED</b>
-   💵 Entry Price: ${entry_price:,.4f}
+   💵 Entry Price: ${_iv(entry_price)}
    💸 Loss: ${profit_loss:,.2f} ({profit_loss_pct:,.2f}%)
    📊 Total: ${total_usd:,.2f}"""
             elif side == "BUY":  # SL or TP executed (buying back short position)
@@ -1150,13 +1151,13 @@ class TelegramNotifier:
                 if profit_loss >= 0:
                     profit_loss_text = f"""
 💰 <b>PROFIT REALIZED</b>
-   💵 Entry Price: ${entry_price:,.4f}
+   💵 Entry Price: ${_iv(entry_price)}
    💰 Profit: +${profit_loss:,.2f} (+{profit_loss_pct:,.2f}%)
    📊 Total: ${total_usd:,.2f}"""
                 else:
                     profit_loss_text = f"""
 💰 <b>LOSS REALIZED</b>
-   💵 Entry Price: ${entry_price:,.4f}
+   💵 Entry Price: ${_iv(entry_price)}
    💸 Loss: ${profit_loss:,.2f} ({profit_loss_pct:,.2f}%)
    📊 Total: ${total_usd:,.2f}"""
         
@@ -1166,7 +1167,7 @@ class TelegramNotifier:
 
 📊 Symbol: <b>{symbol}</b>
 📈 Side: {side}
-💵 Price: ${price:,.4f}
+💵 Price: ${_iv(price)}
 📦 Quantity: {quantity:,.6f}
 💸 Total: ${total_usd:,.2f}{origin_text}{profit_loss_text}{order_type_text}{order_id_text}{open_orders_text}
 📅 Time: {timestamp}
@@ -1224,7 +1225,7 @@ class TelegramNotifier:
     ) -> str:
         """Format a sync cancellation alert with entry vs exit-order context."""
         is_protection = bool(order_role)
-        price_text = f"\n💵 Price: ${price:,.4f}" if price else ""
+        price_text = f"\n💵 Price: ${_iv(price)}" if price else ""
         qty_text = f"\n📦 Quantity: {quantity:,.8f}" if quantity else ""
 
         if is_protection:
@@ -1295,7 +1296,7 @@ class TelegramNotifier:
         exit_side = self._exit_side_label(entry_side)
         original_order_text = ""
         if original_order_id:
-            entry_price_text = f" @ ${entry_price:,.4f}" if entry_price else ""
+            entry_price_text = f" @ ${_iv(entry_price)}" if entry_price else ""
             original_order_text = (
                 f"\n📋 Entry Order: <code>{original_order_id}</code> — "
                 f"<b>{entry_side or 'N/A'}</b>{entry_price_text}"
@@ -1360,22 +1361,22 @@ class TelegramNotifier:
             sl_loss_pct_display = -abs(sl_loss_pct)
             profit_loss_text = f"""
 💰 <b>PROFIT/LOSS ESTIMATES</b>
-   💵 Entry Price: ${entry_price:,.4f}
+   💵 Entry Price: ${_iv(entry_price)}
    📉 If SL hits: ${sl_loss_display:,.2f} ({sl_loss_pct_display:,.2f}%)
    📈 If TP hits: ${tp_profit:,.2f} ({tp_profit_pct:,.2f}%)"""
         
         # Format SL order details with trigger and ref prices
         sl_trigger_text = ""
         if sl_trigger_price is not None:
-            sl_trigger_text = f"\n   🎯 Trigger Price: ${sl_trigger_price:,.4f}"
+            sl_trigger_text = f"\n   🎯 Trigger Price: ${_iv(sl_trigger_price)}"
             if sl_trigger_price == sl_price:
                 sl_trigger_text += " ✅ (igual a SL price)"
             else:
-                sl_trigger_text += f" ⚠️ (debe ser igual a SL price: ${sl_price:,.4f})"
+                sl_trigger_text += f" ⚠️ (debe ser igual a SL price: ${_iv(sl_price)})"
         
         sl_ref_text = ""
         if sl_ref_price is not None:
-            sl_ref_text = f"\n   📍 Ref Price: ${sl_ref_price:,.4f}"
+            sl_ref_text = f"\n   📍 Ref Price: ${_iv(sl_ref_price)}"
             if sl_ref_price == sl_price:
                 sl_ref_text += " ✅ (igual a SL price)"
             elif sl_trigger_price and sl_ref_price == sl_trigger_price:
@@ -1389,7 +1390,7 @@ class TelegramNotifier:
             sl_order_details = f"\n{sl_emoji} <b>SL Order (exit){sl_reuse_note}:</b>"
             sl_order_details += f"\n   🆔 Order ID: {sl_order_id}"
             sl_order_details += f"\n   📊 Type: STOP_LIMIT{sl_side_text}"
-            sl_order_details += f"\n   💵 Price: ${sl_price:,.4f}"
+            sl_order_details += f"\n   💵 Price: ${_iv(sl_price)}"
             sl_order_details += f"\n   📦 Quantity: {quantity:,.6f}"
             sl_order_details += sl_trigger_text
             sl_order_details += sl_ref_text
@@ -1399,11 +1400,11 @@ class TelegramNotifier:
         # Format TP order details with trigger and execution prices (for TAKE_PROFIT_LIMIT)
         tp_trigger_text = ""
         if tp_trigger_price is not None:
-            tp_trigger_text = f"\n   🎯 Trigger Price: ${tp_trigger_price:,.4f}"
+            tp_trigger_text = f"\n   🎯 Trigger Price: ${_iv(tp_trigger_price)}"
             if tp_trigger_price == tp_price:
                 tp_trigger_text += " ✅ (igual a TP price y execution price)"
             else:
-                tp_trigger_text += f" ⚠️ (debe ser igual a TP price: ${tp_price:,.4f})"
+                tp_trigger_text += f" ⚠️ (debe ser igual a TP price: ${_iv(tp_price)})"
         
         tp_order_details = ""
         if tp_order_id:
@@ -1411,7 +1412,7 @@ class TelegramNotifier:
             tp_order_details = f"\n{tp_emoji} <b>TP Order (exit){tp_reuse_note}:</b>"
             tp_order_details += f"\n   🆔 Order ID: {tp_order_id}"
             tp_order_details += f"\n   📊 Type: TAKE_PROFIT_LIMIT{tp_side_text}"
-            tp_order_details += f"\n   💵 Execution Price: ${tp_price:,.4f}"
+            tp_order_details += f"\n   💵 Execution Price: ${_iv(tp_price)}"
             tp_order_details += f"\n   📦 Quantity: {quantity:,.6f}"
             tp_order_details += tp_trigger_text  # Show trigger price info (should equal execution price)
         elif tp_order_id is None:
@@ -1580,7 +1581,7 @@ class TelegramNotifier:
                 from app.api.routes_monitoring import add_telegram_message
                 price_change_display = price_variation or "N/A"
                 label = (persist_label or "DRY_RUN").strip() or "DRY_RUN"
-                sent_message = f"[{label}] BUY SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                sent_message = f"[{label}] BUY SIGNAL: {symbol} @ ${_iv(price)} ({price_change_display}) - {reason}"
                 message_id = add_telegram_message(
                     sent_message,
                     symbol=symbol,
@@ -1609,7 +1610,7 @@ class TelegramNotifier:
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 add_telegram_message(
-                    f"[DUPLICATE BLOCKED] {symbol} @ ${price:.4f} - {duplicate_info}",
+                    f"[DUPLICATE BLOCKED] {symbol} @ ${_iv(price)} - {duplicate_info}",
                     symbol=symbol,
                     blocked=True,
                 )
@@ -1643,7 +1644,7 @@ class TelegramNotifier:
             throttle_reason=throttle_reason,
         )
         
-        price_line = f"💵 Price: ${price:,.4f}"
+        price_line = f"💵 Price: ${_iv(price)}"
         
         # Add source indicator
         source_text = ""
@@ -1690,7 +1691,7 @@ class TelegramNotifier:
                 from app.api.routes_monitoring import add_telegram_message
                 # Include price change in stored message
                 price_change_display = price_change_text.replace("\n📊 Cambio desde última alerta: ", "") if price_change_text else "N/A"
-                sent_message = f"✅ BUY SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                sent_message = f"✅ BUY SIGNAL: {symbol} @ ${_iv(price)} ({price_change_display}) - {reason}"
                 message_id = add_telegram_message(
                     sent_message,
                     symbol=symbol,
@@ -1751,7 +1752,7 @@ class TelegramNotifier:
                 from app.api.routes_monitoring import add_telegram_message
                 price_change_display = price_variation or "N/A"
                 label = (persist_label or "DRY_RUN").strip() or "DRY_RUN"
-                sent_message = f"[{label}] SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                sent_message = f"[{label}] SELL SIGNAL: {symbol} @ ${_iv(price)} ({price_change_display}) - {reason}"
                 is_blocked = (throttle_status or "SENT").upper() == "BLOCKED"
                 message_id = add_telegram_message(
                     sent_message,
@@ -1781,7 +1782,7 @@ class TelegramNotifier:
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 add_telegram_message(
-                    f"[DUPLICATE BLOCKED] {symbol} @ ${price:.4f} - {duplicate_info}",
+                    f"[DUPLICATE BLOCKED] {symbol} @ ${_iv(price)} - {duplicate_info}",
                     symbol=symbol,
                     blocked=True,
                 )
@@ -1815,7 +1816,7 @@ class TelegramNotifier:
             throttle_reason=throttle_reason,
         )
         
-        price_line = f"💵 Price: ${price:,.4f}"
+        price_line = f"💵 Price: ${_iv(price)}"
         
         # Add source indicator
         source_text = ""
@@ -1860,7 +1861,7 @@ class TelegramNotifier:
                 from app.api.routes_monitoring import add_telegram_message
                 # Include price change in stored message
                 price_change_display = price_change_text.replace("\n📊 Cambio desde última alerta: ", "") if price_change_text else "N/A"
-                sent_message = f"🔴 SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                sent_message = f"🔴 SELL SIGNAL: {symbol} @ ${_iv(price)} ({price_change_display}) - {reason}"
                 # FIX: Set blocked=True when throttle_status="BLOCKED" so message is marked correctly
                 is_blocked = (throttle_status or "SENT").upper() == "BLOCKED"
                 message_id = add_telegram_message(

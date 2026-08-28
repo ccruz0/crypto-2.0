@@ -14,6 +14,7 @@ from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusE
 from app.database import SessionLocal
 import json
 from app.utils.http_client import http_get, http_post
+from app.utils.indicator_format import format_indicator_value as _iv
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +238,7 @@ class DailySummaryService:
                 side = order.get('side', 'N/A')
                 qty = float(order.get('quantity', 0))
                 price = float(order.get('limit_price', 0))
-                summary += f"• {symbol} {side} {qty:.6f} @ ${price:.4f}\n"
+                summary += f"• {symbol} {side} {qty:.6f} @ ${_iv(price)}\n"
             
             if len(open_orders) > 3:
                 summary += f"... y {len(open_orders) - 3} más\n"
@@ -252,7 +253,7 @@ class DailySummaryService:
                 qty = float(order.get('quantity', 0))
                 price = float(order.get('avg_price', order.get('limit_price', 0)))
                 status = order.get('status', 'N/A')
-                summary += f"• {symbol} {side} {qty:.6f} @ ${price:.4f} ({status})\n"
+                summary += f"• {symbol} {side} {qty:.6f} @ ${_iv(price)} ({status})\n"
             
             if len(recent_orders) > 3:
                 summary += f"... y {len(recent_orders) - 3} más\n"
@@ -962,7 +963,7 @@ class DailySummaryService:
                         pnl_emoji = "💰" if profit_loss >= 0 else "💸"
                         pnl_sign = "+" if profit_loss >= 0 else ""
                         pnl_info = f"\n   {pnl_emoji} P&L: {pnl_sign}${profit_loss:,.2f} ({pnl_sign}{profit_loss_pct:,.2f}%)"
-                        pnl_info += f"\n   💵 Entrada: ${entry_price:,.4f}"
+                        pnl_info += f"\n   💵 Entrada: ${_iv(entry_price)}"
                     
                     # Format order line. Distinguish a direct exit (market/limit
                     # sell placed by the bot) from a protective SL/TP order so the
@@ -978,7 +979,7 @@ class DailySummaryService:
                         role_emoji, role_text = "🔴", "Venta de Mercado"
                     
                     message += f"• <b>{symbol}</b> {role_emoji} {role_text}\n"
-                    message += f"   💵 Precio: ${sell_price:,.4f}\n"
+                    message += f"   💵 Precio: ${_iv(sell_price)}\n"
                     message += f"   📦 Cantidad: {quantity:,.6f}\n"
                     message += f"   💰 Total: ${(sell_price * quantity):,.2f}\n"
                     if pnl_info:
