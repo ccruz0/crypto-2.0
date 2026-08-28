@@ -209,6 +209,37 @@ def select_exit_child(children: Sequence[Mapping[str, Any]]) -> Optional[Mapping
     return filled[0][1]
 
 
+def select_flatten_child(children: Sequence[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    """Earliest FILLED child tagged order_role=FLATTEN with a usable fill price.
+
+    A flatten/manual close correctly tagged with parent_order_id was invisible
+    before 28-ago-2026: infer_exit_role only maps SL/TP (so select_exit_child
+    skipped it) and the orphan path requires parent_order_id IS NULL (so the
+    tag itself disqualified it). The untagged version of the same economic
+    event DID join via the orphan path — the code rewarded missing metadata.
+    Verified against production: 16 MANUAL_OR_FLATTEN rows, all via_orphan,
+    while 4 correctly-tagged XRP flatten closes were dropped as no_children.
+    """
+    filled: list[tuple[datetime, Mapping[str, Any]]] = []
+    for child in children:
+        child_oid = _as_str(child.get("exchange_order_id"))
+        if is_ops_stub_closed_order_id(child_oid):
+            continue
+        role = (_as_str(child.get("order_role")) or "").upper()
+        if role != "FLATTEN":
+            continue
+        if not is_filled_status(child.get("status")):
+            continue
+        if order_fill_price(child) is None:
+            continue
+        ts = order_event_ts(child) or datetime.min.replace(tzinfo=timezone.utc)
+        filled.append((ts, child))
+    if not filled:
+        return None
+    filled.sort(key=lambda x: x[0])
+    return filled[0][1]
+
+
 def _opposite_side(side: str) -> str:
     return "SELL" if side.upper() == "BUY" else "BUY"
 
@@ -431,6 +462,12 @@ def build_outcome_for_intent(
         exit_reason = infer_exit_role(
             order_role=exit_order.get("order_role"), order_type=exit_order.get("order_type")
         ) or "UNKNOWN"
+    elif (flatten_child := select_flatten_child(children)) is not None:
+        # Tagged flatten wins over the still-open check on purpose: a FILLED
+        # flatten means the position IS closed even if a protection leg still
+        # shows ACTIVE because sibling-cancel lagged.
+        exit_order = flatten_child
+        exit_reason = "MANUAL_OR_FLATTEN"
     elif not has_active_protection_children(children):
         # No filled linked SL/TP and not still-open → try orphan MARKET/LIMIT flatten.
         if qty is None or qty <= 0:

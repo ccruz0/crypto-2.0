@@ -758,3 +758,142 @@ def test_orphan_sql_casts_enum_columns_to_text():
     assert "UPPER(status)" not in src.replace("UPPER(status::text)", "")
     assert "UPPER(order_type)" not in src.replace("UPPER(order_type::text)", "")
     assert "UPPER(order_role)" not in src.replace("UPPER(order_role::text)", "")
+
+
+def test_tagged_flatten_child_joins_as_manual_or_flatten():
+    """A FILLED child with order_role=FLATTEN and parent set IS the exit.
+
+    Regression for the 4 XRP round-trips of 19-20 ago-2026: correctly tagged
+    flatten closes were dropped as no_children while the untagged twin joined
+    via the orphan path.
+    """
+    from app.services.trade_outcome_builder import CoverageStats
+
+    intent = {
+        "id": 40, "signal_id": 140, "symbol": "XRP_USD", "side": "BUY",
+        "status": "ORDER_PLACED", "order_id": "e-flat",
+    }
+    entry = {
+        "exchange_order_id": "e-flat", "symbol": "XRP_USD", "side": "BUY",
+        "status": "FILLED", "avg_price": 1.00, "quantity": 95.0,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "flat-1", "symbol": "XRP_USD", "side": "SELL",
+            "order_type": "MARKET", "order_role": "FLATTEN", "status": "FILLED",
+            "avg_price": 1.05, "quantity": 95.0, "cumulative_quantity": 95.0,
+            "parent_order_id": "e-flat",
+            "exchange_update_time": BASE + timedelta(hours=2),
+        }
+    ]
+    stats = CoverageStats()
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=children, orphan_candidates=[], stats=stats
+    )
+    assert row is not None
+    assert row["exit_reason"] == "MANUAL_OR_FLATTEN"
+    assert row["join_status"] == "COMPLETE"
+    assert row["exit_exchange_order_id"] == "flat-1"
+    assert stats.dropped["no_children"] == 0
+
+
+def test_tagged_flatten_wins_over_lagging_active_protection():
+    """FILLED flatten closes the position even if a protection leg still shows ACTIVE."""
+    from app.services.trade_outcome_builder import CoverageStats
+
+    intent = {
+        "id": 41, "signal_id": 141, "symbol": "XRP_USD", "side": "BUY",
+        "status": "ORDER_PLACED", "order_id": "e-flat2",
+    }
+    entry = {
+        "exchange_order_id": "e-flat2", "symbol": "XRP_USD", "side": "BUY",
+        "status": "FILLED", "avg_price": 1.00, "quantity": 90.0,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "sl-lag", "order_role": "STOP_LOSS",
+            "order_type": "STOP_LIMIT", "status": "ACTIVE",
+        },
+        {
+            "exchange_order_id": "flat-2", "symbol": "XRP_USD", "side": "SELL",
+            "order_type": "MARKET", "order_role": "FLATTEN", "status": "FILLED",
+            "avg_price": 0.98, "quantity": 90.0, "cumulative_quantity": 90.0,
+            "parent_order_id": "e-flat2",
+            "exchange_update_time": BASE + timedelta(hours=3),
+        },
+    ]
+    stats = CoverageStats()
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=children, orphan_candidates=[], stats=stats
+    )
+    assert row is not None
+    assert row["exit_reason"] == "MANUAL_OR_FLATTEN"
+    assert stats.dropped["still_open"] == 0
+
+
+def test_filled_sltp_child_still_beats_flatten():
+    """If a filled SL/TP child exists, it keeps priority over a flatten child."""
+    from app.services.trade_outcome_builder import CoverageStats
+
+    intent = {
+        "id": 42, "signal_id": 142, "symbol": "XRP_USD", "side": "BUY",
+        "status": "ORDER_PLACED", "order_id": "e-both",
+    }
+    entry = {
+        "exchange_order_id": "e-both", "symbol": "XRP_USD", "side": "BUY",
+        "status": "FILLED", "avg_price": 1.00, "quantity": 80.0,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "tp-1", "order_role": "TAKE_PROFIT",
+            "order_type": "TAKE_PROFIT_LIMIT", "status": "FILLED",
+            "avg_price": 1.10, "quantity": 80.0, "cumulative_quantity": 80.0,
+            "exchange_update_time": BASE + timedelta(hours=1),
+        },
+        {
+            "exchange_order_id": "flat-3", "side": "SELL", "order_type": "MARKET",
+            "order_role": "FLATTEN", "status": "FILLED",
+            "avg_price": 1.09, "quantity": 80.0,
+            "parent_order_id": "e-both",
+            "exchange_update_time": BASE + timedelta(hours=2),
+        },
+    ]
+    stats = CoverageStats()
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=children, orphan_candidates=[], stats=stats
+    )
+    assert row is not None
+    assert row["exit_reason"] == "TAKE_PROFIT"
+    assert row["exit_exchange_order_id"] == "tp-1"
+
+
+def test_flatten_without_price_still_drops():
+    """A FLATTEN child without any fill price cannot be used as exit."""
+    from app.services.trade_outcome_builder import CoverageStats
+
+    intent = {
+        "id": 43, "signal_id": 143, "symbol": "XRP_USD", "side": "BUY",
+        "status": "ORDER_PLACED", "order_id": "e-noprice",
+    }
+    entry = {
+        "exchange_order_id": "e-noprice", "symbol": "XRP_USD", "side": "BUY",
+        "status": "FILLED", "avg_price": 1.00, "quantity": 99.7,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "flat-np", "side": "SELL", "order_type": "MARKET",
+            "order_role": "FLATTEN", "status": "FILLED",
+            "avg_price": None, "price": None, "quantity": 99.7,
+            "parent_order_id": "e-noprice",
+            "exchange_update_time": BASE + timedelta(hours=1),
+        }
+    ]
+    stats = CoverageStats()
+    row = build_outcome_for_intent(
+        intent, entry=entry, children=children, orphan_candidates=[], stats=stats
+    )
+    assert row is None
