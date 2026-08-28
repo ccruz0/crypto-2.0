@@ -126,3 +126,83 @@ class TestDivergenceLogging:
             with caplog.at_level(logging.INFO):
                 pcs.record_shadow_count(mock_db, "SOL", 0)
         assert "diverge=0" in caplog.text
+
+
+class _CapLot:
+    def __init__(self, qty, entry_id, buy_time=None, symbol="APT_USD"):
+        from datetime import datetime, timezone
+        self.lot_qty = Decimal(str(qty))
+        self.buy_order_id = entry_id
+        self.buy_time = buy_time or datetime(2026, 8, 27, tzinfo=timezone.utc)
+        self.symbol = symbol
+
+
+class TestWalletCapForCount:
+    """The counted quantity must fit in |wallet|; the display path is untouched.
+
+    Regression for the APT case of 28-ago-2026: protected 173.10 + naked
+    ghosts 17.65/17.54 (entries of 2-3 ago, protections mass-cancelled 11-ago)
+    = 208.29 counted vs wallet 173.49 -> count said 3, truth was 1.
+    """
+
+    def _protected(self, ids):
+        return patch(
+            "app.services.expected_take_profit._protected_entry_ids_for_lots",
+            return_value=set(ids),
+        )
+
+    def test_apt_ghosts_are_dropped(self, mock_db):
+        from datetime import datetime, timezone
+        real = _CapLot("173.10", "e-real", datetime(2026, 8, 27, 8, tzinfo=timezone.utc))
+        ghost1 = _CapLot("17.65", "e-ghost-aug2", datetime(2026, 8, 2, tzinfo=timezone.utc))
+        ghost2 = _CapLot("17.54", "e-ghost-aug3", datetime(2026, 8, 3, tzinfo=timezone.utc))
+        with self._protected({"e-real"}):
+            kept, dropped = pcs._cap_lots_to_wallet_for_count(
+                mock_db, [ghost1, ghost2, real], Decimal("173.48953042")
+            )
+        assert dropped == 2
+        assert [l.buy_order_id for l in kept] == ["e-real"]
+
+    def test_exact_match_passes_untouched(self, mock_db):
+        lot = _CapLot("1.84335603", "e-dot")
+        with self._protected({"e-dot"}):
+            kept, dropped = pcs._cap_lots_to_wallet_for_count(
+                mock_db, [lot], Decimal("1.84335603")
+            )
+        assert dropped == 0 and len(kept) == 1
+
+    def test_naked_real_fill_within_capacity_is_kept(self, mock_db):
+        """ETH_USDT-style: a naked fill that FITS in wallet stays counted."""
+        from datetime import datetime, timezone
+        protected = _CapLot("1.0", "e-prot")
+        naked = _CapLot("0.5", "e-naked", datetime(2026, 8, 28, tzinfo=timezone.utc))
+        with self._protected({"e-prot"}):
+            kept, dropped = pcs._cap_lots_to_wallet_for_count(
+                mock_db, [protected, naked], Decimal("1.6")
+            )
+        assert dropped == 0
+        assert {l.buy_order_id for l in kept} == {"e-prot", "e-naked"}
+
+    def test_newest_naked_wins_over_oldest(self, mock_db):
+        from datetime import datetime, timezone
+        old = _CapLot("0.5", "e-old", datetime(2026, 8, 1, tzinfo=timezone.utc))
+        new = _CapLot("0.5", "e-new", datetime(2026, 8, 28, tzinfo=timezone.utc))
+        with self._protected(set()):
+            kept, dropped = pcs._cap_lots_to_wallet_for_count(
+                mock_db, [old, new], Decimal("0.6")
+            )
+        assert dropped == 1
+        assert [l.buy_order_id for l in kept] == ["e-new"]
+
+    def test_protected_never_dropped_even_over_wallet(self, mock_db):
+        lot = _CapLot("10.0", "e-prot-big")
+        with self._protected({"e-prot-big"}):
+            kept, dropped = pcs._cap_lots_to_wallet_for_count(
+                mock_db, [lot], Decimal("7.0")
+            )
+        assert dropped == 0 and len(kept) == 1
+
+    def test_zero_wallet_passes_through(self, mock_db):
+        lot = _CapLot("5.0", "e-any")
+        kept, dropped = pcs._cap_lots_to_wallet_for_count(mock_db, [lot], Decimal("0"))
+        assert dropped == 0 and len(kept) == 1

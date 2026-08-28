@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, Optional, Tuple
 
@@ -109,6 +110,58 @@ def _load_wallet_by_base(force: bool = False) -> Tuple[Dict[str, Decimal], bool]
         return _wallet_cache, False
 
 
+def _cap_lots_to_wallet_for_count(
+    db: Session,
+    lots: list,
+    wallet_abs: Decimal,
+) -> Tuple[list, int]:
+    """Cap the COUNTED lot quantity at |wallet|. Returns (kept, ghosts_dropped).
+
+    The Expected TP aligner pins direction-aligned naked lots one by one and
+    never checks that the pinned SUM fits in |wallet| — deliberate for the
+    display path (real fills whose SL/TP failed must stay visible, prod
+    ETH_USDT 5755600492671134850), wrong for a position COUNT that B2 will
+    gate orders with. Measured 28-ago-2026 on APT: protected 173.10 + naked
+    ghosts 17.65 + 17.54 (entries of 2-3 ago whose protections were all
+    cancelled on 11-ago) = 208.29 counted vs wallet 173.49 — count said 3,
+    truth was 1.
+
+    Rule: protected lots are never dropped here (they are the live position);
+    unprotected lots are kept newest-first only while the running total still
+    fits in |wallet| plus dust. Old naked leftovers — the ghost signature —
+    fall off first. Display output is untouched: this runs only on the
+    counter's copy.
+    """
+    from app.services.expected_take_profit import _protected_entry_ids_for_lots
+
+    total = sum((Decimal(str(getattr(l, "lot_qty", 0) or 0)) for l in lots), Decimal(0))
+    # Dust: 0.1% of wallet — same spirit as the exit-criteria dust tolerance.
+    dust = wallet_abs * Decimal("0.001")
+    if wallet_abs <= 0 or total <= wallet_abs + dust:
+        return lots, 0
+
+    protected_ids = _protected_entry_ids_for_lots(db, lots)
+    protected = [l for l in lots if getattr(l, "buy_order_id", None) in protected_ids]
+    naked = [l for l in lots if getattr(l, "buy_order_id", None) not in protected_ids]
+
+    kept = list(protected)
+    running = sum((Decimal(str(getattr(l, "lot_qty", 0) or 0)) for l in kept), Decimal(0))
+    # newest first: recent naked fills are more likely real than month-old leftovers
+    naked.sort(
+        key=lambda l: getattr(l, "buy_time", None) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    dropped = 0
+    for lot in naked:
+        qty = Decimal(str(getattr(lot, "lot_qty", 0) or 0))
+        if running + qty <= wallet_abs + dust:
+            kept.append(lot)
+            running += qty
+        else:
+            dropped += 1
+    return kept, dropped
+
+
 def count_open_lots_for_symbol(
     db: Session,
     symbol: str,
@@ -145,6 +198,12 @@ def count_open_lots_for_symbol(
         except Exception as e:
             logger.debug("[POSITION_COUNT_SHADOW] wallet alignment failed for %s: %s", base, e)
 
+    ghosts_dropped = 0
+    if wallet_ok:
+        lots, ghosts_dropped = _cap_lots_to_wallet_for_count(
+            db, lots or [], abs(wallet_balance)
+        )
+
     long_qty = Decimal(0)
     short_qty = Decimal(0)
     for lot in lots:
@@ -158,6 +217,7 @@ def count_open_lots_for_symbol(
         "base": base,
         "count": len(lots),
         "lots_before_wallet": raw_lots,
+        "ghosts_dropped": ghosts_dropped,
         "long_qty": float(long_qty),
         "short_qty": float(short_qty),
         "wallet": float(wallet_balance),
@@ -197,7 +257,7 @@ def record_shadow_count(db: Session, symbol: str, legacy_count: int) -> None:
         logger.info(
             "[POSITION_COUNT_SHADOW] symbol=%s base=%s legacy=%d shadow=%d diverge=%d "
             "long_qty=%.8f short_qty=%.8f wallet=%.8f wallet_ok=%d aligned=%d "
-            "lots_pre=%d ms=%.1f warning=%s",
+            "lots_pre=%d ghosts_dropped=%d ms=%.1f warning=%s",
             (symbol or "").upper(),
             result["base"],
             legacy_count,
@@ -209,6 +269,7 @@ def record_shadow_count(db: Session, symbol: str, legacy_count: int) -> None:
             int(result["wallet_ok"]),
             int(result["aligned"]),
             result["lots_before_wallet"],
+            result.get("ghosts_dropped", 0),
             elapsed_ms,
             result["warning"] or "-",
         )
