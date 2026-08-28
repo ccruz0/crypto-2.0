@@ -1,6 +1,6 @@
 # Criterio de salida de la sombra (PASO B1 → B2)
 
-Fecha: 2026-08-20 · Estado: **abierto**, la sombra empieza al desplegar B1.
+Fecha: 2026-08-20 · Estado: **abierto** — primera agregación 28-ago-2026 (NO-GO, ver registro).
 
 Sin un criterio escrito antes de empezar, una fase de sombra acaba de una de
 dos maneras: eterna, o cortada por impaciencia. Esto lo fija por adelantado.
@@ -131,8 +131,56 @@ de Carlos, 20-ago.
 
 ## Registro de divergencias
 
-_(se rellena durante la sombra)_
+Primera agregación: **28-ago-2026, ventana 00:37–01:45 UTC** (~10.400 muestras).
+La ventana es de ~1h y no de 72h por el bloqueo operativo nº1 de abajo.
 
 | fecha | símbolo | legacy | shadow | quién acierta vs wallet | causa |
 |---|---|---|---|---|---|
-| | | | | | |
+| 28-ago | AAVE | 0 | 1 | **shadow** — wallet −0.02980318 = short_qty exacto a 8 decimales | legacy clavado en 0: sustraendo doblado por gemelas + poblaciones asimétricas (defectos 1-3 de #523) |
+| 28-ago | DOT | 0 | 1 | **shadow** — wallet −1.84335603 exacto | ídem |
+| 28-ago | ALGO | 0 | 1 | **shadow** — wallet +0.47371971 (long) exacto | ídem |
+| 28-ago | ATOM | 0 | 1 | **shadow** — wallet +0.00505000 exacto | ídem; long residual cercano a polvo |
+| 28-ago | SUI | 0 | 1 | **shadow** — wallet −0.30335976 exacto | ídem; corto de ~$0,23: revisar si cae bajo tolerancia de polvo |
+| 28-ago | ETH | 1 | 1 | acuerdo (short residual de polvo) | — |
+| 28-ago | DOGE | 0 | 0 | acuerdo; wallet −12.85 DOGE (~$1) en el borde de la tolerancia | warning=ghost_long_vs_short; vigilar |
+| 28-ago | **APT** | 0 | 3 | **NINGUNO cuadra**: wallet dice corto 173.48953042, libros dicen 208.29 — hueco de 34.8 APT ≈ $20 | **BLOQUEANTE (criterio 3)**: legacy=0 es claramente falso (hay cortos reales), pero la cantidad de la sombra tampoco casa. warning=lots_exceed_wallet con aligned=1: la alineación a wallet no está recortando los cortos como recorta los largos. Causa raíz pendiente |
+| 28-ago | BONK/SOL/HBAR/AKT | 0 | 1 | pendiente de muestra cruda | mismo patrón aparente que AAVE/DOT; sin línea capturada con wallet en esta agregación |
+
+### Medición de coste (criterio 4) — 28-ago
+
+```
+n=10425  p50=68.0ms  p95=308.2ms  p99=681.8ms
+shadow=ERROR: 0    wallet_ok=0: 0
+```
+
+**p95 = 308 ms > 250 ms → el criterio 4 FALLA.** Según lo ya escrito arriba:
+B2 entra con caché por ciclo y el criterio se re-mide. No es opinión nueva,
+es la regla que este documento fijó el 20-ago aplicada al histograma real.
+
+### Bloqueos operativos detectados al agregar (28-ago)
+
+1. **La evidencia se evapora.** La rotación de logs del contenedor retiene
+   ~1h (16 ficheros json.log) y cada deploy recrea el contenedor. El criterio
+   de "72h de sombra continua" es inverificable con `docker logs`: la sombra
+   corre desde el 20-ago pero su evidencia no sobrevive. Hace falta persistir
+   la agregación (una línea diaria en un fichero del host o una tabla) antes
+   de poder declarar cumplido el criterio 1.
+2. **Actividad insuficiente.** Con el sizing manual reducido, las últimas 72h
+   tienen ~5 entradas y ~7 cierres reales en `exchange_orders` — por debajo
+   del mínimo de 10/10 del criterio 1. No es un defecto: es que el sistema
+   está operando poco. El criterio se cumplirá con calendario, no con código.
+
+### Estado B1→B2 a 28-ago-2026: **NO-GO**, con camino claro
+
+- Criterio 1 (cobertura): **no cumplido** (evidencia no retenida + actividad < 10/10).
+- Criterio 2 (divergencias explicadas): **parcial** — el patrón dominante
+  (legacy=0 / shadow=N con wallet dando la razón a la sombra a 8 decimales)
+  queda explicado arriba; **APT queda abierto y es bloqueante**.
+- Criterio 3 (libros vs wallet): **falla en APT** (hueco $20 > tolerancia).
+- Criterio 4 (coste): **falla** (p95 308 > 250) → B2 llevará caché por ciclo.
+
+Lo que la agregación sí deja demostrado con datos vivos: el contador legacy
+reporta 0 posiciones abiertas en ≥9 símbolos mientras el wallet muestra
+cortos y largos reales — `maxOpenOrdersPerCoin` y `maxOpenOrdersTotal` no
+están limitando nada, hoy. La urgencia de B2 sube; el atajo de saltarse los
+criterios, no.
