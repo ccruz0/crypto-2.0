@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { formatNumber } from '@/utils/formatting';
 import {
   getMonitoringSummary,
   getSignalThrottleState,
@@ -998,7 +999,7 @@ export default function MonitoringPanel({
           </td>
           <td className="px-4 py-3 text-sm">{renderSideBadge(entry.side)}</td>
           <td className="px-4 py-3 text-sm text-gray-700">
-            {entry.last_price != null ? `$${entry.last_price.toFixed(4)}` : '—'}
+            {entry.last_price != null ? `$${formatNumber(entry.last_price)}` : '—'}
           </td>
           <td className={`px-4 py-3 text-sm font-medium ${priceChangeColor}`}>
             {priceChangeDisplay}
@@ -1638,7 +1639,7 @@ export default function MonitoringPanel({
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-600">{strategyKey || 'N/A'}</td>
                       <td className="px-4 py-3 text-sm text-gray-900">
-                        {lastPrice !== null && lastPrice > 0 ? `$${lastPrice.toFixed(4)}` : 'N/A'}
+                        {lastPrice !== null && lastPrice > 0 ? `$${formatNumber(lastPrice)}` : 'N/A'}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-500">{formattedTimestamp}</td>
                     </tr>
