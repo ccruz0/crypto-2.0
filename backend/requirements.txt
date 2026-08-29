@@ -85,7 +85,7 @@ ccxt==4.2.65
 protobuf>=5.29.0
 
 # Observability (Phase 7)
-prometheus-client==0.20.0
+prometheus-client==0.26.0
 
 # Brief calendar (ICS + RRULE expansion)
 icalendar>=6.0.0,<8
