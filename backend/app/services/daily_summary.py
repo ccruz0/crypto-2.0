@@ -15,6 +15,8 @@ from app.database import SessionLocal
 import json
 from app.utils.http_client import http_get, http_post
 from app.utils.indicator_format import format_indicator_value as _iv
+from app.utils.filled_entry_order import is_filled_entry_exchange_order
+from app.utils.ops_stub_orders import is_ops_stub_closed_order_id
 
 logger = logging.getLogger(__name__)
 
@@ -920,68 +922,112 @@ class DailySummaryService:
                 total_profit_loss_pct = 0.0
                 orders_with_pnl = 0
                 
+                # 30-ago-2026: el emparejamiento "compra mas reciente del simbolo"
+                # fabricaba P&L. Caso real del 29-ago: 4 aperturas de CORTO de
+                # mercado (~$100) reportadas como ventas con -$16,62 contra
+                # compras viejas sin relacion. Mismo antipatron que el -$86,51
+                # documentado en exchange_sync._lookup_entry_price_for_protection
+                # (:1502-1507), que ya lo corrigio en su superficie: con padre
+                # conocido y precio ausente se devuelve None, NUNCA se adivina.
+                #
+                # Reglas ahora, reutilizando las piezas canonicas del repo:
+                #   - is_filled_entry_exchange_order decide "apertura de corto"
+                #     (el mismo predicado que usan routes_orders, sl_tp_checker,
+                #     sl_tp_protection y scheduler). Sin proxies caseros.
+                #   - P&L solo con parent BUY real y cantidades que casan
+                #     (tolerancia 5%, la misma de trade_outcome_builder).
+                #   - Sin padre y sin ser entrada -> "cierre sin vinculo", sin
+                #     P&L. Nunca se adivina una entrada.
+                shorts_opened = 0
+                no_pnl_rows = 0
+                stub_rows_skipped = 0
+                total_entry_value = 0.0
+
                 # Process each order
                 for order in sell_orders:
                     symbol = order.symbol
-                    sell_price = float(order.avg_price) if order.avg_price else float(order.price) if order.price else 0.0
-                    quantity = float(order.quantity) if order.quantity else 0.0
                     order_id = order.exchange_order_id
+                    if is_ops_stub_closed_order_id(str(order_id or "")):
+                        stub_rows_skipped += 1
+                        continue
+                    sell_price = float(order.avg_price) if order.avg_price else float(order.price) if order.price else 0.0
+                    # Cantidad EJECUTADA, no pedida: en un fill parcial la pedida
+                    # inflaria el P&L en dolares.
+                    executed_qty = float(order.cumulative_quantity) if order.cumulative_quantity else (float(order.quantity) if order.quantity else 0.0)
                     order_time = order.exchange_update_time.strftime('%d/%m/%Y %H:%M:%S') if order.exchange_update_time else 'N/A'
                     order_role = order.order_role or 'SELL'
-                    
-                    # Try to find entry price from parent order or related BUY order
+                    order_type_str = str(order.order_type or "").upper()
+
                     entry_price = None
-                    if order.parent_order_id:
-                        # Try to find parent BUY order
+                    pnl_info = ""
+                    is_short_entry = is_filled_entry_exchange_order(order)
+
+                    if is_short_entry:
+                        shorts_opened += 1
+                        pnl_info = "\n   ℹ️ Sin P&L: es una ENTRADA. El P&L se realizara al cierre (BUY)."
+                    elif order.parent_order_id:
                         parent_order = db.query(ExchangeOrder).filter(
                             ExchangeOrder.exchange_order_id == order.parent_order_id
                         ).first()
-                        if parent_order and parent_order.side == OrderSideEnum.BUY:
-                            entry_price = float(parent_order.avg_price) if parent_order.avg_price else float(parent_order.price) if parent_order.price else None
-                    
-                    # If no parent order, try to find the most recent BUY order for this symbol before this SELL
-                    if entry_price is None:
-                        buy_order = db.query(ExchangeOrder).filter(
-                            ExchangeOrder.symbol == symbol,
-                            ExchangeOrder.side == OrderSideEnum.BUY,
-                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                            ExchangeOrder.exchange_update_time < order.exchange_update_time
-                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                        
-                        if buy_order:
-                            entry_price = float(buy_order.avg_price) if buy_order.avg_price else float(buy_order.price) if buy_order.price else None
-                    
-                    # Calculate P&L if entry price is available
-                    pnl_info = ""
+                        if parent_order is None:
+                            no_pnl_rows += 1
+                            pnl_info = "\n   ⏳ Sin P&L: vinculo conocido, entrada aun no sincronizada."
+                        elif parent_order.side != OrderSideEnum.BUY:
+                            # Gemela/pata con padre no-BUY: nunca inventar.
+                            no_pnl_rows += 1
+                            pnl_info = "\n   ⚠️ Sin P&L: vinculo no estandar (padre no es BUY)."
+                        else:
+                            entry_price = float(parent_order.avg_price) if parent_order.avg_price else (float(parent_order.price) if parent_order.price else None)
+                            parent_qty = float(parent_order.cumulative_quantity) if parent_order.cumulative_quantity else (float(parent_order.quantity) if parent_order.quantity else 0.0)
+                            if not entry_price or entry_price <= 0:
+                                no_pnl_rows += 1
+                                entry_price = None
+                                pnl_info = "\n   ⏳ Sin P&L: entrada vinculada sin precio sincronizado."
+                            elif sell_price <= 0 or executed_qty <= 0:
+                                no_pnl_rows += 1
+                                entry_price = None
+                                pnl_info = "\n   ⚠️ Sin P&L: fill sin precio/cantidad ejecutada."
+                            elif parent_qty > 0 and abs(parent_qty - executed_qty) / max(parent_qty, executed_qty) > 0.05:
+                                # El sync puede haber ADIVINADO este parent
+                                # (exchange_sync:2403-2431 lo infiere por
+                                # proximidad de 24h). Cantidades que no casan
+                                # son la firma del vinculo dudoso.
+                                no_pnl_rows += 1
+                                entry_price = None
+                                pnl_info = "\n   ⚠️ Sin P&L: cantidades entrada/salida no casan (vinculo dudoso)."
+                    else:
+                        no_pnl_rows += 1
+                        pnl_info = "\n   ⚠️ Sin P&L: cierre sin vinculo a su entrada."
+
                     if entry_price and entry_price > 0:
-                        profit_loss = (sell_price - entry_price) * quantity
+                        profit_loss = (sell_price - entry_price) * executed_qty
                         profit_loss_pct = ((sell_price - entry_price) / entry_price) * 100
                         total_profit_loss += profit_loss
-                        total_profit_loss_pct += profit_loss_pct
+                        total_entry_value += entry_price * executed_qty
                         orders_with_pnl += 1
-                        
+
                         pnl_emoji = "💰" if profit_loss >= 0 else "💸"
                         pnl_sign = "+" if profit_loss >= 0 else ""
                         pnl_info = f"\n   {pnl_emoji} P&L: {pnl_sign}${profit_loss:,.2f} ({pnl_sign}{profit_loss_pct:,.2f}%)"
                         pnl_info += f"\n   💵 Entrada: ${_iv(entry_price)}"
-                    
-                    # Format order line. Distinguish a direct exit (market/limit
-                    # sell placed by the bot) from a protective SL/TP order so the
-                    # operator can tell at a glance it was not a stop-loss/take-profit.
-                    order_type_str = str(order.order_type or "").upper()
-                    if order_role == "TAKE_PROFIT":
+
+                    if is_short_entry:
+                        role_emoji, role_text = "📉", "Apertura de CORTO"
+                    elif order_role == "TAKE_PROFIT":
                         role_emoji, role_text = "🚀", "TP"
                     elif order_role == "STOP_LOSS":
                         role_emoji, role_text = "🛑", "SL"
+                    elif order_role == "FLATTEN":
+                        role_emoji, role_text = "🧹", "Cierre forzoso (FLATTEN)"
                     elif "LIMIT" in order_type_str:
                         role_emoji, role_text = "🔴", "Venta (Límite)"
                     else:
                         role_emoji, role_text = "🔴", "Venta de Mercado"
-                    
+
                     message += f"• <b>{symbol}</b> {role_emoji} {role_text}\n"
                     message += f"   💵 Precio: ${_iv(sell_price)}\n"
-                    message += f"   📦 Cantidad: {quantity:,.6f}\n"
-                    message += f"   💰 Total: ${(sell_price * quantity):,.2f}\n"
+                    message += f"   📦 Cantidad: {executed_qty:,.6f}\n"
+                    message += f"   💰 Total: ${(sell_price * executed_qty):,.2f}\n"
                     if pnl_info:
                         message += pnl_info
                     message += f"\n   🆔 ID: {order_id}\n"
@@ -993,14 +1039,20 @@ class DailySummaryService:
                 message += f"   Total órdenes: {len(sell_orders)}\n"
                 
                 if orders_with_pnl > 0:
-                    avg_pnl_pct = total_profit_loss_pct / orders_with_pnl
+                    # Ponderado por nocional de entrada, no media de porcentajes:
+                    # -5% en $20 y +1% en $1000 no promedian -2%.
+                    avg_pnl_pct = (total_profit_loss / total_entry_value * 100) if total_entry_value > 0 else 0.0
                     total_emoji = "💰" if total_profit_loss >= 0 else "💸"
                     total_sign = "+" if total_profit_loss >= 0 else ""
-                    message += f"   {total_emoji} P&L Total: {total_sign}${total_profit_loss:,.2f}\n"
-                    message += f"   📈 P&L Promedio: {total_sign}{avg_pnl_pct:,.2f}%\n"
-                    message += f"   ✅ Órdenes con P&L: {orders_with_pnl}/{len(sell_orders)}\n"
-                else:
-                    message += f"   ⚠️ No se pudo calcular P&L (falta precio de entrada)\n"
+                    message += f"   {total_emoji} P&L realizado (cierres): {total_sign}${total_profit_loss:,.2f}\n"
+                    message += f"   📈 P&L ponderado: {total_sign}{avg_pnl_pct:,.2f}%\n"
+                    message += f"   ✅ Cierres con P&L: {orders_with_pnl}/{len(sell_orders)}\n"
+                if shorts_opened > 0:
+                    message += f"   📉 Aperturas de corto: {shorts_opened} (sin P&L hasta su cierre; los cierres de cortos son BUY y no salen en este reporte)\n"
+                if no_pnl_rows > 0:
+                    message += f"   ⚪ Sin P&L determinable: {no_pnl_rows} (motivo en cada línea; nunca se estima)\n"
+                if orders_with_pnl == 0 and shorts_opened == 0 and no_pnl_rows > 0:
+                    message += f"   ⚠️ Ningún cierre con vínculo verificable en la ventana\n"
                 
                 message += f"\n⏰ Generado: {now_bali.strftime('%H:%M:%S')} (Bali)\n"
                 message += "🤖 Trading Bot Automático"
