@@ -96,7 +96,7 @@ telethon>=1.36.0,<2
 
 # Background tasks
 celery==5.4.0
-redis==5.0.8
+redis==8.1.0
 
 # Testing (NOT installed in production Docker image)
 # pytest==7.4.3
