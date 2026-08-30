@@ -71,7 +71,7 @@ pytz==2024.2
 ccxt==4.2.65
 
 # Background tasks
-celery==5.4.0
+celery==5.6.3
 redis==8.1.0
 
 # Testing (NOT installed in production Docker image)
