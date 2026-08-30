@@ -117,49 +117,25 @@ def _cap_lots_to_wallet_for_count(
 ) -> Tuple[list, int]:
     """Cap the COUNTED lot quantity at |wallet|. Returns (kept, ghosts_dropped).
 
-    The Expected TP aligner pins direction-aligned naked lots one by one and
-    never checks that the pinned SUM fits in |wallet| — deliberate for the
-    display path (real fills whose SL/TP failed must stay visible, prod
-    ETH_USDT 5755600492671134850), wrong for a position COUNT that B2 will
-    gate orders with. Measured 28-ago-2026 on APT: protected 173.10 + naked
-    ghosts 17.65 + 17.54 (entries of 2-3 ago whose protections were all
-    cancelled on 11-ago) = 208.29 counted vs wallet 173.49 — count said 3,
-    truth was 1.
+    The rule itself now lives in ``expected_take_profit.split_lots_by_wallet_capacity``
+    so the counter and the display classify lots identically instead of keeping
+    two copies that could drift. Behaviour here is unchanged: protected lots are
+    never dropped (they are the live position), unprotected lots are kept
+    newest-first while the running total fits in |wallet| plus dust, and old
+    naked leftovers — the ghost signature — fall off first.
 
-    Rule: protected lots are never dropped here (they are the live position);
-    unprotected lots are kept newest-first only while the running total still
-    fits in |wallet| plus dust. Old naked leftovers — the ghost signature —
-    fall off first. Display output is untouched: this runs only on the
-    counter's copy.
+    Origin (measured 28-ago-2026 on APT): protected 173.10 + naked ghosts 17.65
+    + 17.54, entries of 2-3 ago whose protections were all cancelled on 11-ago,
+    = 208.29 counted vs wallet 173.49 — count said 3, truth was 1.
+
+    The difference is what each caller does with the lots that do not fit: the
+    counter drops them, the display keeps them visible (a real fill whose SL/TP
+    failed must stay on screen) but excludes them from every quantity aggregate.
     """
-    from app.services.expected_take_profit import _protected_entry_ids_for_lots
+    from app.services.expected_take_profit import split_lots_by_wallet_capacity
 
-    total = sum((Decimal(str(getattr(l, "lot_qty", 0) or 0)) for l in lots), Decimal(0))
-    # Dust: 0.1% of wallet — same spirit as the exit-criteria dust tolerance.
-    dust = wallet_abs * Decimal("0.001")
-    if wallet_abs <= 0 or total <= wallet_abs + dust:
-        return lots, 0
-
-    protected_ids = _protected_entry_ids_for_lots(db, lots)
-    protected = [l for l in lots if getattr(l, "buy_order_id", None) in protected_ids]
-    naked = [l for l in lots if getattr(l, "buy_order_id", None) not in protected_ids]
-
-    kept = list(protected)
-    running = sum((Decimal(str(getattr(l, "lot_qty", 0) or 0)) for l in kept), Decimal(0))
-    # newest first: recent naked fills are more likely real than month-old leftovers
-    naked.sort(
-        key=lambda l: getattr(l, "buy_time", None) or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-    dropped = 0
-    for lot in naked:
-        qty = Decimal(str(getattr(lot, "lot_qty", 0) or 0))
-        if running + qty <= wallet_abs + dust:
-            kept.append(lot)
-            running += qty
-        else:
-            dropped += 1
-    return kept, dropped
+    kept, exceeding = split_lots_by_wallet_capacity(db, lots, wallet_abs)
+    return kept, len(exceeding)
 
 
 def count_open_lots_for_symbol(
