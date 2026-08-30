@@ -76,13 +76,15 @@ def test_structured_json_arrives_as_dict_via_tool_use(monkeypatch):
     assert obj.get("action") == "get_server_time"
 
 
-def test_structured_json_returns_none_without_tool_use_block(monkeypatch):
+def test_structured_json_raises_without_tool_use_block(monkeypatch):
     fake_response = {
         "output": {"message": {"content": [{"text": "prose only, no structure"}]}},
         "usage": {"inputTokens": 4, "outputTokens": 3},
     }
     monkeypatch.setattr(bedrock_client, "_converse", lambda **kw: fake_response)
-    assert bedrock_client.ask_bedrock_json("plan something") is None
+    with pytest.raises(bedrock_client.BedrockInvocationError) as ei:
+        bedrock_client.ask_bedrock_json("plan something")
+    assert ei.value.kind == "no_structured_output"
 
 
 def test_execute_plan_safe_tool_success():
