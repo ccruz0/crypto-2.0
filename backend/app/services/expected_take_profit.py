@@ -2173,9 +2173,15 @@ def _compute_expected_tp_for_lots(
     tp_orders = get_active_tp_orders(db, actual_symbol)
 
     all_matched, unmatched = match_all_tp_orders(db, open_lots, tp_orders)
-    covered_qty = sum(float(lot.lot_qty) for lot in all_matched)
-    uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched)
-    total_lot_qty = sum(float(lot.lot_qty) for lot in open_lots)
+    # Coverage measures the real position, so phantom lots are out of both sides
+    # of the ratio. Leaving them in covered_qty made the summary claim a fully
+    # covered wallet while the details path (which does exclude them) still
+    # reported uncovered size — the two answers disagreed. Reported by Bugbot.
+    covered_qty = sum(float(lot.lot_qty) for lot in all_matched if not lot_exceeds_wallet(lot))
+    uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched if not lot_exceeds_wallet(lot))
+    total_lot_qty = sum(
+        float(lot.lot_qty) for lot in open_lots if not lot_exceeds_wallet(lot)
+    )
 
     # Wallet (|balance|) is the source of truth. Never invent a position larger
     # than the exchange balance via stale FIFO lots (max(balance, lots) bug).
@@ -2398,6 +2404,10 @@ def build_entry_orders_details(
             "qty": float(lot.lot_qty),
             "entry_time": lot.buy_time.isoformat() if lot.buy_time else None,
             "cost_basis_unknown": lot_cost_basis_unknown,
+            # The details UI renders entry_orders, not matched_lots: without this
+            # the flag never reached the rows that stay on screen, and a phantom
+            # was indistinguishable from real inventory. Reported by Bugbot.
+            "exceeds_wallet": lot_exceeds_wallet(lot),
             "match_origin": lot.match_origin,
             "take_profits": take_profits,
             "stop_loss": stop_loss,
@@ -3486,12 +3496,19 @@ def get_expected_take_profit_details(
                 "expected_profit": None if total_expected_profit_group is None else float(total_expected_profit_group),
                 "expected_profit_pct": None if avg_profit_pct is None else float(avg_profit_pct),
                 "cost_basis_unknown": group_cost_basis_unknown,
+                # A group that contains any phantom lot is flagged as a whole:
+                # its lot_qty and expected_profit are summed across members, so
+                # a mixed group cannot be presented as fully real. Reported by
+                # Bugbot.
+                "exceeds_wallet": any(l.get("exceeds_wallet") for l in lots),
                 "is_grouped": True,  # Flag to indicate this is a grouped entry
             }
             matched_lot_details.append(grouped_entry)
     
     # Calculate uncovered quantity from unmatched lots (lots without TP orders)
-    uncovered_from_lots = sum(float(lot.lot_qty) for lot in unmatched)
+    uncovered_from_lots = sum(
+        float(lot.lot_qty) for lot in unmatched if not lot_exceeds_wallet(lot)
+    )
     
     # Calculate net quantity and position value.
     # Prefer pair wallet share (same as summary) — not the full base balance.

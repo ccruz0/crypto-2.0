@@ -154,3 +154,55 @@ def test_zero_wallet_tags_nothing(db_session):
     within, exceeding = split_lots_by_wallet_capacity(db_session, lots, Decimal("0"))
     assert exceeding == []
     assert len(within) == 1
+
+
+# --- Hallazgos de Cursor Bugbot sobre la primera version de este cambio ---
+
+
+def _algo_shaped_with_protection(db):
+    """ALGO shape but with the naked lots also carrying an ACTIVE TP, so they
+    land in all_matched and reach the coverage arithmetic."""
+    t = datetime(2026, 8, 29, 20, 0, tzinfo=timezone.utc)
+    _order(db, "PROT", side=OrderSideEnum.SELL, qty="1136", price="0.20", when=t)
+    _order(db, "PROT-TP", side=OrderSideEnum.BUY, qty="1136", price="0.18", when=t,
+           role="TAKE_PROFIT", parent="PROT", status=OrderStatusEnum.ACTIVE,
+           order_type="TAKE_PROFIT_LIMIT")
+    # phantom with a TP that is not parent-linked -> matched by FIFO, still naked
+    _order(db, "GHOST", side=OrderSideEnum.SELL, qty="800", price="0.22",
+           when=t - timedelta(days=19))
+
+
+def test_summary_coverage_excludes_phantom_lots(db_session):
+    """Bugbot (medium): covered_qty counted phantom lots, so the summary could
+    claim a fully covered wallet while the details path still reported
+    uncovered size. Both sides of the ratio must ignore them."""
+    from app.services.expected_take_profit import _compute_expected_tp_for_lots
+
+    _algo_shaped_with_protection(db_session)
+    lots = rebuild_open_lots(db_session, "ALGO_USD")
+    aligned, _ = _align_open_lots_to_wallet(db_session, lots, Decimal("-1136"))
+    assert any(lot_exceeds_wallet(l) for l in aligned), "el fixture debe producir un fantasma"
+
+    out = _compute_expected_tp_for_lots(
+        db_session, "ALGO_USD", aligned, Decimal("-1136"), current_price=0.19
+    )
+    # coverage never counts inventory that cannot exist
+    assert out["covered_qty"] + out["uncovered_qty"] <= out["net_qty"] + 1e-6
+    assert out["entry_lot_count"] == 1
+    assert out["lots_exceeding_wallet"] == 1
+
+
+def test_entry_rows_carry_the_flag(db_session):
+    """Bugbot (low): the details UI renders entry_orders, not matched_lots, so
+    the flag has to reach those rows or the phantom is indistinguishable."""
+    from app.services.expected_take_profit import build_entry_orders_details
+
+    _algo_shaped_by_ghosts = _algo_shaped_with_protection(db_session)
+    lots = rebuild_open_lots(db_session, "ALGO_USD")
+    aligned, _ = _align_open_lots_to_wallet(db_session, lots, Decimal("-1136"))
+    rows = build_entry_orders_details(db_session, aligned, current_price=0.19)
+
+    assert rows, "deberia haber filas de entrada"
+    assert all("exceeds_wallet" in r for r in rows), "toda fila lleva la marca"
+    marked = [r for r in rows if r["exceeds_wallet"]]
+    assert [r["order_id"] for r in marked] == ["GHOST"]
