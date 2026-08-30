@@ -267,6 +267,86 @@ def _lot_aligns_wallet_direction(
     return True
 
 
+WALLET_DUST_RATIO = Decimal("0.001")  # 0.1% of |wallet|, same spirit as the exit-criteria dust
+
+
+def split_lots_by_wallet_capacity(
+    db: Session,
+    lots: List[OpenLot],
+    wallet_abs: Decimal,
+) -> Tuple[List[OpenLot], List[OpenLot]]:
+    """Split lots into (within_wallet, exceeding_wallet).
+
+    Single source of truth for "which lots can physically be in the wallet".
+    The aligner pins direction-aligned naked lots one by one and never checks
+    that the pinned SUM fits in |wallet| (deliberate: a real fill whose SL/TP
+    failed must stay visible, prod ETH_USDT 5755600492671134850). That is right
+    for visibility and wrong for arithmetic: measured 30-ago-2026 in production,
+    ALGO_USD pinned protected 1136 + naked 718 + 805 + 72 = 2731 against a
+    wallet of 1136.02, and APT_USD pinned 183.35 + 17.65 + 17.54 = 218.54
+    against 184.13.
+
+    Rule (identical to the one _cap_lots_to_wallet_for_count already applied to
+    the counter's copy, now shared instead of duplicated): protected lots are
+    never classified as exceeding — they are the live position. Unprotected
+    lots are taken newest-first while the running total still fits in |wallet|
+    plus dust. Old naked leftovers, the ghost signature, fall out first.
+
+    Callers decide what to do with the second list: the counter drops it, the
+    display keeps it visible but excludes it from quantity aggregates.
+    """
+    # Defensive: callers hold both signed balances and absolute ones. Taking abs
+    # here means passing the signed balance by mistake degrades to the right
+    # answer instead of silently returning "everything fits".
+    wallet_abs = abs(Decimal(str(wallet_abs or 0)))
+    if wallet_abs <= 0:
+        return list(lots), []
+    total = sum((Decimal(str(getattr(l, "lot_qty", 0) or 0)) for l in lots), Decimal("0"))
+    dust = wallet_abs * WALLET_DUST_RATIO
+    if total <= wallet_abs + dust:
+        return list(lots), []
+
+    protected_ids = _protected_entry_ids_for_lots(db, lots)
+    protected = [l for l in lots if getattr(l, "buy_order_id", None) in protected_ids]
+    naked = [l for l in lots if getattr(l, "buy_order_id", None) not in protected_ids]
+
+    within = list(protected)
+    running = sum(
+        (Decimal(str(getattr(l, "lot_qty", 0) or 0)) for l in within), Decimal("0")
+    )
+    naked.sort(
+        key=lambda l: getattr(l, "buy_time", None) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    exceeding: List[OpenLot] = []
+    for lot in naked:
+        qty = Decimal(str(getattr(lot, "lot_qty", 0) or 0))
+        if running + qty <= wallet_abs + dust:
+            within.append(lot)
+            running += qty
+        else:
+            exceeding.append(lot)
+    return within, exceeding
+
+
+def lot_exceeds_wallet(lot: OpenLot) -> bool:
+    """True when the aligner kept this lot for visibility but it cannot be in the wallet."""
+    return bool(getattr(lot, "exceeds_wallet", False))
+
+
+def _mark_lots_exceeding_wallet(
+    db: Session,
+    lots: List[OpenLot],
+    wallet_abs: Decimal,
+) -> List[OpenLot]:
+    """Tag lots that do not fit in |wallet|. They stay in the list on purpose."""
+    _, exceeding = split_lots_by_wallet_capacity(db, lots, wallet_abs)
+    flagged = {id(lot) for lot in exceeding}
+    for lot in lots:
+        setattr(lot, "exceeds_wallet", id(lot) in flagged)
+    return lots
+
+
 def _align_open_lots_to_wallet(
     db: Session,
     open_lots: List[OpenLot],
@@ -368,14 +448,16 @@ def _align_open_lots_to_wallet(
                 was_trimmed = True
 
         warning = "lots_exceed_wallet" if was_trimmed else None
-        return kept, _with_ghost(warning)
+        # Pinned naked lots stay visible on purpose (ETH_USDT 5755600492671134850)
+        # but are tagged so quantity aggregates do not count phantom inventory.
+        return _mark_lots_exceeding_wallet(db, kept, wallet_abs), _with_ghost(warning)
 
     # No active protection — fall back to direction-preferring trim.
     trimmed, was_trimmed = _trim_lots_to_wallet_qty(
         filtered, wallet_abs, sort_key=_trim_sort_key
     )
     warning = "lots_exceed_wallet" if was_trimmed else None
-    return trimmed, _with_ghost(warning)
+    return _mark_lots_exceeding_wallet(db, trimmed, wallet_abs), _with_ghost(warning)
 
 
 def _allocate_wallet_aligned_pairs(
@@ -2091,9 +2173,15 @@ def _compute_expected_tp_for_lots(
     tp_orders = get_active_tp_orders(db, actual_symbol)
 
     all_matched, unmatched = match_all_tp_orders(db, open_lots, tp_orders)
-    covered_qty = sum(float(lot.lot_qty) for lot in all_matched)
-    uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched)
-    total_lot_qty = sum(float(lot.lot_qty) for lot in open_lots)
+    # Coverage measures the real position, so phantom lots are out of both sides
+    # of the ratio. Leaving them in covered_qty made the summary claim a fully
+    # covered wallet while the details path (which does exclude them) still
+    # reported uncovered size — the two answers disagreed. Reported by Bugbot.
+    covered_qty = sum(float(lot.lot_qty) for lot in all_matched if not lot_exceeds_wallet(lot))
+    uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched if not lot_exceeds_wallet(lot))
+    total_lot_qty = sum(
+        float(lot.lot_qty) for lot in open_lots if not lot_exceeds_wallet(lot)
+    )
 
     # Wallet (|balance|) is the source of truth. Never invent a position larger
     # than the exchange balance via stale FIFO lots (max(balance, lots) bug).
@@ -2105,9 +2193,16 @@ def _compute_expected_tp_for_lots(
     else:
         net_qty = total_lot_qty
 
+    # Lots tagged by the aligner cannot be in the wallet (their sum exceeds it).
+    # They stay in open_lots so the row remains visible, but they are excluded
+    # from every quantity/value aggregate: counting them inflated
+    # avg_entry_price, actual_position_value and total_expected_profit over
+    # inventory that does not exist (ALGO_USD +1595 on a 1136 wallet, 30-ago-2026).
     total_expected_profit = Decimal("0")
     actual_position_value = Decimal("0")
     for lot in all_matched:
+        if lot_exceeds_wallet(lot):
+            continue
         entry_side = _entry_side_for_lot(db, lot)
         for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
             tp_price = Decimal(str(tp.price or 0))
@@ -2118,11 +2213,14 @@ def _compute_expected_tp_for_lots(
                 total_expected_profit += profit
         actual_position_value += lot.buy_price * lot.lot_qty
     for lot in unmatched:
+        if lot_exceeds_wallet(lot):
+            continue
         actual_position_value += lot.buy_price * lot.lot_qty
 
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
     position_value = net_qty * current_price if current_price > 0 else 0.0
-    total_lot_qty_dec = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
+    counted_lots = [lot for lot in open_lots if not lot_exceeds_wallet(lot)]
+    total_lot_qty_dec = sum((lot.lot_qty for lot in counted_lots), Decimal("0"))
     avg_entry_price = (
         None
         if cost_basis_unknown or total_lot_qty_dec <= 0
@@ -2162,7 +2260,8 @@ def _compute_expected_tp_for_lots(
         "position_value": position_value,
         "actual_position_value": None if cost_basis_unknown else float(actual_position_value),
         "avg_entry_price": avg_entry_price,
-        "entry_lot_count": len(open_lots),
+        "entry_lot_count": len(counted_lots),
+        "lots_exceeding_wallet": len(open_lots) - len(counted_lots),
         "covered_qty": covered_qty,
         "uncovered_qty": uncovered_qty,
         "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
@@ -2305,6 +2404,10 @@ def build_entry_orders_details(
             "qty": float(lot.lot_qty),
             "entry_time": lot.buy_time.isoformat() if lot.buy_time else None,
             "cost_basis_unknown": lot_cost_basis_unknown,
+            # The details UI renders entry_orders, not matched_lots: without this
+            # the flag never reached the rows that stay on screen, and a phantom
+            # was indistinguishable from real inventory. Reported by Bugbot.
+            "exceeds_wallet": lot_exceeds_wallet(lot),
             "match_origin": lot.match_origin,
             "take_profits": take_profits,
             "stop_loss": stop_loss,
@@ -3260,6 +3363,9 @@ def get_expected_take_profit_details(
         # Split the lot proportionally across ALL matched TP orders using the
         # shared helper (same computation the summary now uses).
         lot_cost_basis_unknown = getattr(lot, "cost_basis_unknown", False)
+        # Same rule as the summary: a lot the aligner kept only for visibility
+        # is still rendered as a row, but never added to the totals.
+        lot_over_wallet = lot_exceeds_wallet(lot)
         for tp, lot_qty_for_this_tp in split_lot_across_tps(lot):
             tp_price = Decimal(str(tp.price or 0))
             tp_qty = Decimal(str(tp.quantity))
@@ -3272,12 +3378,13 @@ def get_expected_take_profit_details(
                 entry_side, lot.buy_price, tp_price, lot_qty_for_this_tp
             )
             
-            total_covered_qty += lot_qty_for_this_tp
+            if not lot_over_wallet:
+                total_covered_qty += lot_qty_for_this_tp
             # When the cost basis is unknown (buy price is the current-price
             # fallback), the profit and value-at-buy-price are meaningless, so we
             # neither accumulate them into the totals nor expose them; the
             # frontend renders "—" using the cost_basis_unknown flag.
-            if not lot_cost_basis_unknown:
+            if not lot_cost_basis_unknown and not lot_over_wallet:
                 total_expected_profit += profit
                 total_actual_position_value += lot.buy_price * lot_qty_for_this_tp
             
@@ -3296,6 +3403,7 @@ def get_expected_take_profit_details(
                 "expected_profit": None if lot_cost_basis_unknown else float(profit),
                 "expected_profit_pct": None if lot_cost_basis_unknown else float(profit_pct),
                 "cost_basis_unknown": lot_cost_basis_unknown,
+                "exceeds_wallet": lot_over_wallet,
             })
     
     # Group orders executed at the same time with the same TP
@@ -3388,12 +3496,19 @@ def get_expected_take_profit_details(
                 "expected_profit": None if total_expected_profit_group is None else float(total_expected_profit_group),
                 "expected_profit_pct": None if avg_profit_pct is None else float(avg_profit_pct),
                 "cost_basis_unknown": group_cost_basis_unknown,
+                # A group that contains any phantom lot is flagged as a whole:
+                # its lot_qty and expected_profit are summed across members, so
+                # a mixed group cannot be presented as fully real. Reported by
+                # Bugbot.
+                "exceeds_wallet": any(l.get("exceeds_wallet") for l in lots),
                 "is_grouped": True,  # Flag to indicate this is a grouped entry
             }
             matched_lot_details.append(grouped_entry)
     
     # Calculate uncovered quantity from unmatched lots (lots without TP orders)
-    uncovered_from_lots = sum(float(lot.lot_qty) for lot in unmatched)
+    uncovered_from_lots = sum(
+        float(lot.lot_qty) for lot in unmatched if not lot_exceeds_wallet(lot)
+    )
     
     # Calculate net quantity and position value.
     # Prefer pair wallet share (same as summary) — not the full base balance.
@@ -3502,8 +3617,11 @@ def get_expected_take_profit_details(
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
     entry_orders = build_entry_orders_details(db, open_lots, current_price=current_price)
     position_side = resolve_position_side(db, open_lots)
-    total_open_qty = sum((lot.lot_qty for lot in open_lots), Decimal("0"))
-    total_entry_cost = sum((lot.buy_price * lot.lot_qty for lot in open_lots), Decimal("0"))
+    counted_lots = [lot for lot in open_lots if not lot_exceeds_wallet(lot)]
+    total_open_qty = sum((lot.lot_qty for lot in counted_lots), Decimal("0"))
+    total_entry_cost = sum(
+        (lot.buy_price * lot.lot_qty for lot in counted_lots), Decimal("0")
+    )
     avg_entry_price = (
         None
         if cost_basis_unknown or total_open_qty <= 0
@@ -3554,7 +3672,8 @@ def get_expected_take_profit_details(
         "position_value": position_value,
         "actual_position_value": None if cost_basis_unknown else float(total_actual_position_value),
         "avg_entry_price": avg_entry_price,
-        "entry_lot_count": len(open_lots),
+        "entry_lot_count": len(counted_lots),
+        "lots_exceeding_wallet": len(open_lots) - len(counted_lots),
         "covered_qty": float(total_covered_qty),
         "uncovered_qty": uncovered_qty,
         "total_expected_profit": None if cost_basis_unknown else float(total_expected_profit),
