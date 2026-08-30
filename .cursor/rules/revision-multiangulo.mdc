@@ -1,0 +1,165 @@
+---
+description: Revisión multiángulo de crypto-2.0. Invocación manual — úsala cuando Carlos pida revisión multiángulo, veredicto, o diagnóstico sin parche. Produce diagnóstico; nunca código.
+alwaysApply: false
+---
+
+# Revisión multiángulo
+
+Vas a hacer una **revisión multiángulo** sobre `crypto-2.0`, una plataforma de trading automático con **dinero real** en Crypto.com. Este protocolo existe por un fallo concreto y repetido: conclusiones parciales presentadas como completas, seguidas de un cambio de código en la misma sesión.
+
+Casos reales que lo motivaron: mirar un consumidor de P&L y concluir sobre los cuatro; corregir un filtro de tendencia y mergearlo a producción en minutos sin que nadie lo retuviera; tratar `volume_ratio` como bug de sincronización cuando eran cuatro implementaciones divergentes sin fuente canónica.
+
+El objetivo no es tener más opiniones. Es **cerrar la cobertura antes de opinar** y **separar el diagnóstico de la ejecución**.
+
+## REGLA DE ORO — no negociable
+
+**Este protocolo produce diagnóstico. Nunca código.**
+
+Al terminar entregas un veredicto y **paras**. No escribes el parche, no abres el PR, no lo dejas preparado, no creas la rama. Carlos decide después, en un paso aparte, con el veredicto delante. Esto vale **sobre todo** cuando el arreglo parece trivial y evidente — es justo entonces cuando se cuela.
+
+Si en algún momento te descubres escribiendo un diff, para y vuelve al veredicto.
+
+---
+
+## PASO 0 — Clasificar el riesgo. Dilo en voz alta y justifícalo.
+
+**Vía completa** (las cuatro fases) si toca cualquiera de:
+- lógica de señales de compra o venta, filtros, indicadores
+- creación, sincronización o estado de órdenes; protecciones TP/SL
+- cifras de P&L, coste base, valoración de cartera
+- tamaño de posición, `maxUsdPerOrder`, apalancamiento, márgenes, límites de posiciones abiertas
+- configuración de estrategia o presets
+- cualquier cosa que Carlos vaya a leer para decidir si el sistema funciona
+
+**Vía ligera** (fase 1 reducida + rol técnico + rol de encaje) si es mecánico y sin contacto con lo anterior: renombrados, logs, formato, documentación, dependencias.
+
+Ante la duda, **completa**. Si empiezas en ligera y aparece contacto con dinero o señales, **escala y dilo**.
+
+---
+
+## FASE 1 — Barrido de superficie, ciego
+
+Antes de analizar nada, cierra el mapa. **En Cursor esto se hace en chats SEPARADOS** — uno por barrido, sin que ninguno vea las conclusiones de los otros. Si los haces en el mismo hilo pierdes la ceguera, que es lo que hace que la fase funcione. Abre cinco pestañas y fusiona los resultados al final.
+
+1. **Por flujo de datos** — dónde nace el dato, dónde se persiste, dónde se modifica, dónde muere.
+2. **Por consumidores** — quién lee este campo o llama a esta función. **Todos.** Incluye importaciones diferidas (`from ... import` dentro de una función), llamadas indirectas, endpoints, comandos de Telegram, workflows de `.github/`, `backend/scripts/`, el módulo `jarvis` y el scheduler. Marca cuáles **gastan dinero** y cuáles solo muestran.
+3. **Por esquema** — qué dice la tabla: nullable, defaults, índices. Y qué filas reales existen hoy. Transcribe **íntegra y con números de línea** la función central; no la resumas.
+4. **Por historial** — qué PR tocó esto antes, qué problema venía a resolver, qué se rompió la última vez, si ya se intentó arreglar y se descartó (y por qué).
+5. **Por documentación** — ¿contradice esto una decisión ya tomada? ¿Se intentó antes y falló? ¿Estamos reintroduciendo un diagnóstico ya refutado? Barre `docs/`, los documentos de estado, y los veredictos anteriores.
+
+El barrido 5 es el que evita repetir errores caros. Ejemplo real: proponer "`chown` y listo" para el deploy roto, cuando el proyecto ya registraba que ese parche se aplicó en agosto y volvió a fallar.
+
+Cada barrido entrega una lista con **fichero y línea**, y declara **qué NO cubrió**.
+
+**No formules hipótesis todavía.** El objetivo es que el mapa lo construyan cinco búsquedas distintas y no tu primera intuición. Si al fusionarlos aparece algo que ninguno esperaba, la fase hizo su trabajo.
+
+---
+
+## FASE 2 — Análisis por rol, sobre el mapa cerrado
+
+Seis roles. En Cursor, adóptalos **uno por uno y explícitamente**, cada uno en su propio turno, sin mezclar. Cada rol trabaja sobre el mapa de la fase 1, no sobre su propia exploración improvisada.
+
+| Rol | Su única pregunta |
+|---|---|
+| `reglas-negocio` | ¿Lo que hace coincide con lo que debería hacer? |
+| `tecnico` | ¿El código hace lo que dice que hace? |
+| `encaje` | ¿Qué más toca esto y cuántas versiones de la verdad existen? |
+| `economico` | ¿Cuánto cuesta si está mal? |
+| `riesgo-despliegue` | ¿Qué pasa entre "es correcto" y "está en producción"? |
+| `coherencia-doc` | ¿Encaja con lo ya decidido, y qué documentación quedará obsoleta? |
+
+En vía ligera: solo `tecnico`, `encaje` y el pase de salida de `coherencia-doc`.
+
+**Regla de evidencia primaria, para todos:** ejecutar la consulta, leer la fila, correr el test. Razonar sobre el código produce **hipótesis**, y las hipótesis van etiquetadas como tales.
+
+---
+
+## FASE 3 — Confrontación
+
+Cada rol lee las conclusiones de los demás y **está obligado a impugnar al menos una** con evidencia concreta, o a declarar explícitamente que no encuentra nada tras haberlo intentado en serio.
+
+Impugnaciones típicas y valiosas:
+- encaje → técnico: *"concluiste sobre este consumidor; hay otros tres y en uno difiere"*
+- económico → técnico: *"técnicamente es menor, pero al tamaño actual son $100 por evento"*
+- económico → cualquiera: *"esto se ve grave pero no alimenta ninguna ruta con dinero; coste presente cero"*
+- riesgo-despliegue → todos: *"el cambio es correcto pero entra solo, y el canary no cubre esa ruta"*
+- reglas-negocio → técnico: *"el código cumple su docstring; el docstring describe la regla equivocada"*
+
+**Los desacuerdos NO se resuelven por consenso.** No limes las diferencias para producir una síntesis limpia. Un desacuerdo sin resolver entre el rol técnico y el económico es información de primera calidad, y suprimirla es el peor resultado posible de esta fase.
+
+En Cursor: haz esta fase en un chat nuevo, pegando las conclusiones de la fase 2 como material a atacar. Pídete explícitamente romperlas.
+
+---
+
+## FASE 4 — Veredicto, en tres cubos separados
+
+### ✅ Confirmado con evidencia primaria
+
+Cada punto con **qué se afirma** y **con qué se verificó**: la consulta ejecutada, la fila leída, el test corrido, el número de línea. Sin evidencia ejecutada, no entra en este cubo.
+
+### ⚠️ En disputa
+
+Los desacuerdos entre roles, con **ambas posturas y quién las sostiene**. No los resuelvas tú.
+
+### ❓ No sé
+
+Lo que no se pudo determinar y **qué haría falta** para determinarlo. Este cubo casi nunca debe estar vacío; si lo está, sospecha que alguien adivinó.
+
+Cierra con **qué NO se cubrió**, y con un apartado de **tus propios errores en esta revisión** si los hubo — escritos, no disimulados.
+
+La propuesta de cambio, si la hay, se describe **en una frase** (*"habría que rellenar `cumulative_value` en el constructor"*) sin escribir el diff.
+
+Después: **para**.
+
+---
+
+## FASE 5 — Dejar la memoria fiel
+
+- **Las correcciones se escriben, no se disimulan.** Si un diagnóstico de esta misma sesión resultó falso, el documento dice que era falso, por qué se creyó y qué lo refutó. Un registro que solo contiene aciertos entrena a confiar de más.
+- **Actualiza el documento existente**, no crees uno paralelo que lo contradiga en silencio.
+- **Evidencia primaria dentro del documento** (la consulta, la fila, el id de corrida), para poder repetir la comprobación dentro de tres meses.
+- **Nunca lleves a documentación pública** ids de instancia, ARNs, rutas del servidor, nombres de contenedor ni credenciales.
+
+---
+
+## ANTIPATRONES DE ESTA PLATAFORMA
+
+Búscalos siempre; todos han costado dinero o decisiones equivocadas.
+
+- **Adivinar antes que admitir ignorancia.** Un fallback que devuelve *algo* en vez de `None` (el entry price de una posición cerrada de hace dos días → P&L reportado de −$86,51 en una operación que ganó +$5,08).
+- **Defaults indistinguibles de datos reales.** `volume_ratio = 0.0` por error HTTP, idéntico a un volumen real de cero. Corregido a `NULL`.
+- **N implementaciones sin fuente canónica.** Cuatro rutas de `volume_ratio` con defaults distintos. Si arreglas una resta y dejas otra contabilidad al lado, has creado **dos verdades sobre el mismo hecho**.
+- **Comparaciones invertidas.** `ma50 < ema10` es alineación alcista; usarlo para confirmar un giro bajista dejó pasar el 96% de las señales de venta.
+- **Comentarios que contradicen el código.** Un `or` documentado como *"more conservative"* cuando un `or` es menos estricto.
+- **Campos que el constructor no rellena.** La hija spot insertada sin `cumulative_value`, que queda en `0` por el default del modelo.
+- **Retención imaginaria.** Marcar un PR como *draft* creyendo que lo frena, cuando la automatización le quita el borrador y lo mergea.
+- **Un flag de excepción aplicado a dos rutas de tres.** Si un `is_protective_order=True` (o equivalente) exime a una ruta de un guardarraíl, comprueba **todas** las rutas hermanas. Encontrada así una que dejaba posiciones sin protección.
+
+---
+
+## REGLAS DE MÉTODO — de fallos reales, no teóricas
+
+1. **Antes de afirmar, ejecutar.** Razonar sobre el código produce hipótesis. En una sola jornada, siete afirmaciones basadas en lectura resultaron falsas.
+2. **Una conclusión propia no impugnada no está verificada.** La revisión adversarial encontró en una hora lo que dos días de investigación directa no vieron. Pídela siempre, no solo cuando desconfíen de ti.
+3. **Verificar que un mecanismo EXISTE no es verificar que es LA CAUSA de este caso.** El error más caro y más repetido. Comprobar que un defecto está en el código y dar por hecho que explica el síntoma que investigas son dos cosas distintas.
+4. **No concluyas sobre un consumidor cuando hay varios.** Enumera todos antes de opinar sobre el impacto.
+5. **Un control es obligatorio cuando el resultado es negativo.** Si algo "falla", demuestra primero que tu prueba funciona en el caso que sí debería pasar. Si no, no distingues *el defecto* de *tu montaje mal hecho*.
+6. **Comprueba de dónde carga el módulo antes de creerte una medición de producción.** En este despliegue el contenedor importa de `/app/app/...` (dentro de la imagen) y `/repo/backend` es un checkout del host que va por detrás. Medir contra `/repo` tras un deploy hace concluir que el despliegue no entró. Imprime `modulo.__file__` y asértalo.
+7. **Una nota propia envejece igual que una ajena.** Un documento decía "acumulando" once horas después de que el proceso hubiera muerto.
+8. **Al validar contra los criterios de otro, ejecuta SUS comandos**, no una versión tuya.
+9. **Antes de proponer aflojar una barrera, busca si ya se aflojó una vez.**
+10. **No opines sobre un dato que tú mismo has truncado.** Un `left(...,90)` propio hizo diagnosticar un mensaje como incompleto cuando estaba entero.
+
+---
+
+## ACCESO A PRODUCCIÓN — solo lectura
+
+Permitido: `SELECT`, `grep`, `sed`, `cat`, `ls`, `git log`, `git show`.
+
+**Prohibido:** `INSERT`, `UPDATE`, `DELETE`, `ALTER`, migraciones; `docker restart`, `docker compose up/down`, despliegues, reinicios de servicios; `git commit`, `git push`, crear o mergear PRs; escribir ficheros en el repo de producción.
+
+---
+
+## CÓMO EMPIEZO
+
+Dime sobre qué reviso. Yo respondo primero con el **Paso 0** — vía elegida y por qué — y no doy un paso más hasta que lo confirmes.
