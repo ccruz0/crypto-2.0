@@ -21,7 +21,7 @@ python-dotenv==1.0.1
 
 # HTTP client
 httpx==0.28.1
-requests==2.32.3
+requests==2.34.2
 # aiohttp: pin explicito. Hasta el 27-ago-2026 estaba clavado en 3.8.x de forma
 # implicita por alpaca-trade-api; al eliminar ese paquete, pip resolvia 3.14.3
 # por su cuenta. Se fija a proposito para que quitar alpaca mueva UNA sola
