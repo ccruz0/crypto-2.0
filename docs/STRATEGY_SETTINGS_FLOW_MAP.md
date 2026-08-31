@@ -15,6 +15,28 @@ The following strategy parameters can be edited:
 7. **Alert Cooldown Minutes** (alertCooldownMinutes)
 8. **SL/TP Configuration** (sl, tp)
 
+### Watchlist SL/TP settings — operator semantics
+
+Per-symbol watchlist fields `sl_percentage`, `tp_percentage`, `sl_price`, and
+`tp_price` are **strategy inputs**, not a live mirror of exchange protection orders.
+
+| Setting | When it applies | What it does **not** do |
+|--------|-----------------|-------------------------|
+| `tp_percentage` | At **fill** — first SL+TP placement for that entry (or when no active TP exists) | Amend or recreate live TP orders after protection already exists |
+| `sl_percentage` | Same as `tp_percentage` (at fill / first placement) | Amend or recreate live SL orders after protection already exists |
+| `tp_price` / `sl_price` | Dashboard display and next placement calculation from watchlist context | Reflect current exchange trigger prices |
+
+**Live book is not rewritten on save.** Changing `tp_percentage` in the watchlist
+(via Configure Strategy, TP % edit, or API `PUT /api/dashboard/watchlist/{symbol}`)
+updates persisted watchlist state only. If both SL and TP already exist on the
+exchange, the system returns `already_protected` and **does not** cancel, amend, or
+recreate those orders (#329, #612).
+
+**Dashboard `tp_price` ≠ exchange TP.** The watchlist TP price column is serialized
+from watchlist/strategy data for operator reference. It is **not** polled from live
+Crypto.com TP trigger prices. Do not use it to audit whether live TPs match the
+current `tp_percentage`; compare against exchange open orders instead.
+
 ## Storage Locations
 
 ### Global Strategy Settings
