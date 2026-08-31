@@ -135,3 +135,64 @@ class TestShortEntryNoFabricatedPnl:
         # pnl = -1 + 10 = +9 sobre entrada 20+1000=1020 -> +0.88%
         assert "P&L realizado (cierres): +$9.00" in msg
         assert "+0.88%" in msg
+
+
+class TestShortCloseBuyIncludedInReport:
+    def test_short_tp_close_buy_gets_short_pnl(self, db_session):
+        """BUY cover leg linked to SELL short entry must appear with short P&L."""
+        _order(db_session, "short-e", OrderSideEnum.SELL, price=1.00, qty=100.0, hours_ago=30)
+        _order(
+            db_session,
+            "cover-tp",
+            OrderSideEnum.BUY,
+            role="TAKE_PROFIT",
+            otype="TAKE_PROFIT_LIMIT",
+            price=0.97,
+            qty=100.0,
+            parent="short-e",
+            hours_ago=2,
+        )
+
+        msg = _run_report(db_session)
+        assert "Cierre de CORTO (TP)" in msg
+        assert "P&L: +$3.00" in msg
+        assert "Cierres de corto (BUY): 1" in msg
+        assert "Cierres con P&L: 1/1" in msg
+
+    def test_short_sl_close_buy_loss(self, db_session):
+        _order(db_session, "short-e", OrderSideEnum.SELL, price=100.0, qty=10.0, hours_ago=20, symbol="ALGO_USD")
+        _order(
+            db_session,
+            "cover-sl",
+            OrderSideEnum.BUY,
+            role="STOP_LOSS",
+            otype="STOP_LIMIT",
+            price=110.0,
+            qty=10.0,
+            parent="short-e",
+            hours_ago=1,
+            symbol="ALGO_USD",
+        )
+
+        msg = _run_report(db_session)
+        assert "Cierre de CORTO (SL)" in msg
+        assert "P&L: $-100.00" in msg or "P&L: -$100.00" in msg
+
+    def test_short_entry_and_close_both_listed(self, db_session):
+        _order(db_session, "short-open", OrderSideEnum.SELL, price=0.50, qty=200.0, hours_ago=4)
+        _order(
+            db_session,
+            "short-close",
+            OrderSideEnum.BUY,
+            role="STOP_LOSS",
+            otype="STOP_LIMIT",
+            price=0.52,
+            qty=200.0,
+            parent="short-open",
+            hours_ago=1,
+        )
+
+        msg = _run_report(db_session)
+        assert "Apertura de CORTO" in msg
+        assert "Cierre de CORTO (SL)" in msg
+        assert "Total órdenes: 2" in msg

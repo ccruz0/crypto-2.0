@@ -17,6 +17,7 @@ from app.utils.http_client import http_get, http_post
 from app.utils.indicator_format import format_indicator_value as _iv
 from app.utils.filled_entry_order import is_filled_entry_exchange_order
 from app.utils.ops_stub_orders import is_ops_stub_closed_order_id
+from app.services.order_position_service import _short_close_buy_filter
 
 logger = logging.getLogger(__name__)
 
@@ -890,32 +891,55 @@ class DailySummaryService:
                 # Get Bali time for display
                 now_bali = now_utc.astimezone(BALI_TZ)
                 
-                # Query executed SELL orders from last 24 hours
+                # SELL rows: long closes + short entries. BUY short closes were omitted
+                # before #614 — they carry realized P&L for shorts (TP/SL cover legs).
                 sell_orders = db.query(ExchangeOrder).filter(
                     ExchangeOrder.side == OrderSideEnum.SELL,
                     ExchangeOrder.status == OrderStatusEnum.FILLED,
-                    ExchangeOrder.exchange_update_time >= yesterday_utc
+                    ExchangeOrder.exchange_update_time >= yesterday_utc,
+                ).order_by(ExchangeOrder.exchange_update_time.desc()).all()
+                short_close_buys = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                    ExchangeOrder.exchange_update_time >= yesterday_utc,
+                    _short_close_buy_filter(),
                 ).order_by(ExchangeOrder.exchange_update_time.desc()).all()
 
-                raw_count = len(sell_orders)
+                raw_sell_count = len(sell_orders)
+                raw_buy_close_count = len(short_close_buys)
                 sell_orders = self._dedupe_filled_sells_for_report(sell_orders)
-                
-                logger.info(
-                    "Found %s executed SELL orders in last 24 hours (%s after fill dedupe)",
-                    raw_count,
-                    len(sell_orders),
+                short_close_buys = self._dedupe_filled_sells_for_report(short_close_buys)
+                report_orders = sell_orders + short_close_buys
+                report_orders.sort(
+                    key=lambda o: (
+                        o.exchange_update_time.replace(tzinfo=timezone.utc)
+                        if o.exchange_update_time and o.exchange_update_time.tzinfo is None
+                        else o.exchange_update_time or datetime.min.replace(tzinfo=timezone.utc)
+                    ),
+                    reverse=True,
                 )
-                
-                if not sell_orders:
+
+                logger.info(
+                    "Sales report window: SELL=%s→%s short_close_BUY=%s→%s total=%s",
+                    raw_sell_count,
+                    len(sell_orders),
+                    raw_buy_close_count,
+                    len(short_close_buys),
+                    len(report_orders),
+                )
+
+                if not report_orders:
                     message = f"📊 **Reporte de Ventas - {now_bali.strftime('%d/%m/%Y %H:%M')} (Bali)**\n\n"
-                    message += "ℹ️ No se ejecutaron órdenes de venta en las últimas 24 horas."
+                    message += (
+                        "ℹ️ No se ejecutaron cierres ni aperturas de venta en las últimas 24 horas "
+                        "(incluye cierres de corto vía BUY)."
+                    )
                     self.telegram.send_message(message, origin=get_runtime_origin())
                     return
-                
+
                 # Build report message
                 message = f"📊 **Reporte de Ventas - {now_bali.strftime('%d/%m/%Y %H:%M')} (Bali)**\n\n"
                 message += f"⏰ Período: Últimas 24 horas\n"
-                message += f"📈 Total de órdenes: {len(sell_orders)}\n\n"
+                message += f"📈 Total de órdenes: {len(report_orders)}\n\n"
                 message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 
                 total_profit_loss = 0.0
@@ -939,32 +963,64 @@ class DailySummaryService:
                 #   - Sin padre y sin ser entrada -> "cierre sin vinculo", sin
                 #     P&L. Nunca se adivina una entrada.
                 shorts_opened = 0
+                short_closes = 0
                 no_pnl_rows = 0
                 stub_rows_skipped = 0
                 total_entry_value = 0.0
 
-                # Process each order
-                for order in sell_orders:
+                # Process each order (SELL long closes / short entries + BUY short closes)
+                for order in report_orders:
                     symbol = order.symbol
                     order_id = order.exchange_order_id
                     if is_ops_stub_closed_order_id(str(order_id or "")):
                         stub_rows_skipped += 1
                         continue
-                    sell_price = float(order.avg_price) if order.avg_price else float(order.price) if order.price else 0.0
+                    is_buy_close = order.side == OrderSideEnum.BUY
+                    fill_price = float(order.avg_price) if order.avg_price else float(order.price) if order.price else 0.0
                     # Cantidad EJECUTADA, no pedida: en un fill parcial la pedida
                     # inflaria el P&L en dolares.
                     executed_qty = float(order.cumulative_quantity) if order.cumulative_quantity else (float(order.quantity) if order.quantity else 0.0)
                     order_time = order.exchange_update_time.strftime('%d/%m/%Y %H:%M:%S') if order.exchange_update_time else 'N/A'
-                    order_role = order.order_role or 'SELL'
+                    order_role = order.order_role or ('BUY' if is_buy_close else 'SELL')
                     order_type_str = str(order.order_type or "").upper()
 
                     entry_price = None
                     pnl_info = ""
-                    is_short_entry = is_filled_entry_exchange_order(order)
+                    is_short_entry = (not is_buy_close) and is_filled_entry_exchange_order(order)
 
                     if is_short_entry:
                         shorts_opened += 1
                         pnl_info = "\n   ℹ️ Sin P&L: es una ENTRADA. El P&L se realizara al cierre (BUY)."
+                    elif is_buy_close:
+                        short_closes += 1
+                        if order.parent_order_id:
+                            parent_order = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.exchange_order_id == order.parent_order_id
+                            ).first()
+                            if parent_order is None:
+                                no_pnl_rows += 1
+                                pnl_info = "\n   ⏳ Sin P&L: vinculo conocido, entrada corto aun no sincronizada."
+                            elif parent_order.side != OrderSideEnum.SELL:
+                                no_pnl_rows += 1
+                                pnl_info = "\n   ⚠️ Sin P&L: vinculo no estandar (padre no es SELL de corto)."
+                            else:
+                                entry_price = float(parent_order.avg_price) if parent_order.avg_price else (float(parent_order.price) if parent_order.price else None)
+                                parent_qty = float(parent_order.cumulative_quantity) if parent_order.cumulative_quantity else (float(parent_order.quantity) if parent_order.quantity else 0.0)
+                                if not entry_price or entry_price <= 0:
+                                    no_pnl_rows += 1
+                                    entry_price = None
+                                    pnl_info = "\n   ⏳ Sin P&L: entrada corto vinculada sin precio sincronizado."
+                                elif fill_price <= 0 or executed_qty <= 0:
+                                    no_pnl_rows += 1
+                                    entry_price = None
+                                    pnl_info = "\n   ⚠️ Sin P&L: fill sin precio/cantidad ejecutada."
+                                elif parent_qty > 0 and abs(parent_qty - executed_qty) / max(parent_qty, executed_qty) > 0.05:
+                                    no_pnl_rows += 1
+                                    entry_price = None
+                                    pnl_info = "\n   ⚠️ Sin P&L: cantidades entrada/salida no casan (vinculo dudoso)."
+                        else:
+                            no_pnl_rows += 1
+                            pnl_info = "\n   ⚠️ Sin P&L: cierre de corto sin vinculo a su entrada."
                     elif order.parent_order_id:
                         parent_order = db.query(ExchangeOrder).filter(
                             ExchangeOrder.exchange_order_id == order.parent_order_id
@@ -983,7 +1039,7 @@ class DailySummaryService:
                                 no_pnl_rows += 1
                                 entry_price = None
                                 pnl_info = "\n   ⏳ Sin P&L: entrada vinculada sin precio sincronizado."
-                            elif sell_price <= 0 or executed_qty <= 0:
+                            elif fill_price <= 0 or executed_qty <= 0:
                                 no_pnl_rows += 1
                                 entry_price = None
                                 pnl_info = "\n   ⚠️ Sin P&L: fill sin precio/cantidad ejecutada."
@@ -1000,8 +1056,12 @@ class DailySummaryService:
                         pnl_info = "\n   ⚠️ Sin P&L: cierre sin vinculo a su entrada."
 
                     if entry_price and entry_price > 0:
-                        profit_loss = (sell_price - entry_price) * executed_qty
-                        profit_loss_pct = ((sell_price - entry_price) / entry_price) * 100
+                        if is_buy_close:
+                            profit_loss = (entry_price - fill_price) * executed_qty
+                            profit_loss_pct = ((entry_price - fill_price) / entry_price) * 100
+                        else:
+                            profit_loss = (fill_price - entry_price) * executed_qty
+                            profit_loss_pct = ((fill_price - entry_price) / entry_price) * 100
                         total_profit_loss += profit_loss
                         total_entry_value += entry_price * executed_qty
                         orders_with_pnl += 1
@@ -1013,6 +1073,15 @@ class DailySummaryService:
 
                     if is_short_entry:
                         role_emoji, role_text = "📉", "Apertura de CORTO"
+                    elif is_buy_close:
+                        if order_role == "TAKE_PROFIT":
+                            role_emoji, role_text = "🚀", "Cierre de CORTO (TP)"
+                        elif order_role == "STOP_LOSS":
+                            role_emoji, role_text = "🛑", "Cierre de CORTO (SL)"
+                        elif order_role == "FLATTEN":
+                            role_emoji, role_text = "🧹", "Cierre forzoso de CORTO (FLATTEN)"
+                        else:
+                            role_emoji, role_text = "📈", "Cierre de CORTO (BUY)"
                     elif order_role == "TAKE_PROFIT":
                         role_emoji, role_text = "🚀", "TP"
                     elif order_role == "STOP_LOSS":
@@ -1025,9 +1094,9 @@ class DailySummaryService:
                         role_emoji, role_text = "🔴", "Venta de Mercado"
 
                     message += f"• <b>{symbol}</b> {role_emoji} {role_text}\n"
-                    message += f"   💵 Precio: ${_iv(sell_price)}\n"
+                    message += f"   💵 Precio: ${_iv(fill_price)}\n"
                     message += f"   📦 Cantidad: {executed_qty:,.6f}\n"
-                    message += f"   💰 Total: ${(sell_price * executed_qty):,.2f}\n"
+                    message += f"   💰 Total: ${(fill_price * executed_qty):,.2f}\n"
                     if pnl_info:
                         message += pnl_info
                     message += f"\n   🆔 ID: {order_id}\n"
@@ -1036,7 +1105,7 @@ class DailySummaryService:
                 # Add summary
                 message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 message += f"📊 <b>RESUMEN</b>\n"
-                message += f"   Total órdenes: {len(sell_orders)}\n"
+                message += f"   Total órdenes: {len(report_orders)}\n"
                 
                 if orders_with_pnl > 0:
                     # Ponderado por nocional de entrada, no media de porcentajes:
@@ -1046,9 +1115,11 @@ class DailySummaryService:
                     total_sign = "+" if total_profit_loss >= 0 else ""
                     message += f"   {total_emoji} P&L realizado (cierres): {total_sign}${total_profit_loss:,.2f}\n"
                     message += f"   📈 P&L ponderado: {total_sign}{avg_pnl_pct:,.2f}%\n"
-                    message += f"   ✅ Cierres con P&L: {orders_with_pnl}/{len(sell_orders)}\n"
+                    message += f"   ✅ Cierres con P&L: {orders_with_pnl}/{len(report_orders)}\n"
                 if shorts_opened > 0:
-                    message += f"   📉 Aperturas de corto: {shorts_opened} (sin P&L hasta su cierre; los cierres de cortos son BUY y no salen en este reporte)\n"
+                    message += f"   📉 Aperturas de corto: {shorts_opened} (sin P&L hasta su cierre BUY)\n"
+                if short_closes > 0:
+                    message += f"   📈 Cierres de corto (BUY): {short_closes}\n"
                 if no_pnl_rows > 0:
                     message += f"   ⚪ Sin P&L determinable: {no_pnl_rows} (motivo en cada línea; nunca se estima)\n"
                 if orders_with_pnl == 0 and shorts_opened == 0 and no_pnl_rows > 0:
@@ -1075,7 +1146,11 @@ class DailySummaryService:
                 success = self.telegram.send_message(message, origin=get_runtime_origin())
                 
                 if success:
-                    logger.info(f"Sell orders report sent successfully: {len(sell_orders)} orders, P&L: ${total_profit_loss:,.2f}")
+                    logger.info(
+                        "Sell orders report sent successfully: %s orders, P&L: $%s",
+                        len(report_orders),
+                        f"{total_profit_loss:,.2f}",
+                    )
                 else:
                     logger.error("Failed to send sell orders report")
                 
