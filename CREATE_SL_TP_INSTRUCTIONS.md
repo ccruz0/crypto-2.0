@@ -62,6 +62,31 @@ docker exec -it <container_name> python3 create_sl_tp_for_symbol.py SOL_USDT
    - Links them with an OCO group
    - Sends Telegram notifications
 
+## Operator note: `tp_percentage` vs live exchange TPs
+
+These three rules apply to **every** SL/TP path (automatic post-fill, manual create,
+hourly checker ensure, dashboard edits). They are intentional — see issue #612 / #329.
+
+1. **Watchlist `tp_percentage` applies only at fill.** It is read when the system
+   first places SL+TP for a filled entry (or when no active TP exists yet). It is
+   **not** re-applied on every dashboard save or on every checker cycle.
+
+2. **The live book is not rewritten when the setting changes.** If SL and TP orders
+   already exist on the exchange, changing `tp_percentage` (or `sl_percentage`) in
+   the watchlist does **not** cancel, amend, or recreate those live orders. The
+   protection path returns `already_protected` and reuses the active legs.
+
+3. **Dashboard `tp_price` is not the exchange TP.** The watchlist column shows a
+   **strategy/display** price derived from watchlist percentages and entry context.
+   It is **not** synced from live exchange trigger prices. To compare against Crypto.com,
+   use open orders on the exchange (or Executed Orders / SL-TP check tooling) — not
+   the watchlist `tp_price` cell.
+
+**Example (2026-08-31):** With watchlist `tp_percentage=3%`, BTC live TP matched ~3%,
+while HBAR / ALGO / BONK live TPs did not — those positions were already protected
+under older TP levels. STOP_LIMIT remained the active protection; wider legacy TPs
+simply take longer to cover.
+
 ## SL/TP Calculation Logic
 
 The SL/TP prices are calculated using:
