@@ -109,10 +109,53 @@ ACTION_POLICY: dict[str, dict[str, Any]] = {
         "base_priority_score": 90,
         "impact_default": "high",
     },
+    "google_ads_pause_campaign": {
+        "execution_mode": "requires_approval",
+        "base_priority_score": 84,
+        "impact_default": "high",
+    },
+    "google_ads_reduce_campaign_budget": {
+        "execution_mode": "requires_approval",
+        "base_priority_score": 82,
+        "impact_default": "high",
+    },
+    "google_ads_resume_campaign": {
+        "execution_mode": "requires_approval",
+        "base_priority_score": 80,
+        "impact_default": "high",
+    },
 }
 
+# Fallback when resolve_action_type cannot infer a registered type from title alone.
 DEFAULT_ACTION_TYPE = "analysis"
-DEFAULT_EXECUTION_MODE = "auto_execute"
+# Fail-closed default when policy lookup returns no explicit execution_mode.
+DEFAULT_EXECUTION_MODE = "requires_approval"
+
+# Applied to any action_type not explicitly listed in ACTION_POLICY (default-deny).
+UNREGISTERED_ACTION_POLICY: dict[str, Any] = {
+    "execution_mode": "requires_approval",
+    "base_priority_score": 70,
+    "impact_default": "high",
+    "registered": False,
+}
+
+# Mutating action types that must stay registered with requires_approval (or forbidden).
+# Tests fail if code introduces a new mutating type without adding it to ACTION_POLICY.
+MUTATING_ACTION_TYPES: frozenset[str] = frozenset(
+    {
+        "ops_config_change",
+        "deploy",
+        "external_side_effect",
+        "fix_credentials_path",
+        "update_runtime_env",
+        "restart_backend",
+        "google_ads_pause_campaign",
+        "google_ads_reduce_campaign_budget",
+        "google_ads_resume_campaign",
+        "perico_apply_patch",
+        "code_change",
+    }
+)
 
 _IMPACT_WEIGHT: dict[str, int] = {"low": 0, "medium": 8, "high": 16}
 
@@ -155,16 +198,30 @@ def objective_has_destructive_intent(text: str) -> bool:
     return has_destructive_intent(text)
 
 
-def get_action_policy(action_type: str) -> dict[str, Any]:
-    """Return effective policy for an action type."""
+def is_registered_action_type(action_type: str) -> bool:
+    """True when action_type has an explicit entry in ACTION_POLICY."""
     key = (action_type or "").strip().lower()
-    return ACTION_POLICY.get(key, ACTION_POLICY[DEFAULT_ACTION_TYPE])
+    return bool(key) and key in ACTION_POLICY
+
+
+def get_action_policy(action_type: str) -> dict[str, Any]:
+    """Return effective policy for an action type.
+
+    Unregistered types fail closed: requires_approval, never auto_execute.
+    """
+    key = (action_type or "").strip().lower()
+    if key in ACTION_POLICY:
+        return ACTION_POLICY[key]
+    return dict(UNREGISTERED_ACTION_POLICY)
 
 
 def resolve_action_type(title: str, model_hint: str = "") -> str:
     """Infer action type from title/hint when model does not provide a known one."""
     hint = (model_hint or "").strip().lower()
     if hint in ACTION_POLICY:
+        return hint
+    if hint:
+        # Preserve explicit but unregistered hints — get_action_policy default-denies them.
         return hint
     text = f"{title} {hint}".lower()
     if any(k in text for k in ("deploy", "release", "rollout")):
