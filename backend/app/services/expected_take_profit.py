@@ -179,11 +179,12 @@ def _drop_ghost_direction_lots(
     open_lots: List[OpenLot],
     wallet_balance: Decimal,
 ) -> Tuple[List[OpenLot], Optional[str]]:
-    """Drop one-sided ghost lots that contradict wallet sign.
+    """Drop ghost lots that contradict wallet sign.
 
-    - Long wallet + only SELL lots → ghost SHORT (e.g. DGB)
-    - Short wallet + only BUY lots → ghost LONG
-    MIXED hedges (both sides present) are kept and trimmed separately.
+    - Long wallet + only SELL lots → wipe all (`ghost_short_vs_long`, e.g. DGB)
+    - Short wallet + only BUY lots → wipe all (`ghost_long_vs_short`)
+    - Long wallet + MIXED long+short → drop contradicting lots per side, keep
+      aligned inventory (`ghost_mixed_trimmed`; ALGO_USD #496)
     """
     if not open_lots or wallet_balance == 0:
         return open_lots, None
