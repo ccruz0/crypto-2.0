@@ -2043,30 +2043,29 @@ const VERSION_HISTORY = [
   },
 
   {
-    version: '0.94',
+    version: '0.95',
     date: '2026-08-31',
-    change: 'Fake STOP_LOSS rows no longer count as protected (#521)',
-    details: `🚀 VERSIÓN 0.94 — PROTECTION TYPE INTEGRITY (#521)
+    change: 'Sales report includes BUY short-close P&L (#614)',
+    details: `🚀 VERSIÓN 0.95 — SHORT CLOSE P&L IN SALES REPORT (#614)
 
 📋 **Root cause**
-• ETH_USD order 73817490102074667 was booked as STOP_LOSS / STOP_LIMIT but the exchange held a plain LIMIT BUY — a short stop that never triggers on a price rise
-• exchange_sync preserved bot-authored order_role and did not reconcile order_type from the live exchange payload
-• Protection dashboards trusted order_role alone, so the position looked SL-covered when it was not
+• Bali Reporte de Ventas only queried FILLED SELL rows
+• Short realized P&L lives on BUY cover legs (TP/SL); those closes were omitted entirely
 
 ✅ **What shipped**
-• Shared helpers: protection legs count only when order_type matches SL/TP trigger types for the role
-• exchange_sync reconciles order_type from the exchange on every open-order upsert (order_role preserved)
-• sl_tp_checker, position review, and dashboard protection leg stats ignore fake SL/TP rows
-• Logic watchdog protection_type_mismatch detector unchanged; tests cover DB STOP_LOSS + exchange LIMIT → not protected
+• Merge canonical short-close BUY fills (_short_close_buy_filter) into the daily sales report
+• Short P&L: (entry − cover) × qty with linked SELL parent + same anti-guess rules as long closes
+• Investigation doc for SL −$99/−$100 tail (sizing + 10% SL default path — no strategy change)
 
-🔧 **Why**
-• Unprotected shorts must surface in risk dashboards; no auto-replacement SL placement in this PR (Carlos approval before merge)
+🔧 **Live-order path**
+• Reporting-only (daily_summary.py read + Telegram). No place/cancel/amend TP/SL touched.
 
 📦 **PRs**
-• #521
+• #614
 
 ---
 `
+  },
 
 ];
 
