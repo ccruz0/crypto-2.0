@@ -25,15 +25,17 @@ def _base_from_symbol(symbol: Optional[str]) -> str:
 
 
 def _is_protection_order(order: Any) -> bool:
+    from app.services.sl_tp_protection import is_effective_protection_order
+
     order_type = (getattr(order, "order_type", None) or "").upper()
     role = (getattr(order, "order_role", None) or "").upper()
-    if role in ("TAKE_PROFIT", "STOP_LOSS"):
-        return True
-    if "TAKE_PROFIT" in order_type:
-        return True
-    if "STOP" in order_type and "LIMIT" in order_type:
-        return True
-    return False
+    if isinstance(order, dict):
+        order_type = (order.get("order_type") or order.get("type") or order_type or "").upper()
+        role = (order.get("order_role") or role or "").upper()
+    return is_effective_protection_order(
+        order_role=role or None,
+        order_type=order_type or None,
+    )
 
 
 def _order_qty(order: Any) -> float:

@@ -47,10 +47,11 @@ DEAD_STATUSES = (
     OrderStatusEnum.EXPIRED,
 )
 
-# Exchange order types that actually trigger. An order booked as protection
-# whose real type is outside these sets does not protect anything (#521).
-_SL_EXCHANGE_TYPES = ("STOP_LOSS", "STOP_LIMIT", "STOP_MARKET", "STOP_LOSS_LIMIT")
-_TP_EXCHANGE_TYPES = ("TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT_MARKET")
+from app.services.sl_tp_protection import SL_TRIGGER_ORDER_TYPES, TP_TRIGGER_ORDER_TYPES
+
+# Exchange order types that actually trigger (#521). Shared with protection counting.
+_SL_EXCHANGE_TYPES = SL_TRIGGER_ORDER_TYPES
+_TP_EXCHANGE_TYPES = TP_TRIGGER_ORDER_TYPES
 
 
 # --------------------------------------------------------------------------

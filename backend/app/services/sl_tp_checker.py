@@ -14,6 +14,7 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
 from app.services.exchange_sync import exchange_sync_service
 from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
+from app.services.sl_tp_protection import order_counts_as_protection
 from app.services.unified_open_orders_fetch import fetch_unified_open_orders
 
 logger = logging.getLogger(__name__)
@@ -262,7 +263,16 @@ def _classify_open_protection_leg(order: dict) -> Optional[str]:
 
     Advanced TP/SL (SPOT_ATTACH / TAKE_PROFIT_LIMIT / STOP_LIMIT) must be
     detected here — spot-only open-order endpoints miss them.
+
+    #521: order_role alone is not enough — a STOP_LOSS row that the exchange
+    holds as plain LIMIT does not protect anything.
     """
+    from app.services.sl_tp_protection import (
+        SL_TRIGGER_ORDER_TYPES,
+        TP_TRIGGER_ORDER_TYPES,
+        protection_type_matches_role,
+    )
+
     order_type = (order.get("order_type") or order.get("type") or "").upper()
     role = (order.get("order_role") or "").upper()
     contingency = (
@@ -275,13 +285,19 @@ def _classify_open_protection_leg(order: dict) -> Optional[str]:
         or order.get("stop_price")
     )
 
-    if role == "TAKE_PROFIT" or "TAKE_PROFIT" in order_type or "TAKE-PROFIT" in order_type:
+    if role == "TAKE_PROFIT" and protection_type_matches_role(role, order_type):
+        return "TP"
+    if "TAKE_PROFIT" in order_type or "TAKE-PROFIT" in order_type:
         return "TP"
     if "PROFIT" in order_type and "TAKE" in order_type:
         return "TP"
-    if role == "STOP_LOSS" or any(
-        term in order_type for term in ("STOP_LOSS", "STOP_LIMIT", "STOP-LOSS")
-    ):
+    if order_type in TP_TRIGGER_ORDER_TYPES:
+        return "TP"
+    if role == "STOP_LOSS" and protection_type_matches_role(role, order_type):
+        return "SL"
+    if any(term in order_type for term in ("STOP_LOSS", "STOP_LIMIT", "STOP-LOSS")):
+        return "SL"
+    if order_type in SL_TRIGGER_ORDER_TYPES:
         return "SL"
     if order_type in ("STOP",) or (
         "STOP" in order_type and "TAKE_PROFIT" not in order_type
@@ -446,6 +462,12 @@ def _db_active_protection_qty(
     )
     total = 0.0
     for row in rows:
+        if not order_counts_as_protection(
+            role=role,
+            order_role=getattr(row, "order_role", None),
+            order_type=getattr(row, "order_type", None),
+        ):
+            continue
         qty = _parent_lot_qty(row)
         if qty:
             total += qty
@@ -1179,8 +1201,22 @@ class SLTPCheckerService:
                 ]
                 if not still_active:
                     continue
-                has_sl = any(o.order_role == "STOP_LOSS" for o in still_active)
-                has_tp = any(o.order_role == "TAKE_PROFIT" for o in still_active)
+                has_sl = any(
+                    order_counts_as_protection(
+                        role="STOP_LOSS",
+                        order_role=o.order_role,
+                        order_type=o.order_type,
+                    )
+                    for o in still_active
+                )
+                has_tp = any(
+                    order_counts_as_protection(
+                        role="TAKE_PROFIT",
+                        order_role=o.order_role,
+                        order_type=o.order_type,
+                    )
+                    for o in still_active
+                )
                 if not (has_sl and has_tp):
                     symbol = still_active[0].symbol if still_active else "Unknown"
                     missing = "STOP_LOSS" if not has_sl else "TAKE_PROFIT"

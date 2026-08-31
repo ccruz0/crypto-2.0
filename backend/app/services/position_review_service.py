@@ -268,18 +268,20 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
 
         has_sl = False
         has_tp = False
+        from app.services.sl_tp_protection import order_counts_as_protection
+
         for o in matched:
             status = (o.get("order_status") or o.get("status") or "").upper()
             if status and status not in ("ACTIVE", "NEW", "PENDING", "PARTIALLY_FILLED"):
                 continue
-            otype = str(o.get("order_type") or o.get("type") or "").lower()
-            # Crypto.com uses STOP_LIMIT / TAKE_PROFIT_LIMIT for protective orders.
-            # Matching only the literal "stop_loss" missed live STOP_LIMIT rows, so
-            # the daily review kept saying "sin SL/TP" while protection already existed.
-            if any(t in otype for t in ("stop_limit", "stop_loss", "stop-loss", "stop")):
+            otype = str(o.get("order_type") or o.get("type") or "").upper()
+            role = str(o.get("order_role") or "").upper()
+            if order_counts_as_protection(
+                role="STOP_LOSS", order_role=role or None, order_type=otype or None
+            ):
                 has_sl = True
-            if any(t in otype for t in ("take_profit", "take-profit")) or (
-                "take" in otype and "profit" in otype
+            if order_counts_as_protection(
+                role="TAKE_PROFIT", order_role=role or None, order_type=otype or None
             ):
                 has_tp = True
         # Prefer the live exchange view only when it sees BOTH protections.
@@ -299,9 +301,10 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
         logger.warning("posrev: exchange protection check failed for %s: %s", symbol, e)
 
     try:
-        from sqlalchemy import or_
+        from sqlalchemy import and_, or_
 
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        from app.services.sl_tp_protection import SL_TRIGGER_ORDER_TYPES, TP_TRIGGER_ORDER_TYPES
 
         active = [
             OrderStatusEnum.NEW,
@@ -313,10 +316,10 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
             .filter(
                 or_(*[ExchangeOrder.symbol == v for v in variants]),
                 ExchangeOrder.status.in_(active),
+                ExchangeOrder.order_type.in_(list(SL_TRIGGER_ORDER_TYPES)),
                 or_(
-                    ExchangeOrder.order_type.in_(
-                        ["STOP_LIMIT", "STOP_LOSS", "STOP_LOSS_LIMIT"]
-                    ),
+                    ExchangeOrder.order_role.is_(None),
+                    ExchangeOrder.order_role == "",
                     ExchangeOrder.order_role == "STOP_LOSS",
                 ),
             )
@@ -327,10 +330,10 @@ def _get_protection_status(db: Session, symbol: str) -> Dict[str, bool]:
             .filter(
                 or_(*[ExchangeOrder.symbol == v for v in variants]),
                 ExchangeOrder.status.in_(active),
+                ExchangeOrder.order_type.in_(list(TP_TRIGGER_ORDER_TYPES)),
                 or_(
-                    ExchangeOrder.order_type.in_(
-                        ["TAKE_PROFIT_LIMIT", "TAKE_PROFIT"]
-                    ),
+                    ExchangeOrder.order_role.is_(None),
+                    ExchangeOrder.order_role == "",
                     ExchangeOrder.order_role == "TAKE_PROFIT",
                 ),
             )

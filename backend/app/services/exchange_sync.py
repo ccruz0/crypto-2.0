@@ -2338,6 +2338,21 @@ class ExchangeSyncService:
                     existing.exchange_create_time = create_time
                     existing.exchange_update_time = update_time
                     existing.updated_at = datetime.utcnow()
+                    # Reconcile order_type from the exchange (#521). order_role is bot-authored
+                    # and preserved, but a STOP_LOSS row must not keep STOP_LIMIT when the
+                    # exchange holds a plain LIMIT.
+                    exchange_type = str(order_data.get("order_type") or "").strip().upper()
+                    if exchange_type:
+                        books_type = str(existing.order_type or "").strip().upper()
+                        if books_type and books_type != exchange_type:
+                            logger.warning(
+                                "[SYNC_TYPE_RECONCILE] order %s role=%s books_type=%s exchange_type=%s",
+                                order_id,
+                                existing.order_role,
+                                books_type,
+                                exchange_type,
+                            )
+                        existing.order_type = exchange_type
                     # CRITICAL: Preserve parent_order_id and order_role if they exist
                     # These are set when SL/TP orders are created and should not be overwritten
                     # Do NOT update parent_order_id or order_role from exchange sync

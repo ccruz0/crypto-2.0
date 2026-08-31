@@ -131,7 +131,70 @@ ACTIVE_PROTECTION_STATUSES = [
 # Ghost-cleanup grace for ordinary (non-protection) DB rows missing from open+history.
 GHOST_CANCEL_GRACE_SECONDS = 120.0
 
+# Exchange order types that actually trigger when the books label a leg SL/TP (#521).
+SL_TRIGGER_ORDER_TYPES = frozenset({
+    "STOP_LOSS",
+    "STOP_LIMIT",
+    "STOP_MARKET",
+    "STOP_LOSS_LIMIT",
+})
+TP_TRIGGER_ORDER_TYPES = frozenset({
+    "TAKE_PROFIT",
+    "TAKE_PROFIT_LIMIT",
+    "TAKE_PROFIT_MARKET",
+})
+
 _SL_TP_LOCK_NAMESPACE = 876543210
+
+
+def protection_type_matches_role(
+    order_role: Optional[str],
+    order_type: Optional[str],
+) -> bool:
+    """True when order_type is a trigger type that matches order_role."""
+    role = (order_role or "").upper().strip()
+    otype = (order_type or "").upper().strip()
+    if role == "STOP_LOSS":
+        return otype in SL_TRIGGER_ORDER_TYPES
+    if role == "TAKE_PROFIT":
+        return otype in TP_TRIGGER_ORDER_TYPES
+    return False
+
+
+def order_counts_as_protection(
+    *,
+    role: str,
+    order_role: Optional[str] = None,
+    order_type: Optional[str] = None,
+) -> bool:
+    """True when a live leg counts as SL/TP protection for dashboards (#521).
+
+    Rows labeled STOP_LOSS but stored as plain LIMIT do not protect anything.
+    Trigger order types without order_role still count when the type alone
+    identifies the leg.
+    """
+    role_u = (role or "").upper().strip()
+    o_role = (order_role or "").upper().strip()
+    o_type = (order_type or "").upper().strip()
+    allowed = SL_TRIGGER_ORDER_TYPES if role_u == "STOP_LOSS" else TP_TRIGGER_ORDER_TYPES
+    if o_role == role_u:
+        return o_type in allowed
+    if not o_role:
+        return o_type in allowed
+    return False
+
+
+def is_effective_protection_order(
+    *,
+    order_role: Optional[str] = None,
+    order_type: Optional[str] = None,
+) -> bool:
+    """True when an order counts as some protective leg (SL or TP), not a fake."""
+    o_role = (order_role or "").upper().strip()
+    o_type = (order_type or "").upper().strip()
+    if o_role in PROTECTION_ROLES:
+        return protection_type_matches_role(o_role, o_type)
+    return o_type in TRIGGER_ORDER_TYPES
 
 
 def is_flatten_close_role(order_role: Optional[str]) -> bool:
