@@ -2142,6 +2142,30 @@ const VERSION_HISTORY = [
 `
   },
 
+  {
+    version: '0.99',
+    date: '2026-09-01',
+    change: 'No Telegram SELL when MA200 regime already blocks the short (#624)',
+    details: `🚀 VERSIÓN 0.99 — REGIME PRE-BLOCK FOR MARGIN SELLS (#624)
+
+📋 **Symptom**
+• BONK ~14:30 / 14:47 WITA: live Telegram \`SELL SIGNAL DETECTED\` then \`ORDEN BLOQUEADA\` \`REGIME_FILTER_BLOCKED\` / \`short_regime_price_above_ma200\` — nothing reached the exchange
+
+✅ **What shipped**
+• Pre-check regime filter before live SELL Telegram when \`trade_enabled\` + margin short would open
+• Persist \`REGIME_FILTER_BLOCKED\` in Monitoring/DB only (no SELL SIGNAL, no ORDEN BLOQUEADA live page)
+• Safety net: \`suppress_order_failure_telegram\` also silences regime-filter follow-ups if orchestrator still runs
+
+🔧 **Out of scope**
+• BUY/long path unchanged (#619/#621 untouched)
+
+📦 **PRs**
+• #624
+
+---
+`
+  },
+
 ];
 
 // Helper function to get current version (must be defined before component)
