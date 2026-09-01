@@ -2,8 +2,9 @@
 
 Compares candidate holdout metrics to the current manifest and, when allowed,
 promotes `current.joblib`. No Approval Center path — gated by
-AUTO_ML_AUTONOMOUS_PROMOTE (default false), AUTO_ML_HUMAN_PROMOTE (operator
-workflow_dispatch only), or an explicit --force-promote CLI flag.
+AUTO_ML_AUTONOMOUS_PROMOTE (default false), AUTO_ML_HUMAN_PROMOTE (process env,
+default false), POST /api/config/auto-ml/promote (explicit human gate), or
+--force-promote CLI.
 """
 
 from __future__ import annotations
