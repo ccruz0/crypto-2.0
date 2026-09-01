@@ -2111,7 +2111,12 @@ class SignalMonitorService:
         current_price: float,
         now_utc: datetime,
     ) -> None:
-        """Dashboard/DB only — no live Telegram SELL SIGNAL or ORDEN BLOQUEADA (#624)."""
+        """Dashboard/DB only — no live Telegram SELL SIGNAL or ORDEN BLOQUEADA (#624).
+
+        Uses add_telegram_message (Monitoring row + telegram_messages table only).
+        That helper never calls telegram_notifier.send_message — live ATP Control
+        paging requires emit_alert / send_*_signal / send_message explicitly.
+        """
         from app.api.routes_monitoring import add_telegram_message
         from app.utils.decision_reason import ReasonCode
 

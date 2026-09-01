@@ -111,18 +111,22 @@ def test_persist_regime_filter_blocked_writes_db_not_live_telegram():
     now = datetime.now(timezone.utc)
 
     with patch("app.api.routes_monitoring.add_telegram_message") as add_msg:
-        with patch.object(svc, "_upsert_watchlist_signal_state") as upsert:
-            svc._persist_regime_filter_blocked_sell(
-                db,
-                symbol="BONK_USD",
-                normalized_symbol="BONK_USD",
-                reason=reason,
-                evaluation_id="eval-624",
-                current_price=0.000012,
-                now_utc=now,
-            )
+        with patch("app.services.telegram_notifier.telegram_notifier.send_message") as send_msg:
+            with patch("app.services.telegram_notifier.telegram_notifier.send_sell_signal") as send_sell:
+                with patch.object(svc, "_upsert_watchlist_signal_state") as upsert:
+                    svc._persist_regime_filter_blocked_sell(
+                        db,
+                        symbol="BONK_USD",
+                        normalized_symbol="BONK_USD",
+                        reason=reason,
+                        evaluation_id="eval-624",
+                        current_price=0.000012,
+                        now_utc=now,
+                    )
 
     add_msg.assert_called_once()
+    send_msg.assert_not_called()
+    send_sell.assert_not_called()
     kwargs = add_msg.call_args.kwargs
     assert kwargs["reason_code"] == ReasonCode.REGIME_FILTER_BLOCKED.value
     assert kwargs["blocked"] is True
@@ -133,6 +137,30 @@ def test_persist_regime_filter_blocked_writes_db_not_live_telegram():
     upsert_kwargs = upsert.call_args.kwargs
     assert upsert_kwargs["alert_block_reason"] == "REGIME_FILTER"
     assert upsert_kwargs["trade_block_reason"] == "REGIME_FILTER"
+
+
+def test_add_telegram_message_persist_only_no_live_send():
+    """add_telegram_message is DB/Monitoring only — must not page ATP Control."""
+    from app.api.routes_monitoring import add_telegram_message
+
+    db = MagicMock()
+    db.execute.return_value = None
+    db.flush.return_value = None
+    db.query.return_value.filter.return_value.first.return_value = None
+
+    with patch("app.services.telegram_notifier.telegram_notifier.send_message") as send_msg:
+        with patch("app.services.telegram_notifier.telegram_notifier.send_sell_signal") as send_sell:
+            add_telegram_message(
+                "REGIME_FILTER_BLOCKED | BONK_USD SELL",
+                symbol="BONK_USD",
+                blocked=True,
+                reason_code=ReasonCode.REGIME_FILTER_BLOCKED.value,
+                db=db,
+            )
+
+    send_msg.assert_not_called()
+    send_sell.assert_not_called()
+    db.add.assert_called_once()
 
 
 def test_suppress_order_failure_telegram_for_regime_filter():
