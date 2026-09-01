@@ -2,7 +2,8 @@
 
 Compares candidate holdout metrics to the current manifest and, when allowed,
 promotes `current.joblib`. No Approval Center path — gated by
-AUTO_ML_AUTONOMOUS_PROMOTE (default false) or an explicit --promote CLI flag.
+AUTO_ML_AUTONOMOUS_PROMOTE (default false), AUTO_ML_HUMAN_PROMOTE (operator
+workflow_dispatch only), or an explicit --force-promote CLI flag.
 """
 
 from __future__ import annotations
@@ -28,6 +29,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def autonomous_promote_enabled() -> bool:
     return _env_bool("AUTO_ML_AUTONOMOUS_PROMOTE", False)
+
+
+def human_promote_enabled() -> bool:
+    """Explicit operator merit gate (e.g. workflow_dispatch dry_run_only=false)."""
+    return _env_bool("AUTO_ML_HUMAN_PROMOTE", False)
+
+
+def promote_gate_enabled() -> bool:
+    return autonomous_promote_enabled() or human_promote_enabled()
 
 
 def min_promote_rows() -> int:
@@ -76,6 +86,7 @@ class PromoteDecision:
     min_rows: int
     min_delta: float
     autonomous: bool
+    human_promote: bool = False
 
 
 def load_manifest(path: Path) -> Optional[dict[str, Any]]:
@@ -97,11 +108,14 @@ def should_promote(
     min_delta: Optional[float] = None,
     allow_single_class: bool = False,
     autonomous: Optional[bool] = None,
+    human: Optional[bool] = None,
     force: bool = False,
 ) -> PromoteDecision:
     rows_floor = min_promote_rows() if min_rows is None else min_rows
     delta = min_promote_delta() if min_delta is None else min_delta
     auto = autonomous_promote_enabled() if autonomous is None else autonomous
+    human_ok = human_promote_enabled() if human is None else human
+    gate_open = auto or human_ok
 
     n_fit = int(candidate.get("n_fit_rows") or 0)
     cand_metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
@@ -116,9 +130,10 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
-    if not auto:
+    if not gate_open:
         return PromoteDecision(
             should_promote=False,
             reason="autonomous_promote_disabled",
@@ -127,6 +142,7 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
     if n_fit < rows_floor:
@@ -138,6 +154,7 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
     if cand_metrics.get("holdout") is False and not allow_single_class:
@@ -149,6 +166,7 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
     if cand_metric is None:
@@ -160,6 +178,7 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
     if current is None:
@@ -171,6 +190,7 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
     cur_metric = primary_metric(current.get("metrics") if isinstance(current.get("metrics"), dict) else {})
@@ -183,6 +203,7 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
     if cand_metric + 1e-12 >= cur_metric + delta:
@@ -194,6 +215,7 @@ def should_promote(
             min_rows=rows_floor,
             min_delta=delta,
             autonomous=auto,
+            human_promote=human_ok,
         )
 
     return PromoteDecision(
@@ -204,6 +226,7 @@ def should_promote(
         min_rows=rows_floor,
         min_delta=delta,
         autonomous=auto,
+        human_promote=human_ok,
     )
 
 
@@ -227,6 +250,7 @@ def apply_promote(
 
     promoted = dict(candidate_manifest)
     promoted["autonomous_promote"] = bool(decision.autonomous)
+    promoted["human_promote"] = bool(decision.human_promote)
     promoted["promoted_at"] = datetime.now(timezone.utc).isoformat()
     promoted["promote_reason"] = decision.reason
     promoted["promote_decision"] = asdict(decision)
@@ -259,7 +283,7 @@ def _human_reason(reason: str) -> str:
     if reason == "single_class_or_no_holdout":
         return "Entrenamiento sin holdout / una sola clase (bloqueado salvo allow-single-class)."
     if reason == "autonomous_promote_disabled":
-        return "AUTO_ML_AUTONOMOUS_PROMOTE está desactivado."
+        return "AUTO_ML_AUTONOMOUS_PROMOTE y AUTO_ML_HUMAN_PROMOTE están desactivados."
     if reason == "candidate_metric_missing":
         return "El candidato no reportó métrica primaria."
     if reason == "train_direct_current":

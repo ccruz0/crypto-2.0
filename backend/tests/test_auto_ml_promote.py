@@ -49,6 +49,7 @@ def test_format_promote_telegram_includes_changes_and_why():
 
 def test_should_promote_disabled_by_default(monkeypatch):
     monkeypatch.delenv("AUTO_ML_AUTONOMOUS_PROMOTE", raising=False)
+    monkeypatch.delenv("AUTO_ML_HUMAN_PROMOTE", raising=False)
     cand = {
         "n_fit_rows": 50,
         "metrics": {"holdout": True, "roc_auc": 0.9, "accuracy": 0.8},
@@ -56,6 +57,26 @@ def test_should_promote_disabled_by_default(monkeypatch):
     d = should_promote(cand, None)
     assert d.should_promote is False
     assert d.reason == "autonomous_promote_disabled"
+    assert d.human_promote is False
+
+
+def test_should_promote_with_human_gate_without_autonomous(monkeypatch):
+    monkeypatch.delenv("AUTO_ML_AUTONOMOUS_PROMOTE", raising=False)
+    monkeypatch.setenv("AUTO_ML_HUMAN_PROMOTE", "true")
+    monkeypatch.setenv("AUTO_ML_PROMOTE_MIN_ROWS", "10")
+    cand = {
+        "n_fit_rows": 20,
+        "metrics": {"holdout": True, "roc_auc": 0.8, "accuracy": 0.75},
+    }
+    cur = {
+        "n_fit_rows": 20,
+        "metrics": {"holdout": True, "roc_auc": 0.6, "accuracy": 0.55},
+    }
+    d = should_promote(cand, cur)
+    assert d.should_promote is True
+    assert d.autonomous is False
+    assert d.human_promote is True
+    assert "metric_improved" in d.reason
 
 
 def test_should_promote_when_autonomous_and_better(monkeypatch):

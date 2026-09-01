@@ -44,6 +44,7 @@ class CoverageStats:
     complete: int = 0
     with_alert: int = 0
     without_alert: int = 0
+    short_close_supplemented: int = 0
     dropped: dict[str, int] = field(
         default_factory=lambda: {
             "dry_run_order_id": 0,
@@ -58,6 +59,9 @@ class CoverageStats:
             "orphan_rejected_by_guards": 0,
             "missing_exit_price": 0,
             "missing_quantity": 0,
+            "short_close_existing": 0,
+            "short_close_missing_parent": 0,
+            "short_close_invalid": 0,
         }
     )
 
@@ -72,6 +76,7 @@ class CoverageStats:
             "complete": self.complete,
             "with_alert": self.with_alert,
             "without_alert": self.without_alert,
+            "short_close_supplemented": self.short_close_supplemented,
             "join_coverage_pct": self.join_coverage_pct(),
             "dropped": dict(self.dropped),
         }
@@ -564,6 +569,194 @@ def build_outcome_for_intent(
     }
 
 
+def is_short_close_buy_order(order: Mapping[str, Any]) -> bool:
+    """BUY cover leg that closes a short (parent link or SL/TP role).
+
+    Same predicate shape as ``order_position_service._short_close_buy_filter``.
+    """
+    if (_as_str(order.get("side")) or "").upper() != "BUY":
+        return False
+    parent = (_as_str(order.get("parent_order_id")) or "").strip()
+    role = (_as_str(order.get("order_role")) or "").upper()
+    return bool(parent) or role in EXIT_ROLES
+
+
+def build_outcome_from_short_close_buy(
+    cover: Mapping[str, Any],
+    parent_entry: Mapping[str, Any],
+    *,
+    alert: Optional[Mapping[str, Any]] = None,
+    order_intent: Optional[Mapping[str, Any]] = None,
+    qty_tolerance: float = DEFAULT_ORPHAN_QTY_TOLERANCE,
+    stats: Optional[CoverageStats] = None,
+) -> Optional[dict[str, Any]]:
+    """Build COMPLETE short round-trip from a filled BUY cover + linked SELL entry."""
+    if stats is not None:
+        pass  # increments applied only on success below
+
+    cover_oid = _as_str(cover.get("exchange_order_id"))
+    if not cover_oid or is_dry_run_order_id(cover_oid) or is_ops_stub_closed_order_id(cover_oid):
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+    if not is_filled_status(cover.get("status")):
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+
+    parent_side = (_as_str(parent_entry.get("side")) or "").upper()
+    if parent_side != "SELL":
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+    if not is_filled_status(parent_entry.get("status")):
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+
+    entry_price = order_fill_price(parent_entry)
+    exit_price = order_fill_price(cover)
+    if entry_price is None or entry_price <= 0 or exit_price is None or exit_price <= 0:
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+
+    entry_qty = order_qty(parent_entry)
+    exit_qty = order_qty(cover)
+    if entry_qty is None or exit_qty is None or entry_qty <= 0 or exit_qty <= 0:
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+    if not _qty_within_tolerance(entry_qty, exit_qty, tolerance=qty_tolerance):
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+
+    entry_oid = _as_str(parent_entry.get("exchange_order_id"))
+    if not entry_oid:
+        if stats is not None:
+            stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+        return None
+
+    entry_ts = order_event_ts(parent_entry)
+    exit_ts = order_event_ts(cover)
+    pnl_usd, pnl_pct = compute_pnl(
+        side="SELL", entry_price=entry_price, exit_price=exit_price, quantity=exit_qty
+    )
+    exit_reason = (
+        infer_exit_role(order_role=cover.get("order_role"), order_type=cover.get("order_type"))
+        or "UNKNOWN"
+    )
+
+    telegram_message_id = None
+    order_intent_id = None
+    if order_intent is not None:
+        order_intent_id = order_intent.get("id")
+        telegram_message_id = order_intent.get("signal_id")
+    if telegram_message_id is None and alert is not None:
+        telegram_message_id = alert.get("id")
+
+    hold_seconds: Optional[int] = None
+    if entry_ts and exit_ts:
+        hold_seconds = max(0, int((exit_ts - entry_ts).total_seconds()))
+
+    if stats is not None:
+        stats.complete += 1
+        stats.short_close_supplemented += 1
+        if telegram_message_id is not None:
+            stats.with_alert += 1
+        else:
+            stats.without_alert += 1
+
+    meta = {
+        "outcome_kind": "short_close_buy",
+        "entry_order_type": _as_str(parent_entry.get("order_type")),
+        "exit_order_type": _as_str(cover.get("order_type")),
+        "exit_order_role": _as_str(cover.get("order_role")),
+        "has_alert": telegram_message_id is not None,
+        "exit_via_short_close_buy": True,
+    }
+
+    return {
+        "telegram_message_id": int(telegram_message_id) if telegram_message_id is not None else None,
+        "order_intent_id": order_intent_id,
+        "entry_exchange_order_id": entry_oid,
+        "exit_exchange_order_id": cover_oid,
+        "symbol": _as_str(parent_entry.get("symbol") or cover.get("symbol")) or "UNKNOWN",
+        "side": "SELL",
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "quantity": exit_qty,
+        "pnl_usd": pnl_usd,
+        "pnl_pct": pnl_pct,
+        "exit_reason": exit_reason,
+        "label": 1 if pnl_usd > 0 else 0,
+        "entry_ts": entry_ts,
+        "exit_ts": exit_ts,
+        "hold_seconds": hold_seconds,
+        "join_status": "COMPLETE",
+        "source": "exchange_orders",
+        "meta_json": json.dumps(meta, default=str),
+    }
+
+
+def supplement_short_close_buy_outcomes(
+    rows: Sequence[Mapping[str, Any]],
+    short_close_buys: Sequence[Mapping[str, Any]],
+    entries_by_id: Mapping[str, Mapping[str, Any]],
+    *,
+    intents_by_order_id: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    alerts_by_id: Optional[Mapping[Any, Mapping[str, Any]]] = None,
+    qty_tolerance: float = DEFAULT_ORPHAN_QTY_TOLERANCE,
+    stats: Optional[CoverageStats] = None,
+) -> list[dict[str, Any]]:
+    """Add short round-trips from BUY cover legs when the intent path missed them."""
+    existing_entries = {_as_str(r.get("entry_exchange_order_id")) for r in rows}
+    existing_entries.discard(None)
+    intents_by_order_id = intents_by_order_id or {}
+    alerts_by_id = alerts_by_id or {}
+    out: list[dict[str, Any]] = [dict(r) for r in rows]
+
+    for cover in short_close_buys:
+        if not is_short_close_buy_order(cover):
+            continue
+        parent_id = _as_str(cover.get("parent_order_id"))
+        if not parent_id:
+            if stats is not None:
+                stats.dropped["short_close_invalid"] = stats.dropped.get("short_close_invalid", 0) + 1
+            continue
+        if parent_id in existing_entries:
+            if stats is not None:
+                stats.dropped["short_close_existing"] = stats.dropped.get("short_close_existing", 0) + 1
+            continue
+        parent_entry = entries_by_id.get(parent_id)
+        if parent_entry is None:
+            if stats is not None:
+                stats.dropped["short_close_missing_parent"] = stats.dropped.get(
+                    "short_close_missing_parent", 0
+                ) + 1
+            continue
+
+        intent = intents_by_order_id.get(parent_id)
+        alert = None
+        if intent is not None and intent.get("signal_id") is not None:
+            alert = alerts_by_id.get(intent["signal_id"])
+
+        row = build_outcome_from_short_close_buy(
+            cover,
+            parent_entry,
+            alert=alert,
+            order_intent=intent,
+            qty_tolerance=qty_tolerance,
+            stats=stats,
+        )
+        if row is not None:
+            out.append(row)
+            existing_entries.add(parent_id)
+
+    return out
+
+
 def build_outcomes_from_fixtures(
     *,
     intents: Sequence[Mapping[str, Any]],
@@ -571,6 +764,7 @@ def build_outcomes_from_fixtures(
     children_by_parent: Mapping[str, Sequence[Mapping[str, Any]]],
     alerts_by_id: Optional[Mapping[Any, Mapping[str, Any]]] = None,
     orphan_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    short_close_buys: Optional[Sequence[Mapping[str, Any]]] = None,
     orphan_window_days: int = DEFAULT_ORPHAN_EXIT_WINDOW_DAYS,
     orphan_qty_tolerance: float = DEFAULT_ORPHAN_QTY_TOLERANCE,
 ) -> tuple[list[dict[str, Any]], CoverageStats]:
@@ -610,6 +804,21 @@ def build_outcomes_from_fixtures(
         )
         if row is not None:
             out.append(row)
+    intents_by_order_id = {
+        oid: intent
+        for intent in intents
+        if (oid := _as_str(intent.get("order_id")))
+    }
+    if short_close_buys:
+        out = supplement_short_close_buy_outcomes(
+            out,
+            short_close_buys,
+            entries_by_id,
+            intents_by_order_id=intents_by_order_id,
+            alerts_by_id=alerts_by_id,
+            qty_tolerance=orphan_qty_tolerance,
+            stats=stats,
+        )
     return out, stats
 
 
@@ -619,8 +828,9 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
     dict[str, list[dict[str, Any]]],
     dict[Any, dict[str, Any]],
     list[dict[str, Any]],
+    list[dict[str, Any]],
 ]:
-    """Read intents / orders / alerts / orphan exit candidates.
+    """Read intents / orders / alerts / orphan exit candidates / short-close BUYs.
 
     Never logs the URL (may contain credentials). Dry-run synthetic order ids
     are excluded from the eligible intent set.
@@ -637,6 +847,7 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
     children_by_parent: dict[str, list[dict[str, Any]]] = {}
     alerts_by_id: dict[Any, dict[str, Any]] = {}
     orphan_candidates: list[dict[str, Any]] = []
+    short_close_buys: list[dict[str, Any]] = []
 
     with engine.connect() as conn:
         intent_sql = text(
@@ -659,7 +870,7 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
 
         order_ids = [i["order_id"] for i in intents if i.get("order_id")]
         if not order_ids:
-            return intents, entries_by_id, children_by_parent, alerts_by_id, orphan_candidates
+            return intents, entries_by_id, children_by_parent, alerts_by_id, orphan_candidates, short_close_buys
 
         # Chunk IN lists for portability
         chunk = 500
@@ -745,6 +956,37 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
                 for row in conn.execute(orphan_sql, params):
                     orphan_candidates.append(dict(row._mapping))
 
+            # Short-close BUY covers (TP/SL linked to SELL parent) for ML labels.
+            short_cutoff = cutoff
+            for i in range(0, len(symbols), chunk):
+                part = symbols[i : i + chunk]
+                placeholders = ", ".join(f":sym{j}" for j in range(len(part)))
+                params = {f"sym{j}": part[j] for j in range(len(part))}
+                params["cutoff"] = short_cutoff
+                short_close_sql = text(
+                    f"""
+                    SELECT exchange_order_id, symbol, side, order_type, status,
+                           price, quantity, cumulative_quantity, avg_price,
+                           exchange_create_time, exchange_update_time,
+                           parent_order_id, oco_group_id, order_role,
+                           created_at, updated_at
+                    FROM exchange_orders
+                    WHERE symbol IN ({placeholders})
+                      AND UPPER(side::text) = 'BUY'
+                      AND UPPER(status::text) IN ('FILLED', 'PARTIALLY_FILLED')
+                      AND (
+                        parent_order_id IS NOT NULL
+                        OR UPPER(COALESCE(order_role::text, '')) IN ('STOP_LOSS', 'TAKE_PROFIT')
+                      )
+                      AND LOWER(exchange_order_id) NOT LIKE 'dry\\_%' ESCAPE '\\'
+                      AND UPPER(exchange_order_id) NOT LIKE 'STUB-CLOSED-%'
+                      AND (:cutoff IS NULL
+                           OR COALESCE(exchange_update_time, exchange_create_time, created_at) >= :cutoff)
+                    """
+                )
+                for row in conn.execute(short_close_sql, params):
+                    short_close_buys.append(dict(row._mapping))
+
         signal_ids = [i["signal_id"] for i in intents if i.get("signal_id") is not None]
         for i in range(0, len(signal_ids), chunk):
             part = signal_ids[i : i + chunk]
@@ -763,7 +1005,7 @@ def load_rows_from_db(database_url: str, *, days: Optional[int] = 90) -> tuple[
                 d = dict(row._mapping)
                 alerts_by_id[d["id"]] = d
 
-    return intents, entries_by_id, children_by_parent, alerts_by_id, orphan_candidates
+    return intents, entries_by_id, children_by_parent, alerts_by_id, orphan_candidates, short_close_buys
 
 
 def upsert_outcomes(database_url: str, rows: Iterable[Mapping[str, Any]]) -> int:

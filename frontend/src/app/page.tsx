@@ -2091,6 +2091,32 @@ const VERSION_HISTORY = [
 `
   },
 
+  {
+    version: '0.98',
+    date: '2026-09-01',
+    change: 'Auto ML learns from short outcomes; human promote gate (#620)',
+    details: `🚀 VERSIÓN 0.98 — SHORT OUTCOMES + HUMAN PROMOTE GATE (#620)
+
+📋 **Root cause**
+• trade_outcomes builder could miss short round-trips when BUY cover legs existed but intent-path exit join failed (same gap class as sales report #614)
+• Runbook claimed AUTO_ML_AUTONOMOUS_PROMOTE=true while compose/YAML kept it false
+• workflow_dispatch dry_run_only=false could never promote (autonomous flag stayed false with no human gate)
+
+✅ **What shipped**
+• Supplement COMPLETE short labels from BUY short-close covers linked to SELL entries (qty + parent guards)
+• AUTO_ML_HUMAN_PROMOTE operator merit gate (workflow_dispatch only); AUTO_ML_AUTONOMOUS_PROMOTE stays false
+• Runbook + status API aligned with compose/YAML promote flags
+
+🔧 **Live-order path**
+• Offline learning + promote scripts only. No strategy_rules Learned rewrite. No live orders.
+
+📦 **PRs**
+• #620
+
+---
+`
+  },
+
 ];
 
 // Helper function to get current version (must be defined before component)

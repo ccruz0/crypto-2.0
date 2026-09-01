@@ -18,7 +18,8 @@
 | `AUTO_ML_THRESHOLD` | 0.5 | Min P(good) |
 | `AUTO_ML_MODEL_PATH` | `/data/auto_ml/current.joblib` | Artifact (host `./models/auto_entry`) |
 | `AUTO_ML_SHADOW_LOG` | true | Log `[AUTO_ML]` scores without blocking |
-| `AUTO_ML_AUTONOMOUS_PROMOTE` | **true** | Allow promote of `current.joblib` |
+| `AUTO_ML_AUTONOMOUS_PROMOTE` | **false** | Cron/autonomous promote of `current.joblib` (leave off) |
+| `AUTO_ML_HUMAN_PROMOTE` | **false** | Operator merit promote (`workflow_dispatch` dry_run_only=false only) |
 | `AUTO_ML_PROMOTE_MIN_ROWS` | 20 | Min labels to promote |
 | `AUTO_ML_PROMOTE_MIN_DELTA` | 0.0 | Min metric gain vs current |
 
@@ -33,7 +34,7 @@ git pull
 # Seed a model into the mounted dir (fail-open until this exists)
 mkdir -p models/auto_entry
 backend/.venv/bin/python -m pip install -r scripts/requirements-auto-ml.txt
-AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+AUTO_ML_HUMAN_PROMOTE=true AUTO_ML_AUTONOMOUS_PROMOTE=false backend/.venv/bin/python \
   scripts/retrain_and_promote_auto_entry.py \
   --api-url https://dashboard.hilovivo.com --days 30 \
   --out-dir models/auto_entry --no-telegram
@@ -43,7 +44,7 @@ AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
 docker compose --profile aws up -d backend-aws --force-recreate
 
 # Verify
-curl -sS http://127.0.0.1:8002/api/config/auto-ml | jq '{gate_enabled,autonomous_promote,model_present,version}'
+curl -sS http://127.0.0.1:8002/api/config/auto-ml | jq '{gate_enabled,autonomous_promote,human_promote,model_present,version}'
 docker compose --profile aws logs --tail=50 backend-aws | grep AUTO_ML || true
 ```
 
@@ -65,12 +66,12 @@ del proceso que corre el retrain. Usa `--no-telegram` para silenciar.
 backend/.venv/bin/python -m pip install -r scripts/requirements-auto-ml.txt
 
 # Demo
-AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+AUTO_ML_HUMAN_PROMOTE=true AUTO_ML_AUTONOMOUS_PROMOTE=false backend/.venv/bin/python \
   scripts/retrain_and_promote_auto_entry.py --demo \
   --min-rows 4 --promote-min-rows 4 --allow-single-class
 
 # From API (prod alerts)
-AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+AUTO_ML_HUMAN_PROMOTE=true AUTO_ML_AUTONOMOUS_PROMOTE=false backend/.venv/bin/python \
   scripts/retrain_and_promote_auto_entry.py \
   --api-url https://dashboard.hilovivo.com --days 30
 ```
@@ -111,7 +112,8 @@ from **real prod alerts**. Labels are still **alert-path** (OHLCV forward:
 | Labeled fit rows | `n_fit_rows ≥ 20` (`AUTO_ML_PROMOTE_MIN_ROWS`) | Below floor → no promote |
 | Holdout metric | Candidate primary metric ≥ current + `AUTO_ML_PROMOTE_MIN_DELTA` (default 0) | Flat/worse → leave current |
 | Class balance | Holdout usable (not single-class) | `single_class_or_no_holdout` |
-| Flag | `AUTO_ML_AUTONOMOUS_PROMOTE=true` for merit path | Disabled → `autonomous_promote_disabled` |
+| Flag | `AUTO_ML_HUMAN_PROMOTE=true` for operator merit path | Disabled → `autonomous_promote_disabled` |
+| Autonomous | `AUTO_ML_AUTONOMOUS_PROMOTE` stays **false** in prod | Never enable for cron |
 
 Primary metric: holdout `roc_auc`, else `accuracy` (see `auto_entry_promote.primary_metric`).
 
@@ -156,7 +158,7 @@ PY
 ### 2) Retrain without `--force-promote`
 
 ```bash
-AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+AUTO_ML_HUMAN_PROMOTE=true AUTO_ML_AUTONOMOUS_PROMOTE=false backend/.venv/bin/python \
   scripts/retrain_and_promote_auto_entry.py \
   --api-url https://dashboard.hilovivo.com --days 30 \
   --out-dir models/auto_entry
@@ -172,7 +174,7 @@ Expect JSON on stdout with `decision.should_promote` and `decision.reason`.
 | `n_fit_rows=…<20` | Collect more labeled alerts; do not force |
 | `metric_not_improved:…` | Keep current `current.joblib`; candidate stays in `candidate.joblib` for inspection |
 | `single_class_or_no_holdout` | Dataset not usable for promote; fix class balance / window |
-| `autonomous_promote_disabled` | Export `AUTO_ML_AUTONOMOUS_PROMOTE=true` and re-run (still no `--force-promote`) |
+| `autonomous_promote_disabled` | Use `workflow_dispatch` with `dry_run_only=false` (sets `AUTO_ML_HUMAN_PROMOTE=true`) or export `AUTO_ML_HUMAN_PROMOTE=true` locally — still no `--force-promote` |
 
 **Do not** add `--force-promote` to “make it green.” If the live model is still the
 old force-demo and merit cannot pass, prefer gate off or shadow-only until Phase 1
@@ -187,7 +189,7 @@ trade labels are ready:
 
 ```bash
 curl -sS https://dashboard.hilovivo.com/api/config/auto-ml | jq \
-  '{gate_enabled, autonomous_promote, model_present, version, n_fit_rows, promote_reason, metrics, promoted_at}'
+  '{gate_enabled, autonomous_promote, human_promote, model_present, version, n_fit_rows, promote_reason, metrics, promoted_at}'
 
 # On host loopback if preferred:
 curl -sS http://127.0.0.1:8002/api/config/auto-ml | jq \
@@ -204,8 +206,12 @@ curl -sS http://127.0.0.1:8002/api/config/auto-ml | jq \
 | Mode | Flag | Labels |
 |------|------|--------|
 | Phase 0 | `--label-source alert` (default) | OHLCV forward: `dir_acc_1h OR tp_before_sl` |
-| Phase 1b fills | `--label-source trade_outcomes` | COMPLETE `trade_outcomes`: `y=1 if pnl_usd > 0` |
+| Phase 1b fills | `--label-source trade_outcomes` | COMPLETE `trade_outcomes`: `y=1 if pnl_usd > 0` (long **and** short round-trips; short closes via BUY cover legs) |
 | Phase 1b hybrid | `--label-source hybrid` | Prefer fill PnL when alert has a COMPLETE outcome; else alert-path |
+
+Short realized P&L: `build_trade_outcomes.py` supplements intent-path rows from canonical
+BUY short-close covers (`_short_close_buy_filter` shape) when the SELL entry join missed
+the exit child — same anti-guess rules as the sales report (#614).
 
 Phase 1a still builds rows via `scripts/build_trade_outcomes.py`. Phase 1b only
 changes the **training dataset** — live BUY gate / promote merit rules unchanged.
@@ -238,8 +244,8 @@ print({k: m.get(k) for k in (
 )})
 PY
 
-# 3) Retrain + merit promote (no --force-promote)
-AUTO_ML_AUTONOMOUS_PROMOTE=true backend/.venv/bin/python \
+# 3) Retrain + merit promote (no --force-promote; human gate only)
+AUTO_ML_HUMAN_PROMOTE=true AUTO_ML_AUTONOMOUS_PROMOTE=false backend/.venv/bin/python \
   scripts/retrain_and_promote_auto_entry.py \
   --database-url "$DATABASE_URL" --days 90 \
   --label-source hybrid \
@@ -257,6 +263,6 @@ GitHub Actions workflow **Ops — Auto ML hybrid retrain**:
 |---------|----------|--------|
 | `schedule` (Mon 05:00 UTC) | **No** — dry-run only | Refreshes `trade_outcomes`, trains candidate, prints `DATASET_META` |
 | `workflow_dispatch` `dry_run_only=true` | No | Same as cron |
-| `workflow_dispatch` `dry_run_only=false` | Merit gate only | Promotes `current.joblib` if holdout metric improves; never `--force-promote` |
+| `workflow_dispatch` `dry_run_only=false` | Human merit gate only | Sets `AUTO_ML_HUMAN_PROMOTE=true`; promotes if holdout metric improves; never `--force-promote` or `AUTO_ML_AUTONOMOUS_PROMOTE=true` |
 
 Also useful: **Ops — Auto ML fill feature diag** (read-only fill/context diagnostics).

@@ -5,14 +5,17 @@ Flow:
   1) Optionally rebuild dataset (--demo / --api-url / --database-url / existing JSON)
   2) Train candidate (--no-promote train path)
   3) Decide promote via auto_entry_promote.should_promote
-  4) If AUTO_ML_AUTONOMOUS_PROMOTE=true (or --force-promote): apply_promote + Telegram
+  4) If AUTO_ML_HUMAN_PROMOTE=true or AUTO_ML_AUTONOMOUS_PROMOTE=true (or --force-promote):
+     apply_promote + Telegram
 
 Does not mutate trading_config. Live BUY gate still requires AUTO_ML_ENABLED.
+Production keeps AUTO_ML_AUTONOMOUS_PROMOTE=false; operators use AUTO_ML_HUMAN_PROMOTE
+via workflow_dispatch dry_run_only=false.
 
 Usage:
   python3 scripts/retrain_and_promote_auto_entry.py --demo --min-rows 4 \\
     --promote-min-rows 4 --allow-single-class
-  AUTO_ML_AUTONOMOUS_PROMOTE=true python3 scripts/retrain_and_promote_auto_entry.py --demo ...
+  AUTO_ML_HUMAN_PROMOTE=true python3 scripts/retrain_and_promote_auto_entry.py --demo ...
 """
 
 from __future__ import annotations
@@ -169,6 +172,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "candidate_metric": decision.candidate_metric,
             "current_metric": decision.current_metric,
             "autonomous": decision.autonomous,
+            "human_promote": decision.human_promote,
         },
         "promoted": False,
         "dry_run": args.dry_run,

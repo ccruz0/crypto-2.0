@@ -50,10 +50,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$DRY_RUN" = "true" ]; then
-            PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=false"
+            PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=false AUTO_ML_HUMAN_PROMOTE=false"
             EXTRA_FLAGS="--dry-run"
           else
-            PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=false"
+            PROMOTE_ENV="AUTO_ML_AUTONOMOUS_PROMOTE=false AUTO_ML_HUMAN_PROMOTE=true"
             EXTRA_FLAGS=""
           fi
           echo "event=${{ github.event_name }} DRY_RUN=$DRY_RUN DAYS=$DAYS"
