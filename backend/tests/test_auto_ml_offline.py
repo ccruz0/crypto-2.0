@@ -464,3 +464,34 @@ def test_demo_meta_still_alert_phase(tmp_path):
     assert meta["label_source"] == "alert"
     assert meta["phase"] == "ml-a-offline"
     assert all(r.get("label_source") == "alert" for r in json.loads(ds.read_text())["rows"])
+
+
+def test_short_trade_outcome_enters_ml_labels():
+    """SELL-side short round-trip (BUY cover exit) must produce a training row."""
+    outcome = {
+        "telegram_message_id": 777,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "entry_price": 100.0,
+        "entry_ts": "2026-08-01T12:00:00+00:00",
+        "label": 1,
+        "pnl_usd": 10.0,
+        "exit_reason": "TAKE_PROFIT",
+        "entry_exchange_order_id": "short-entry-777",
+        "context_json": {
+            "rsi": 78,
+            "ma50": 99.0,
+            "ma200": 95.0,
+            "ema10": 98.0,
+            "volume_ratio": 1.1,
+            "atr": 2.0,
+            "strategy_index": 65,
+        },
+    }
+    rows, suppress = attach_features_from_trade_outcomes([outcome])
+    assert len(rows) == 1
+    assert rows[0]["side"] == "SELL"
+    assert rows[0]["y"] == 1
+    assert rows[0]["label_source"] == "trade_outcome"
+    assert rows[0]["features"]["side_buy"] == pytest.approx(0.0)
+    assert suppress == set()

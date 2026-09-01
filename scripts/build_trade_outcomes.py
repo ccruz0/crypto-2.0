@@ -272,6 +272,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     orphans: list[dict[str, Any]] = []
     if args.demo:
         intents, entries, children, alerts, orphans = _demo_fixtures()
+        short_close_buys: list[dict[str, Any]] = []
         source = "demo"
     elif args.fixtures_json:
         data = json.loads(args.fixtures_json.read_text(encoding="utf-8"))
@@ -280,13 +281,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         children = data["children_by_parent"]
         alerts = {int(k) if str(k).isdigit() else k: v for k, v in (data.get("alerts_by_id") or {}).items()}
         orphans = list(data.get("orphan_candidates") or [])
+        short_close_buys = list(data.get("short_close_buys") or [])
         source = f"json:{args.fixtures_json}"
     else:
         url = db_url or os.environ.get("DATABASE_URL")
         if not url:
             print("Provide --demo, --fixtures-json, or --database-url / DATABASE_URL", file=sys.stderr)
             return 2
-        intents, entries, children, alerts, orphans = load_rows_from_db(url, days=args.days)
+        intents, entries, children, alerts, orphans, short_close_buys = load_rows_from_db(url, days=args.days)
         source = "database"
 
     rows, stats = build_outcomes_from_fixtures(
@@ -295,6 +297,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         children_by_parent=children,
         alerts_by_id=alerts,
         orphan_candidates=orphans,
+        short_close_buys=short_close_buys,
     )
 
     report = coverage_report_dict(rows, stats)

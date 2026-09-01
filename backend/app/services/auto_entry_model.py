@@ -343,6 +343,7 @@ def get_auto_ml_status() -> dict[str, Any]:
     """Read-only status for UI / ops (no secrets)."""
     from app.services.auto_entry_promote import (
         autonomous_promote_enabled,
+        human_promote_enabled,
         load_manifest,
         min_promote_delta,
         min_promote_rows,
@@ -369,6 +370,7 @@ def get_auto_ml_status() -> dict[str, Any]:
         "shadow_log": auto_ml_shadow_log(),
         "threshold": auto_ml_threshold(),
         "autonomous_promote": autonomous_promote_enabled(),
+        "human_promote": human_promote_enabled(),
         "promote_min_rows": min_promote_rows(),
         "promote_min_delta": min_promote_delta(),
         "model_path": str(path),

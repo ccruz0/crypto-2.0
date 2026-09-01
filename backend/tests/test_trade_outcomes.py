@@ -897,3 +897,125 @@ def test_flatten_without_price_still_drops():
         intent, entry=entry, children=children, orphan_candidates=[], stats=stats
     )
     assert row is None
+
+
+def test_supplement_short_close_buy_when_intent_path_missed():
+    """BUY cover linked to SELL parent must label short P&L when intent join missed exit."""
+    from app.services.trade_outcome_builder import CoverageStats, build_outcomes_from_fixtures
+
+    intent = {
+        "id": 99,
+        "signal_id": 501,
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "status": "ORDER_PLACED",
+        "order_id": "short-entry-99",
+    }
+    entry = {
+        "exchange_order_id": "short-entry-99",
+        "symbol": "ALGO_USD",
+        "side": "SELL",
+        "order_type": "LIMIT",
+        "status": "FILLED",
+        "avg_price": 100.0,
+        "quantity": 10.0,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "sl-cancel",
+            "parent_order_id": "short-entry-99",
+            "order_role": "STOP_LOSS",
+            "order_type": "STOP_LIMIT",
+            "status": "CANCELLED",
+            "price": 110.0,
+            "quantity": 10.0,
+        },
+    ]
+    short_close_buys = [
+        {
+            "exchange_order_id": "cover-sl",
+            "symbol": "ALGO_USD",
+            "side": "BUY",
+            "order_type": "STOP_LIMIT",
+            "order_role": "STOP_LOSS",
+            "status": "FILLED",
+            "avg_price": 110.0,
+            "quantity": 10.0,
+            "parent_order_id": "short-entry-99",
+            "exchange_update_time": BASE + timedelta(hours=2),
+        }
+    ]
+    alerts = {501: {"id": 501, "symbol": "ALGO_USD", "message": "SELL SIGNAL ALGO RSI=80"}}
+
+    rows, stats = build_outcomes_from_fixtures(
+        intents=[intent],
+        entries_by_id={"short-entry-99": entry},
+        children_by_parent={"short-entry-99": children},
+        alerts_by_id=alerts,
+        short_close_buys=short_close_buys,
+    )
+    assert len(rows) == 1
+    assert rows[0]["side"] == "SELL"
+    assert rows[0]["label"] == 0
+    assert rows[0]["pnl_usd"] == pytest.approx(-100.0)
+    assert rows[0]["telegram_message_id"] == 501
+    assert stats.short_close_supplemented == 1
+
+
+def test_supplement_short_close_buy_skips_existing_intent_row():
+    from app.services.trade_outcome_builder import build_outcomes_from_fixtures
+
+    intent = {
+        "id": 100,
+        "signal_id": 502,
+        "symbol": "BTC_USD",
+        "side": "SELL",
+        "status": "ORDER_PLACED",
+        "order_id": "short-win",
+    }
+    entry = {
+        "exchange_order_id": "short-win",
+        "symbol": "BTC_USD",
+        "side": "SELL",
+        "status": "FILLED",
+        "avg_price": 100.0,
+        "quantity": 1.0,
+        "exchange_create_time": BASE,
+    }
+    children = [
+        {
+            "exchange_order_id": "tp-win",
+            "parent_order_id": "short-win",
+            "order_role": "TAKE_PROFIT",
+            "order_type": "TAKE_PROFIT_LIMIT",
+            "status": "FILLED",
+            "avg_price": 90.0,
+            "quantity": 1.0,
+            "exchange_update_time": BASE + timedelta(hours=1),
+        }
+    ]
+    short_close_buys = [
+        {
+            "exchange_order_id": "tp-win",
+            "symbol": "BTC_USD",
+            "side": "BUY",
+            "order_role": "TAKE_PROFIT",
+            "order_type": "TAKE_PROFIT_LIMIT",
+            "status": "FILLED",
+            "avg_price": 90.0,
+            "quantity": 1.0,
+            "parent_order_id": "short-win",
+            "exchange_update_time": BASE + timedelta(hours=1),
+        }
+    ]
+    rows, stats = build_outcomes_from_fixtures(
+        intents=[intent],
+        entries_by_id={"short-win": entry},
+        children_by_parent={"short-win": children},
+        alerts_by_id={502: {"id": 502, "symbol": "BTC_USD"}},
+        short_close_buys=short_close_buys,
+    )
+    assert len(rows) == 1
+    assert stats.short_close_supplemented == 0
+    assert stats.dropped.get("short_close_existing", 0) == 1
