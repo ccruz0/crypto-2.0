@@ -6220,7 +6220,6 @@ class SignalMonitorService:
             # Define lock_key up front: the throttle-blocked branch below references it before the
             # original assignment site, which raised UnboundLocalError and aborted monitoring.
             lock_key = f"{symbol}_SELL"
-            sell_trigger_reference_price: Optional[float] = None
             # Determine if we should emit (send telegram) or just record (blocked)
             # emit_sell is set above: True if throttling passed, False if blocked
             should_emit_telegram_sell = emit_sell if 'emit_sell' in locals() else sell_allowed if 'sell_allowed' in locals() else True
@@ -6293,7 +6292,6 @@ class SignalMonitorService:
                     throttle_sell_reason,
                     db,
                 )
-                sell_trigger_reference_price = prev_sell_price
                 
                 logger.info(
                     f"🔍 {symbol} SELL alert ready to send (throttling already verified by should_emit_signal)"
@@ -6763,7 +6761,6 @@ class SignalMonitorService:
                                                         correlation_id=evaluation_id,
                                                         rsi=rsi,
                                                         ma200=ma200,
-                                                        trigger_reference_price=sell_trigger_reference_price,
                                                     )
                                                 )
                                             finally:
@@ -9188,7 +9185,6 @@ class SignalMonitorService:
         correlation_id: Optional[str] = None,
         rsi: Optional[float] = None,
         ma200: Optional[float] = None,
-        trigger_reference_price: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Dedup choke point around the orchestrator entry path (PART B: atomic (symbol, side) cap-race guard).
 
@@ -9235,7 +9231,6 @@ class SignalMonitorService:
                 correlation_id=correlation_id,
                 rsi=rsi,
                 ma200=ma200,
-                trigger_reference_price=trigger_reference_price,
             )
             # A REAL order was placed only when there is no error and the exchange returned an id.
             # Retain the slot ONLY then, so the TTL suppresses a 2nd order 2-4s later. Blocks,
@@ -9262,7 +9257,6 @@ class SignalMonitorService:
         correlation_id: Optional[str] = None,
         rsi: Optional[float] = None,
         ma200: Optional[float] = None,
-        trigger_reference_price: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Place order immediately from signal (NO eligibility checks).
@@ -9431,17 +9425,9 @@ class SignalMonitorService:
                     ),
                 }
 
-        # A SHORT ENTRY (margin SELL opening a NEW independent short) uses the same
-        # SYSTEM_CORE regime gates as BUY (BTC MA200, symbol MA200, one-short-per-symbol)
-        # plus a rising-price + RSI>70 exhaustion block (#619).
+        # A SHORT ENTRY (margin SELL) mirrors BUY SYSTEM_CORE gates (inverse RSI/MA200,
+        # one-short-per-symbol) — #619.
         if is_margin_short_entry:
-            price_rising: bool | None = None
-            if (
-                trigger_reference_price is not None
-                and trigger_reference_price > 0
-                and current_price > 0
-            ):
-                price_rising = current_price > trigger_reference_price
             try:
                 from app.services.system_core_trade_guards import check_system_core_short_entry_allowed
 
@@ -9452,30 +9438,23 @@ class SignalMonitorService:
                     price=float(current_price),
                     rsi=rsi,
                     ma200=ma200,
-                    price_rising=price_rising,
                 )
                 if not ok_sc:
                     logger.info(
-                        "SYSTEM_CORE short_entry_blocked symbol=%s reason=%s amount_usd=%s "
-                        "rsi=%s price=%s price_rising=%s ref_price=%s",
+                        "SYSTEM_CORE short_entry_blocked symbol=%s reason=%s amount_usd=%s rsi=%s price=%s",
                         symbol,
                         reason_sc,
                         amount_usd,
                         rsi,
                         current_price,
-                        price_rising,
-                        trigger_reference_price,
                     )
                     return {"error": reason_sc, "blocked": True, "message": reason_sc}
                 logger.info(
-                    "SYSTEM_CORE short_entry_allowed symbol=%s amount_usd=%s rsi=%s price=%s "
-                    "price_rising=%s ref_price=%s",
+                    "SYSTEM_CORE short_entry_allowed symbol=%s amount_usd=%s rsi=%s price=%s",
                     symbol,
                     amount_usd,
                     rsi,
                     current_price,
-                    price_rising,
-                    trigger_reference_price,
                 )
             except Exception as sc_err:
                 logger.warning("SYSTEM_CORE short-entry guards check failed, proceeding: %s", sc_err)

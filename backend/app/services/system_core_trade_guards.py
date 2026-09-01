@@ -28,9 +28,6 @@ _STALE_PEAK_RATIO = float(os.getenv("SYSTEM_CORE_STALE_PEAK_RATIO", "1.75"))
 # RSI buy gate: block when rsi >= this value. Default 40 (legacy). Aggressive strategy uses buyBelow 50 —
 # set SYSTEM_CORE_RSI_BUY_MAX=50 on prod to align with scalp/aggressive profiles.
 _RSI_BUY_MAX = float(os.getenv("SYSTEM_CORE_RSI_BUY_MAX", "40"))
-# Short entry: block when RSI is overbought AND the alert trigger is a rising price
-# (APT 2026-09-01: ↑1.27% + RSI>70 opened a short into momentum).
-_RSI_SELL_OVERBOUGHT = float(os.getenv("SYSTEM_CORE_RSI_SELL_OVERBOUGHT", "70"))
 # Dust: net filled remnant below these thresholds does not count as an open position for one-per-coin.
 _MIN_POSITION_QTY = float(os.getenv("SYSTEM_CORE_MIN_POSITION_QTY", "0"))
 _MIN_POSITION_USD = float(os.getenv("SYSTEM_CORE_MIN_POSITION_USD", "5"))
@@ -372,6 +369,11 @@ def _long_btc_regime_block(db: Session) -> Tuple[bool, str]:
     return False, ""
 
 
+def _rsi_short_min() -> float:
+    """Inverse of BUY RSI gate: short only when RSI > (100 - RSI_BUY_MAX)."""
+    return 100.0 - _RSI_BUY_MAX
+
+
 def check_system_core_short_entry_allowed(
     db: Session,
     symbol: str,
@@ -380,23 +382,22 @@ def check_system_core_short_entry_allowed(
     price: float,
     rsi: float | None = None,
     ma200: float | None = None,
-    price_rising: bool | None = None,
     ignore_one_active_per_coin: bool = False,
 ) -> Tuple[bool, str]:
     """Position/exposure gates for a SHORT ENTRY (a margin SELL that opens a NEW position).
 
-    Mirrors BUY regime gates where applicable:
+    Mirror of ``check_system_core_buy_allowed`` (#619):
     - BTC > MA200 market regime (``_long_btc_regime_block``)
-    - Symbol price < MA200 (``_short_regime_block``)
+    - Symbol price < MA200 (``_short_regime_block``) — inverse of BUY price > MA200
+    - RSI > (100 - SYSTEM_CORE_RSI_BUY_MAX); skip RSI check when rsi is None (same as BUY)
     - At most one open short per symbol (bot book + material wallet short)
-    - Block RSI > 70 when the trigger is a rising price
 
-    ``ignore_one_active_per_coin`` is deprecated and ignored (#619): an existing long
-    no longer skips the one-short-per-symbol check; only open *short* exposure counts.
+    ``ignore_one_active_per_coin`` is deprecated and ignored (#619).
 
     Returns (allowed, reason). When guards are disabled, always (True, "").
     """
     _ = ma200  # reserved for callers passing snapshot ma200; regime uses DB lookup
+    _ = ignore_one_active_per_coin
     if not _GUARDS_ON:
         return True, ""
 
@@ -413,11 +414,9 @@ def check_system_core_short_entry_allowed(
         if blocked:
             return False, regime_reason
 
-    if price_rising is True and rsi is not None and rsi > _RSI_SELL_OVERBOUGHT:
-        return False, (
-            f"system_core_short_rsi_overbought_rising rsi={rsi} "
-            f"need_not_rising_or_rsi_lte_{_RSI_SELL_OVERBOUGHT:g}"
-        )
+    rsi_short_min = _rsi_short_min()
+    if rsi is not None and rsi <= rsi_short_min:
+        return False, f"system_core_short_rsi rsi={rsi} need_gt_{rsi_short_min:g}"
 
     if amount_usd > _MAX_PER_TRADE + 1e-6:
         return False, f"system_core_max_trade_usd amount={amount_usd} max={_MAX_PER_TRADE}"

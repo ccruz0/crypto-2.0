@@ -17,48 +17,46 @@ def mock_db():
 class TestRsiGuard:
     def test_blocks_at_default_rsi_max(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
-            with patch.object(scg, "_LONG_BTC_REGIME_ON", False):
-                with patch.object(scg, "_RSI_BUY_MAX", 40.0):
+            with patch.object(scg, "_RSI_BUY_MAX", 40.0):
+                with patch(
+                    "app.services.order_position_service.count_open_positions_for_symbol",
+                    return_value=0,
+                ):
                     with patch(
-                        "app.services.order_position_service.count_open_positions_for_symbol",
+                        "app.services.system_core_trade_guards.count_distinct_symbols_with_open_positions",
                         return_value=0,
                     ):
-                        with patch(
-                            "app.services.system_core_trade_guards.count_distinct_symbols_with_open_positions",
-                            return_value=0,
-                        ):
-                            allowed, reason = scg.check_system_core_buy_allowed(
-                                mock_db,
-                                "ETH_USDT",
-                                100.0,
-                                rsi=42.0,
-                                ma200=None,
-                                price=3000.0,
-                            )
+                        allowed, reason = scg.check_system_core_buy_allowed(
+                            mock_db,
+                            "ETH_USDT",
+                            100.0,
+                            rsi=42.0,
+                            ma200=None,
+                            price=3000.0,
+                        )
         assert allowed is False
         assert "system_core_rsi" in reason
         assert "need_lt_40" in reason
 
     def test_allows_rsi_below_max(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
-            with patch.object(scg, "_LONG_BTC_REGIME_ON", False):
-                with patch.object(scg, "_RSI_BUY_MAX", 50.0):
+            with patch.object(scg, "_RSI_BUY_MAX", 50.0):
+                with patch(
+                    "app.services.order_position_service.count_open_positions_for_symbol",
+                    return_value=0,
+                ):
                     with patch(
-                        "app.services.order_position_service.count_open_positions_for_symbol",
+                        "app.services.system_core_trade_guards.count_distinct_symbols_with_open_positions",
                         return_value=0,
                     ):
-                        with patch(
-                            "app.services.system_core_trade_guards.count_distinct_symbols_with_open_positions",
-                            return_value=0,
-                        ):
-                            allowed, reason = scg.check_system_core_buy_allowed(
-                                mock_db,
-                                "ETH_USDT",
-                                100.0,
-                                rsi=45.0,
-                                ma200=None,
-                                price=3000.0,
-                            )
+                        allowed, reason = scg.check_system_core_buy_allowed(
+                            mock_db,
+                            "ETH_USDT",
+                            100.0,
+                            rsi=45.0,
+                            ma200=None,
+                            price=3000.0,
+                        )
         assert allowed is True
         assert reason == ""
 
@@ -70,20 +68,18 @@ class TestRsiGuard:
 class TestOneActiveTradePerCoin:
     def test_blocks_when_material_position_exists(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
-            with patch.object(scg, "_LONG_BTC_REGIME_ON", False):
-                with patch.object(scg, "_resolve_max_open_per_coin", return_value=1):
-                    with patch(
-                        "app.services.order_position_service.count_open_positions_for_symbol",
-                        return_value=1,
-                    ) as count_mock:
-                        allowed, reason = scg.check_system_core_buy_allowed(
-                            mock_db,
-                            "ETH_USDT",
-                            100.0,
-                            rsi=30.0,
-                            ma200=None,
-                            price=3000.0,
-                        )
+            with patch(
+                "app.services.order_position_service.count_open_positions_for_symbol",
+                return_value=1,
+            ) as count_mock:
+                allowed, reason = scg.check_system_core_buy_allowed(
+                    mock_db,
+                    "ETH_USDT",
+                    100.0,
+                    rsi=30.0,
+                    ma200=None,
+                    price=3000.0,
+                )
         assert allowed is False
         assert reason == "system_core_one_active_trade_per_coin"
         count_mock.assert_called_once()
@@ -93,21 +89,20 @@ class TestOneActiveTradePerCoin:
 
     def test_passes_dust_kwargs_from_env(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
-            with patch.object(scg, "_LONG_BTC_REGIME_ON", False):
-                with patch.object(scg, "_MIN_POSITION_USD", 5.0):
-                    with patch.object(scg, "_MIN_POSITION_QTY", 0.05):
-                        with patch(
-                            "app.services.order_position_service.count_open_positions_for_symbol",
-                            return_value=0,
-                        ) as count_mock:
-                            scg.check_system_core_buy_allowed(
-                                mock_db,
-                                "ETH_USDT",
-                                100.0,
-                                rsi=30.0,
-                                ma200=None,
-                                price=2500.0,
-                            )
+            with patch.object(scg, "_MIN_POSITION_USD", 5.0):
+                with patch.object(scg, "_MIN_POSITION_QTY", 0.05):
+                    with patch(
+                        "app.services.order_position_service.count_open_positions_for_symbol",
+                        return_value=0,
+                    ) as count_mock:
+                        scg.check_system_core_buy_allowed(
+                            mock_db,
+                            "ETH_USDT",
+                            100.0,
+                            rsi=30.0,
+                            ma200=None,
+                            price=2500.0,
+                        )
         kwargs = count_mock.call_args.kwargs
         assert kwargs["min_position_usd"] == 5.0
         assert kwargs["min_position_qty"] == 0.05
@@ -130,8 +125,7 @@ class TestGuardsDisabled:
 
 
 class TestShortEntryGuard:
-    """A short entry (margin SELL opening a NEW position) obeys the same exposure caps as a BUY,
-    plus short-specific regime gates (#619)."""
+    """Short entry mirrors BUY SYSTEM_CORE gates (inverse RSI/MA200) + one short per symbol (#619)."""
 
     def test_allows_under_caps(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
@@ -150,7 +144,7 @@ class TestShortEntryGuard:
                                 return_value=0,
                             ):
                                 allowed, reason = scg.check_system_core_short_entry_allowed(
-                                    mock_db, "DOT_USD", 100.0, price=6.0
+                                    mock_db, "DOT_USD", 100.0, price=6.0, rsi=65.0
                                 )
         assert allowed is True
         assert reason == ""
@@ -165,7 +159,7 @@ class TestShortEntryGuard:
                             return_value=1,
                         ):
                             allowed, reason = scg.check_system_core_short_entry_allowed(
-                                mock_db, "DOT_USD", 100.0, price=6.0
+                                mock_db, "DOT_USD", 100.0, price=6.0, rsi=65.0
                             )
         assert allowed is False
         assert reason == "system_core_one_open_short_per_symbol"
@@ -191,11 +185,12 @@ class TestShortEntryGuard:
                                     "ETH_USD",
                                     100.0,
                                     price=3000.0,
+                                    rsi=65.0,
                                 )
         assert allowed is True
         assert reason == ""
 
-    def test_still_enforces_max_open(self, mock_db):
+    def test_blocks_max_open_trades(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", True):
             with patch.object(scg, "_LONG_BTC_REGIME_ON", False):
                 with patch.object(scg, "_SHORT_REGIME_ON", False):
@@ -217,6 +212,7 @@ class TestShortEntryGuard:
                                         "DOT_USD",
                                         100.0,
                                         price=6.0,
+                                        rsi=65.0,
                                     )
         assert allowed is False
         assert "system_core_max_open_trades" in reason
@@ -227,10 +223,44 @@ class TestShortEntryGuard:
                 with patch.object(scg, "_SHORT_REGIME_ON", False):
                     with patch.object(scg, "_MAX_PER_TRADE", 1000.0):
                         allowed, reason = scg.check_system_core_short_entry_allowed(
-                            mock_db, "DOT_USD", 5000.0, price=6.0
+                            mock_db, "DOT_USD", 5000.0, price=6.0, rsi=65.0
                         )
         assert allowed is False
         assert "system_core_max_trade_usd" in reason
+
+    def test_blocks_rsi_at_or_below_inverse_threshold(self, mock_db):
+        with patch.object(scg, "_GUARDS_ON", True):
+            with patch.object(scg, "_LONG_BTC_REGIME_ON", False):
+                with patch.object(scg, "_SHORT_REGIME_ON", False):
+                    with patch.object(scg, "_RSI_BUY_MAX", 40.0):
+                        allowed, reason = scg.check_system_core_short_entry_allowed(
+                            mock_db, "APT_USD", 100.0, price=4.5, rsi=60.0
+                        )
+        assert allowed is False
+        assert "system_core_short_rsi" in reason
+        assert "need_gt_60" in reason
+
+    def test_allows_missing_rsi_like_buy(self, mock_db):
+        with patch.object(scg, "_GUARDS_ON", True):
+            with patch.object(scg, "_LONG_BTC_REGIME_ON", False):
+                with patch.object(scg, "_SHORT_REGIME_ON", False):
+                    with patch(
+                        "app.services.order_position_service.count_open_short_positions_for_symbol",
+                        return_value=0,
+                    ):
+                        with patch(
+                            "app.services.order_position_service.wallet_has_material_short",
+                            return_value=False,
+                        ):
+                            with patch(
+                                "app.services.system_core_trade_guards.count_distinct_symbols_with_open_positions",
+                                return_value=0,
+                            ):
+                                allowed, reason = scg.check_system_core_short_entry_allowed(
+                                    mock_db, "APT_USD", 100.0, price=4.5, rsi=None
+                                )
+        assert allowed is True
+        assert reason == ""
 
     def test_skips_all_checks_when_disabled(self, mock_db):
         with patch.object(scg, "_GUARDS_ON", False):
