@@ -2055,6 +2055,104 @@ class SignalMonitorService:
             return False, None
         return True, reason or "blocked by trade criteria"
 
+    def _would_regime_block_margin_short(
+        self,
+        db: Session,
+        symbol: str,
+        price: float,
+        watchlist_item: WatchlistItem,
+        *,
+        rsi: float | None = None,
+        ma200: float | None = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """True when a margin SELL would open a short blocked by regime filters (#624)."""
+        if not bool(getattr(watchlist_item, "trade_enabled", False)):
+            return False, None
+        user_wants_margin = bool(getattr(watchlist_item, "trade_on_margin", False))
+        if not user_wants_margin:
+            return False, None
+        try:
+            from app.services.risk_guard import shorting_enabled
+            from app.services.margin_info_service import instrument_allows_margin_short
+
+            if not (shorting_enabled() and instrument_allows_margin_short(symbol)):
+                return False, None
+            from app.utils.order_sizing import clamp_order_usd_to_limit
+            from app.services.system_core_trade_guards import check_system_core_short_entry_allowed
+            from app.utils.decision_reason import ReasonCode, classify_exchange_error
+
+            amount_usd = float(getattr(watchlist_item, "trade_amount_usd", None) or 0.0)
+            amount_usd, _ = clamp_order_usd_to_limit(amount_usd, symbol=symbol, side="SELL")
+            ok, reason = check_system_core_short_entry_allowed(
+                db,
+                symbol,
+                amount_usd,
+                price=float(price),
+                rsi=rsi,
+                ma200=ma200,
+            )
+            if ok:
+                return False, None
+            if classify_exchange_error(reason or "") == ReasonCode.REGIME_FILTER_BLOCKED.value:
+                return True, reason
+            return False, None
+        except Exception as e:
+            logger.warning("regime pre-check failed for %s SELL (proceeding): %s", symbol, e)
+            return False, None
+
+    def _persist_regime_filter_blocked_sell(
+        self,
+        db: Session,
+        *,
+        symbol: str,
+        normalized_symbol: str,
+        reason: str,
+        evaluation_id: str,
+        current_price: float,
+        now_utc: datetime,
+    ) -> None:
+        """Dashboard/DB only — no live Telegram SELL SIGNAL or ORDEN BLOQUEADA (#624)."""
+        from app.api.routes_monitoring import add_telegram_message
+        from app.utils.decision_reason import ReasonCode
+
+        store_msg = (
+            f"REGIME_FILTER_BLOCKED | {symbol} SELL @ ${current_price:.6g} | {reason}"
+        )
+        try:
+            add_telegram_message(
+                store_msg,
+                symbol=symbol,
+                blocked=True,
+                throttle_status="BLOCKED",
+                throttle_reason=reason,
+                decision_type="SKIPPED",
+                reason_code=ReasonCode.REGIME_FILTER_BLOCKED.value,
+                reason_message=reason,
+                db=db,
+                correlation_id=evaluation_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to persist REGIME_FILTER_BLOCKED for %s: %s", symbol, e)
+
+        self._upsert_watchlist_signal_state(
+            db,
+            symbol=normalized_symbol,
+            alert_status="BLOCKED",
+            alert_block_reason="REGIME_FILTER",
+            trade_status="BLOCKED",
+            trade_block_reason="REGIME_FILTER",
+            last_alert_at_utc=now_utc,
+            last_trade_at_utc=now_utc,
+            correlation_id=evaluation_id,
+        )
+        logger.info(
+            "[REGIME_PREBLOCK] symbol=%s side=SELL reason=%s evaluation_id=%s "
+            "(Monitoring only — no live Telegram)",
+            symbol,
+            reason,
+            evaluation_id,
+        )
+
     def _block_orchestrator_order(
         self,
         db: Session,
@@ -6223,6 +6321,28 @@ class SignalMonitorService:
             # Determine if we should emit (send telegram) or just record (blocked)
             # emit_sell is set above: True if throttling passed, False if blocked
             should_emit_telegram_sell = emit_sell if 'emit_sell' in locals() else sell_allowed if 'sell_allowed' in locals() else True
+
+            regime_blocked, regime_reason = (False, None)
+            if should_emit_telegram_sell:
+                regime_blocked, regime_reason = self._would_regime_block_margin_short(
+                    db,
+                    symbol,
+                    current_price,
+                    watchlist_item,
+                    rsi=rsi,
+                    ma200=ma200,
+                )
+            if regime_blocked and regime_reason:
+                self._persist_regime_filter_blocked_sell(
+                    db,
+                    symbol=symbol,
+                    normalized_symbol=normalized_symbol,
+                    reason=regime_reason,
+                    evaluation_id=evaluation_id,
+                    current_price=current_price,
+                    now_utc=now_utc,
+                )
+                should_emit_telegram_sell = False
             
             if should_emit_telegram_sell:
                 # Log alert allowed decision with all flags for verification

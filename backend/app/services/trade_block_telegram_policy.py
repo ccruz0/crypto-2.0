@@ -31,7 +31,14 @@ SUPPRESS_LIVE_TELEGRAM_REASON_CODES: frozenset[str] = frozenset(
         "ONE_ACTIVE_TRADE_PER_COIN",
         "MAX_OPEN_TRADES_REACHED",
         "ALREADY_HAS_OPEN_ORDER",
+        "REGIME_FILTER_BLOCKED",
     }
+)
+
+# Regime filter detail prefixes (short MA200 / BTC MA200 market regime).
+SUPPRESS_REGIME_FILTER_REASON_SUBSTRINGS: tuple[str, ...] = (
+    "SHORT_REGIME_",
+    "LONG_BTC_REGIME_",
 )
 
 # Small-position / cannot-protect-with-SL-TP (dust) — Monitoring only.
@@ -68,14 +75,27 @@ def suppress_live_trade_block_telegram(*reasons: Optional[str], reason_code: Opt
     return is_expected_capacity_limit_reason(*reasons, reason_code=reason_code)
 
 
+def is_regime_filter_block_reason(*reasons: Optional[str], reason_code: Optional[str] = None) -> bool:
+    """True when the block is a regime filter (MA200 / BTC regime), not an exchange fault."""
+    code = (reason_code or "").strip().upper()
+    if code == "REGIME_FILTER_BLOCKED":
+        return True
+    haystack = _haystack(*reasons, reason_code).lower()
+    if not haystack:
+        return False
+    return any(s.lower() in haystack for s in SUPPRESS_REGIME_FILTER_REASON_SUBSTRINGS)
+
+
 def suppress_order_failure_telegram(
     *reasons: Optional[str],
     reason_code: Optional[str] = None,
 ) -> bool:
     """
     Return True when an ORDER FAILED / automatic-order-failure alert must not
-    page Telegram (expected capacity limit, not a real exchange outage).
+    page Telegram (expected capacity limit, regime filter, not a real exchange outage).
     """
+    if is_regime_filter_block_reason(*reasons, reason_code=reason_code):
+        return True
     return is_expected_capacity_limit_reason(*reasons, reason_code=reason_code)
 
 

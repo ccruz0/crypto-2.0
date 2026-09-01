@@ -2117,26 +2117,24 @@ const VERSION_HISTORY = [
   },
 
   {
-    version: '0.98',
+    version: '0.99',
     date: '2026-09-01',
-    change: 'Auto ML learns from short outcomes; human promote gate (#620)',
-    details: `🚀 VERSIÓN 0.98 — SHORT OUTCOMES + HUMAN PROMOTE GATE (#620)
+    change: 'No Telegram SELL when MA200 regime already blocks the short (#624)',
+    details: `🚀 VERSIÓN 0.99 — REGIME PRE-BLOCK FOR MARGIN SELLS (#624)
 
-📋 **Root cause**
-• trade_outcomes builder could miss short round-trips when BUY cover legs existed but intent-path exit join failed (same gap class as sales report #614)
-• Runbook claimed AUTO_ML_AUTONOMOUS_PROMOTE=true while compose/YAML kept it false
-• workflow_dispatch dry_run_only=false could never promote (autonomous flag stayed false with no human gate)
+📋 **Symptom**
+• BONK ~14:30 / 14:47 WITA: live Telegram \`SELL SIGNAL DETECTED\` then \`ORDEN BLOQUEADA\` \`REGIME_FILTER_BLOCKED\` / \`short_regime_price_above_ma200\` — nothing reached the exchange
 
 ✅ **What shipped**
-• Supplement COMPLETE short labels from BUY short-close covers linked to SELL entries (qty + parent guards)
-• AUTO_ML_HUMAN_PROMOTE operator merit gate (workflow_dispatch only); AUTO_ML_AUTONOMOUS_PROMOTE stays false
-• Runbook + status API aligned with compose/YAML promote flags
+• Pre-check regime filter before live SELL Telegram when \`trade_enabled\` + margin short would open
+• Persist \`REGIME_FILTER_BLOCKED\` in Monitoring/DB only (no SELL SIGNAL, no ORDEN BLOQUEADA live page)
+• Safety net: \`suppress_order_failure_telegram\` also silences regime-filter follow-ups if orchestrator still runs
 
-🔧 **Live-order path**
-• Offline learning + promote scripts only. No strategy_rules Learned rewrite. No live orders.
+🔧 **Out of scope**
+• BUY/long path unchanged (#619/#621 untouched)
 
 📦 **PRs**
-• #620
+• #624
 
 ---
 `
