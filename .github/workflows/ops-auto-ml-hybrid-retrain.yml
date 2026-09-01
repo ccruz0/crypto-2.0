@@ -1,7 +1,7 @@
 # Ops: Phase 1b hybrid Auto ML retrain on prod (trade_outcomes + alert fallback).
 # Auth: OIDC via AWS_DEPLOY_ROLE_ARN (same as deploy-backend; static access keys are stale).
-# Schedule: weekly dry-run only (never promotes current.joblib).
-# Live promote: workflow_dispatch with dry_run_only=false (still no --force-promote).
+# Schedule: weekly train + quality gate; writes pending_promote.json when merit passes.
+# Live promote: workflow_dispatch dry_run_only=false OR POST /api/config/auto-ml/promote.
 name: Ops — Auto ML hybrid retrain
 
 on:
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run_only:
-        description: "If true, build/train decision only (no current.joblib promote)"
+        description: "If true, train + quality gate only (writes pending_promote when merit passes; no current.joblib promote)"
         required: false
         default: "true"
         type: choice
@@ -79,7 +79,7 @@ jobs:
           # /repo is ro — install ML deps + write dataset under /tmp only.
           # Single-quote bash -lc so host set -u does not expand \$DATABASE_URL;
           # container env provides DATABASE_URL. DAYS/PROMOTE_ENV expand on GH Actions.
-          docker exec "\$CONTAINER" bash -lc 'set -euo pipefail; cd /repo; pip install -q -r scripts/requirements-auto-ml.txt; python3 scripts/build_trade_outcomes.py --database-url "\$DATABASE_URL" --days ${DAYS} --out /tmp/trade-outcomes.json --write-db || true; ${PROMOTE_ENV} python3 scripts/retrain_and_promote_auto_entry.py --database-url "\$DATABASE_URL" --days ${DAYS} --label-source hybrid --out-dir /data/auto_ml --dataset-out /tmp/auto-ml-dataset-hybrid.json --no-telegram ${EXTRA_FLAGS}; python3 -c "import json;from pathlib import Path;p=Path(\"/tmp/auto-ml-dataset-hybrid.json\");m=json.loads(p.read_text()).get(\"meta\",{}) if p.exists() else {};print(\"DATASET_META\",{k:m.get(k) for k in (\"label_source\",\"phase\",\"n_dataset_rows\",\"n_from_trade_outcome\",\"n_from_alert\",\"n_positive\",\"n_negative\")});man=Path(\"/data/auto_ml/manifest.json\");print(\"MANIFEST_VERSION\", json.loads(man.read_text()).get(\"version\") if man.exists() else None)"'
+          docker exec "\$CONTAINER" bash -lc 'set -euo pipefail; cd /repo; pip install -q -r scripts/requirements-auto-ml.txt; python3 scripts/build_trade_outcomes.py --database-url "\$DATABASE_URL" --days ${DAYS} --out /tmp/trade-outcomes.json --write-db || true; ${PROMOTE_ENV} python3 scripts/retrain_and_promote_auto_entry.py --database-url "\$DATABASE_URL" --days ${DAYS} --label-source hybrid --out-dir /data/auto_ml --dataset-out /tmp/auto-ml-dataset-hybrid.json --no-telegram ${EXTRA_FLAGS}; python3 -c "import json;from pathlib import Path;p=Path(\"/tmp/auto-ml-dataset-hybrid.json\");m=json.loads(p.read_text()).get(\"meta\",{}) if p.exists() else {};print(\"DATASET_META\",{k:m.get(k) for k in (\"label_source\",\"phase\",\"n_dataset_rows\",\"n_from_trade_outcome\",\"n_from_alert\",\"n_trade_outcome_long\",\"n_trade_outcome_short\",\"n_positive\",\"n_negative\")});man=Path(\"/data/auto_ml/manifest.json\");print(\"MANIFEST_VERSION\", json.loads(man.read_text()).get(\"version\") if man.exists() else None);pending=Path(\"/data/auto_ml/pending_promote.json\");print(\"PENDING_PROMOTE\", json.loads(pending.read_text()) if pending.exists() else None)"'
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \

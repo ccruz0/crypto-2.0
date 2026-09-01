@@ -12,18 +12,20 @@
 
 ## Env flags
 
-| Variable | Compose default (backend-aws) | Effect |
-|----------|-------------------------------|--------|
-| `AUTO_ML_ENABLED` | **true** | Live BUY gate |
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `AUTO_ML_ENABLED` | **true** (compose) | Live BUY gate |
 | `AUTO_ML_THRESHOLD` | 0.5 | Min P(good) |
 | `AUTO_ML_MODEL_PATH` | `/data/auto_ml/current.joblib` | Artifact (host `./models/auto_entry`) |
 | `AUTO_ML_SHADOW_LOG` | true | Log `[AUTO_ML]` scores without blocking |
 | `AUTO_ML_AUTONOMOUS_PROMOTE` | **false** | Cron/autonomous promote of `current.joblib` (leave off) |
-| `AUTO_ML_HUMAN_PROMOTE` | **false** | Operator merit promote (`workflow_dispatch` dry_run_only=false only) |
+| `AUTO_ML_HUMAN_PROMOTE` | **false** (backend reads process env) | Shell/workflow merit promote; **not** required for dashboard/API promote |
 | `AUTO_ML_PROMOTE_MIN_ROWS` | 20 | Min labels to promote |
 | `AUTO_ML_PROMOTE_MIN_DELTA` | 0.0 | Min metric gain vs current |
 
-Override any flag via `.env.aws` or shell export before `compose up`.
+`AUTO_ML_HUMAN_PROMOTE` is **not** wired in `docker-compose.yml` (path-guard).
+Override only via process env on retrain shells, GitHub `workflow_dispatch`
+(`dry_run_only=false`), or use the dashboard/API promote path below (no env flip).
 
 ## Enable / apply on AWS host (operator)
 
@@ -80,8 +82,35 @@ Dry-run: add `--dry-run`. Force: `--force-promote`.
 
 ## Status API
 
-`GET /api/config/auto-ml` — gate flags, model version, promote timestamps, holdout metrics.  
+`GET /api/config/auto-ml` — gate flags, model version, promote timestamps, holdout metrics,
+pending candidate (`pending_promote`, long/short fill counts).  
 Strategy Config UI shows the same when preset = Auto.
+
+## Human promote (dashboard / API — no compose change)
+
+Weekly hybrid retrain writes `/data/auto_ml/pending_promote.json` when the **quality
+gate** passes (merit-only; cron still blocks silent promote).
+
+**Preferred operator path (no `AUTO_ML_HUMAN_PROMOTE` env required):**
+
+1. Open Strategy Configuration → preset **Auto** → review pending candidate banner.
+2. Click **Promote candidate (human gate)**, or:
+
+```bash
+curl -sS -X POST https://dashboard.hilovivo.com/api/config/auto-ml/promote \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm": true, "telegram": true}'
+```
+
+The API runs the merit check on `candidate.joblib` and copies to `current.joblib`
+with `human_promote=true` in the manifest. It does **not** rewrite `strategy_rules.auto`
+and never sets `AUTO_ML_AUTONOMOUS_PROMOTE=true`.
+
+**Alternative:** GitHub Actions **Ops — Auto ML hybrid retrain** with
+`dry_run_only=false` (sets `AUTO_ML_HUMAN_PROMOTE=true` in the remote shell only).
+
+**Alternative:** one-off shell retrain with `AUTO_ML_HUMAN_PROMOTE=true` exported for
+that process (see Offline train / promote above).
 
 ## Rollback
 
@@ -112,7 +141,7 @@ from **real prod alerts**. Labels are still **alert-path** (OHLCV forward:
 | Labeled fit rows | `n_fit_rows ≥ 20` (`AUTO_ML_PROMOTE_MIN_ROWS`) | Below floor → no promote |
 | Holdout metric | Candidate primary metric ≥ current + `AUTO_ML_PROMOTE_MIN_DELTA` (default 0) | Flat/worse → leave current |
 | Class balance | Holdout usable (not single-class) | `single_class_or_no_holdout` |
-| Flag | `AUTO_ML_HUMAN_PROMOTE=true` for operator merit path | Disabled → `autonomous_promote_disabled` |
+| Flag | `AUTO_ML_HUMAN_PROMOTE=true` for shell/workflow merit path, **or** POST `/api/config/auto-ml/promote` / dashboard button (no env) | Disabled shell path → `autonomous_promote_disabled`; API promote still works when pending |
 | Autonomous | `AUTO_ML_AUTONOMOUS_PROMOTE` stays **false** in prod | Never enable for cron |
 
 Primary metric: holdout `roc_auc`, else `accuracy` (see `auto_entry_promote.primary_metric`).
@@ -174,7 +203,7 @@ Expect JSON on stdout with `decision.should_promote` and `decision.reason`.
 | `n_fit_rows=…<20` | Collect more labeled alerts; do not force |
 | `metric_not_improved:…` | Keep current `current.joblib`; candidate stays in `candidate.joblib` for inspection |
 | `single_class_or_no_holdout` | Dataset not usable for promote; fix class balance / window |
-| `autonomous_promote_disabled` | Use `workflow_dispatch` with `dry_run_only=false` (sets `AUTO_ML_HUMAN_PROMOTE=true`) or export `AUTO_ML_HUMAN_PROMOTE=true` locally — still no `--force-promote` |
+| `autonomous_promote_disabled` | Promote via dashboard/API (`POST /api/config/auto-ml/promote`), `workflow_dispatch dry_run_only=false`, or export `AUTO_ML_HUMAN_PROMOTE=true` for shell retrain — still no `--force-promote` |
 
 **Do not** add `--force-promote` to “make it green.” If the live model is still the
 old force-demo and merit cannot pass, prefer gate off or shadow-only until Phase 1

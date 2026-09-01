@@ -35,7 +35,7 @@ def _merge_strategy_rules_preserving_locked_auto(
                 status_code=403,
                 detail=(
                     "strategy_rules.auto is locked; parameters are read-only. "
-                    "Updates require retrain/promote (AUTO_ML_AUTONOMOUS_PROMOTE), not this API."
+                    "Updates require retrain/promote (AUTO_ML_HUMAN_PROMOTE or POST /api/config/auto-ml/promote), not this API."
                 ),
             )
     elif incoming_auto is not None:
@@ -85,6 +85,40 @@ def get_auto_ml_config_status() -> Dict[str, Any]:
     from app.services.auto_entry_model import get_auto_ml_status
 
     return get_auto_ml_status()
+
+
+@router.post("/config/auto-ml/promote")
+def promote_auto_ml_candidate(payload: Optional[Dict[str, Any]] = Body(default=None)) -> Dict[str, Any]:
+    """Operator promote: copy merit-passing candidate → current.joblib (human gate only)."""
+    body = payload or {}
+    if not body.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail="Set confirm=true to promote the on-disk candidate after reviewing pending_promote.json",
+        )
+
+    from app.services.auto_entry_model import get_auto_ml_status, reset_model_cache
+    from app.services.auto_entry_promote import model_out_dir, promote_candidate_from_disk
+
+    out_dir = model_out_dir()
+    result = promote_candidate_from_disk(
+        out_dir,
+        human=True,
+        send_telegram=bool(body.get("telegram", True)),
+    )
+    if not result.get("ok"):
+        err = str(result.get("error") or "promote_failed")
+        if err == "quality_gate_failed":
+            raise HTTPException(status_code=409, detail=result)
+        if err == "promote_permission_denied":
+            raise HTTPException(status_code=403, detail=result)
+        if err == "candidate_missing":
+            raise HTTPException(status_code=404, detail=result)
+        raise HTTPException(status_code=500, detail=result)
+
+    reset_model_cache()
+    result["status"] = get_auto_ml_status()
+    return result
 
 
 @router.put("/config")

@@ -459,6 +459,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     neg = sum(1 for r in dataset if r["y"] == 0)
     n_trade = sum(1 for r in dataset if r.get("label_source") == "trade_outcome")
     n_alert = sum(1 for r in dataset if r.get("label_source") == "alert")
+    n_trade_long = sum(
+        1
+        for r in dataset
+        if r.get("label_source") == "trade_outcome" and str(r.get("side") or "").upper() == "BUY"
+    )
+    n_trade_short = sum(
+        1
+        for r in dataset
+        if r.get("label_source") == "trade_outcome" and str(r.get("side") or "").upper() == "SELL"
+    )
 
     payload = {
         "meta": {
@@ -478,6 +488,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             "n_dataset_rows": len(dataset),
             "n_from_trade_outcome": n_trade,
             "n_from_alert": n_alert,
+            "n_trade_outcome_long": n_trade_long,
+            "n_trade_outcome_short": n_trade_short,
             "n_positive": pos,
             "n_negative": neg,
         },
@@ -488,7 +500,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args.out.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
     print(
         f"Wrote {len(dataset)} rows "
-        f"({pos} pos / {neg} neg; trade={n_trade} alert={n_alert}) → {args.out}",
+        f"({pos} pos / {neg} neg; trade={n_trade} alert={n_alert}; long={n_trade_long} short={n_trade_short}) → {args.out}",
         file=sys.stderr,
     )
     return 0

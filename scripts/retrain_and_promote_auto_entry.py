@@ -48,9 +48,12 @@ _promote = importlib.util.module_from_spec(_spec)
 sys.modules["auto_entry_promote"] = _promote
 _spec.loader.exec_module(_promote)
 apply_promote = _promote.apply_promote
+clear_pending_promote = _promote.clear_pending_promote
 load_manifest = _promote.load_manifest
+load_pending_promote = _promote.load_pending_promote
 notify_model_version_update = _promote.notify_model_version_update
 should_promote = _promote.should_promote
+write_pending_promote = _promote.write_pending_promote
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -155,6 +158,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     current = load_manifest(args.out_dir / "manifest.json")
+    quality = should_promote(
+        candidate,
+        current,
+        min_rows=args.promote_min_rows,
+        min_delta=args.promote_min_delta,
+        allow_single_class=args.allow_single_class,
+        merit_only=True,
+        force=args.force_promote,
+    )
     decision = should_promote(
         candidate,
         current,
@@ -164,8 +176,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         force=args.force_promote,
     )
 
+    if quality.should_promote:
+        write_pending_promote(
+            args.out_dir,
+            candidate=candidate,
+            decision=quality,
+        )
+    else:
+        clear_pending_promote(args.out_dir)
+
     result: dict[str, Any] = {
         "candidate_version": candidate.get("version"),
+        "quality_gate": {
+            "passed": quality.should_promote,
+            "reason": quality.reason,
+            "candidate_metric": quality.candidate_metric,
+            "current_metric": quality.current_metric,
+        },
         "decision": {
             "should_promote": decision.should_promote,
             "reason": decision.reason,
@@ -200,6 +227,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 decision=decision,
                 previous=previous,
             )
+    elif quality.should_promote and args.dry_run:
+        result["note"] = "quality_gate_passed_pending_human"
     elif decision.should_promote and args.dry_run:
         result["note"] = "would_promote"
     else:
