@@ -6,7 +6,12 @@ import json
 import logging
 from typing import Any
 
-from app.jarvis.bedrock_client import ask_bedrock, ask_bedrock_json
+from app.jarvis import failure_metrics
+from app.jarvis.bedrock_client import (
+    BedrockInvocationError,
+    ask_bedrock,
+    ask_bedrock_json,
+)
 from app.jarvis.mvp.aws_auditor import compile_audit_findings, is_aws_audit_task, run_aws_audit
 from app.jarvis.mvp.crypto_auditor import (
     compile_crypto_audit_findings,
@@ -186,7 +191,11 @@ def planner_agent(state: dict[str, Any]) -> dict[str, Any]:
         f"{sorted(READONLY_TOOLS)}) and args (object). Task: {task}"
     )
     plan: list[dict[str, Any]] = []
-    parsed = ask_bedrock_json(prompt, task="standard", agent="mvp_planner", mission_id=str(state.get("task_id") or "") or None)
+    try:
+        parsed = ask_bedrock_json(prompt, task="standard", agent="mvp_planner", mission_id=str(state.get("task_id") or "") or None)
+    except BedrockInvocationError as _e:
+        failure_metrics.record_heuristic_fallback(_e.kind)
+        parsed = None
     if isinstance(parsed, dict) and isinstance(parsed.get("plan"), list):
         plan = [p for p in parsed["plan"] if isinstance(p, dict)]
     if not plan:
@@ -313,7 +322,11 @@ def reviewer_agent(state: dict[str, Any]) -> dict[str, Any]:
             f"Review: {json.dumps(review)}\n"
             f"Tool results: {json.dumps(tool_results)[:4000]}"
         )
-        llm_answer = (ask_bedrock(prompt) or "").strip()
+        try:
+            llm_answer = (ask_bedrock(prompt) or "").strip()
+        except BedrockInvocationError as _e:
+            failure_metrics.record_heuristic_fallback(_e.kind)
+            llm_answer = ""
         if llm_answer:
             final_answer = llm_answer
 
