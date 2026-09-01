@@ -5,8 +5,8 @@ Companion to the cap-race dedup fix. Before this change ``_place_order_from_sign
 ``check_system_core_buy_allowed`` for BUY but had NO cap guard for SELL, so a margin SELL that
 opens a new short could exceed SYSTEM_CORE_MAX_OPEN_TRADES / one-active-per-coin on the live path.
 A closing SELL from Position Review / SL/TP is a different path. Watchlist SELL
-alerts always open an independent short and ARE routed through this guard
-(one-active-per-coin is skipped so an existing long does not block the short).
+alerts open an independent short and ARE routed through this guard
+(one-short-per-symbol counts bot shorts + material wallet short; existing longs do not block).
 
 Patterns mirror ``test_short_protection.py`` (short entry = margin + no existing position +
 shorting enabled).

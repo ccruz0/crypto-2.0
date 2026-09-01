@@ -2090,6 +2090,30 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.97',
+    date: '2026-09-01',
+    change: 'SELL short gates = BUY regime + one short per symbol (#619)',
+    details: `🚀 VERSIÓN 0.97 — SELL SHORT ENTRY GATES (#619)
+
+📋 **Root cause**
+• Short entries skipped BUY-aligned SYSTEM_CORE gates (RSI/MA200/regime) after #614 cap work
+• \`ignore_one_active_per_coin=True\` let autos stack a second short on BONK; APT opened on ↑ trigger with RSI>70
+
+✅ **What shipped**
+• \`check_system_core_short_entry_allowed\`: BTC MA200 regime, symbol MA200, RSI>70 + rising-price block
+• One open short per symbol (bot short count + material wallet short); existing long no longer bypasses
+• Orchestrator passes rsi/ma200/trigger reference price into short-entry guard
+
+🔧 **Live-order path**
+• Guard-only at \`_place_order_from_signal_impl\`; no TP/SL invent-heal, flatten, or deploy in this PR
+
+📦 **PRs**
+• #619
+
+---
+`
+  },
 
 ];
 

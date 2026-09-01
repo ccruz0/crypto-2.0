@@ -28,6 +28,9 @@ _STALE_PEAK_RATIO = float(os.getenv("SYSTEM_CORE_STALE_PEAK_RATIO", "1.75"))
 # RSI buy gate: block when rsi >= this value. Default 40 (legacy). Aggressive strategy uses buyBelow 50 —
 # set SYSTEM_CORE_RSI_BUY_MAX=50 on prod to align with scalp/aggressive profiles.
 _RSI_BUY_MAX = float(os.getenv("SYSTEM_CORE_RSI_BUY_MAX", "40"))
+# Short entry: block when RSI is overbought AND the alert trigger is a rising price
+# (APT 2026-09-01: ↑1.27% + RSI>70 opened a short into momentum).
+_RSI_SELL_OVERBOUGHT = float(os.getenv("SYSTEM_CORE_RSI_SELL_OVERBOUGHT", "70"))
 # Dust: net filled remnant below these thresholds does not count as an open position for one-per-coin.
 _MIN_POSITION_QTY = float(os.getenv("SYSTEM_CORE_MIN_POSITION_QTY", "0"))
 _MIN_POSITION_USD = float(os.getenv("SYSTEM_CORE_MIN_POSITION_USD", "5"))
@@ -375,33 +378,46 @@ def check_system_core_short_entry_allowed(
     amount_usd: float,
     *,
     price: float,
+    rsi: float | None = None,
+    ma200: float | None = None,
+    price_rising: bool | None = None,
     ignore_one_active_per_coin: bool = False,
 ) -> Tuple[bool, str]:
     """Position/exposure gates for a SHORT ENTRY (a margin SELL that opens a NEW position).
 
-    A short entry increases open exposure, so it must obey the same amount cap, daily-drawdown,
-    and max-open-trades limits as a BUY. The RSI/MA200 gates are BUY-specific and are NOT
-    applied here.
+    Mirrors BUY regime gates where applicable:
+    - BTC > MA200 market regime (``_long_btc_regime_block``)
+    - Symbol price < MA200 (``_short_regime_block``)
+    - At most one open short per symbol (bot book + material wallet short)
+    - Block RSI > 70 when the trigger is a rising price
 
-    ``ignore_one_active_per_coin``: Watchlist SELL alerts always open an independent short
-    and must not treat an existing long as "already in a trade". Amount/drawdown/max-open
-    still apply.
-
-    Regime filter (2026-08-22): ademas de los limites de exposicion, un corto
-    exige price < MA200 (fail-closed). Ver _short_regime_block.
+    ``ignore_one_active_per_coin`` is deprecated and ignored (#619): an existing long
+    no longer skips the one-short-per-symbol check; only open *short* exposure counts.
 
     Returns (allowed, reason). When guards are disabled, always (True, "").
     """
+    _ = ma200  # reserved for callers passing snapshot ma200; regime uses DB lookup
     if not _GUARDS_ON:
         return True, ""
 
     sym = (symbol or "").strip().upper()
     base = sym.split("_")[0] if "_" in sym else sym
 
+    if _LONG_BTC_REGIME_ON:
+        blocked, regime_reason = _long_btc_regime_block(db)
+        if blocked:
+            return False, regime_reason
+
     if _SHORT_REGIME_ON:
         blocked, regime_reason = _short_regime_block(db, sym, base, price)
         if blocked:
             return False, regime_reason
+
+    if price_rising is True and rsi is not None and rsi > _RSI_SELL_OVERBOUGHT:
+        return False, (
+            f"system_core_short_rsi_overbought_rising rsi={rsi} "
+            f"need_not_rising_or_rsi_lte_{_RSI_SELL_OVERBOUGHT:g}"
+        )
 
     if amount_usd > _MAX_PER_TRADE + 1e-6:
         return False, f"system_core_max_trade_usd amount={amount_usd} max={_MAX_PER_TRADE}"
@@ -411,13 +427,18 @@ def check_system_core_short_entry_allowed(
         return False, dd_reason
 
     try:
-        from app.services.order_position_service import count_open_positions_for_symbol
+        from app.services.order_position_service import (
+            count_open_short_positions_for_symbol,
+            wallet_has_material_short,
+        )
 
-        if not ignore_one_active_per_coin:
-            max_per_coin = _resolve_max_open_per_coin()
-            open_for_symbol = count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price))
-            if open_for_symbol >= max_per_coin:
-                return False, "system_core_one_active_trade_per_coin"
+        dust = _position_dust_kwargs(price)
+        max_per_coin = _resolve_max_open_per_coin()
+        open_shorts = count_open_short_positions_for_symbol(db, base, **dust)
+        if open_shorts >= max_per_coin:
+            return False, "system_core_one_open_short_per_symbol"
+        if wallet_has_material_short(db, base, **dust):
+            return False, "system_core_one_open_short_per_symbol"
 
         max_open_trades = _resolve_max_open_trades()
         open_symbols = count_distinct_symbols_with_open_positions(db)
