@@ -345,26 +345,36 @@ def get_auto_ml_status() -> dict[str, Any]:
         autonomous_promote_enabled,
         human_promote_enabled,
         load_manifest,
+        load_pending_promote,
         min_promote_delta,
         min_promote_rows,
+        model_out_dir,
     )
 
     path = default_model_path()
-    manifest_path = path.parent / "manifest.json"
+    out_dir = model_out_dir(path)
+    manifest_path = out_dir / "manifest.json"
     if not manifest_path.is_file():
         here = Path(__file__).resolve()
         repo_root = here.parents[3]
         alt = repo_root / "models" / "auto_entry" / "manifest.json"
         if alt.is_file():
             manifest_path = alt
+            out_dir = alt.parent
 
     manifest = load_manifest(manifest_path) or {}
+    pending = load_pending_promote(out_dir) or {}
+    candidate = load_manifest(out_dir / "candidate_manifest.json") or {}
     model_present = path.is_file()
     metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
 
     dataset_meta = (
         manifest.get("dataset_meta") if isinstance(manifest.get("dataset_meta"), dict) else {}
     )
+    candidate_meta = (
+        candidate.get("dataset_meta") if isinstance(candidate.get("dataset_meta"), dict) else {}
+    )
+    pending_decision = pending.get("decision") if isinstance(pending.get("decision"), dict) else {}
     return {
         "gate_enabled": auto_ml_enabled(),
         "shadow_log": auto_ml_shadow_log(),
@@ -385,6 +395,20 @@ def get_auto_ml_status() -> dict[str, Any]:
         "label_source": dataset_meta.get("label_source"),
         "n_from_trade_outcome": dataset_meta.get("n_from_trade_outcome"),
         "n_from_alert": dataset_meta.get("n_from_alert"),
+        "n_trade_outcome_long": dataset_meta.get("n_trade_outcome_long"),
+        "n_trade_outcome_short": dataset_meta.get("n_trade_outcome_short"),
+        "candidate_version": candidate.get("version"),
+        "candidate_trained_at": candidate.get("trained_at"),
+        "candidate_n_fit_rows": candidate.get("n_fit_rows"),
+        "candidate_label_source": candidate_meta.get("label_source"),
+        "candidate_n_from_trade_outcome": candidate_meta.get("n_from_trade_outcome"),
+        "candidate_n_from_alert": candidate_meta.get("n_from_alert"),
+        "candidate_n_trade_outcome_long": candidate_meta.get("n_trade_outcome_long"),
+        "candidate_n_trade_outcome_short": candidate_meta.get("n_trade_outcome_short"),
+        "pending_promote": bool(pending.get("quality_gate_passed")),
+        "pending_at": pending.get("pending_at"),
+        "pending_candidate_version": pending.get("candidate_version"),
+        "pending_reason": pending_decision.get("reason"),
         "metrics": {
             "holdout": metrics.get("holdout"),
             "accuracy": metrics.get("accuracy"),

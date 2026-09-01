@@ -110,6 +110,7 @@ def should_promote(
     autonomous: Optional[bool] = None,
     human: Optional[bool] = None,
     force: bool = False,
+    merit_only: bool = False,
 ) -> PromoteDecision:
     rows_floor = min_promote_rows() if min_rows is None else min_rows
     delta = min_promote_delta() if min_delta is None else min_delta
@@ -133,7 +134,7 @@ def should_promote(
             human_promote=human_ok,
         )
 
-    if not gate_open:
+    if not merit_only and not gate_open:
         return PromoteDecision(
             should_promote=False,
             reason="autonomous_promote_disabled",
@@ -265,6 +266,148 @@ def apply_promote(
         json.dumps(candidate_manifest, indent=2) + "\n", encoding="utf-8"
     )
     return promoted
+
+
+PENDING_PROMOTE_FILENAME = "pending_promote.json"
+
+
+def model_out_dir(model_path: Optional[Path] = None) -> Path:
+    """Directory holding current.joblib, candidate artifacts, and pending promote."""
+    if model_path is None:
+        from app.services.auto_entry_model import default_model_path
+
+        model_path = default_model_path()
+    return model_path.parent
+
+
+def write_pending_promote(
+    out_dir: Path,
+    *,
+    candidate: dict[str, Any],
+    decision: PromoteDecision,
+) -> dict[str, Any]:
+    """Persist merit-passing candidate awaiting explicit human promote."""
+    payload = {
+        "pending_at": datetime.now(timezone.utc).isoformat(),
+        "candidate_version": candidate.get("version"),
+        "quality_gate_passed": bool(decision.should_promote),
+        "decision": asdict(decision),
+        "candidate_manifest": candidate,
+        "note": (
+            "Quality gate passed; awaiting AUTO_ML_HUMAN_PROMOTE or "
+            "POST /api/config/auto-ml/promote"
+        ),
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / PENDING_PROMOTE_FILENAME).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    return payload
+
+
+def clear_pending_promote(out_dir: Path) -> None:
+    pending = out_dir / PENDING_PROMOTE_FILENAME
+    if pending.is_file():
+        pending.unlink()
+
+
+def load_pending_promote(out_dir: Path) -> Optional[dict[str, Any]]:
+    path = out_dir / PENDING_PROMOTE_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.warning("Failed to read pending promote %s: %s", path, e)
+        return None
+
+
+def promote_candidate_from_disk(
+    out_dir: Path,
+    *,
+    human: bool = True,
+    force: bool = False,
+    send_telegram: bool = True,
+    allow_single_class: bool = False,
+    min_rows: Optional[int] = None,
+    min_delta: Optional[float] = None,
+) -> dict[str, Any]:
+    """Promote on-disk candidate when merit + permission gates pass."""
+    candidate_model = out_dir / "candidate.joblib"
+    candidate = load_manifest(out_dir / "candidate_manifest.json")
+    if candidate is None or not candidate_model.is_file():
+        return {
+            "ok": False,
+            "error": "candidate_missing",
+            "detail": "candidate.joblib or candidate_manifest.json not found",
+        }
+
+    current = load_manifest(out_dir / "manifest.json")
+    auto = autonomous_promote_enabled()
+    human_ok = human if human is not None else human_promote_enabled()
+    quality = should_promote(
+        candidate,
+        current,
+        min_rows=min_rows,
+        min_delta=min_delta,
+        allow_single_class=allow_single_class,
+        merit_only=True,
+        force=force,
+    )
+    if not quality.should_promote and not force:
+        return {
+            "ok": False,
+            "error": "quality_gate_failed",
+            "decision": asdict(quality),
+        }
+
+    permission = should_promote(
+        candidate,
+        current,
+        min_rows=min_rows,
+        min_delta=min_delta,
+        allow_single_class=allow_single_class,
+        autonomous=auto,
+        human=human_ok,
+        force=force,
+    )
+    if not permission.should_promote:
+        return {
+            "ok": False,
+            "error": "promote_permission_denied",
+            "decision": asdict(permission),
+            "quality_decision": asdict(quality),
+        }
+
+    previous = current
+    promoted = apply_promote(
+        out_dir,
+        candidate_model=candidate_model,
+        candidate_manifest=candidate,
+        decision=permission,
+    )
+    clear_pending_promote(out_dir)
+    telegram_sent = False
+    if send_telegram:
+        telegram_sent = notify_model_version_update(
+            out_dir=out_dir,
+            promoted=promoted,
+            decision=permission,
+            previous=previous,
+        )
+    return {
+        "ok": True,
+        "promoted": True,
+        "promoted_manifest": {
+            "version": promoted.get("version"),
+            "previous_version": promoted.get("previous_version"),
+            "promoted_at": promoted.get("promoted_at"),
+            "promote_reason": promoted.get("promote_reason"),
+        },
+        "decision": asdict(permission),
+        "telegram_sent": telegram_sent,
+    }
 
 
 def _human_reason(reason: str) -> str:

@@ -58,6 +58,9 @@ def test_should_promote_disabled_by_default(monkeypatch):
     assert d.should_promote is False
     assert d.reason == "autonomous_promote_disabled"
     assert d.human_promote is False
+    quality = should_promote(cand, None, merit_only=True)
+    assert quality.should_promote is True
+    assert quality.reason == "no_current_baseline"
 
 
 def test_should_promote_with_human_gate_without_autonomous(monkeypatch):

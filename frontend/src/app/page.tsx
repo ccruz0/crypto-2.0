@@ -2164,6 +2164,30 @@ const VERSION_HISTORY = [
 
 ---
 `
+  {
+    version: '1.0',
+    date: '2026-09-01',
+    change: 'Auto ML learning: long+short fills, human promote path, pending quality gate (#626)',
+    details: `🚀 VERSIÓN 1.0 — AUTO ML LEARNING LOOP (#626)
+
+📋 **Problem**
+• Live gate ON but learning loop stuck: weekly retrain always dry-run, human_promote never wired to compose/API, trade_outcome labels dominated by alerts and shorts under-represented in operator view
+
+✅ **What shipped**
+• Merit-only quality gate separated from promote permission; weekly hybrid retrain writes pending_promote.json when merit passes (still no silent promote)
+• POST /api/config/auto-ml/promote — operator promotes merit-passing candidate to current.joblib (human gate; no AUTO_ML_AUTONOMOUS_PROMOTE)
+• Strategy Config Auto panel: human_promote flag, long/short fill counts, pending candidate + Promote button
+• docker-compose: AUTO_ML_HUMAN_PROMOTE env (default false); workflow prints pending + long/short dataset meta
+• Dataset meta tracks n_trade_outcome_long / n_trade_outcome_short for real fill labels (long BUY + short SELL)
+
+🔧 **Out of scope**
+• #623 SL/TP learning, BUY gate changes, autonomous promote, strategy_rules.auto rewrite
+
+📦 **Issue**
+• #626
+
+---
+`
   },
 
 ];

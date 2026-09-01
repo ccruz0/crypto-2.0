@@ -274,6 +274,7 @@ services:
       # Auto ML entry gate + autonomous promote (ADR-0004). Override via .env.aws if needed.
       - AUTO_ML_ENABLED=${AUTO_ML_ENABLED:-true}
       - AUTO_ML_AUTONOMOUS_PROMOTE=${AUTO_ML_AUTONOMOUS_PROMOTE:-false}
+      - AUTO_ML_HUMAN_PROMOTE=${AUTO_ML_HUMAN_PROMOTE:-false}
       - AUTO_ML_THRESHOLD=${AUTO_ML_THRESHOLD:-0.5}
       - AUTO_ML_SHADOW_LOG=${AUTO_ML_SHADOW_LOG:-true}
       - AUTO_ML_MODEL_PATH=${AUTO_ML_MODEL_PATH:-/data/auto_ml/current.joblib}

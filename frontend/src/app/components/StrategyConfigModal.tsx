@@ -43,6 +43,7 @@ export default function StrategyConfigModal({
     shadow_log?: boolean;
     threshold?: number;
     autonomous_promote?: boolean;
+    human_promote?: boolean;
     model_present?: boolean;
     version?: number | null;
     trained_at?: string | null;
@@ -52,6 +53,13 @@ export default function StrategyConfigModal({
     label_source?: string | null;
     n_from_trade_outcome?: number | null;
     n_from_alert?: number | null;
+    n_trade_outcome_long?: number | null;
+    n_trade_outcome_short?: number | null;
+    candidate_version?: number | null;
+    pending_promote?: boolean;
+    pending_at?: string | null;
+    pending_candidate_version?: number | null;
+    pending_reason?: string | null;
     metrics?: {
       accuracy?: number | null;
       roc_auc?: number | null;
@@ -60,6 +68,8 @@ export default function StrategyConfigModal({
     load_error?: string | null;
   } | null>(null);
   const [autoMlStatusError, setAutoMlStatusError] = useState<string | null>(null);
+  const [autoMlPromoteBusy, setAutoMlPromoteBusy] = useState(false);
+  const [autoMlPromoteMessage, setAutoMlPromoteMessage] = useState<string | null>(null);
 
   const isLocked = isAutoPreset(activePreset);
 
@@ -194,7 +204,50 @@ export default function StrategyConfigModal({
     setFormData(rules);
     setSaveError(null);
     setSaveSuccess(false);
+    setAutoMlPromoteMessage(null);
     onClose();
+  };
+
+  const refreshAutoMlStatus = async () => {
+    const res = await fetch('/api/config/auto-ml');
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    setAutoMlStatus(data);
+    setAutoMlStatusError(null);
+    return data;
+  };
+
+  const handlePromoteCandidate = async () => {
+    setAutoMlPromoteBusy(true);
+    setAutoMlPromoteMessage(null);
+    try {
+      const res = await fetch('/api/config/auto-ml/promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true, telegram: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail =
+          typeof data?.detail === 'string'
+            ? data.detail
+            : data?.detail?.error || data?.error || `HTTP ${res.status}`;
+        throw new Error(String(detail));
+      }
+      await refreshAutoMlStatus();
+      const version = data?.promoted_manifest?.version;
+      setAutoMlPromoteMessage(
+        version != null ? `Promoted candidate to v${version}.` : 'Candidate promoted.'
+      );
+    } catch (err) {
+      setAutoMlPromoteMessage(
+        err instanceof Error ? err.message : 'Failed to promote candidate'
+      );
+    } finally {
+      setAutoMlPromoteBusy(false);
+    }
   };
 
   const lockedInputClass =
@@ -279,7 +332,7 @@ export default function StrategyConfigModal({
               {isLocked && (
                 <p className="text-xs text-amber-700 dark:text-amber-300 mt-1" data-testid="auto-locked-hint">
                   Parámetros visibles pero no editables. El modelo ML se actualiza vía retrain/promote
-                  (`AUTO_ML_AUTONOMOUS_PROMOTE`), no desde este formulario.
+                  (`AUTO_ML_HUMAN_PROMOTE` o botón Promote cuando hay candidato pendiente), no desde este formulario.
                 </p>
               )}
               {isLocked && (
@@ -310,8 +363,10 @@ export default function StrategyConfigModal({
                           : 'missing'}
                       </dd>
                       <dt>Promote</dt>
-                      <dd>
+                      <dd data-testid="auto-ml-promote-flags">
                         {autoMlStatus.autonomous_promote ? 'autonomous ON' : 'autonomous OFF'}
+                        {' · '}
+                        {autoMlStatus.human_promote ? 'human ON' : 'human OFF'}
                       </dd>
                       <dt>Labels</dt>
                       <dd
@@ -319,7 +374,7 @@ export default function StrategyConfigModal({
                         title={
                           autoMlStatus.n_from_trade_outcome != null ||
                           autoMlStatus.n_from_alert != null
-                            ? `trade=${autoMlStatus.n_from_trade_outcome ?? '?'} alert=${autoMlStatus.n_from_alert ?? '?'}`
+                            ? `trade=${autoMlStatus.n_from_trade_outcome ?? '?'} alert=${autoMlStatus.n_from_alert ?? '?'} long=${autoMlStatus.n_trade_outcome_long ?? '?'} short=${autoMlStatus.n_trade_outcome_short ?? '?'}`
                             : undefined
                         }
                       >
@@ -329,6 +384,10 @@ export default function StrategyConfigModal({
                         {autoMlStatus.n_from_trade_outcome != null ||
                         autoMlStatus.n_from_alert != null
                           ? ` · fills ${autoMlStatus.n_from_trade_outcome ?? '—'} / alerts ${autoMlStatus.n_from_alert ?? '—'}`
+                          : ''}
+                        {autoMlStatus.n_trade_outcome_long != null ||
+                        autoMlStatus.n_trade_outcome_short != null
+                          ? ` · long ${autoMlStatus.n_trade_outcome_long ?? '—'} / short ${autoMlStatus.n_trade_outcome_short ?? '—'}`
                           : ''}
                       </dd>
                       <dt>Holdout</dt>
@@ -368,6 +427,31 @@ export default function StrategyConfigModal({
                       ) : null}
                     </dl>
                   )}
+                  {autoMlStatus?.pending_promote ? (
+                    <div
+                      className="mt-3 rounded border border-emerald-300 bg-emerald-50/80 p-2 dark:border-emerald-800 dark:bg-emerald-950/30"
+                      data-testid="auto-ml-pending-promote"
+                    >
+                      <p>
+                        Candidate v{autoMlStatus.pending_candidate_version ?? autoMlStatus.candidate_version ?? '?'} passed quality gate
+                        {autoMlStatus.pending_reason ? ` (${autoMlStatus.pending_reason})` : ''}.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handlePromoteCandidate}
+                        disabled={autoMlPromoteBusy}
+                        className="mt-2 rounded bg-emerald-700 px-3 py-1.5 text-white hover:bg-emerald-800 disabled:opacity-60"
+                        data-testid="auto-ml-promote-button"
+                      >
+                        {autoMlPromoteBusy ? 'Promoting…' : 'Promote candidate (human gate)'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {autoMlPromoteMessage ? (
+                    <p className="mt-2 text-xs" data-testid="auto-ml-promote-message">
+                      {autoMlPromoteMessage}
+                    </p>
+                  ) : null}
                 </div>
               )}
             </div>
