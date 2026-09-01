@@ -3,7 +3,20 @@ name: AWS Runtime Sentinel
 on:
   push:
     branches: [main]
+  schedule:
+    # 09:21 and 16:21 Asia/Makassar (UTC+8) — JARVIS twice-daily prod check via OIDC
+    - cron: "21 1,8 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Verification mode (auto = prod-check on schedule, sentinel otherwise)
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - sentinel
+          - prod-check
 
 permissions:
   contents: read
@@ -17,6 +30,11 @@ jobs:
     env:
       AWS_REGION: ap-southeast-1
       AWS_DEFAULT_REGION: ap-southeast-1
+      AWS_RUNTIME_VERIFY_MODE: >-
+        ${{ inputs.mode == 'prod-check' && 'prod-check'
+            || (inputs.mode == 'sentinel' && 'sentinel'
+            || (github.event_name == 'schedule' && 'prod-check' || 'sentinel')) }}
+      AWS_RUNTIME_VERIFY_QUIET: ${{ github.event_name == 'schedule' && '1' || '0' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
