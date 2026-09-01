@@ -369,39 +369,54 @@ def _long_btc_regime_block(db: Session) -> Tuple[bool, str]:
     return False, ""
 
 
+def _rsi_short_min() -> float:
+    """Inverse of BUY RSI gate: short only when RSI > (100 - RSI_BUY_MAX)."""
+    return 100.0 - _RSI_BUY_MAX
+
+
 def check_system_core_short_entry_allowed(
     db: Session,
     symbol: str,
     amount_usd: float,
     *,
     price: float,
+    rsi: float | None = None,
+    ma200: float | None = None,
     ignore_one_active_per_coin: bool = False,
 ) -> Tuple[bool, str]:
     """Position/exposure gates for a SHORT ENTRY (a margin SELL that opens a NEW position).
 
-    A short entry increases open exposure, so it must obey the same amount cap, daily-drawdown,
-    and max-open-trades limits as a BUY. The RSI/MA200 gates are BUY-specific and are NOT
-    applied here.
+    Mirror of ``check_system_core_buy_allowed`` (#619):
+    - BTC > MA200 market regime (``_long_btc_regime_block``)
+    - Symbol price < MA200 (``_short_regime_block``) — inverse of BUY price > MA200
+    - RSI > (100 - SYSTEM_CORE_RSI_BUY_MAX); skip RSI check when rsi is None (same as BUY)
+    - At most one open short per symbol (bot book + material wallet short)
 
-    ``ignore_one_active_per_coin``: Watchlist SELL alerts always open an independent short
-    and must not treat an existing long as "already in a trade". Amount/drawdown/max-open
-    still apply.
-
-    Regime filter (2026-08-22): ademas de los limites de exposicion, un corto
-    exige price < MA200 (fail-closed). Ver _short_regime_block.
+    ``ignore_one_active_per_coin`` is deprecated and ignored (#619).
 
     Returns (allowed, reason). When guards are disabled, always (True, "").
     """
+    _ = ma200  # reserved for callers passing snapshot ma200; regime uses DB lookup
+    _ = ignore_one_active_per_coin
     if not _GUARDS_ON:
         return True, ""
 
     sym = (symbol or "").strip().upper()
     base = sym.split("_")[0] if "_" in sym else sym
 
+    if _LONG_BTC_REGIME_ON:
+        blocked, regime_reason = _long_btc_regime_block(db)
+        if blocked:
+            return False, regime_reason
+
     if _SHORT_REGIME_ON:
         blocked, regime_reason = _short_regime_block(db, sym, base, price)
         if blocked:
             return False, regime_reason
+
+    rsi_short_min = _rsi_short_min()
+    if rsi is not None and rsi <= rsi_short_min:
+        return False, f"system_core_short_rsi rsi={rsi} need_gt_{rsi_short_min:g}"
 
     if amount_usd > _MAX_PER_TRADE + 1e-6:
         return False, f"system_core_max_trade_usd amount={amount_usd} max={_MAX_PER_TRADE}"
@@ -411,13 +426,18 @@ def check_system_core_short_entry_allowed(
         return False, dd_reason
 
     try:
-        from app.services.order_position_service import count_open_positions_for_symbol
+        from app.services.order_position_service import (
+            count_open_short_positions_for_symbol,
+            wallet_has_material_short,
+        )
 
-        if not ignore_one_active_per_coin:
-            max_per_coin = _resolve_max_open_per_coin()
-            open_for_symbol = count_open_positions_for_symbol(db, base, **_position_dust_kwargs(price))
-            if open_for_symbol >= max_per_coin:
-                return False, "system_core_one_active_trade_per_coin"
+        dust = _position_dust_kwargs(price)
+        max_per_coin = _resolve_max_open_per_coin()
+        open_shorts = count_open_short_positions_for_symbol(db, base, **dust)
+        if open_shorts >= max_per_coin:
+            return False, "system_core_one_open_short_per_symbol"
+        if wallet_has_material_short(db, base, **dust):
+            return False, "system_core_one_open_short_per_symbol"
 
         max_open_trades = _resolve_max_open_trades()
         open_symbols = count_distinct_symbols_with_open_positions(db)

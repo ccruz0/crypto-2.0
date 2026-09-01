@@ -6759,6 +6759,8 @@ class SignalMonitorService:
                                                         current_price=current_price,
                                                         source="orchestrator",
                                                         correlation_id=evaluation_id,
+                                                        rsi=rsi,
+                                                        ma200=ma200,
                                                     )
                                                 )
                                             finally:
@@ -9423,10 +9425,8 @@ class SignalMonitorService:
                     ),
                 }
 
-        # A SHORT ENTRY (margin SELL opening a NEW independent short) increases open
-        # exposure, so it must obey amount/drawdown/max-open caps as a BUY. RSI/MA200
-        # are BUY-only. one-active-per-coin is skipped: a SELL alert must not treat an
-        # existing long as "already in a trade" (it does not close that long).
+        # A SHORT ENTRY (margin SELL) mirrors BUY SYSTEM_CORE gates (inverse RSI/MA200,
+        # one-short-per-symbol) — #619.
         if is_margin_short_entry:
             try:
                 from app.services.system_core_trade_guards import check_system_core_short_entry_allowed
@@ -9436,21 +9436,24 @@ class SignalMonitorService:
                     symbol,
                     float(amount_usd),
                     price=float(current_price),
-                    ignore_one_active_per_coin=True,
+                    rsi=rsi,
+                    ma200=ma200,
                 )
                 if not ok_sc:
                     logger.info(
-                        "SYSTEM_CORE short_entry_blocked symbol=%s reason=%s amount_usd=%s price=%s",
+                        "SYSTEM_CORE short_entry_blocked symbol=%s reason=%s amount_usd=%s rsi=%s price=%s",
                         symbol,
                         reason_sc,
                         amount_usd,
+                        rsi,
                         current_price,
                     )
                     return {"error": reason_sc, "blocked": True, "message": reason_sc}
                 logger.info(
-                    "SYSTEM_CORE short_entry_allowed symbol=%s amount_usd=%s price=%s",
+                    "SYSTEM_CORE short_entry_allowed symbol=%s amount_usd=%s rsi=%s price=%s",
                     symbol,
                     amount_usd,
+                    rsi,
                     current_price,
                 )
             except Exception as sc_err:

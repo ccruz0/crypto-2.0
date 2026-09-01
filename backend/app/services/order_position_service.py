@@ -436,6 +436,131 @@ def count_open_positions_for_symbol(
     return total_open_positions
 
 
+def count_open_short_positions_for_symbol(
+    db: Session,
+    symbol: str,
+    *,
+    min_position_qty: float = 0.0,
+    min_position_usd: float = 0.0,
+    last_price: float | None = None,
+) -> int:
+    """Open bot short positions for a symbol (pending + net filled SELL entries).
+
+    Long-only exposure on the same base does not increment this count.
+    """
+    pending_statuses = [
+        OrderStatusEnum.NEW,
+        OrderStatusEnum.ACTIVE,
+        OrderStatusEnum.PARTIALLY_FILLED,
+    ]
+    pending_enum = getattr(OrderStatusEnum, "PENDING", None)
+    if pending_enum is not None:
+        pending_statuses.append(pending_enum)
+
+    symbol_filter = _normalized_symbol_filter(symbol)
+    bot_entry_filter = _bot_main_entry_filter()
+    order_time = (
+        ExchangeOrder.exchange_create_time.asc(),
+        ExchangeOrder.created_at.asc(),
+        ExchangeOrder.id.asc(),
+    )
+
+    pending_sell_orders = db.query(ExchangeOrder).filter(
+        symbol_filter,
+        ExchangeOrder.side == OrderSideEnum.SELL,
+        ExchangeOrder.status.in_(pending_statuses),
+        bot_entry_filter,
+    ).all()
+    pending_sell_count = len(pending_sell_orders)
+
+    filled_sell_entry_orders = (
+        db.query(ExchangeOrder)
+        .filter(
+            symbol_filter,
+            ExchangeOrder.side == OrderSideEnum.SELL,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            bot_entry_filter,
+        )
+        .order_by(*order_time)
+        .all()
+    )
+    filled_sell_entry_qty = sum(_order_filled_quantity(o) for o in filled_sell_entry_orders)
+
+    filled_short_close_buys = (
+        db.query(ExchangeOrder)
+        .filter(
+            symbol_filter,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            _short_close_buy_filter(),
+        )
+        .order_by(*order_time)
+        .all()
+    )
+    filled_short_close_buy_qty = sum(_order_filled_quantity(o) for o in filled_short_close_buys)
+    short_net_qty = max(filled_sell_entry_qty - filled_short_close_buy_qty, 0.0)
+
+    short_dust_price = last_price if last_price is not None else _infer_symbol_price(
+        filled_sell_entry_orders
+    )
+    if _is_position_dust(
+        short_net_qty,
+        min_position_qty=min_position_qty,
+        min_position_usd=min_position_usd,
+        last_price=short_dust_price,
+    ):
+        short_filled_positions = 0
+    else:
+        short_filled_positions = _estimate_filled_open_positions(
+            short_net_qty,
+            filled_sell_entry_orders,
+            filled_short_close_buy_qty,
+            symbol=symbol,
+            side_label="short",
+        )
+
+    return pending_sell_count + short_filled_positions
+
+
+def wallet_has_material_short(
+    db: Session,
+    symbol: str,
+    *,
+    min_position_qty: float = 0.0,
+    min_position_usd: float = 0.0,
+    last_price: float | None = None,
+) -> bool:
+    """True when the latest portfolio snapshot shows a non-dust negative base balance."""
+    from app.models.portfolio import PortfolioBalance
+
+    sym = (symbol or "").strip().upper()
+    base = sym.split("_")[0] if "_" in sym else sym
+    if not base:
+        return False
+
+    try:
+        row = (
+            db.query(PortfolioBalance)
+            .filter(PortfolioBalance.currency == base)
+            .order_by(PortfolioBalance.id.desc())
+            .first()
+        )
+        if row is None or row.balance is None:
+            return False
+        balance = float(row.balance)
+        if balance >= 0:
+            return False
+        short_qty = abs(balance)
+        return not _is_position_dust(
+            short_qty,
+            min_position_qty=min_position_qty,
+            min_position_usd=min_position_usd,
+            last_price=last_price,
+        )
+    except Exception as e:
+        logger.debug("wallet_has_material_short failed for %s: %s", symbol, e)
+        return False
+
+
 def count_total_open_positions(db: Session) -> int:
     """
     Count total open bot positions across all symbols.

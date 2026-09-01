@@ -47,6 +47,7 @@ def test_precio_invalido_bloqueado():
 def test_gate_completo_bloquea_corto_en_alcista(monkeypatch):
     monkeypatch.setattr(g, "_GUARDS_ON", True)
     monkeypatch.setattr(g, "_SHORT_REGIME_ON", True)
+    monkeypatch.setattr(g, "_LONG_BTC_REGIME_ON", False)
     allowed, reason = g.check_system_core_short_entry_allowed(
         _db(), "BTC_USD", 100.0, price=70000.0
     )
@@ -57,12 +58,16 @@ def test_gate_completo_bloquea_corto_en_alcista(monkeypatch):
 def test_kill_switch_desactiva_el_filtro(monkeypatch):
     monkeypatch.setattr(g, "_GUARDS_ON", True)
     monkeypatch.setattr(g, "_SHORT_REGIME_ON", False)
+    monkeypatch.setattr(g, "_LONG_BTC_REGIME_ON", False)
     monkeypatch.setattr(g, "_daily_drawdown_violation", lambda db: (False, ""))
     monkeypatch.setattr(g, "count_distinct_symbols_with_open_positions", lambda db: 0)
     from app.services import order_position_service
 
     monkeypatch.setattr(
-        order_position_service, "count_open_positions_for_symbol", lambda db, b, **k: 0
+        order_position_service, "count_open_short_positions_for_symbol", lambda db, b, **k: 0
+    )
+    monkeypatch.setattr(
+        order_position_service, "wallet_has_material_short", lambda db, b, **k: False
     )
     allowed, reason = g.check_system_core_short_entry_allowed(
         _db(), "BTC_USD", 100.0, price=70000.0
