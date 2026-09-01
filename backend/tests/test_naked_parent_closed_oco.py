@@ -3,8 +3,8 @@
 Un OCO real llena UNA pata (SL o TP) y cancela la otra. El bug corregido:
 _is_naked exigia ambas patas FILLED (imposible en un OCO) y el HOURLY SL/TP
 AUDIT re-alertaba cada hora, durante los 7 dias de lookback, por parents ya
-cerrados. El caso que motivo el lookback (parent sin NINGUN hijo, micro-fill
-ETH oculto por wallet-sum) debe seguir alertando.
+cerrados. El caso ETH micro oculto por wallet-sum solo alerta cuando wallet-sum
+NO cubre SL+TP (issue #617); _iter_naked_entry_parents sigue encontrandolo.
 """
 import unittest
 from datetime import datetime, timezone

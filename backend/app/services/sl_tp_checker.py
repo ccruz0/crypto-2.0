@@ -397,6 +397,15 @@ def _protection_quantities_cover_position(
     return covered >= wallet * (1.0 - tolerance)
 
 
+def _wallet_sum_covers_sl_tp(has_sl: bool, has_tp: bool) -> bool:
+    """True when active SL/TP legs already cover the wallet at sum level.
+
+    Naked FIFO entry parents whose qty is trimmed or redundant vs |wallet| must
+    not appear in the hourly audit when this holds (issue #617).
+    """
+    return bool(has_sl and has_tp)
+
+
 def _parent_lot_qty(order: Optional[ExchangeOrder]) -> Optional[float]:
     """Filled/declared qty of an entry parent used to size linked SL/TP legs."""
     if order is None:
@@ -1681,68 +1690,75 @@ class SLTPCheckerService:
                         'tp_covered_qty': tp_covered_qty,
                     }
 
-                # Even when wallet-sum SL/TP looks complete, surface FILLED entry
-                # parents that still lack ACTIVE children (naked micros). Prefer
-                # parent rows over the wallet aggregate so Create sizes to the fill.
+                # Surface FILLED entry parents missing ACTIVE children only when
+                # wallet-sum SL/TP does not already cover the bag. When both legs
+                # cover |wallet|, older FIFO parents are informational noise only
+                # (APT/BTC ghost rows; issue #617) — do not alert or heal them.
                 naked_rows: List[Dict] = []
-                try:
-                    entry_side = position.get("side") or (
-                        "BUY" if float(position.get("balance") or 0) >= 0 else "SELL"
-                    )
-                    naked_parents = _iter_naked_entry_parents(
-                        db, symbol, entry_side=str(entry_side)
-                    )
-                    open_lot_ids = set()
+                if not _wallet_sum_covers_sl_tp(has_sl, has_tp):
                     try:
-                        from app.services.expected_take_profit import rebuild_open_lots
+                        entry_side = position.get("side") or (
+                            "BUY" if float(position.get("balance") or 0) >= 0 else "SELL"
+                        )
+                        naked_parents = _iter_naked_entry_parents(
+                            db, symbol, entry_side=str(entry_side)
+                        )
+                        open_lot_ids = set()
+                        try:
+                            from app.services.expected_take_profit import rebuild_open_lots
 
-                        for lot in rebuild_open_lots(db, symbol) or []:
-                            lot_pid = (getattr(lot, "buy_order_id", None) or "").strip()
-                            if lot_pid:
-                                open_lot_ids.add(lot_pid)
-                    except Exception:
-                        pass
-                    seen_parent_ids = set()
-                    for parent in naked_parents:
-                        pid = (parent.exchange_order_id or "").strip()
-                        if not pid or pid in seen_parent_ids:
-                            continue
-                        parent_qty = _parent_lot_qty(parent) or 0.0
-                        entry_px = _order_entry_price(parent)
-                        mark = position.get("mark_price")
-                        if mark is None:
-                            mark = _fetch_mark_price(symbol)
-                        # Skip sub-dollar dust parents; ETH 0.0052 @ ~1900 is ~$10.
-                        notional = parent_qty * float(entry_px or mark or 0.0)
-                        if parent_qty <= 0 or notional < 1.0:
-                            continue
-                        row = _naked_parent_report_row(
-                            db,
-                            parent,
-                            symbol=symbol,
-                            currency=currency,
-                            balance=float(position.get("balance") or 0.0),
-                            skip_reminder=skip_reminder,
-                            watchlist_item=watchlist_item,
-                            current_price=mark,
-                            in_open_lot=pid in open_lot_ids,
-                        )
-                        naked_rows.append(row)
-                        seen_parent_ids.add(pid)
+                            for lot in rebuild_open_lots(db, symbol) or []:
+                                lot_pid = (getattr(lot, "buy_order_id", None) or "").strip()
+                                if lot_pid:
+                                    open_lot_ids.add(lot_pid)
+                        except Exception:
+                            pass
+                        seen_parent_ids = set()
+                        for parent in naked_parents:
+                            pid = (parent.exchange_order_id or "").strip()
+                            if not pid or pid in seen_parent_ids:
+                                continue
+                            parent_qty = _parent_lot_qty(parent) or 0.0
+                            entry_px = _order_entry_price(parent)
+                            mark = position.get("mark_price")
+                            if mark is None:
+                                mark = _fetch_mark_price(symbol)
+                            # Skip sub-dollar dust parents; ETH 0.0052 @ ~1900 is ~$10.
+                            notional = parent_qty * float(entry_px or mark or 0.0)
+                            if parent_qty <= 0 or notional < 1.0:
+                                continue
+                            row = _naked_parent_report_row(
+                                db,
+                                parent,
+                                symbol=symbol,
+                                currency=currency,
+                                balance=float(position.get("balance") or 0.0),
+                                skip_reminder=skip_reminder,
+                                watchlist_item=watchlist_item,
+                                current_price=mark,
+                                in_open_lot=pid in open_lot_ids,
+                            )
+                            naked_rows.append(row)
+                            seen_parent_ids.add(pid)
+                            logger.warning(
+                                "Naked entry parent %s on %s qty=%s (wallet has_sl=%s has_tp=%s)",
+                                pid,
+                                symbol,
+                                parent_qty,
+                                has_sl,
+                                has_tp,
+                            )
+                    except Exception as naked_err:
                         logger.warning(
-                            "Naked entry parent %s on %s qty=%s (wallet has_sl=%s has_tp=%s)",
-                            pid,
+                            "Naked-entry parent scan failed for %s: %s",
                             symbol,
-                            parent_qty,
-                            has_sl,
-                            has_tp,
+                            naked_err,
+                            exc_info=True,
                         )
-                except Exception as naked_err:
-                    logger.warning(
-                        "Naked-entry parent scan failed for %s: %s",
+                elif logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Skipping naked-entry parent scan for %s: wallet-sum SL+TP covered",
                         symbol,
-                        naked_err,
-                        exc_info=True,
                     )
 
                 if naked_rows:

@@ -512,8 +512,7 @@ class TradingScheduler:
                                 ]
                             if naked_n:
                                 lines.append(
-                                    f" (incl. {naked_n} naked entry parent(s) "
-                                    "hidden by wallet-sum coverage)"
+                                    f" (incl. {naked_n} naked entry parent row(s))"
                                 )
                             if half_heal:
                                 lines.append(".\n\n")
