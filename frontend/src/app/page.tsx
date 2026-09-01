@@ -2066,6 +2066,30 @@ const VERSION_HISTORY = [
 ---
 `
   },
+  {
+    version: '0.96',
+    date: '2026-09-01',
+    change: 'Hourly SL/TP audit skips FIFO parents covered by wallet-sum (#617)',
+    details: `🚀 VERSIÓN 0.96 — WALLET-SUM NAKED PARENT SILENCE (#617)
+
+📋 **Root cause**
+• HOURLY SL/TP AUDIT listed FILLED entry parents missing ACTIVE SL/TP even when wallet-sum SL+TP already covered |wallet|
+• APT/BTC ghost FIFO rows repeated every hour; live positions already protected
+
+✅ **What shipped**
+• \`_wallet_sum_covers_sl_tp\` gate: skip naked-parent scan when both SL and TP legs cover the wallet
+• Hourly Telegram copy no longer claims parents are "hidden by wallet-sum" while still listing them
+• Investigation doc for BONK leftover OCO TP without SL (document only)
+
+🔧 **Live-order path**
+• Audit/read-only only (\`sl_tp_checker.py\`, \`scheduler.py\`). No place/cancel/amend TP/SL. Invent-heal stays OFF.
+
+📦 **PRs**
+• #617 follow-up PR
+
+---
+`
+  },
 
 ];
 
