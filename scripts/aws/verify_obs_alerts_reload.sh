@@ -5,7 +5,6 @@ set -euo pipefail
 REPO="${ATP_REPO_ROOT:-/home/ubuntu/crypto-2.0}"
 cd "$REPO"
 
-# SSM/root may leave .git objects root-owned; ubuntu fetch then fails.
 if [ -d .git ]; then
   sudo chown -R ubuntu:ubuntu .git || true
 fi
@@ -45,11 +44,11 @@ else
 fi
 sleep 2
 
-echo "=== prometheus container age (should stay old unless recreate) ==="
+echo "=== prometheus container age ==="
 docker inspect -f 'prom={{.State.Status}} started={{.State.StartedAt}}' atp-prometheus || true
 
 echo "=== prometheus rules InstanceDown ==="
-curl -sS http://127.0.0.1:9090/api/v1/rules | python3 - <<'PY2'
+curl -sS http://127.0.0.1:9090/api/v1/rules | python3 - <<'PY'
 import sys, json
 d = json.load(sys.stdin)
 found = False
@@ -61,7 +60,7 @@ for g in d.get("data", {}).get("groups", []):
 if not found:
     print("RULE InstanceDown NOT_FOUND")
     raise SystemExit(2)
-PY2
+PY
 
 echo "=== alerts.yml inside prometheus container ==="
 docker exec atp-prometheus sh -c 'grep -nE "InstanceDown|for:" /etc/prometheus/alerts.yml | head -10'

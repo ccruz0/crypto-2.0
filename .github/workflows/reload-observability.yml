@@ -48,16 +48,12 @@ jobs:
           COMPOSE_DIR="${COMPOSE_DIR}"
           cd "\${COMPOSE_DIR}" || { echo "COMPOSE_DIR missing: \${COMPOSE_DIR}"; exit 1; }
           if [ -d .git ]; then sudo chown -R ubuntu:ubuntu .git || true; fi
-          if [ -x scripts/aws/verify_obs_alerts_reload.sh ]; then
-            export ATP_REPO_ROOT="\${COMPOSE_DIR}"
-            bash scripts/aws/verify_obs_alerts_reload.sh
-          else
-            echo "verify_obs_alerts_reload.sh missing; syncing main then retry"
-            sudo -u ubuntu git -C "\${COMPOSE_DIR}" fetch origin main
-            sudo -u ubuntu git -C "\${COMPOSE_DIR}" reset --hard origin/main
-            export ATP_REPO_ROOT="\${COMPOSE_DIR}"
-            bash scripts/aws/verify_obs_alerts_reload.sh
-          fi
+          sudo -u ubuntu git -C "\${COMPOSE_DIR}" fetch origin main
+          sudo -u ubuntu git -C "\${COMPOSE_DIR}" reset --hard origin/main
+          echo "GIT_HEAD=\$(sudo -u ubuntu git -C "\${COMPOSE_DIR}" rev-parse --short HEAD)"
+          test -f scripts/aws/verify_obs_alerts_reload.sh
+          export ATP_REPO_ROOT="\${COMPOSE_DIR}"
+          bash scripts/aws/verify_obs_alerts_reload.sh
           EOF
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           CMD_ID=$(aws ssm send-command \
