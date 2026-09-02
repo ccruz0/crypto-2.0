@@ -1,0 +1,92 @@
+# Reload observability on PROD without laptop AWS SSO.
+# Syncs alerts/throttle from main, rebuilds telegram-alerts only, reloads Prometheus rules.
+# Does NOT restart backend-aws, market-updater, frontend-aws, or trading containers.
+#
+# OIDC: production-gate holds environment:production reviewer approval; the reload job
+# must NOT set environment so the JWT sub stays repo:...:ref:refs/heads/main (IAM trust).
+name: Ops — reload observability (SSM)
+
+on:
+  workflow_dispatch:
+
+# Separate from atp-prod-ec2-deploy — no full compose rebuild; must not queue behind Session Manager.
+concurrency:
+  group: atp-obs-reload
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  production-gate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Production approved
+        run: echo "production environment approved"
+
+  reload-observability:
+    needs: production-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Reload observability on EC2 via SSM
+        env:
+          REGION: ${{ vars.AWS_REGION }}
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          COMPOSE_DIR: ${{ vars.COMPOSE_DIR }}
+        run: |
+          set -euo pipefail
+          read -r -d '' REMOTE <<EOF || true
+          set -eu
+          COMPOSE_DIR="${COMPOSE_DIR}"
+          cd "\${COMPOSE_DIR}" || { echo "COMPOSE_DIR missing: \${COMPOSE_DIR}"; exit 1; }
+          if [ -d .git ]; then sudo chown -R ubuntu:ubuntu .git || true; fi
+          sudo -u ubuntu git -C "\${COMPOSE_DIR}" fetch origin main
+          sudo -u ubuntu git -C "\${COMPOSE_DIR}" reset --hard origin/main
+          echo "GIT_HEAD=\$(sudo -u ubuntu git -C "\${COMPOSE_DIR}" rev-parse --short HEAD)"
+          test -f scripts/aws/verify_obs_alerts_reload.sh
+          export ATP_REPO_ROOT="\${COMPOSE_DIR}"
+          bash scripts/aws/verify_obs_alerts_reload.sh
+          EOF
+          PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
+          CMD_ID=$(aws ssm send-command \
+            --region "$REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "reload observability: InstanceDown 15m + telegram-alerts + prometheus reload" \
+            --parameters "$PARAMS" \
+            --timeout-seconds 300 \
+            --query "Command.CommandId" --output text)
+          echo "SSM CommandId: $CMD_ID"
+          STATUS="Pending"
+          for i in $(seq 1 50); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "$REGION" \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "Status" --output text 2>/dev/null || echo "Pending")
+            case "$STATUS" in
+              Success|Failed|TimedOut|Cancelled) break ;;
+              *) sleep 5 ;;
+            esac
+          done
+          echo "----- remote stdout -----"
+          aws ssm get-command-invocation \
+            --region "$REGION" \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" --output text || true
+          echo "----- remote stderr -----"
+          aws ssm get-command-invocation \
+            --region "$REGION" \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardErrorContent" --output text || true
+          [ "$STATUS" = "Success" ] || { echo "Reload status: $STATUS"; exit 1; }

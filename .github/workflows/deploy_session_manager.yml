@@ -184,7 +184,7 @@ jobs:
             "echo \"🔍 Verifying clean frontend working tree before Docker build...\"",
             "sudo -u ubuntu bash -lc \"cd /home/ubuntu/crypto-2.0 && bash scripts/verify_clean_worktree.sh --frontend-only\"",
             "echo \"🐳 Rebuilding and restarting AWS services (EXCLUDING frontend-aws, backend-aws and backend-aws-canary, which are built+deployed from ECR by deploy-frontend.yml / deploy-backend.yml)...\"",
-            "DEPLOY_SERVICES=$(docker compose --profile aws config --services | grep -vxE '\''frontend-aws|backend-aws|backend-aws-canary'\'' | tr '\\n' '\'' '\'')",
+            "DEPLOY_SERVICES=$(docker compose --profile aws config --services | grep -vxE '\''frontend-aws|backend-aws|backend-aws-canary'\'' | paste -sd '\'' '\'' -)",
             "echo \"Services managed by this deploy: $DEPLOY_SERVICES\"",
             "export GIT_SHA=${{ github.sha }}",
             "export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
