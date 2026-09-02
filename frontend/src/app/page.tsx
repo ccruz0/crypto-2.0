@@ -2269,6 +2269,33 @@ const VERSION_HISTORY = [
 `
   },
 
+  {
+    version: '1.03',
+    date: '2026-09-02',
+    change: 'Backend: OverlapGuard + async liveness to stop post-#642 health hangs (#647)',
+    details: `🚀 VERSIÓN 1.03 — PRIMARY HEALTH HANG FIX (#647 / #642 / #644)
+
+📋 **Symptom**
+• Primary still hangs: /__ping briefly 200 then fails under sync load; event-loop lag 5–12s; rebuild_open_lots storms from dashboard counts; sync health handlers still on default anyio pool
+
+✅ **What shipped (backend only — DO NOT DEPLOY until CI green + operator auth)**
+• Async \`async def\` liveness: /__ping, /health, /api/health, /ping_fast, /api/ping_fast, /test, /
+• OverlapGuard skip-when-busy for exchange_sync open/background, candle_sweep, margin_sample
+• rebuild_open_lots short TTL cache (\`REBUILD_OPEN_LOTS_CACHE_TTL_SEC\`, default 2.0s)
+• Scheduler + signal_monitor hot paths moved to atp-bg via run_in_background
+• Lag monitor WARNING (≤1/10s) + atp-bg queue stats on OverlapGuard skip
+• Kill-switch \`ATP_HEAVY_SYNC_MODE\`: full | throttle | off
+
+🔧 **Out of scope**
+• Invent-heal, OCO/trading execution, compose/prod deploy, nginx canary flip
+
+📦 **Issues**
+• #647 #642 #644
+
+---
+`
+  },
+
 ];
 
 // Helper function to get current version (must be defined before component)
