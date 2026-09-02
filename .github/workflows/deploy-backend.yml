@@ -17,9 +17,17 @@ permissions:
   id-token: write
   contents: read
 jobs:
-  build-and-deploy:
+  # Keep production reviewer gate without changing OIDC sub to environment:production
+  # (IAM trust for gha-deploy-frontend still allows ref:refs/heads/main only).
+  production-gate:
     runs-on: ubuntu-latest
     environment: production
+    steps:
+      - name: Production approved
+        run: echo "production environment approved"
+  build-and-deploy:
+    needs: production-gate
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)

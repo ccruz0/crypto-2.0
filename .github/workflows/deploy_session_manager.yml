@@ -46,9 +46,15 @@ permissions:
   id-token: write
 
 jobs:
-  deploy:
+  production-gate:
     runs-on: ubuntu-latest
     environment: production
+    steps:
+      - name: Production approved
+        run: echo "production environment approved"
+  deploy:
+    needs: production-gate
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
