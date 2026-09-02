@@ -489,6 +489,33 @@ class TradingScheduler:
                             [p.get("symbol") for p in positions_missing[:10]],
                         )
                         try:
+                            from app.services.hourly_sl_tp_alert_dedup import (
+                                evaluate_hourly_sl_tp_audit_send,
+                                load_state,
+                                record_sent,
+                            )
+
+                            dedup_state = load_state()
+                            dedup = evaluate_hourly_sl_tp_audit_send(
+                                dedup_state,
+                                positions_missing,
+                                now_epoch=time.time(),
+                            )
+                            if not dedup.send_alert:
+                                logger.info(
+                                    "Hourly SL/TP audit Telegram suppressed (%s); "
+                                    "fingerprint=%s",
+                                    dedup.suppress_reason or "policy",
+                                    dedup.fingerprint[:80],
+                                )
+                                from app.api.routes_monitoring import (
+                                    record_workflow_execution,
+                                )
+
+                                record_workflow_execution(
+                                    "hourly_sl_tp_check", "success", None
+                                )
+                                return
                             if half_heal:
                                 lines = [
                                     "🔍 <b>HOURLY SL/TP AUDIT</b>\n\n",
@@ -542,6 +569,7 @@ class TradingScheduler:
                             if len(positions_missing) > 5:
                                 lines.append(f"  ... and {len(positions_missing) - 5} more\n")
                             telegram_notifier.send_message("".join(lines))
+                            record_sent(dedup.fingerprint)
                         except Exception as notify_err:
                             logger.warning(
                                 "Failed to send hourly SL/TP audit notification: %s",
