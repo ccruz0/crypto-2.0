@@ -31,6 +31,10 @@ grep -nE 'TRANSIENT|transient_suppress' \
 
 echo "=== rebuild telegram-alerts ==="
 docker compose --profile aws build telegram-alerts
+# Clear compose recreate leftovers (old name conflict seen on prod).
+docker compose --profile aws stop telegram-alerts || true
+docker compose --profile aws rm -f telegram-alerts || true
+docker ps -aq --filter name=telegram-alerts | while read -r cid; do docker rm -f "$cid" || true; done
 docker compose --profile aws up -d --no-deps --force-recreate telegram-alerts
 sleep 3
 docker inspect -f 'telegram={{.State.Status}} running={{.State.Running}} started={{.State.StartedAt}}' atp-telegram-alerts
