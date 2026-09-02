@@ -14,9 +14,10 @@ on:
       - "scripts/aws/observability/telegram-alerts/Dockerfile"
       - "scripts/aws/observability/alerts.yml"
 
+# Separate from atp-prod-ec2-deploy so verify is not blocked by production-gate waits.
 concurrency:
-  group: atp-prod-ec2-deploy
-  cancel-in-progress: false
+  group: atp-obs-verify-reload
+  cancel-in-progress: true
 
 permissions:
   contents: read
