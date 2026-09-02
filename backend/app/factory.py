@@ -434,6 +434,13 @@ def create_app(role: str = "legacy") -> FastAPI:
         import asyncio
         t0 = time.perf_counter()
         logger.info("PERF: Startup event started")
+
+        try:
+            from app.utils.background_executor import start_event_loop_lag_monitor
+
+            await start_event_loop_lag_monitor()
+        except Exception as e:
+            logger.warning("Event loop lag monitor not started: %s", e)
     
         # Schedule ALL background work without blocking - fire and forget
         async def _background_init():
@@ -722,20 +729,18 @@ def create_app(role: str = "legacy") -> FastAPI:
                 logger.error(f"Background init error: {e}", exc_info=True)
     
         # Ensure watchlist is never empty and sync with portfolio symbols
-        async def _ensure_watchlist_not_empty():
-            """Ensure watchlist has at least some items based on portfolio and sync missing portfolio coins"""
-            # Bug 2 Fix: Ensure db session is always closed, even if exception occurs before inner try
+        def _ensure_watchlist_not_empty_sync():
+            """Sync watchlist bootstrap — runs on background executor, not event loop."""
             db = None
             try:
                 from app.database import SessionLocal
                 from app.models.watchlist import WatchlistItem
                 from app.services.portfolio_cache import get_portfolio_summary
-            
+
                 if SessionLocal is None:
                     logger.warning("SessionLocal is None, skipping watchlist sync")
                     return
                 db = SessionLocal()
-                assert db is not None
                 try:
                     # Get portfolio symbols
                     portfolio_symbols = set()
@@ -921,8 +926,7 @@ def create_app(role: str = "legacy") -> FastAPI:
                         db.close()
                     except Exception:
                         pass  # Ignore errors during cleanup
-    
-            # Schedule background work - won't block startup
+
         # CRITICAL FIX: Start background services and signal_monitor directly
         logger.info("📋 Starting background services...")
         try:
@@ -935,10 +939,12 @@ def create_app(role: str = "legacy") -> FastAPI:
         except Exception as e:
             logger.error(f"❌ Failed to start background services: {e}", exc_info=True)
     
-        # Schedule watchlist initialization in background (with delay to allow DB to be ready) in background (with delay to allow DB to be ready)
+        # Schedule watchlist initialization in background (with delay to allow DB to be ready)
         async def _delayed_watchlist_init():
+            from app.utils.background_executor import run_in_background
+
             await asyncio.sleep(10)  # Wait 10 seconds for DB and services to be ready
-            await _ensure_watchlist_not_empty()
+            await run_in_background(_ensure_watchlist_not_empty_sync)
         asyncio.create_task(_delayed_watchlist_init())
 
         # Start real-time price stream for dashboard WebSocket (/api/ws/prices); controlled by ENABLE_WS_PRICES
@@ -960,6 +966,11 @@ def create_app(role: str = "legacy") -> FastAPI:
             stop_price_stream()
         except Exception as e:
             logger.warning("Price stream stop: %s", e)
+        try:
+            from app.utils.background_executor import shutdown_background_executor
+            shutdown_background_executor()
+        except Exception as e:
+            logger.warning("Background executor shutdown: %s", e)
 
     # Define simple endpoints BEFORE routers to ensure they're accessible
     @app.get("/__ping")
