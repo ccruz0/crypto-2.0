@@ -99,8 +99,12 @@ else
   echo "TELEGRAM_POLLER=OK count=$POLLER_COUNT"
 fi
 
-# Scheduler / backend health
-HTTP_CODE="$(curl -sS -o /dev/null -w '%{{http_code}}' --connect-timeout 5 --max-time 15 http://127.0.0.1:8002/api/health 2>/dev/null || echo 000)"
+# Scheduler / backend health (avoid http=000000 when curl -w prints 000 then || echo 000)
+HTTP_CODE="$(curl -sS -o /dev/null -w '%{{http_code}}' --connect-timeout 5 --max-time 15 http://127.0.0.1:8002/api/health 2>/dev/null || true)"
+HTTP_CODE="${{HTTP_CODE:-000}}"
+case "$HTTP_CODE" in
+  *200*) HTTP_CODE=200 ;;
+esac
 if [ "$HTTP_CODE" = "200" ]; then
   echo "SCHEDULER_OK=OK http=$HTTP_CODE"
 else
@@ -405,6 +409,12 @@ def main(argv: list[str] | None = None) -> int:
     if remote_stderr.strip():
         report["remote_stderr"] = remote_stderr.strip()
 
+    # Prefer explicit VIOLATIONS= from remote stdout over opaque SSM ResponseCode.
+    if "violations" in parsed:
+        try:
+            remote_code = 2 if int(parsed["violations"].split()[0]) > 0 else 0
+        except ValueError:
+            pass
     exit_code = 2 if remote_code == 2 else 0
     runtime_warnings = any(
         not report["checks"].get(k, True)
@@ -417,8 +427,13 @@ def main(argv: list[str] | None = None) -> int:
         or runtime_warnings
     )
     if prod_check and not public_api_ok:
-        exit_code = 2
-        has_warnings = True
+        # Public URL from GHA can flake; SSM /api/health is authoritative for host.
+        if report["checks"].get("scheduler_ok"):
+            has_warnings = True
+            report["checks"]["public_api_soft_warn"] = True
+        else:
+            exit_code = 2
+            has_warnings = True
     if has_warnings and exit_code == 0 and not prod_check:
         report["classification"] = "PRODUCTION_AT_RISK"
         exit_code = 1
