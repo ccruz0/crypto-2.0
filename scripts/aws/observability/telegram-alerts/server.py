@@ -3,6 +3,8 @@ import os
 import requests
 from flask import Flask, request, jsonify
 
+from throttle import filter_alerts_for_telegram
+
 BOT_TOKEN = (os.getenv("TELEGRAM_ALERT_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("TELEGRAM_ALERT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
@@ -21,6 +23,9 @@ def send(msg: str):
 def alert():
     payload = request.get_json(force=True, silent=False)
     alerts = payload.get("alerts", [])
+    alerts, suppressed = filter_alerts_for_telegram(alerts)
+    if not alerts:
+        return jsonify({"ok": True, "suppressed": suppressed})
     parts = []
     for a in alerts:
         status = a.get("status", "unknown").upper()
