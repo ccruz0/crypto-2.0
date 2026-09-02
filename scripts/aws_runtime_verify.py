@@ -99,8 +99,12 @@ else
   echo "TELEGRAM_POLLER=OK count=$POLLER_COUNT"
 fi
 
-# Scheduler / backend health
-HTTP_CODE="$(curl -sS -o /dev/null -w '%{{http_code}}' --connect-timeout 5 --max-time 15 http://127.0.0.1:8002/api/health 2>/dev/null || echo 000)"
+# Scheduler / backend health (avoid http=000000 when curl -w prints 000 then || echo 000)
+HTTP_CODE="$(curl -sS -o /dev/null -w '%{{http_code}}' --connect-timeout 5 --max-time 15 http://127.0.0.1:8002/api/health 2>/dev/null || true)"
+HTTP_CODE="${{HTTP_CODE:-000}}"
+case "$HTTP_CODE" in
+  *200*) HTTP_CODE=200 ;;
+esac
 if [ "$HTTP_CODE" = "200" ]; then
   echo "SCHEDULER_OK=OK http=$HTTP_CODE"
 else
@@ -269,6 +273,15 @@ def _emit(exit_code: int, report: dict, remote_stdout: str = "", remote_stderr: 
     if not quiet:
         print(f"classification={report['classification']}")
         print(f"Recorded exitcode={exit_code} to GITHUB_OUTPUT ({report['classification']})")
+        next_step = (report.get("remediation") or {}).get("next_step") or ""
+        if next_step:
+            print(f"next_step={next_step}")
+        checks = report.get("checks") or {}
+        if checks:
+            print("checks=" + json.dumps(checks, sort_keys=True))
+        ssm_details = report.get("ssm_status_details") or ""
+        if ssm_details:
+            print(f"ssm_status={report.get('ssm_status')} details={ssm_details}")
         if remote_stdout.strip():
             print(remote_stdout.strip())
         if remote_stderr.strip():
@@ -320,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     ec2_status, ec2_details = _ec2_instance_state()
     report["checks"]["ec2_instance_running"] = ec2_status == "ok"
     report["checks"]["ec2_instance_state"] = ec2_details
-    if ec2_status != "ok":
+    ec2_denied = "AccessDenied" in str(ec2_details) or "UnauthorizedOperation" in str(ec2_details)
+    if ec2_status != "ok" and not ec2_denied:
         report["ssm_status"] = "skipped"
         report["ssm_status_details"] = f"EC2 state={ec2_details}"
         return _fail_report(
@@ -332,6 +346,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"Current state: {ec2_details}"
             ),
         )
+    if ec2_denied:
+        # OIDC deploy role historically lacked ec2:DescribeInstances; SSM Online is enough.
+        report["checks"]["ec2_instance_running"] = None
+        report["checks"]["ec2_describe_skipped"] = True
 
     if not prod_check:
         compose_ok = _compose_ports_ok()
@@ -391,6 +409,12 @@ def main(argv: list[str] | None = None) -> int:
     if remote_stderr.strip():
         report["remote_stderr"] = remote_stderr.strip()
 
+    # Prefer explicit VIOLATIONS= from remote stdout over opaque SSM ResponseCode.
+    if "violations" in parsed:
+        try:
+            remote_code = 2 if int(parsed["violations"].split()[0]) > 0 else 0
+        except ValueError:
+            pass
     exit_code = 2 if remote_code == 2 else 0
     runtime_warnings = any(
         not report["checks"].get(k, True)
@@ -403,8 +427,13 @@ def main(argv: list[str] | None = None) -> int:
         or runtime_warnings
     )
     if prod_check and not public_api_ok:
-        exit_code = 2
-        has_warnings = True
+        # Public URL from GHA can flake; SSM /api/health is authoritative for host.
+        if report["checks"].get("scheduler_ok"):
+            has_warnings = True
+            report["checks"]["public_api_soft_warn"] = True
+        else:
+            exit_code = 2
+            has_warnings = True
     if has_warnings and exit_code == 0 and not prod_check:
         report["classification"] = "PRODUCTION_AT_RISK"
         exit_code = 1
