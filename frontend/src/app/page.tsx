@@ -2193,6 +2193,32 @@ const VERSION_HISTORY = [
   },
 
   {
+    version: '1.03',
+    date: '2026-09-02',
+    change: 'Auto ML Phase 2: learn SL/TP from fills, human promote (#623)',
+    details: `🚀 VERSIÓN 1.03 — AUTO ML SL/TP PHASE 2 (#623)
+
+📋 **Problem**
+• Phase 1 entry gate + human promote shipped (#622/#626/#627) but SL/TP stayed fixed watchlist 3%/3% — no learning loop from realized fills
+
+✅ **What shipped**
+• Offline walk-forward grid search on COMPLETE trade_outcomes (long + short): proposes sl_pct/tp_pct with merit report vs 3%/3% baseline
+• \`scripts/retrain_and_promote_auto_sltp.py\` + \`pending_sltp_promote.json\` quality gate (no silent promote)
+• GET/POST \`/api/config/auto-ml/sltp\` + Strategy Config Auto panel: SL/TP status + human promote button
+• Runtime resolver applies learned SL/TP for Auto-preset **new** fill protection only when \`AUTO_ML_SLTP_ENABLED=true\` (default OFF); shadow log when gate off
+• BUY entry gate unchanged; invent-heal untouched; open positions not amended
+
+🔧 **Flags (all default safe)**
+• \`AUTO_ML_SLTP_ENABLED=false\`, \`AUTO_ML_SLTP_AUTONOMOUS_PROMOTE=false\`
+
+📦 **Issue**
+• #623
+
+---
+`
+  },
+
+  {
     version: '1.02',
     date: '2026-09-02',
     change: 'Keep __ping /api/health responsive under exchange_sync and candle load',

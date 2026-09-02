@@ -4021,20 +4021,20 @@ class ExchangeSyncService:
                 "tp_price": _protection_order_price(existing_tp),
             }
         watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
-        sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"
-        sl_pct = 3.0 if sl_tp_mode == "conservative" else 2.0
-        tp_pct = 3.0 if sl_tp_mode == "conservative" else 2.0
-        if watchlist_item:
-            _sl = getattr(watchlist_item, "sl_percentage", None)
-            _tp = getattr(watchlist_item, "tp_percentage", None)
-            if strict_percentages and _sl is not None and float(_sl) > 0:
-                sl_pct = abs(float(_sl))
-            elif _sl is not None and float(_sl) > 0:
-                sl_pct = abs(float(_sl))
-            if strict_percentages and _tp is not None and float(_tp) > 0:
-                tp_pct = abs(float(_tp))
-            elif _tp is not None and float(_tp) > 0:
-                tp_pct = abs(float(_tp))
+        from app.services.auto_sltp_model import resolve_effective_sltp_percentages
+
+        sl_pct, tp_pct, _sl_tp_mode, sltp_meta = resolve_effective_sltp_percentages(
+            symbol, watchlist_item
+        )
+        if sltp_meta.get("auto_sltp_applied"):
+            logger.info(
+                "[AUTO_ML_SLTP] parent=%s symbol=%s using learned sl=%.2f%% tp=%.2f%% v=%s",
+                order_id,
+                symbol,
+                sl_pct,
+                tp_pct,
+                sltp_meta.get("learned_version"),
+            )
         if sl_price_override_f is not None:
             sl_price = sl_price_override_f
         else:

@@ -295,3 +295,80 @@ GitHub Actions workflow **Ops — Auto ML hybrid retrain**:
 | `workflow_dispatch` `dry_run_only=false` | Human merit gate only | Sets `AUTO_ML_HUMAN_PROMOTE=true`; promotes if holdout metric improves; never `--force-promote` or `AUTO_ML_AUTONOMOUS_PROMOTE=true` |
 
 Also useful: **Ops — Auto ML fill feature diag** (read-only fill/context diagnostics).
+
+---
+
+## Phase 2 — Learn SL/TP from fills (#623)
+
+**Goal:** Offline walk-forward grid search on COMPLETE `trade_outcomes` (long **and** short)
+to propose SL/TP %% distances vs conservative 3%/3% baseline. Human promote only;
+live gate **default OFF**. Does **not** amend open positions or enable invent-heal.
+
+### Env flags
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `AUTO_ML_SLTP_ENABLED` | **false** | Use promoted `sltp_manifest.json` for Auto-preset **new** fill protection |
+| `AUTO_ML_SLTP_SHADOW_LOG` | true | Log `[AUTO_ML_SLTP]` learned vs watchlist when gate off |
+| `AUTO_ML_SLTP_AUTONOMOUS_PROMOTE` | **false** | Never enable in prod |
+| `AUTO_ML_SLTP_HUMAN_PROMOTE` | **false** | Shell/workflow merit promote of SL/TP manifest |
+| `AUTO_ML_SLTP_DIR` | same as entry model dir | `sltp_manifest.json` location |
+| `AUTO_ML_SLTP_PROMOTE_MIN_ROWS` | 20 | Min COMPLETE outcomes to promote |
+| `AUTO_ML_SLTP_PROMOTE_MIN_DELTA` | 0.0 | Min holdout expectancy gain vs baseline |
+
+BUY entry gate (`AUTO_ML_ENABLED`) is unchanged by Phase 2.
+
+### Offline retrain
+
+```bash
+backend/.venv/bin/python -m pip install -r scripts/requirements-auto-ml.txt
+
+# Demo (24 synthetic fills)
+backend/.venv/bin/python scripts/retrain_and_promote_auto_sltp.py --demo --min-rows 20
+
+# Prod DB (merit report only; writes pending when quality passes)
+backend/.venv/bin/python scripts/retrain_and_promote_auto_sltp.py \
+  --database-url "$DATABASE_URL" --days 90 --dry-run
+
+# Human promote via shell (optional)
+AUTO_ML_SLTP_HUMAN_PROMOTE=true backend/.venv/bin/python \
+  scripts/retrain_and_promote_auto_sltp.py --database-url "$DATABASE_URL" --days 90
+```
+
+Merit report: `models/auto_entry/sltp_merit_report_vN.txt` (expectancy, win rate, max DD vs baseline).
+
+### Human promote (dashboard / API)
+
+```bash
+curl -sS https://dashboard.hilovivo.com/api/config/auto-ml/sltp | jq \
+  '{gate_enabled, manifest_present, sl_pct, tp_pct, pending_promote, metrics}'
+
+curl -sS -X POST https://dashboard.hilovivo.com/api/config/auto-ml/sltp/promote \
+  -H 'Content-Type: application/json' -d '{"confirm": true}'
+```
+
+Strategy Config → Auto also shows **Auto ML SL/TP (Phase 2)** panel with promote button.
+
+### Enable live gate (operator, after promote)
+
+```bash
+# .env.aws — explicit opt-in only
+AUTO_ML_SLTP_ENABLED=true
+docker compose --profile aws up -d backend-aws --force-recreate
+```
+
+### Rollback
+
+1. Set `AUTO_ML_SLTP_ENABLED=false` and recreate backend.
+2. Or restore previous `sltp_manifest.json` from `sltp_manifest.prev.json`.
+3. Open positions are **not** retrofitted.
+
+### Tests
+
+```bash
+cd backend && python -m pytest \
+  tests/test_auto_sltp_offline.py \
+  tests/test_auto_sltp_promote.py \
+  tests/test_auto_sltp_live_gate.py \
+  tests/test_auto_sltp_status_api.py -q
+```
