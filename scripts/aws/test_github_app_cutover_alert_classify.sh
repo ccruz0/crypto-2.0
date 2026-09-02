@@ -152,13 +152,12 @@ else
   assert_eq "enospc_retry_no_bare_compose" "ok" "ok"
 fi
 
-# Runner: recovery Telegram only when note is exact healed string (not skipped*).
+# Runner: TRANSIENT failures do not page (issue #616); AUTH/OTHER still send.
 runner="$SCRIPT_DIR/run_github_app_cutover_monitor_with_alerts.sh"
-grep -q 'AUTO_HEAL_NOTE="attempted — ping_fast recovered"' "$runner" \
-  && grep -q 'AUTO_HEAL_NOTE" == "attempted — ping_fast recovered"' "$runner" \
-  && grep -q 'auto-heal skipped:' "$runner" \
-  && assert_eq "recovery_notify_requires_real_heal" "ok" "ok" \
-  || assert_eq "recovery_notify_requires_real_heal" "ok" "missing"
+grep -q 'TRANSIENT failure persists after recheck — suppressing Telegram' "$runner" \
+  && grep -q 'No recovery Telegram for TRANSIENT auto-heal' "$runner" \
+  && assert_eq "transient_failures_suppressed_from_telegram" "ok" "ok" \
+  || assert_eq "transient_failures_suppressed_from_telegram" "ok" "missing"
 
 echo
 echo "Results: PASS=$PASS FAIL=$FAIL"

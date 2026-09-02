@@ -165,19 +165,7 @@ if [[ "$FAIL" == "yes" ]]; then
     if [[ "$HEALTH" == "PASS" && "$CUTOVER" == "YES" && "$AUTH_MODE" == "github_app" ]]; then
       echo "Transient recheck PASS — suppressing Telegram alert."
       echo "Monitor failure reasons (initial, cleared): ${FAIL_REASONS[*]}"
-      recovered_msg="$(cat <<EOF
-✅ ATP GitHub App Cutover auto-healed
-
-Time UTC: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-Previous: TRANSIENT (backend/probes not ready)
-Auto-heal: $AUTO_HEAL_NOTE
-Now: auth_mode=github_app CUTOVER_READY=YES HEALTH=PASS
-EOF
-)"
-      # Only notify when a real heal path recovered (not skip/cooldown/blip).
-      if [[ "$AUTO_HEAL_NOTE" == "attempted — ping_fast recovered" ]]; then
-        send_telegram "$recovered_msg" || true
-      fi
+      # No recovery Telegram for TRANSIENT auto-heal (issue #616 — hourly flap noise).
       exit 0
     fi
 
@@ -188,6 +176,13 @@ EOF
     SEVERITY="$(classify_failure "$AUTH_MODE" "$CUTOVER" "$MINT_OK" "$MONITOR_FAILURES")"
     MONITOR_OUT="$RECHECK_OUT"
     echo "classified severity after recheck: $SEVERITY"
+
+    # TRANSIENT still failing after recheck: log only — real outages page via InstanceDown (>15m).
+    if [[ "$SEVERITY" == "TRANSIENT" ]]; then
+      echo "TRANSIENT failure persists after recheck — suppressing Telegram (AUTH/OTHER still page)."
+      echo "Monitor failure reasons: ${FAIL_REASONS[*]}"
+      exit 1
+    fi
   fi
 
   FAILURES_BLOCK="none"
