@@ -34,9 +34,15 @@ permissions:
   id-token: write
 
 jobs:
-  build-deploy:
+  production-gate:
     runs-on: ubuntu-latest
     environment: production
+    steps:
+      - name: Production approved
+        run: echo "production environment approved"
+  build-deploy:
+    needs: production-gate
+    runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
