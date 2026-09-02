@@ -9,8 +9,13 @@
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:ccruz0/crypto-2.0:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "ForAnyValue:StringLike": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:ccruz0/crypto-2.0:ref:refs/heads/main",
+            "repo:ccruz0/crypto-2.0:environment:production"
+          ]
         }
       }
     }
