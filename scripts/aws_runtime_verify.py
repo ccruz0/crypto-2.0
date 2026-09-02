@@ -269,6 +269,15 @@ def _emit(exit_code: int, report: dict, remote_stdout: str = "", remote_stderr: 
     if not quiet:
         print(f"classification={report['classification']}")
         print(f"Recorded exitcode={exit_code} to GITHUB_OUTPUT ({report['classification']})")
+        next_step = (report.get("remediation") or {}).get("next_step") or ""
+        if next_step:
+            print(f"next_step={next_step}")
+        checks = report.get("checks") or {}
+        if checks:
+            print("checks=" + json.dumps(checks, sort_keys=True))
+        ssm_details = report.get("ssm_status_details") or ""
+        if ssm_details:
+            print(f"ssm_status={report.get('ssm_status')} details={ssm_details}")
         if remote_stdout.strip():
             print(remote_stdout.strip())
         if remote_stderr.strip():
@@ -320,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
     ec2_status, ec2_details = _ec2_instance_state()
     report["checks"]["ec2_instance_running"] = ec2_status == "ok"
     report["checks"]["ec2_instance_state"] = ec2_details
-    if ec2_status != "ok":
+    ec2_denied = "AccessDenied" in str(ec2_details) or "UnauthorizedOperation" in str(ec2_details)
+    if ec2_status != "ok" and not ec2_denied:
         report["ssm_status"] = "skipped"
         report["ssm_status_details"] = f"EC2 state={ec2_details}"
         return _fail_report(
@@ -332,6 +342,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"Current state: {ec2_details}"
             ),
         )
+    if ec2_denied:
+        # OIDC deploy role historically lacked ec2:DescribeInstances; SSM Online is enough.
+        report["checks"]["ec2_instance_running"] = None
+        report["checks"]["ec2_describe_skipped"] = True
 
     if not prod_check:
         compose_ok = _compose_ports_ok()
