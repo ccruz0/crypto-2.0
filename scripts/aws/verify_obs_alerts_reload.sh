@@ -14,12 +14,12 @@ sudo -u ubuntu git -C "$REPO" reset --hard origin/main
 echo "GIT_HEAD=$(sudo -u ubuntu git -C "$REPO" rev-parse --short HEAD)"
 
 echo "=== alerts.yml InstanceDown ==="
-grep -nE 'alert: InstanceDown|for: |more than' scripts/aws/observability/alerts.yml | head -20
+grep -nE 'alert: InstanceDown|for: |more than' scripts/aws/observability/alerts.yml | head -20 || true
 grep -qE 'for:[[:space:]]*15m' scripts/aws/observability/alerts.yml
 
 test -f scripts/aws/observability/telegram-alerts/throttle.py && echo THROTTLE_FILE=ok
-grep -nE 'filter_alerts_for_telegram|from throttle' scripts/aws/observability/telegram-alerts/server.py
-grep -nE 'COPY .*throttle|COPY server' scripts/aws/observability/telegram-alerts/Dockerfile
+grep -nE 'filter_alerts_for_telegram|from throttle' scripts/aws/observability/telegram-alerts/server.py || true
+grep -nE 'COPY .*throttle|COPY server' scripts/aws/observability/telegram-alerts/Dockerfile || true
 
 echo "=== health_snapshot transient throttle ==="
 grep -nE 'ATP_HEALTH_MIN_FAIL_MINUTES|transient flap|action_required_skipped' scripts/diag/health_snapshot_telegram_alert.sh | head -10 || true
@@ -52,19 +52,14 @@ echo "=== prometheus container age ==="
 docker inspect -f 'prom={{.State.Status}} started={{.State.StartedAt}}' atp-prometheus || true
 
 echo "=== prometheus rules InstanceDown ==="
-curl -sS http://127.0.0.1:9090/api/v1/rules | python3 - <<'PY'
-import sys, json
-d = json.load(sys.stdin)
-found = False
-for g in d.get("data", {}).get("groups", []):
-    for r in g.get("rules", []):
-        if r.get("name") == "InstanceDown":
-            found = True
-            print("RULE", r.get("name"), "duration", r.get("duration"), "state", r.get("state"), "health", r.get("health"))
+curl -sS http://127.0.0.1:9090/api/v1/rules > /tmp/prom_rules.json
+python3 -c 'import json;d=json.load(open("/tmp/prom_rules.json")); found=False
+for g in d.get("data",{}).get("groups",[]):
+  for r in g.get("rules",[]):
+    if r.get("name")=="InstanceDown":
+      found=True; print("RULE",r.get("name"),"duration",r.get("duration"),"state",r.get("state"),"health",r.get("health"))
 if not found:
-    print("RULE InstanceDown NOT_FOUND")
-    raise SystemExit(2)
-PY
+  print("RULE InstanceDown NOT_FOUND"); raise SystemExit(2)'
 
 echo "=== alerts.yml inside prometheus container ==="
 docker exec atp-prometheus sh -c 'grep -nE "InstanceDown|for:" /etc/prometheus/alerts.yml | head -10'
