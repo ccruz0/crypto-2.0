@@ -1,0 +1,6 @@
+# ATP primary backend health watchdog — synthetic /api/health probe every 2 minutes.
+# Install: docs/runbooks/ATP_HEALTH_WATCHDOG.md
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+*/2 * * * * root /home/ubuntu/automated-trading-platform/scripts/aws/health_watchdog.sh >> /var/log/atp/health_watchdog.log 2>&1
