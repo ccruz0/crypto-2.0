@@ -8,6 +8,7 @@ from app.services.daily_summary import daily_summary_service
 from app.services.telegram_commands import process_telegram_commands
 from app.services.sl_tp_checker import sl_tp_checker_service
 from app.database import SessionLocal
+from app.utils.background_executor import run_in_background
 
 
 def _is_primary_report_sender() -> bool:
@@ -175,7 +176,7 @@ class TradingScheduler:
                 self.last_daily_summary_date = today
                 
                 # Run blocking call in thread pool
-                await asyncio.to_thread(self.check_daily_summary_sync)
+                await run_in_background(self.check_daily_summary_sync)
                 
                 # Wait 2 minutes to avoid duplicate sends
                 await asyncio.sleep(120)
@@ -239,7 +240,7 @@ class TradingScheduler:
                 self.last_sl_tp_check_date = today
                 
                 # Run blocking DB/API calls in thread pool
-                await asyncio.to_thread(self.check_sl_tp_positions_sync)
+                await run_in_background(self.check_sl_tp_positions_sync)
                 
                 # Wait 2 minutes to avoid duplicate checks
                 await asyncio.sleep(120)
@@ -284,7 +285,7 @@ class TradingScheduler:
                 self.last_sell_orders_report_date = today_bali
                 
                 # Run blocking DB/API calls in thread pool
-                await asyncio.to_thread(self.check_sell_orders_report_sync)
+                await run_in_background(self.check_sell_orders_report_sync)
                 
                 # Wait 2 minutes to avoid duplicate sends
                 await asyncio.sleep(120)
@@ -374,7 +375,7 @@ class TradingScheduler:
                 self.last_nightly_consistency_date = today_bali
                 
                 # Run blocking script execution in thread pool
-                await asyncio.to_thread(self.check_nightly_consistency_sync)
+                await run_in_background(self.check_nightly_consistency_sync)
                 
                 # Wait 2 minutes to avoid duplicate runs
                 await asyncio.sleep(120)
@@ -418,7 +419,7 @@ class TradingScheduler:
     async def check_telegram_commands(self):
         """Check for pending Telegram commands - async wrapper"""
         # Run blocking DB/API calls in thread pool
-        await asyncio.to_thread(self.check_telegram_commands_sync)
+        await run_in_background(self.check_telegram_commands_sync)
     
     def check_hourly_sl_tp_missed_sync(self):
         """Hourly SL/TP audit / scoped heal.
@@ -877,7 +878,7 @@ class TradingScheduler:
         async with self._approval_queue_check_lock:
             if should_check:
                 self.last_approval_queue_check = now
-                await asyncio.to_thread(self.check_approval_queue_sync)
+                await run_in_background(self.check_approval_queue_sync)
                 await asyncio.sleep(2)
 
     def check_orphan_orders_sync(self):
@@ -911,7 +912,7 @@ class TradingScheduler:
         async with self._orphan_order_check_lock:
             if should_check:
                 self.last_orphan_order_check = now
-                await asyncio.to_thread(self.check_orphan_orders_sync)
+                await run_in_background(self.check_orphan_orders_sync)
                 await asyncio.sleep(120)
 
     async def check_hourly_sl_tp_missed(self):
@@ -934,7 +935,7 @@ class TradingScheduler:
                 self.last_hourly_sl_tp_check = now
                 
                 # Run blocking DB/API calls in thread pool
-                await asyncio.to_thread(self.check_hourly_sl_tp_missed_sync)
+                await run_in_background(self.check_hourly_sl_tp_missed_sync)
                 
                 # Wait 2 minutes to avoid duplicate checks
                 await asyncio.sleep(120)
@@ -1027,7 +1028,7 @@ class TradingScheduler:
                 and self.last_daily_followup_date != today
             ):
                 self.last_daily_followup_date = today
-                await asyncio.to_thread(self.check_daily_followup_sync)
+                await run_in_background(self.check_daily_followup_sync)
                 await asyncio.sleep(120)
 
     def check_kr_refresh_sync(self):
@@ -1066,7 +1067,7 @@ class TradingScheduler:
                 and self.last_kr_refresh_date != today
             ):
                 self.last_kr_refresh_date = today
-                await asyncio.to_thread(self.check_kr_refresh_sync)
+                await run_in_background(self.check_kr_refresh_sync)
                 await asyncio.sleep(120)
 
     async def check_weekly_executive_report(self):
@@ -1085,7 +1086,7 @@ class TradingScheduler:
                 and self.last_weekly_executive_report_date != today
             ):
                 self.last_weekly_executive_report_date = today
-                await asyncio.to_thread(self.check_weekly_executive_report_sync)
+                await run_in_background(self.check_weekly_executive_report_sync)
                 await asyncio.sleep(120)
 
     async def run_scheduler(self):
@@ -1100,7 +1101,7 @@ class TradingScheduler:
             logger.warning(f"[SCHEDULER] Failed to run Telegram health-check on startup: {e}")
 
         try:
-            await asyncio.to_thread(self.check_approval_queue_sync)
+            await run_in_background(self.check_approval_queue_sync)
         except Exception as e:
             logger.warning("[SCHEDULER] Failed approval queue maintenance on startup: %s", e)
         
@@ -1132,7 +1133,7 @@ class TradingScheduler:
                             finally:
                                 db.close()
 
-                        await asyncio.to_thread(_refresh_equity_peak)
+                        await run_in_background(_refresh_equity_peak)
                     except Exception as eq_err:
                         logger.warning("[SCHEDULER] system_core equity_peak_refresh thread failed: %s", eq_err)
                 if primary_reports:

@@ -11,6 +11,8 @@ Calculates expected take profit for open positions by:
 """
 import logging
 import os
+import threading
+import time
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -20,6 +22,19 @@ from sqlalchemy import and_, or_
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 
 logger = logging.getLogger(__name__)
+
+_REBUILD_OPEN_LOTS_CACHE: Dict[str, Tuple[float, List["OpenLot"]]] = {}
+_REBUILD_OPEN_LOTS_CACHE_LOCK = threading.Lock()
+
+
+def _rebuild_open_lots_cache_ttl() -> float:
+    return float(os.getenv("REBUILD_OPEN_LOTS_CACHE_TTL_SEC", "2.0"))
+
+
+def clear_rebuild_open_lots_cache_for_tests() -> None:
+    """Clear TTL cache between unit tests."""
+    with _REBUILD_OPEN_LOTS_CACHE_LOCK:
+        _REBUILD_OPEN_LOTS_CACHE.clear()
 
 
 # Active statuses for TP orders (orders that can still execute)
@@ -849,6 +864,26 @@ def _parent_order_id(order: ExchangeOrder) -> Optional[str]:
 
 
 def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
+    """Rebuild open lots with a short TTL cache to collapse dashboard storms."""
+    ttl = _rebuild_open_lots_cache_ttl()
+    if ttl > 0:
+        now = time.monotonic()
+        with _REBUILD_OPEN_LOTS_CACHE_LOCK:
+            cached = _REBUILD_OPEN_LOTS_CACHE.get(symbol)
+            if cached is not None:
+                cached_at, lots = cached
+                if now - cached_at < ttl:
+                    return list(lots)
+
+    result = _rebuild_open_lots_uncached(db, symbol)
+
+    if ttl > 0:
+        with _REBUILD_OPEN_LOTS_CACHE_LOCK:
+            _REBUILD_OPEN_LOTS_CACHE[symbol] = (time.monotonic(), list(result))
+    return result
+
+
+def _rebuild_open_lots_uncached(db: Session, symbol: str) -> List[OpenLot]:
     """
     Rebuild open lots from executed orders.
 
