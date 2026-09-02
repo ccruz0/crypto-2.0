@@ -84,22 +84,34 @@ def record_margin_snapshot(db: Session) -> Optional[MarginSnapshot]:
     return row
 
 
+def _run_margin_sample() -> None:
+    """One margin sample — sync; run via background executor, not on the event loop."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        record_margin_snapshot(db)
+    finally:
+        db.close()
+
+
 async def start_margin_recorder_loop() -> None:
     """Muestrea cada RECORD_INTERVAL_SECONDS. Nunca muere por una excepcion."""
     import asyncio
 
-    from app.database import SessionLocal
+    from app.utils.background_executor import heavy_background_work_allowed, run_in_background
 
     logger.info(
         "[MARGIN] bucle de registro iniciado (cada %ds)", RECORD_INTERVAL_SECONDS
     )
     while True:
         try:
-            db = SessionLocal()
-            try:
-                record_margin_snapshot(db)
-            finally:
-                db.close()
+            if heavy_background_work_allowed():
+                await run_in_background(_run_margin_sample)
+            else:
+                logger.warning(
+                    "[MARGIN] muestra omitida — event loop degradado (health-first)"
+                )
         except asyncio.CancelledError:  # pragma: no cover
             logger.info("[MARGIN] bucle cancelado")
             raise

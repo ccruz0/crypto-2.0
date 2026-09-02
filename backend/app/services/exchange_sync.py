@@ -6380,7 +6380,9 @@ class ExchangeSyncService:
             return
         db = SessionLocal()
         try:
-            await asyncio.to_thread(self._run_open_orders_sync_sync, db)
+            from app.utils.background_executor import run_in_background
+
+            await run_in_background(self._run_open_orders_sync_sync, db)
             self.last_open_orders_sync = datetime.now(timezone.utc)
         finally:
             db.close()
@@ -6392,12 +6394,29 @@ class ExchangeSyncService:
             return
         db = SessionLocal()
         try:
-            await asyncio.to_thread(self.sync_balances, db)
+            from app.utils.background_executor import (
+                event_loop_lag_seconds,
+                heavy_background_work_allowed,
+                run_in_background,
+            )
+
+            await run_in_background(self.sync_balances, db)
+            if not heavy_background_work_allowed():
+                logger.warning(
+                    "sync_order_history skipped — event loop lag %.2fs (threshold %.2fs); "
+                    "open orders refresh continues independently",
+                    event_loop_lag_seconds(),
+                    float(os.environ.get("EVENT_LOOP_LAG_THRESHOLD_SEC", "1.5")),
+                )
+                self.last_sync = datetime.now(timezone.utc)
+                return
             history_started = time.monotonic()
             logger.info("sync_order_history start")
             try:
                 await asyncio.wait_for(
-                    asyncio.to_thread(self.sync_order_history, db, page_size=200, max_pages=10),
+                    run_in_background(
+                        self.sync_order_history, db, page_size=200, max_pages=10
+                    ),
                     timeout=self.order_history_timeout,
                 )
                 logger.info(

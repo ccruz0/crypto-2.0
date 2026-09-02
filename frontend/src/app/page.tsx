@@ -2193,6 +2193,31 @@ const VERSION_HISTORY = [
   },
 
   {
+    version: '1.02',
+    date: '2026-09-02',
+    change: 'Keep __ping /api/health responsive under exchange_sync and candle load',
+    details: `🚀 VERSIÓN 1.02 — HEALTH LIVENESS UNDER SYNC LOAD
+
+📋 **Symptom**
+• Primary backend-aws stayed Up but localhost:8002/__ping and /api/health timed out while exchange_sync, rebuild paths, and candle_recorder saturated the asyncio default thread pool; gunicorn WORKER TIMEOUT; nginx /api/health proxies to __ping; restart helped only until boot sync resumed
+
+✅ **What shipped**
+• Dedicated \`atp-bg\` ThreadPoolExecutor for heavy background work (exchange_sync, candle_recorder, margin_recorder, watchlist bootstrap) — keeps Starlette default pool free for sync health handlers
+• Event-loop lag monitor + circuit breaker: skip order-history and candle/margin sweeps when loop lag exceeds threshold (open-orders sync unchanged)
+• __ping remains static JSON with no DB/exchange calls; host health_watchdog.sh unchanged
+
+🔧 **Verify**
+• \`curl -m 2 http://localhost:8002/__ping\` stays <2s during exchange_sync boot
+• \`pytest backend/tests/test_health_liveness_under_sync_load.py\`
+
+📦 **Risk**
+• Low: no order place/cancel/amend, no invent-heal, no trading-executor isolation changes; order-history may defer one cycle when loop is degraded
+
+---
+`
+  },
+
+  {
     version: '1.01',
     date: '2026-09-02',
     change: 'Reduce Telegram alert noise: InstanceDown 15m, SL/TP audit dedup (#616)',

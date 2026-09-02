@@ -273,11 +273,31 @@ def _symbols_from_watchlist(db: Session) -> List[str]:
         return []
 
 
+def _run_candle_sweep() -> None:
+    """One candle sweep — sync; run via background executor, not on the event loop."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        symbols = _symbols_from_watchlist(db)
+        if not symbols:
+            logger.info("[CANDLES] watchlist vacia, no hay nada que registrar")
+            return
+        totals = record_all(db, symbols, count=RECORD_COUNT)
+        logger.info(
+            "[CANDLES] barrido completo: %d simbolos, nuevas=%s",
+            len(symbols),
+            totals,
+        )
+    finally:
+        db.close()
+
+
 async def start_candle_recorder_loop() -> None:
     """Registra velas cada RECORD_INTERVAL_SECONDS. Nunca muere por una excepcion."""
     import asyncio
 
-    from app.database import SessionLocal
+    from app.utils.background_executor import heavy_background_work_allowed, run_in_background
 
     logger.info(
         "[CANDLES] bucle de registro iniciado (cada %ds, %d velas, timeframes=%s)",
@@ -285,20 +305,12 @@ async def start_candle_recorder_loop() -> None:
     )
     while True:
         try:
-            db = SessionLocal()
-            try:
-                symbols = _symbols_from_watchlist(db)
-                if not symbols:
-                    logger.info("[CANDLES] watchlist vacia, no hay nada que registrar")
-                else:
-                    totals = record_all(db, symbols, count=RECORD_COUNT)
-                    logger.info(
-                        "[CANDLES] barrido completo: %d simbolos, nuevas=%s",
-                        len(symbols),
-                        totals,
-                    )
-            finally:
-                db.close()
+            if heavy_background_work_allowed():
+                await run_in_background(_run_candle_sweep)
+            else:
+                logger.warning(
+                    "[CANDLES] barrido omitido — event loop degradado (health-first)"
+                )
         except asyncio.CancelledError:  # pragma: no cover
             logger.info("[CANDLES] bucle cancelado")
             raise
