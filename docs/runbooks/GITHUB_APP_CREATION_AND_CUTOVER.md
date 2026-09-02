@@ -471,7 +471,7 @@ bash scripts/aws/uninstall_github_app_cutover_cron.sh
 | Event | Telegram |
 |-------|----------|
 | Monitor **FAIL** (AUTH / OTHER) | Immediate alert with severity, failure list, and remedy |
-| Monitor **FAIL** (TRANSIENT only) | Auto-heal (disk reclaim if full → `ensure_stack_up` → `prod_compose.sh restart backend-aws`, including ENOSPC retry), wait, recheck; alert only if still failing. On recovery after a real heal, one “auto-healed” notice (skips/cooldown/blips do not notify). |
+| Monitor **FAIL** (TRANSIENT only) | Observe-only by default: log + short recheck, no Telegram (#616). Optional auto-heal (`GITHUB_APP_CUTOVER_AUTO_HEAL=1`) waits for probe recovery; **does not** run `compose up` on a running `backend-aws` (#638). Restart only with `GITHUB_APP_CUTOVER_RESTART_BACKEND=1`. Sustained outages page via InstanceDown (>15m). |
 | Monitor **PASS** | Success heartbeat at most once every **12 hours** |
 | After **2026-06-12 08:18 UTC** with **PASS** | One-time PAT-removal-ready message (marker: `logs/github_app_pat_removal_ready_alert_sent`) |
 
@@ -483,12 +483,16 @@ bash scripts/aws/uninstall_github_app_cutover_cron.sh
 | `AUTH` | GitHub App cutover or live mint broken (`auth_mode` known and wrong, or mint failed while backend reachable) | `verify_github_app_cutover_ready.sh` + SSM / container env |
 | `OTHER` | Unclassified monitor failure | Rerun monitor + inspect `logs/github_app_monitor_latest.log` |
 
-**Auto-heal (TRANSIENT):** enabled by default (`GITHUB_APP_CUTOVER_AUTO_HEAL=1`). Order:
+**Auto-heal (TRANSIENT, optional):** **disabled by default** (`GITHUB_APP_CUTOVER_AUTO_HEAL=0`, issue #638). When enabled:
 1. If root disk ≥ `GITHUB_APP_CUTOVER_DISK_RECLAIM_PCT` (default 90%): run
    `infra/cleanup_disk.sh` + `predeploy_disk_guard.sh` (volume-safe; no named-volume prune).
-2. `scripts/aws/ensure_stack_up.sh` (never `compose down`).
-3. Restart `backend-aws` if `/ping_fast` is still down; on `no space left on device`,
-   reclaim again and retry restart.
+2. If `backend-aws` **container is running**: wait for `/ping_fast` recovery only — **never**
+   `docker compose up -d` (that recreated the container and caused hourly Prometheus scrape flaps).
+3. If the container is **not running**: `scripts/aws/ensure_stack_up.sh` (never `compose down`).
+4. Restart `backend-aws` only when `GITHUB_APP_CUTOVER_RESTART_BACKEND=1` (explicit opt-in).
+
+Cron schedule: **minute 25** each hour UTC (`install_github_app_cutover_cron.sh`) to avoid
+collision with HOURLY SL/TP audit and health snapshot at `:00`.
 
 Skips when a fresh deploy marker is present or within cooldown
 (`GITHUB_APP_CUTOVER_AUTO_HEAL_COOLDOWN_S`, default 900s). Does **not** rewrite
