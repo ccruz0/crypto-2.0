@@ -776,6 +776,17 @@ export default function ExpectedTakeProfitTab({
                     to prior filled buys — not an open spot position.
                   </div>
                 )}
+                {(expectedTPDetails.wallet_covered_phantoms_hidden ?? 0) > 0 && (
+                  <div
+                    className="rounded-lg border border-slate-300 bg-slate-50 dark:border-slate-600 dark:bg-slate-900/40 p-3 text-sm text-slate-800 dark:text-slate-200"
+                    data-testid="wallet-covered-phantoms-banner"
+                  >
+                    {expectedTPDetails.wallet_covered_phantoms_hidden} FIFO ledger row
+                    {expectedTPDetails.wallet_covered_phantoms_hidden === 1 ? '' : 's'} hidden —
+                    wallet-sum SL+TP already covers the live position. These are book ghosts, not
+                    additional live shorts. Invent-heal stays OFF; enable only with operator approval.
+                  </div>
+                )}
                 {expectedTPDetails.cost_basis_unknown && (
                   <div className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/30 p-3 text-sm text-amber-800 dark:text-amber-200">
                     Cost basis not tracked for this position — there are no recorded buy orders,

@@ -1914,6 +1914,9 @@ export interface ExpectedTPDetails {
     | 'ghost_long_vs_short'
     | 'ghost_mixed_trimmed'
     | null;
+  /** Rows hidden because exceeds_wallet FIFO ghosts are covered by wallet-sum SL+TP (#617). */
+  wallet_covered_phantoms_hidden?: number;
+  hide_wallet_covered_phantoms_enabled?: boolean;
   strategy?: {
     sl_percentage: number;
     tp_percentage: number;

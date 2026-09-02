@@ -10,6 +10,7 @@ Calculates expected take profit for open positions by:
 3. Calculating expected profit per lot and aggregated
 """
 import logging
+import os
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -333,6 +334,54 @@ def split_lots_by_wallet_capacity(
 def lot_exceeds_wallet(lot: OpenLot) -> bool:
     """True when the aligner kept this lot for visibility but it cannot be in the wallet."""
     return bool(getattr(lot, "exceeds_wallet", False))
+
+
+def _hide_wallet_covered_phantoms_enabled() -> bool:
+    """Gate display-only hiding of exceeds_wallet FIFO ghosts (#617 / BTC plan)."""
+    from app.core.config import settings
+
+    raw = (
+        os.getenv("EXPECTED_TP_HIDE_WALLET_COVERED_PHANTOMS")
+        or getattr(settings, "EXPECTED_TP_HIDE_WALLET_COVERED_PHANTOMS", None)
+        or "false"
+    )
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def wallet_sum_sl_tp_covers_from_db(db: Session, symbol: str) -> bool:
+    """True when DB shows active SL and TP legs for the symbol (issue #617 gate)."""
+    from app.services.sl_tp_checker import _wallet_sum_covers_sl_tp
+
+    has_sl = bool(get_active_sl_orders(db, symbol))
+    has_tp = bool(get_active_tp_orders(db, symbol))
+    return _wallet_sum_covers_sl_tp(has_sl, has_tp)
+
+
+def filter_wallet_covered_phantom_display(
+    db: Session,
+    symbol: str,
+    entry_orders: List[Dict],
+    matched_lots: List[Dict],
+) -> Tuple[List[Dict], List[Dict], int, bool]:
+    """Drop exceeds_wallet rows from details when flag ON and wallet-sum covers.
+
+    Display-only: aggregates already exclude phantom lots; this reduces operator
+    noise (BTC FIFO parent ghosts with live OCO on the real short).
+    """
+    if not _hide_wallet_covered_phantoms_enabled():
+        return entry_orders, matched_lots, 0, False
+    if not wallet_sum_sl_tp_covers_from_db(db, symbol):
+        return entry_orders, matched_lots, 0, False
+
+    hidden_entries = sum(1 for row in entry_orders if row.get("exceeds_wallet"))
+    hidden_matched = sum(1 for row in matched_lots if row.get("exceeds_wallet"))
+    hidden = hidden_entries + hidden_matched
+    if hidden <= 0:
+        return entry_orders, matched_lots, 0, True
+
+    entry_orders = [row for row in entry_orders if not row.get("exceeds_wallet")]
+    matched_lots = [row for row in matched_lots if not row.get("exceeds_wallet")]
+    return entry_orders, matched_lots, hidden, True
 
 
 def _mark_lots_exceeding_wallet(
@@ -1104,6 +1153,35 @@ def get_active_tp_orders(db: Session, symbol: str) -> List[ExchangeOrder]:
         ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
     
     return tp_orders
+
+
+def get_active_sl_orders(db: Session, symbol: str) -> List[ExchangeOrder]:
+    """Active stop-loss legs for a symbol (mirror of get_active_tp_orders)."""
+    symbol_variants = _order_symbol_scope(symbol)
+
+    sl_orders = db.query(ExchangeOrder).filter(
+        ExchangeOrder.symbol.in_(symbol_variants),
+        ExchangeOrder.side.in_([OrderSideEnum.SELL, OrderSideEnum.BUY]),
+        ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
+        or_(
+            ExchangeOrder.order_role == "STOP_LOSS",
+            ExchangeOrder.order_type.in_(["STOP_LOSS", "STOP_LOSS_LIMIT", "STOP_LIMIT"]),
+        ),
+    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
+
+    if not sl_orders and "_" not in symbol:
+        base_currency = symbol.split("_")[0] if "_" in symbol else symbol
+        sl_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.symbol.like(f"{base_currency}_%"),
+            ExchangeOrder.side.in_([OrderSideEnum.SELL, OrderSideEnum.BUY]),
+            ExchangeOrder.status.in_(ACTIVE_TP_STATUSES),
+            or_(
+                ExchangeOrder.order_role == "STOP_LOSS",
+                ExchangeOrder.order_type.in_(["STOP_LOSS", "STOP_LOSS_LIMIT", "STOP_LIMIT"]),
+            ),
+        ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
+
+    return sl_orders
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -3617,6 +3695,11 @@ def get_expected_take_profit_details(
     # value (at current price) and covered/uncovered qty stay real.
     cost_basis_unknown = any(getattr(lot, "cost_basis_unknown", False) for lot in open_lots)
     entry_orders = build_entry_orders_details(db, open_lots, current_price=current_price)
+    entry_orders, matched_lot_details, wallet_covered_phantoms_hidden, phantoms_filter_active = (
+        filter_wallet_covered_phantom_display(
+            db, symbol, entry_orders, matched_lot_details
+        )
+    )
     position_side = resolve_position_side(db, open_lots)
     counted_lots = [lot for lot in open_lots if not lot_exceeds_wallet(lot)]
     total_open_qty = sum((lot.lot_qty for lot in counted_lots), Decimal("0"))
@@ -3687,5 +3770,7 @@ def get_expected_take_profit_details(
         "strategy": strategy,
         "wallet_balance": details_wallet_balance,
         "wallet_qty_warning": wallet_warning,
+        "wallet_covered_phantoms_hidden": wallet_covered_phantoms_hidden,
+        "hide_wallet_covered_phantoms_enabled": phantoms_filter_active,
     }
 
