@@ -27,6 +27,7 @@ def _to_float(val: Any) -> float:
         return 0.0
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
+from app.utils.background_executor import run_in_background
 from app.models.watchlist import WatchlistItem
 from app.services.watchlist_selector import (
     get_canonical_watchlist_item,
@@ -2444,7 +2445,7 @@ class SignalMonitorService:
                 )
             
             # Fetch watchlist items in a thread pool to avoid blocking the event loop
-            watchlist_items = await asyncio.to_thread(self._fetch_watchlist_items_sync, db)
+            watchlist_items = await run_in_background(self._fetch_watchlist_items_sync, db)
 
             logger.info(
                 "[SIGNAL_MONITOR_TICK] tick_ts=%s items=%d",
@@ -2501,7 +2502,7 @@ class SignalMonitorService:
     
     async def _check_signal_for_coin(self, db: Session, watchlist_item: WatchlistItem):
         """Async wrapper to run the synchronous signal check in a thread"""
-        await asyncio.to_thread(self._check_signal_for_coin_sync, db, watchlist_item)
+        await run_in_background(self._check_signal_for_coin_sync, db, watchlist_item)
 
     def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem):  # pyright: ignore[reportGeneralTypeIssues]
         """Check signal for a specific coin and take action if needed"""

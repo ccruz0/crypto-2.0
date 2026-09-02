@@ -99,19 +99,16 @@ async def start_margin_recorder_loop() -> None:
     """Muestrea cada RECORD_INTERVAL_SECONDS. Nunca muere por una excepcion."""
     import asyncio
 
-    from app.utils.background_executor import heavy_background_work_allowed, run_in_background
+    from app.utils.background_executor import overlap_guard, run_in_background
 
     logger.info(
         "[MARGIN] bucle de registro iniciado (cada %ds)", RECORD_INTERVAL_SECONDS
     )
     while True:
         try:
-            if heavy_background_work_allowed():
-                await run_in_background(_run_margin_sample)
-            else:
-                logger.warning(
-                    "[MARGIN] muestra omitida — event loop degradado (health-first)"
-                )
+            async with overlap_guard("margin_sample") as acquired:
+                if acquired:
+                    await run_in_background(_run_margin_sample)
         except asyncio.CancelledError:  # pragma: no cover
             logger.info("[MARGIN] bucle cancelado")
             raise

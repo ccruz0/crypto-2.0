@@ -974,26 +974,26 @@ def create_app(role: str = "legacy") -> FastAPI:
 
     # Define simple endpoints BEFORE routers to ensure they're accessible
     @app.get("/__ping")
-    def __ping():
+    async def __ping():
         return {"ok": True}
 
     @app.get("/test")
-    def test():
+    async def test():
         """Simple test endpoint without dependencies"""
         return {"status": "ok", "message": "Backend is responding"}
 
     @app.get("/route_fix_test")
-    def route_fix_test():
+    async def route_fix_test():
         """Routing fix test endpoint - debug hanging paths"""
         return {"status": "ok", "source": "route_fix_test"}
 
     @app.get("/ping_fast")
-    def ping_fast():
+    async def ping_fast():
         """Ultra-fast ping endpoint - minimal processing"""
         return {"status": "ok", "source": "ping_fast"}
 
     @app.get("/")
-    def root():
+    async def root():
         """Root endpoint - simplified to avoid blocking"""
         return {
             "message": "Automated Trading Platform API",
@@ -1003,7 +1003,7 @@ def create_app(role: str = "legacy") -> FastAPI:
         }
 
     @app.get("/health")
-    def health():
+    async def health():
         # Simplified health endpoint - return immediately without blocking
         t0 = time.perf_counter()
         result = {"status": "ok"}
@@ -1058,7 +1058,7 @@ def create_app(role: str = "legacy") -> FastAPI:
     # Alias health under /api for reverse-proxy setups that expect /api/health
     # Defined AFTER routers so /api/health/system can be matched first
     @app.get("/api/health")
-    def api_health():
+    async def api_health():
         # Reuse same simple response as /health
         t0 = time.perf_counter()
         result = {"status": "ok", "path": "/api/health"}
@@ -1069,7 +1069,7 @@ def create_app(role: str = "legacy") -> FastAPI:
 
 
     @app.get("/api/ping_fast")
-    def api_ping_fast():
+    async def api_ping_fast():
         """Alias for /ping_fast when accessed via nginx proxy at /api/ping_fast."""
         return {"status": "ok", "source": "ping_fast"}
 

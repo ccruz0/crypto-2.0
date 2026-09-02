@@ -6378,67 +6378,75 @@ class ExchangeSyncService:
         if SessionLocal is None:
             logger.warning("Database not available (SessionLocal is None), skipping open orders sync")
             return
-        db = SessionLocal()
-        try:
-            from app.utils.background_executor import run_in_background
+        from app.utils.background_executor import overlap_guard, run_in_background
 
-            await run_in_background(self._run_open_orders_sync_sync, db)
-            self.last_open_orders_sync = datetime.now(timezone.utc)
-        finally:
-            db.close()
+        async with overlap_guard("exchange_sync_open_orders") as acquired:
+            if not acquired:
+                return
+            db = SessionLocal()
+            try:
+                await run_in_background(self._run_open_orders_sync_sync, db)
+                self.last_open_orders_sync = datetime.now(timezone.utc)
+            finally:
+                db.close()
 
     async def run_background_sync(self):
         """Run one balances + order-history cycle with timeout on history scan."""
         if SessionLocal is None:
             logger.warning("Database not available (SessionLocal is None), skipping background sync")
             return
-        db = SessionLocal()
-        try:
-            from app.utils.background_executor import (
-                event_loop_lag_seconds,
-                heavy_background_work_allowed,
-                run_in_background,
-            )
+        from app.utils.background_executor import (
+            event_loop_lag_seconds,
+            heavy_sync_order_history_allowed,
+            overlap_guard,
+            run_in_background,
+        )
 
-            await run_in_background(self.sync_balances, db)
-            if not heavy_background_work_allowed():
-                logger.warning(
-                    "sync_order_history skipped — event loop lag %.2fs (threshold %.2fs); "
-                    "open orders refresh continues independently",
-                    event_loop_lag_seconds(),
-                    float(os.environ.get("EVENT_LOOP_LAG_THRESHOLD_SEC", "1.5")),
-                )
-                self.last_sync = datetime.now(timezone.utc)
+        async with overlap_guard("exchange_sync_background") as acquired:
+            if not acquired:
                 return
-            history_started = time.monotonic()
-            logger.info("sync_order_history start")
+            db = SessionLocal()
             try:
-                await asyncio.wait_for(
-                    run_in_background(
-                        self.sync_order_history, db, page_size=200, max_pages=10
-                    ),
-                    timeout=self.order_history_timeout,
-                )
-                logger.info(
-                    "sync_order_history end duration=%.2fs",
-                    time.monotonic() - history_started,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "sync_order_history timed out after %.2fs (limit=%ds) — open orders refresh continues independently",
-                    time.monotonic() - history_started,
-                    self.order_history_timeout,
-                )
-            except Exception as e:
-                logger.error(
-                    "sync_order_history failed duration=%.2fs error=%s",
-                    time.monotonic() - history_started,
-                    e,
-                    exc_info=True,
-                )
-            self.last_sync = datetime.now(timezone.utc)
-        finally:
-            db.close()
+                await run_in_background(self.sync_balances, db)
+                if not heavy_sync_order_history_allowed(guard_busy=False):
+                    logger.warning(
+                        "sync_order_history skipped — event loop lag %.2fs (threshold %.2fs) "
+                        "mode=%s; open orders refresh continues independently",
+                        event_loop_lag_seconds(),
+                        float(os.environ.get("EVENT_LOOP_LAG_THRESHOLD_SEC", "1.5")),
+                        (os.getenv("ATP_HEAVY_SYNC_MODE") or "full").strip().lower(),
+                    )
+                    self.last_sync = datetime.now(timezone.utc)
+                    return
+                history_started = time.monotonic()
+                logger.info("sync_order_history start")
+                try:
+                    await asyncio.wait_for(
+                        run_in_background(
+                            self.sync_order_history, db, page_size=200, max_pages=10
+                        ),
+                        timeout=self.order_history_timeout,
+                    )
+                    logger.info(
+                        "sync_order_history end duration=%.2fs",
+                        time.monotonic() - history_started,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "sync_order_history timed out after %.2fs (limit=%ds) — open orders refresh continues independently",
+                        time.monotonic() - history_started,
+                        self.order_history_timeout,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "sync_order_history failed duration=%.2fs error=%s",
+                        time.monotonic() - history_started,
+                        e,
+                        exc_info=True,
+                    )
+                self.last_sync = datetime.now(timezone.utc)
+            finally:
+                db.close()
 
     async def run_sync(self):
         """Run one full sync cycle (background + open orders) — async wrapper."""
