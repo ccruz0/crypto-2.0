@@ -176,3 +176,27 @@ def test_action_alert_sent_suppresses_resend():
     )
     assert d.send_fail_alert is False
     assert d.suppress_reason == "action_alert_already_sent"
+
+
+def test_should_send_action_required_blocks_fresh_failure():
+    from app.services.health_alert_incident import should_send_action_required_alert
+
+    ok, reason = should_send_action_required_alert(
+        "2026-03-10T12:09:00Z",
+        parse_epoch("2026-03-10T12:10:00Z"),
+        min_fail_minutes=10,
+    )
+    assert ok is False
+    assert reason.startswith("failure_too_short_")
+
+
+def test_should_send_action_required_allows_sustained_failure():
+    from app.services.health_alert_incident import should_send_action_required_alert
+
+    ok, reason = should_send_action_required_alert(
+        "2026-03-10T12:00:00Z",
+        parse_epoch("2026-03-10T12:15:00Z"),
+        min_fail_minutes=10,
+    )
+    assert ok is True
+    assert reason == ""

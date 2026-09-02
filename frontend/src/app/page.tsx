@@ -2164,6 +2164,8 @@ const VERSION_HISTORY = [
 
 ---
 `
+  },
+
   {
     version: '1.0',
     date: '2026-09-01',
@@ -2185,6 +2187,34 @@ const VERSION_HISTORY = [
 
 📦 **Issue**
 • #626
+
+---
+`
+  },
+
+  {
+    version: '1.01',
+    date: '2026-09-02',
+    change: 'Reduce Telegram alert noise: InstanceDown 15m, SL/TP audit dedup (#616)',
+    details: `🚀 VERSIÓN 1.01 — ALERT NOISE REDUCTION (#616)
+
+📋 **Symptom**
+• ~Hourly FIRING+RESOLVED InstanceDown (backend scrape flap ~5 min), repeated HOURLY SL/TP AUDIT for same FIFO parents, TRANSIENT cutover + Health action-required on 0-min failures
+
+✅ **What shipped**
+• Prometheus InstanceDown \`for:\` 2m → 15m; telegram-alerts relay suppresses short InstanceDown FIRING/RESOLVED pairs
+• HOURLY SL/TP AUDIT: dedupe by parent-id fingerprint — max 1 digest/24h unless a new parent row appears (invent-heal stays OFF)
+• GitHub App cutover: no Telegram for TRANSIENT auto-heal recovery or persistent TRANSIENT after recheck (AUTH still pages)
+• Health action-required: minimum 10 min failing duration before Telegram
+
+🔧 **Hypothesis (verified in code, not prod logs)**
+• Hourly cutover cron at :00 can restart backend-aws for TRANSIENT infra failures → scrape down >2m → InstanceDown flap; 15m gate + TRANSIENT suppress breaks the ping-pong
+
+🔧 **Out of scope**
+• Live orders, TP/SL placement, invent-heal, deploy scripts
+
+📦 **Issue**
+• #616
 
 ---
 `
