@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Run GitHub App cutover monitor, write logs, and send Telegram alerts on failure.
-# Transient / infra failures (health=starting, unhealthy, backend down → auth_mode
-# unknown) trigger safe auto-heal (ensure_stack_up + backend-aws restart) then a
-# recheck before paging. Success heartbeats at most once every 12 hours.
-# Never prints secret values.
+# Transient / infra failures are observe-only by default (issue #638): the hourly
+# cron must not restart backend-aws or run compose up on a running container.
+# Optional auto-heal (GITHUB_APP_CUTOVER_AUTO_HEAL=1) waits for probe recovery;
+# restart requires GITHUB_APP_CUTOVER_RESTART_BACKEND=1. Success heartbeats at
+# most once every 12 hours. Never prints secret values.
 #
 # Env:
-#   GITHUB_APP_CUTOVER_AUTO_HEAL=0     disable auto-heal (default 1)
+#   GITHUB_APP_CUTOVER_AUTO_HEAL=0     observe-only (default; was 1 before #638)
+#   GITHUB_APP_CUTOVER_RESTART_BACKEND=0  never restart on hourly monitor (default)
 #   GITHUB_APP_CUTOVER_AUTO_HEAL_COOLDOWN_S  cooldown between heals (default 900)
 #   TRANSIENT_RECHECK_S / AUTO_HEAL_RECHECK_S
 #
@@ -30,7 +32,7 @@ LAST_SUCCESS_ALERT="$LOG_DIR/github_app_monitor_last_success_alert.txt"
 PAT_REMOVAL_ALERT_MARKER="$LOG_DIR/github_app_pat_removal_ready_alert_sent"
 OBSERVATION_END_UTC="2026-06-12 08:18:00"
 HEARTBEAT_INTERVAL_S=$((12 * 60 * 60))
-TRANSIENT_RECHECK_S="${TRANSIENT_RECHECK_S:-90}"
+TRANSIENT_RECHECK_S="${TRANSIENT_RECHECK_S:-30}"
 # After infra auto-heal, wait this long before recheck (backend warm-up).
 AUTO_HEAL_RECHECK_S="${AUTO_HEAL_RECHECK_S:-30}"
 AUTO_HEAL_COOLDOWN_FILE="$LOG_DIR/github_app_cutover_auto_heal_last"

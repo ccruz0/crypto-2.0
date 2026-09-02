@@ -103,13 +103,42 @@ assert_eq "classify_auth_mode_none_is_auth" "AUTH" "$sev"
 sev="$(classify_failure "github_app" "NO" "no" $'CUTOVER_READY is not YES (got NO)\nlive token mint not confirmed')"
 assert_eq "classify_mint_fail_with_known_mode_auth" "AUTH" "$sev"
 
-# Auto-heal disabled path
+# Auto-heal disabled by default (issue #638 — hourly observe-only)
+tmp_log="$(mktemp -d)"
+out="$(attempt_cutover_infra_auto_heal "$SCRIPT_DIR/../.." "$tmp_log" "$tmp_log/cooldown" 2>&1)" || true
+echo "$out" | grep -q "auto-heal skipped: GITHUB_APP_CUTOVER_AUTO_HEAL=0" \
+  && assert_eq "auto_heal_disabled_by_default" "skipped" "skipped" \
+  || assert_eq "auto_heal_disabled_by_default" "skipped" "not_skipped"
+rm -rf "$tmp_log"
+
+# Explicit opt-in still works
 tmp_log="$(mktemp -d)"
 out="$(GITHUB_APP_CUTOVER_AUTO_HEAL=0 attempt_cutover_infra_auto_heal "$SCRIPT_DIR/../.." "$tmp_log" "$tmp_log/cooldown" 2>&1)" || true
 echo "$out" | grep -q "auto-heal skipped: GITHUB_APP_CUTOVER_AUTO_HEAL=0" \
-  && assert_eq "auto_heal_disabled" "skipped" "skipped" \
-  || assert_eq "auto_heal_disabled" "skipped" "not_skipped"
+  && assert_eq "auto_heal_explicit_disabled" "skipped" "skipped" \
+  || assert_eq "auto_heal_explicit_disabled" "skipped" "not_skipped"
 rm -rf "$tmp_log"
+
+# Running-container path must not call ensure_stack_up (issue #638 scrape flap)
+heal_body="$(sed -n '/^attempt_cutover_infra_auto_heal()/,/^remedy_for_class/ {p}' "$SCRIPT_DIR/_github_app_cutover_alert_lib.sh")"
+echo "$heal_body" | grep -q '_backend_aws_container_running' \
+  && assert_eq "auto_heal_checks_container_running" "ok" "ok" \
+  || assert_eq "auto_heal_checks_container_running" "ok" "missing"
+echo "$heal_body" | grep -q 'waiting for probe recovery (no compose up)' \
+  && assert_eq "auto_heal_no_compose_up_when_running" "ok" "ok" \
+  || assert_eq "auto_heal_no_compose_up_when_running" "ok" "missing"
+echo "$heal_body" | grep -q 'GITHUB_APP_CUTOVER_RESTART_BACKEND' \
+  && assert_eq "auto_heal_restart_opt_in" "ok" "ok" \
+  || assert_eq "auto_heal_restart_opt_in" "ok" "missing"
+
+# Cron installer staggered off :00 (issue #638)
+install_cron="$SCRIPT_DIR/install_github_app_cutover_cron.sh"
+grep -q '25 \* \* \* \*' "$install_cron" \
+  && assert_eq "cutover_cron_minute_25" "ok" "ok" \
+  || assert_eq "cutover_cron_minute_25" "ok" "missing"
+grep -q '0 \* \* \* \*.*run_github_app_cutover_monitor' "$install_cron" \
+  && assert_eq "cutover_cron_not_at_zero" "ok" "still_at_zero" \
+  || assert_eq "cutover_cron_not_at_zero" "ok" "ok"
 
 # Deploy marker blocks auto-heal
 tmp_log="$(mktemp -d)"

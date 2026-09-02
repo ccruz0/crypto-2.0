@@ -135,6 +135,34 @@ reclaim_disk_for_cutover_heal() {
   return 0
 }
 
+# True when backend-aws has a running container (not merely Created/exited).
+_backend_aws_container_running() {
+  local cid running
+  cid="$(docker compose --profile aws ps -q backend-aws 2>/dev/null | head -1 || true)"
+  if [[ -z "$cid" ]]; then
+    return 1
+  fi
+  running="$(docker inspect "$cid" --format='{{.State.Running}}' 2>/dev/null || echo false)"
+  [[ "$running" == "true" ]]
+}
+
+# Wait for /ping_fast without touching compose. Used when the container is up but
+# probes fail during hourly load (SL/TP audit, health snapshot at :00).
+_wait_for_cutover_ping() {
+  local ping_url="$1"
+  local attempts="${2:-24}"
+  local interval="${3:-5}"
+  local i
+  for i in $(seq 1 "$attempts"); do
+    if curl -fsS --connect-timeout 5 --max-time 8 "$ping_url" >/dev/null 2>&1; then
+      echo "auto-heal: ping_fast OK after wait (~$((i * interval))s)"
+      return 0
+    fi
+    sleep "$interval"
+  done
+  return 1
+}
+
 # Restart backend-aws via prod_compose.sh when present (PROD secrets/runtime.env
 # is mode 600; bare `docker compose` cannot read it without the sudo wrapper).
 # Prints compose output to stdout; never prints secret values. Best-effort.
@@ -151,15 +179,17 @@ _restart_backend_aws_for_cutover_heal() {
 }
 
 # Safe infra recovery for TRANSIENT cutover monitor failures.
-# Order: disk reclaim (if full) → ensure_stack_up → targeted restart.
-# Respects deploy marker and cooldown. Never prints secrets.
+# When backend-aws is already running: wait for probe recovery only (no compose up).
+# ensure_stack_up + optional restart only when the container is not running, and
+# restart requires GITHUB_APP_CUTOVER_RESTART_BACKEND=1. Respects deploy marker
+# and cooldown. Never prints secrets.
 # Returns 0 if ping_fast is OK after attempt, 1 otherwise.
 attempt_cutover_infra_auto_heal() {
   local root_dir="${1:-.}"
   local log_dir="${2:-$root_dir/logs}"
   local cooldown_file="${3:-$log_dir/github_app_cutover_auto_heal_last}"
   local cooldown_s="${GITHUB_APP_CUTOVER_AUTO_HEAL_COOLDOWN_S:-900}"
-  local enabled="${GITHUB_APP_CUTOVER_AUTO_HEAL:-1}"
+  local enabled="${GITHUB_APP_CUTOVER_AUTO_HEAL:-0}"
   local marker="${ATP_DEPLOY_MARKER:-/tmp/atp-deploy-in-progress}"
   local marker_ttl="${ATP_DEPLOY_MARKER_TTL_SECS:-1800}"
   local ping_url="${GITHUB_APP_CUTOVER_HEAL_PING_URL:-http://127.0.0.1:8002/ping_fast}"
@@ -209,50 +239,71 @@ attempt_cutover_infra_auto_heal() {
     fi
   fi
 
+  if curl -fsS --connect-timeout 5 --max-time 8 "$ping_url" >/dev/null 2>&1; then
+    echo "auto-heal: ping_fast already OK — no action needed"
+    return 0
+  fi
+
   date +%s >"$cooldown_file" 2>/dev/null || true
-  echo "auto-heal: starting infra recovery (disk reclaim → ensure_stack_up → restart)"
+  echo "auto-heal: starting infra recovery (disk reclaim → wait or ensure_stack_up → optional restart)"
 
   # Disk full makes compose up / restart fail with "no space left on device".
   reclaim_disk_for_cutover_heal "$root_dir"
 
-  if [[ -x "$root_dir/scripts/aws/ensure_stack_up.sh" ]]; then
-    # Shorter wait for hourly monitor context (overrideable).
-    ENSURE_STACK_WAIT_ITERS="${ENSURE_STACK_WAIT_ITERS:-18}" \
-    ENSURE_STACK_WAIT_INTERVAL="${ENSURE_STACK_WAIT_INTERVAL:-5}" \
-      bash "$root_dir/scripts/aws/ensure_stack_up.sh" || true
+  local allow_restart="${GITHUB_APP_CUTOVER_RESTART_BACKEND:-0}"
+  local wait_iters="${GITHUB_APP_CUTOVER_HEAL_WAIT_ITERS:-24}"
+  local wait_interval="${GITHUB_APP_CUTOVER_HEAL_WAIT_INTERVAL:-5}"
+
+  if _backend_aws_container_running; then
+    # Container is up but probes failed — typical hourly :00 blip (SL/TP audit,
+    # health snapshot). Never `compose up -d` here: it can recreate backend-aws
+    # and drop Prometheus scrape for several minutes (issue #638).
+    echo "auto-heal: backend-aws container running — waiting for probe recovery (no compose up)"
+    if _wait_for_cutover_ping "$ping_url" "$wait_iters" "$wait_interval"; then
+      return 0
+    fi
+    if [[ "$allow_restart" != "1" ]]; then
+      echo "auto-heal: ping still down after wait; restart disabled (GITHUB_APP_CUTOVER_RESTART_BACKEND=$allow_restart)"
+      return 1
+    fi
+    echo "auto-heal: ping still failing after wait — restarting backend-aws (explicit opt-in)"
+    restart_err="$(_restart_backend_aws_for_cutover_heal "$root_dir")" || true
   else
-    echo "auto-heal: ensure_stack_up.sh missing"
+    echo "auto-heal: backend-aws not running — reconciling stack via ensure_stack_up"
+    if [[ -x "$root_dir/scripts/aws/ensure_stack_up.sh" ]]; then
+      ENSURE_STACK_WAIT_ITERS="${ENSURE_STACK_WAIT_ITERS:-18}" \
+      ENSURE_STACK_WAIT_INTERVAL="${ENSURE_STACK_WAIT_INTERVAL:-5}" \
+        bash "$root_dir/scripts/aws/ensure_stack_up.sh" || true
+    else
+      echo "auto-heal: ensure_stack_up.sh missing"
+    fi
+    if curl -fsS --connect-timeout 5 --max-time 8 "$ping_url" >/dev/null 2>&1; then
+      echo "auto-heal: ping_fast OK after ensure_stack_up"
+      return 0
+    fi
+    if [[ "$allow_restart" != "1" ]]; then
+      echo "auto-heal: ping still down after ensure_stack_up; restart disabled (GITHUB_APP_CUTOVER_RESTART_BACKEND=$allow_restart)"
+      return 1
+    fi
+    echo "auto-heal: ping still failing — restarting backend-aws (explicit opt-in)"
+    restart_err="$(_restart_backend_aws_for_cutover_heal "$root_dir")" || true
   fi
 
-  if curl -fsS --connect-timeout 5 --max-time 8 "$ping_url" >/dev/null 2>&1; then
-    echo "auto-heal: ping_fast OK after ensure_stack_up"
-    return 0
-  fi
-
-  echo "auto-heal: ping still failing — restarting backend-aws"
-  restart_err="$(_restart_backend_aws_for_cutover_heal "$root_dir")" || true
-  if [[ -n "$restart_err" ]]; then
+  if [[ -n "${restart_err:-}" ]]; then
     echo "$restart_err" | tail -20 | sed 's/^/  /'
   fi
-  if echo "$restart_err" | grep -qi 'no space left on device'; then
+  if echo "${restart_err:-}" | grep -qi 'no space left on device'; then
     echo "auto-heal: restart hit ENOSPC — reclaiming disk again then retry restart"
     reclaim_disk_for_cutover_heal "$root_dir"
-    # Must use prod_compose (sudo path) on PROD — bare docker compose cannot
-    # read secrets/runtime.env mode 600 and fails the post-reclaim retry.
     restart_err="$(_restart_backend_aws_for_cutover_heal "$root_dir")" || true
-    if [[ -n "$restart_err" ]]; then
+    if [[ -n "${restart_err:-}" ]]; then
       echo "$restart_err" | tail -10 | sed 's/^/  /'
     fi
   fi
 
-  local i
-  for i in $(seq 1 24); do
-    if curl -fsS --connect-timeout 5 --max-time 8 "$ping_url" >/dev/null 2>&1; then
-      echo "auto-heal: ping_fast OK after backend-aws restart (~$((i * 5))s)"
-      return 0
-    fi
-    sleep 5
-  done
+  if _wait_for_cutover_ping "$ping_url" "$wait_iters" "$wait_interval"; then
+    return 0
+  fi
 
   echo "auto-heal: still unhealthy after recovery attempt (disk=$(_cutover_disk_pct)%)"
   return 1
@@ -264,13 +315,13 @@ remedy_for_class() {
     TRANSIENT)
       cat <<'EOF'
 Containers were restarting or not ready (or backend down made auth_mode look unknown).
-Auto-heal already tried disk reclaim + ensure_stack_up / backend-aws restart when enabled.
+Hourly monitor is observe-only by default (no compose up / restart on running backend-aws).
 If this persists — especially "no space left on device":
   df -h /
   bash infra/cleanup_disk.sh
   bash scripts/aws/predeploy_disk_guard.sh
   bash scripts/aws/ensure_stack_up.sh
-  bash scripts/aws/prod_compose.sh restart backend-aws
+  GITHUB_APP_CUTOVER_RESTART_BACKEND=1 bash scripts/aws/run_github_app_cutover_monitor_with_alerts.sh
   bash scripts/aws/prod_compose.sh logs backend-aws --tail=80
 EOF
       ;;

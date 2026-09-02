@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Install hourly GitHub App cutover monitor cron for the current ubuntu user.
+# Install GitHub App cutover monitor cron for the current ubuntu user.
 # Idempotent — replaces any prior entry for run_github_app_cutover_monitor_with_alerts.sh.
+#
+# Schedule: minute 25 each hour (UTC on PROD). Avoids :00 collision with HOURLY
+# SL/TP audit and health snapshot that caused false TRANSIENT + backend restart
+# flaps (issue #638). WITA operators still see hourly coverage (08:25 WITA = 00:25 UTC).
 #
 # Usage:
 #   bash scripts/aws/install_github_app_cutover_cron.sh
@@ -15,7 +19,7 @@ cd "$ROOT_DIR"
 MONITOR_SCRIPT="$ROOT_DIR/scripts/aws/run_github_app_cutover_monitor_with_alerts.sh"
 LOG_DIR="$ROOT_DIR/logs"
 CRON_TAG="run_github_app_cutover_monitor_with_alerts.sh"
-CRON_ENTRY="0 * * * * cd $ROOT_DIR && bash scripts/aws/run_github_app_cutover_monitor_with_alerts.sh"
+CRON_ENTRY="25 * * * * cd $ROOT_DIR && bash scripts/aws/run_github_app_cutover_monitor_with_alerts.sh"
 
 if [[ ! -f "$MONITOR_SCRIPT" ]]; then
   echo "ERROR: monitor script not found: $MONITOR_SCRIPT" >&2
@@ -35,7 +39,7 @@ fi
 (crontab -l 2>/dev/null; echo "$CRON_ENTRY") | crontab -
 
 echo
-echo "Installed hourly GitHub App cutover monitor cron."
+echo "Installed GitHub App cutover monitor cron (minute 25 each hour UTC)."
 echo
 echo "Current crontab:"
 crontab -l 2>/dev/null || true
