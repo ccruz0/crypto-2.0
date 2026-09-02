@@ -41,6 +41,40 @@ from app.services.trade_outcome_builder import (  # noqa: E402
 )
 
 
+def trade_outcomes_max_updated_age_hours(database_url: str) -> float:
+    """Hours since max(trade_outcomes.updated_at); 99999.0 when table empty."""
+    try:
+        from sqlalchemy import create_engine, text
+    except ImportError as e:
+        raise RuntimeError("sqlalchemy required for --skip-if-fresh-hours") from e
+
+    engine = create_engine(database_url)
+    sql = text(
+        """
+        SELECT COALESCE(
+          EXTRACT(EPOCH FROM (NOW() AT TIME ZONE 'UTC' - max(updated_at))) / 3600.0,
+          99999.0
+        )
+        FROM trade_outcomes
+        """
+    )
+    sql_sqlite = text(
+        """
+        SELECT COALESCE(
+          (julianday('now') - julianday(max(updated_at))) * 24.0,
+          99999.0
+        )
+        FROM trade_outcomes
+        """
+    )
+    q = sql_sqlite if engine.dialect.name == "sqlite" else sql
+    with engine.connect() as conn:
+        row = conn.execute(q).fetchone()
+    if row is None or row[0] is None:
+        return 99999.0
+    return float(row[0])
+
+
 def _demo_fixtures() -> tuple[
     list[dict[str, Any]],
     dict[str, dict[str, Any]],
@@ -259,6 +293,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Never write DB (default unless --write-db)",
     )
+    p.add_argument(
+        "--skip-if-fresh-hours",
+        type=float,
+        default=None,
+        metavar="HOURS",
+        help=(
+            "Skip rebuild when max(trade_outcomes.updated_at) is newer than HOURS "
+            "(ops daily job refreshes updated_at even without new closes)"
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -288,6 +332,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not url:
             print("Provide --demo, --fixtures-json, or --database-url / DATABASE_URL", file=sys.stderr)
             return 2
+        if args.skip_if_fresh_hours is not None:
+            age_h = trade_outcomes_max_updated_age_hours(url)
+            threshold = float(args.skip_if_fresh_hours)
+            if age_h <= threshold:
+                skip_payload = {
+                    "skipped": True,
+                    "reason": "trade_outcomes_fresh",
+                    "max_updated_at_age_hours": round(age_h, 3),
+                    "threshold_hours": threshold,
+                }
+                print(json.dumps(skip_payload), file=sys.stderr)
+                print(json.dumps(skip_payload))
+                return 0
+            print(
+                json.dumps(
+                    {
+                        "skipped": False,
+                        "reason": "trade_outcomes_stale",
+                        "max_updated_at_age_hours": round(age_h, 3),
+                        "threshold_hours": threshold,
+                    }
+                ),
+                file=sys.stderr,
+            )
         intents, entries, children, alerts, orphans, short_close_buys = load_rows_from_db(url, days=args.days)
         source = "database"
 

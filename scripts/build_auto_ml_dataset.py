@@ -56,6 +56,16 @@ HYBRID_LABEL_DEF = (
 )
 
 
+def _heartbeat(step: str, **fields: Any) -> None:
+    """Progress line for long SSM runs (flushed immediately to CI stdout)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    extra = " ".join(f"{k}={v}" for k, v in fields.items())
+    msg = f"AUTO_ML_DATASET_HEARTBEAT [{ts}] {step}"
+    if extra:
+        msg = f"{msg} {extra}"
+    print(msg, file=sys.stderr, flush=True)
+
+
 def build_rich_demo_alerts() -> list[dict[str, Any]]:
     """Demo alerts with indicator context so feature extraction is non-trivial."""
     base = datetime.now(timezone.utc) - timedelta(hours=8)
@@ -271,7 +281,13 @@ def load_complete_fill_alert_ids(
 def _build_alert_dataset(
     alerts: list[dict[str, Any]], *, fixture: bool, delta: float
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    _heartbeat("alert_labeling_start", n_alerts=len(alerts), fixture=fixture)
     labeled, summary = evaluate_alerts(alerts, fixture_candles=fixture, delta=delta)
+    _heartbeat(
+        "alert_labeling_done",
+        n_labeled=summary.get("n_labeled"),
+        n_skipped=summary.get("n_skipped"),
+    )
     raw_by_id: dict[Any, dict[str, Any]] = {}
     for a in alerts:
         if a.get("id") is not None:
@@ -318,6 +334,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
+    _heartbeat(
+        "start",
+        label_source=args.label_source,
+        days=args.days,
+        out=str(args.out),
+    )
     fixture = bool(args.fixture_candles or args.demo)
     source = "demo"
     label_source = args.label_source
@@ -356,7 +378,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     elif args.database_url:
         # Always load SIGNAL alerts when a DB is available — hybrid uses them for
         # Phase-0 labels; trade_outcomes/hybrid use them to enrich fill context.
+        _heartbeat("load_alerts_from_db_start", days=args.days)
         alerts = load_alerts_from_db(args.database_url, days=args.days)
+        _heartbeat("load_alerts_from_db_done", n_alerts=len(alerts))
         source = "database"
     else:
         print(
@@ -384,6 +408,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         alert_ids = [a.get("id") for a in alerts if a.get("id") is not None]
         try:
+            _heartbeat("load_trade_outcomes_start", days=args.days)
             # Always load COMPLETE fills via --days window (not restricted to the
             # SIGNAL-pattern alert_ids set). Many realized fills link to alerts
             # that fail that text filter; filtering by alert_ids dropped all 32.
@@ -392,21 +417,27 @@ def main(argv: Optional[list[str]] = None) -> int:
                 days=args.days,
                 telegram_message_ids=None,
             )
+            _heartbeat("load_trade_outcomes_done", n_outcomes=len(outcomes))
             if label_source == "hybrid" and alert_ids:
+                _heartbeat("load_complete_fill_alert_ids_start", n_alert_ids=len(alert_ids))
                 # Drop Phase-0 labels when a labeled COMPLETE exists for that alert.
                 complete_ids = load_complete_fill_alert_ids(
                     args.database_url, telegram_message_ids=alert_ids
                 )
+                _heartbeat("load_complete_fill_alert_ids_done", n_complete_ids=len(complete_ids))
             else:
                 complete_ids = set()
         except Exception as exc:
+            _heartbeat("load_trade_outcomes_failed", error=str(exc))
             print(f"Failed to load trade_outcomes: {exc}", file=sys.stderr)
             return 2
         # Fill-linked telegram context is often order-ack only; overlay nearest
         # prior SIGNAL alert context (6h) before feature attach.
+        _heartbeat("enrich_outcomes_start", n_outcomes=len(outcomes))
         outcomes, enrich_stats = enrich_outcomes_with_nearest_signal_context(
             outcomes, alerts, max_skew_seconds=6 * 3600
         )
+        _heartbeat("enrich_outcomes_done", **{f"enrich_{k}": v for k, v in enrich_stats.items()})
         print(f"SIGNAL_CTX_ENRICH {enrich_stats}", file=sys.stderr)
         # Hybrid: empty fill-linked context is common; reuse alert-path features
         # when available, and keep fill labels even if features stay default
@@ -414,10 +445,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         fallback_by_id: dict[Any, dict[str, Any]] = {
             r["id"]: r for r in alert_dataset if r.get("id") is not None
         }
+        _heartbeat("attach_trade_features_start", n_outcomes=len(outcomes))
         trade_dataset, suppress_alert_ids = attach_features_from_trade_outcomes(
             outcomes,
             feature_fallback_by_id=fallback_by_id if label_source == "hybrid" else None,
             keep_degraded=(label_source == "hybrid"),
+        )
+        _heartbeat(
+            "attach_trade_features_done",
+            n_trade_rows=len(trade_dataset),
+            n_suppress=len(suppress_alert_ids),
         )
         n_ctx_empty = 0
         for o in outcomes:
@@ -454,6 +491,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         label_def = HYBRID_LABEL_DEF
         phase = "1b-hybrid"
+        _heartbeat(
+            "merge_hybrid_done",
+            n_alert=len(alert_dataset),
+            n_trade=len(trade_dataset),
+            n_merged=len(dataset),
+        )
 
     pos = sum(1 for r in dataset if r["y"] == 1)
     neg = sum(1 for r in dataset if r["y"] == 0)
@@ -497,7 +540,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    _heartbeat("write_dataset_start", path=str(args.out), n_rows=len(dataset))
     args.out.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+    _heartbeat(
+        "done",
+        n_rows=len(dataset),
+        n_positive=pos,
+        n_negative=neg,
+        phase=phase,
+    )
     print(
         f"Wrote {len(dataset)} rows "
         f"({pos} pos / {neg} neg; trade={n_trade} alert={n_alert}; long={n_trade_long} short={n_trade_short}) → {args.out}",

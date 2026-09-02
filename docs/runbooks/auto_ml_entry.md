@@ -290,9 +290,17 @@ GitHub Actions workflow **Ops — Auto ML hybrid retrain**:
 
 | Trigger | Promote? | Notes |
 |---------|----------|--------|
-| `schedule` (Mon 05:00 UTC) | **No** — dry-run only | Refreshes `trade_outcomes`, trains candidate, prints `DATASET_META` |
+| `schedule` (Mon 05:00 UTC) | **No** — dry-run only | Trains candidate, prints `DATASET_META` + `AUTO_ML_*_HEARTBEAT` progress |
 | `workflow_dispatch` `dry_run_only=true` | No | Same as cron |
 | `workflow_dispatch` `dry_run_only=false` | Human merit gate only | Sets `AUTO_ML_HUMAN_PROMOTE=true`; promotes if holdout metric improves; never `--force-promote` or `AUTO_ML_AUTONOMOUS_PROMOTE=true` |
+
+**Related ops jobs (do not duplicate work):**
+
+- **Ops — trade_outcomes diario** (daily 04:30 UTC) rebuilds `trade_outcomes` only.
+- Hybrid retrain passes `--skip-if-fresh-hours 26` to `build_trade_outcomes.py` so Monday
+  runs skip the heavy rebuild when the daily job already refreshed the table (30 min earlier).
+- SSM remote timeout is **3600s** with CI poll up to ~3700s; last `AUTO_ML_DATASET_HEARTBEAT`
+  or `AUTO_ML_RETRAIN_HEARTBEAT` line in workflow stdout shows where a hang occurred.
 
 Also useful: **Ops — Auto ML fill feature diag** (read-only fill/context diagnostics).
 

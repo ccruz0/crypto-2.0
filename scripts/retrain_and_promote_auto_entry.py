@@ -99,7 +99,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 def _build_dataset(args: argparse.Namespace) -> Path:
     if args.dataset:
+        print("AUTO_ML_RETRAIN_HEARTBEAT using_existing_dataset path=" + str(args.dataset), file=sys.stderr, flush=True)
         return args.dataset
+    print(
+        f"AUTO_ML_RETRAIN_HEARTBEAT build_dataset_start label_source={args.label_source} days={args.days}",
+        file=sys.stderr,
+        flush=True,
+    )
     build_argv: list[str] = [
         "--out",
         str(args.dataset_out),
@@ -125,7 +131,9 @@ def _build_dataset(args: argparse.Namespace) -> Path:
         raise SystemExit(2)
     rc = build_main(build_argv)
     if rc != 0:
+        print(f"AUTO_ML_RETRAIN_HEARTBEAT build_dataset_failed rc={rc}", file=sys.stderr, flush=True)
         raise SystemExit(rc)
+    print(f"AUTO_ML_RETRAIN_HEARTBEAT build_dataset_done path={args.dataset_out}", file=sys.stderr, flush=True)
     return args.dataset_out
 
 
@@ -133,6 +141,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     ds_path = _build_dataset(args)
 
+    print(f"AUTO_ML_RETRAIN_HEARTBEAT train_start dataset={ds_path}", file=sys.stderr, flush=True)
     train_argv = [
         "--dataset",
         str(ds_path),
@@ -148,7 +157,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ]
     rc = train_main(train_argv)
     if rc != 0:
+        print(f"AUTO_ML_RETRAIN_HEARTBEAT train_failed rc={rc}", file=sys.stderr, flush=True)
         return rc
+    print("AUTO_ML_RETRAIN_HEARTBEAT train_done", file=sys.stderr, flush=True)
 
     candidate_manifest_path = args.out_dir / "candidate_manifest.json"
     candidate_model = args.out_dir / "candidate.joblib"
