@@ -87,6 +87,47 @@ def get_auto_ml_config_status() -> Dict[str, Any]:
     return get_auto_ml_status()
 
 
+@router.get("/config/auto-ml/sltp")
+def get_auto_ml_sltp_status() -> Dict[str, Any]:
+    """Read-only Auto ML SL/TP gate + manifest status (Phase 2 / #623)."""
+    from app.services.auto_sltp_model import get_auto_sltp_status
+
+    return get_auto_sltp_status()
+
+
+@router.post("/config/auto-ml/sltp/promote")
+def promote_auto_ml_sltp_candidate(payload: Optional[Dict[str, Any]] = Body(default=None)) -> Dict[str, Any]:
+    """Operator promote: apply merit-passing SL/TP candidate manifest (human gate only)."""
+    body = payload or {}
+    if not body.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Set confirm=true to promote the on-disk SL/TP candidate after reviewing "
+                "pending_sltp_promote.json"
+            ),
+        )
+
+    from app.services.auto_sltp_model import get_auto_sltp_status, reset_sltp_cache
+    from app.services.auto_sltp_promote import promote_sltp_candidate_from_disk, sltp_out_dir
+
+    out_dir = sltp_out_dir()
+    result = promote_sltp_candidate_from_disk(out_dir, human=True)
+    if not result.get("ok"):
+        err = str(result.get("error") or "promote_failed")
+        if err == "quality_gate_failed":
+            raise HTTPException(status_code=409, detail=result)
+        if err == "promote_permission_denied":
+            raise HTTPException(status_code=403, detail=result)
+        if err == "candidate_missing":
+            raise HTTPException(status_code=404, detail=result)
+        raise HTTPException(status_code=500, detail=result)
+
+    reset_sltp_cache()
+    result["status"] = get_auto_sltp_status()
+    return result
+
+
 @router.post("/config/auto-ml/promote")
 def promote_auto_ml_candidate(payload: Optional[Dict[str, Any]] = Body(default=None)) -> Dict[str, Any]:
     """Operator promote: copy merit-passing candidate → current.joblib (human gate only)."""

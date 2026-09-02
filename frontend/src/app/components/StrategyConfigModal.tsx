@@ -70,6 +70,22 @@ export default function StrategyConfigModal({
   const [autoMlStatusError, setAutoMlStatusError] = useState<string | null>(null);
   const [autoMlPromoteBusy, setAutoMlPromoteBusy] = useState(false);
   const [autoMlPromoteMessage, setAutoMlPromoteMessage] = useState<string | null>(null);
+  const [autoMlSltpStatus, setAutoMlSltpStatus] = useState<{
+    gate_enabled?: boolean;
+    manifest_present?: boolean;
+    sl_pct?: number | null;
+    tp_pct?: number | null;
+    version?: number | null;
+    pending_promote?: boolean;
+    pending_candidate_version?: number | null;
+    candidate_sl_pct?: number | null;
+    candidate_tp_pct?: number | null;
+    metrics?: { merit_delta_expectancy?: number | null };
+    n_long?: number | null;
+    n_short?: number | null;
+  } | null>(null);
+  const [autoMlSltpPromoteBusy, setAutoMlSltpPromoteBusy] = useState(false);
+  const [autoMlSltpPromoteMessage, setAutoMlSltpPromoteMessage] = useState<string | null>(null);
 
   const isLocked = isAutoPreset(activePreset);
 
@@ -91,19 +107,25 @@ export default function StrategyConfigModal({
     if (!isOpen || !isAutoPreset(activePreset)) {
       setAutoMlStatus(null);
       setAutoMlStatusError(null);
+      setAutoMlSltpStatus(null);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/config/auto-ml');
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+        const [entryRes, sltpRes] = await Promise.all([
+          fetch('/api/config/auto-ml'),
+          fetch('/api/config/auto-ml/sltp'),
+        ]);
+        if (!entryRes.ok) {
+          throw new Error(`HTTP ${entryRes.status}`);
         }
-        const data = await res.json();
+        const data = await entryRes.json();
+        const sltpData = sltpRes.ok ? await sltpRes.json() : null;
         if (!cancelled) {
           setAutoMlStatus(data);
           setAutoMlStatusError(null);
+          setAutoMlSltpStatus(sltpData);
         }
       } catch (err) {
         if (!cancelled) {
@@ -217,6 +239,38 @@ export default function StrategyConfigModal({
     setAutoMlStatus(data);
     setAutoMlStatusError(null);
     return data;
+  };
+
+  const handlePromoteSltpCandidate = async () => {
+    setAutoMlSltpPromoteBusy(true);
+    setAutoMlSltpPromoteMessage(null);
+    try {
+      const res = await fetch('/api/config/auto-ml/sltp/promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail =
+          typeof data?.detail === 'string'
+            ? data.detail
+            : data?.detail?.error || data?.error || `HTTP ${res.status}`;
+        throw new Error(String(detail));
+      }
+      const sltpRes = await fetch('/api/config/auto-ml/sltp');
+      if (sltpRes.ok) {
+        setAutoMlSltpStatus(await sltpRes.json());
+      }
+      const version = data?.promoted?.version;
+      setAutoMlSltpPromoteMessage(
+        version != null ? `Promoted SL/TP candidate to v${version}.` : 'SL/TP candidate promoted.'
+      );
+    } catch (err) {
+      setAutoMlSltpPromoteMessage(err instanceof Error ? err.message : 'SL/TP promote failed');
+    } finally {
+      setAutoMlSltpPromoteBusy(false);
+    }
   };
 
   const handlePromoteCandidate = async () => {
@@ -454,6 +508,59 @@ export default function StrategyConfigModal({
                   ) : null}
                 </div>
               )}
+              {isLocked && autoMlSltpStatus ? (
+                <div
+                  className="mt-3 rounded-md border border-sky-200 bg-sky-50/80 p-3 text-xs text-sky-950 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-100"
+                  data-testid="auto-ml-sltp-status-panel"
+                >
+                  <div className="font-semibold mb-1">Auto ML SL/TP (Phase 2)</div>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+                    <dt>Gate</dt>
+                    <dd data-testid="auto-ml-sltp-gate">
+                      {autoMlSltpStatus.gate_enabled ? 'ON' : 'OFF'}
+                    </dd>
+                    <dt>Live SL/TP</dt>
+                    <dd data-testid="auto-ml-sltp-live">
+                      {autoMlSltpStatus.manifest_present
+                        ? `${autoMlSltpStatus.sl_pct ?? '?'}% / ${autoMlSltpStatus.tp_pct ?? '?'}% (v${autoMlSltpStatus.version ?? '?'})`
+                        : 'watchlist defaults'}
+                    </dd>
+                    <dt>Fills</dt>
+                    <dd>
+                      long {autoMlSltpStatus.n_long ?? '—'} / short {autoMlSltpStatus.n_short ?? '—'}
+                    </dd>
+                    <dt>Merit Δ</dt>
+                    <dd>
+                      {autoMlSltpStatus.metrics?.merit_delta_expectancy != null
+                        ? Number(autoMlSltpStatus.metrics.merit_delta_expectancy).toFixed(4)
+                        : 'n/a'}
+                    </dd>
+                  </dl>
+                  {autoMlSltpStatus.pending_promote ? (
+                    <div className="mt-2">
+                      <p>
+                        Candidate v{autoMlSltpStatus.pending_candidate_version ?? '?'}:{' '}
+                        {autoMlSltpStatus.candidate_sl_pct ?? '?'}% SL /{' '}
+                        {autoMlSltpStatus.candidate_tp_pct ?? '?'}% TP
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handlePromoteSltpCandidate}
+                        disabled={autoMlSltpPromoteBusy}
+                        className="mt-2 rounded bg-sky-700 px-3 py-1.5 text-white hover:bg-sky-800 disabled:opacity-60"
+                        data-testid="auto-ml-sltp-promote-button"
+                      >
+                        {autoMlSltpPromoteBusy ? 'Promoting…' : 'Promote SL/TP (human gate)'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {autoMlSltpPromoteMessage ? (
+                    <p className="mt-2 text-xs" data-testid="auto-ml-sltp-promote-message">
+                      {autoMlSltpPromoteMessage}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <button
               type="button"
