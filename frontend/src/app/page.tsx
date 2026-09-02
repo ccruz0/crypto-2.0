@@ -2220,6 +2220,30 @@ const VERSION_HISTORY = [
 `
   },
 
+  {
+    version: '1.02',
+    date: '2026-09-02',
+    change: 'Expected TP: gated hide of wallet-covered FIFO ghost rows (#617)',
+    details: `🚀 VERSIÓN 1.02 — BTC FIFO GHOST DISPLAY PLAN (#617 / #603)
+
+📋 **Symptom**
+• Live BTC short (~−0.0013 / ~$103) with OCO on book, but Expected TP details list ~11 historical Compra FIFO parents (−10%…−19% each, ~−$1.6k aggregate) — ledger ghosts, not 11 live shorts
+
+✅ **What shipped**
+• Safe plan doc: classify live vs ghost vs dust; books-only close (#603); verification + rollback
+• \`EXPECTED_TP_HIDE_WALLET_COVERED_PHANTOMS\` flag (default OFF): details omit \`exceeds_wallet\` rows when wallet-sum SL+TP covers
+• UI banner when phantoms hidden; aggregates unchanged (phantoms already excluded from qty math)
+
+🔧 **Live-order path**
+• Display/read-only only. No place/cancel/amend SL/TP. Invent-heal stays OFF (#329).
+
+📦 **Issues**
+• #617 #603
+
+---
+`
+  },
+
 ];
 
 // Helper function to get current version (must be defined before component)

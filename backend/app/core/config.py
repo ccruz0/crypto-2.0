@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     CRYPTO_PROXY_URL: Optional[str] = None
     CRYPTO_PROXY_TOKEN: Optional[str] = None
     LIVE_TRADING: Optional[str] = None
+    # Expected TP: hide exceeds_wallet FIFO rows when wallet-sum SL+TP covers (default OFF).
+    EXPECTED_TP_HIDE_WALLET_COVERED_PHANTOMS: Optional[str] = None
 
     # Telegram
     TELEGRAM_BOT_TOKEN: Optional[str] = None  # Deprecated: use TELEGRAM_BOT_TOKEN_AWS or TELEGRAM_BOT_TOKEN_LOCAL
