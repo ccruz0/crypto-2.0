@@ -84,25 +84,57 @@ def record_margin_snapshot(db: Session) -> Optional[MarginSnapshot]:
     return row
 
 
+_margin_guard = None
+
+
+def _get_margin_guard():
+    global _margin_guard
+    if _margin_guard is None:
+        from app.core.background_executor import OverlapGuard
+
+        _margin_guard = OverlapGuard("margin_recorder")
+    return _margin_guard
+
+
+def _run_margin_record_iteration() -> None:
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        record_margin_snapshot(db)
+    finally:
+        db.close()
+
+
 async def start_margin_recorder_loop() -> None:
     """Muestrea cada RECORD_INTERVAL_SECONDS. Nunca muere por una excepcion."""
     import asyncio
 
-    from app.database import SessionLocal
+    from app.core.background_executor import run_background_blocking
+
+    timeout = float(os.getenv("MARGIN_RECORD_TIMEOUT_SEC", "120"))
 
     logger.info(
-        "[MARGIN] bucle de registro iniciado (cada %ds)", RECORD_INTERVAL_SECONDS
+        "[MARGIN] bucle de registro iniciado (cada %ds, timeout=%.0fs)",
+        RECORD_INTERVAL_SECONDS,
+        timeout,
     )
     while True:
         try:
-            db = SessionLocal()
-            try:
-                record_margin_snapshot(db)
-            finally:
-                db.close()
+            guard = _get_margin_guard()
+
+            async def _cycle() -> None:
+                await run_background_blocking(
+                    _run_margin_record_iteration,
+                    timeout=timeout,
+                )
+
+            await guard.run_if_idle_coro(_cycle)
         except asyncio.CancelledError:  # pragma: no cover
             logger.info("[MARGIN] bucle cancelado")
             raise
+        except asyncio.TimeoutError:
+            logger.warning("[MARGIN] iteracion excedio timeout %.0fs", timeout)
         except Exception as exc:  # pragma: no cover - el bucle debe sobrevivir
             logger.error("[MARGIN] iteracion fallida: %s", exc, exc_info=True)
         await asyncio.sleep(RECORD_INTERVAL_SECONDS)

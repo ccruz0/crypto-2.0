@@ -2193,6 +2193,35 @@ const VERSION_HISTORY = [
   },
 
   {
+    version: '1.02',
+    date: '2026-09-02',
+    change: 'Event-loop root fix: dedicated background executor + overlap guards (#644)',
+    details: `🚀 VERSIÓN 1.02 — EVENT LOOP / LIVENESS ROOT FIX (#644)
+
+📋 **Symptom**
+• Primary could show Docker healthy while \`GET /api/health\` and \`/__ping\` hung — exchange_sync, candle_recorder, margin_recorder, and startup DB work competed for the default thread pool with sync HTTP handlers.
+
+✅ **What shipped**
+• \`app/core/background_executor.py\`: dedicated \`atp-bg\` thread pool, \`OverlapGuard\` skip-when-busy circuit, \`guard_stats()\` for 24–48h evidence
+• \`exchange_sync\`: background executor + overlap guards on open-orders and background cycles; order-history timeout preserved
+• \`candle_recorder\` / \`margin_recorder\`: blocking sweeps off event loop with hard timeouts
+• Startup watchlist sync + DB init moved to background executor (health served before heavy I/O completes)
+• Regression tests: liveness stays <1s while background pool saturated; overlap skip under concurrent sync
+
+🔧 **Related mitigation (unchanged)**
+• #641 host health watchdog — bounded primary restart; safety net only, not root fix
+
+🔧 **Out of scope**
+• invent-heal, trading executor, live orders, flatten, compose changes
+
+📦 **Issues**
+• #644 (root fix), #641 (watchdog mitigation)
+
+---
+`
+  },
+
+  {
     version: '1.01',
     date: '2026-09-02',
     change: 'Reduce Telegram alert noise: InstanceDown 15m, SL/TP audit dedup (#616)',

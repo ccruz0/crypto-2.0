@@ -273,35 +273,66 @@ def _symbols_from_watchlist(db: Session) -> List[str]:
         return []
 
 
+_candle_guard = None
+
+
+def _get_candle_guard():
+    global _candle_guard
+    if _candle_guard is None:
+        from app.core.background_executor import OverlapGuard
+
+        _candle_guard = OverlapGuard("candle_recorder")
+    return _candle_guard
+
+
+def _run_candle_record_iteration() -> None:
+    """One sync sweep — runs on the dedicated background executor."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        symbols = _symbols_from_watchlist(db)
+        if not symbols:
+            logger.info("[CANDLES] watchlist vacia, no hay nada que registrar")
+            return
+        totals = record_all(db, symbols, count=RECORD_COUNT)
+        logger.info(
+            "[CANDLES] barrido completo: %d simbolos, nuevas=%s",
+            len(symbols),
+            totals,
+        )
+    finally:
+        db.close()
+
+
 async def start_candle_recorder_loop() -> None:
     """Registra velas cada RECORD_INTERVAL_SECONDS. Nunca muere por una excepcion."""
     import asyncio
 
-    from app.database import SessionLocal
+    from app.core.background_executor import run_background_blocking
+
+    timeout = float(os.getenv("CANDLE_RECORD_TIMEOUT_SEC", "900"))
 
     logger.info(
-        "[CANDLES] bucle de registro iniciado (cada %ds, %d velas, timeframes=%s)",
-        RECORD_INTERVAL_SECONDS, RECORD_COUNT, ",".join(TIMEFRAMES),
+        "[CANDLES] bucle de registro iniciado (cada %ds, %d velas, timeframes=%s, timeout=%.0fs)",
+        RECORD_INTERVAL_SECONDS, RECORD_COUNT, ",".join(TIMEFRAMES), timeout,
     )
     while True:
         try:
-            db = SessionLocal()
-            try:
-                symbols = _symbols_from_watchlist(db)
-                if not symbols:
-                    logger.info("[CANDLES] watchlist vacia, no hay nada que registrar")
-                else:
-                    totals = record_all(db, symbols, count=RECORD_COUNT)
-                    logger.info(
-                        "[CANDLES] barrido completo: %d simbolos, nuevas=%s",
-                        len(symbols),
-                        totals,
-                    )
-            finally:
-                db.close()
+            guard = _get_candle_guard()
+
+            async def _cycle() -> None:
+                await run_background_blocking(
+                    _run_candle_record_iteration,
+                    timeout=timeout,
+                )
+
+            await guard.run_if_idle_coro(_cycle)
         except asyncio.CancelledError:  # pragma: no cover
             logger.info("[CANDLES] bucle cancelado")
             raise
+        except asyncio.TimeoutError:
+            logger.warning("[CANDLES] iteracion excedio timeout %.0fs", timeout)
         except Exception as exc:  # pragma: no cover - el bucle debe sobrevivir
             logger.error("[CANDLES] iteracion fallida: %s", exc, exc_info=True)
         await asyncio.sleep(RECORD_INTERVAL_SECONDS)

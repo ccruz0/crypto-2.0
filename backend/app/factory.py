@@ -487,9 +487,10 @@ def create_app(role: str = "legacy") -> FastAPI:
                             logger.warning(f"Database initialization failed: {e}")
 
                     # Ensure DB initialization completes before scheduling other services.
-                    # Run in default executor but await completion so dependent services see the DB.
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, init_db)
+                    # Run on dedicated background executor so default pool stays free for liveness HTTP.
+                    from app.core.background_executor import run_background_blocking
+
+                    await run_background_blocking(init_db)
                     logger.info("Database initialization completed")
 
                     def _startup_telegram_messages_check():
@@ -511,7 +512,7 @@ def create_app(role: str = "legacy") -> FastAPI:
                         except Exception as e:
                             logger.error("[STARTUP_DB_CHECK] telegram_messages=FAIL (%s)", e)
 
-                    await loop.run_in_executor(None, _startup_telegram_messages_check)
+                    await run_background_blocking(_startup_telegram_messages_check)
             
                 # Eagerly initialize TelegramNotifier to ensure TELEGRAM_STARTUP log appears
                 # This triggers __init__ which logs [TELEGRAM_STARTUP] exactly once
@@ -528,7 +529,7 @@ def create_app(role: str = "legacy") -> FastAPI:
                 try:
                     from app.services.telegram_commands import _run_startup_diagnostics
                     logger.info("🔧 Running Telegram startup diagnostics...")
-                    await loop.run_in_executor(None, _run_startup_diagnostics)
+                    await run_background_blocking(_run_startup_diagnostics)
                     logger.info("✅ Telegram startup diagnostics completed")
                 except Exception as e:
                     logger.error(f"❌ Telegram startup diagnostics failed: {e}", exc_info=True)
@@ -722,7 +723,7 @@ def create_app(role: str = "legacy") -> FastAPI:
                 logger.error(f"Background init error: {e}", exc_info=True)
     
         # Ensure watchlist is never empty and sync with portfolio symbols
-        async def _ensure_watchlist_not_empty():
+        def _ensure_watchlist_not_empty_sync():
             """Ensure watchlist has at least some items based on portfolio and sync missing portfolio coins"""
             # Bug 2 Fix: Ensure db session is always closed, even if exception occurs before inner try
             db = None
@@ -921,8 +922,11 @@ def create_app(role: str = "legacy") -> FastAPI:
                         db.close()
                     except Exception:
                         pass  # Ignore errors during cleanup
-    
-            # Schedule background work - won't block startup
+
+        async def _ensure_watchlist_not_empty():
+            from app.core.background_executor import run_background_blocking
+
+            await run_background_blocking(_ensure_watchlist_not_empty_sync)
         # CRITICAL FIX: Start background services and signal_monitor directly
         logger.info("📋 Starting background services...")
         try:

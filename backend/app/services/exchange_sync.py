@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, not_, text
+from app.core.background_executor import OverlapGuard, run_background_blocking
 from app.database import SessionLocal
 from app.models.exchange_balance import ExchangeBalance
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
@@ -881,6 +882,8 @@ class ExchangeSyncService:
         # Advanced detail confirmed these CANCELLED/REJECTED protection rows are not fills;
         # skip re-polling them every open-orders cycle (process-lifetime).
         self._protection_reconcile_exhausted: set[str] = set()
+        self._open_orders_guard = OverlapGuard("exchange_sync.open_orders")
+        self._background_guard = OverlapGuard("exchange_sync.background")
     
     def _purge_stale_processed_orders(self):
         """Remove processed order IDs older than 10 minutes"""
@@ -6373,15 +6376,17 @@ class ExchangeSyncService:
         self._run_background_sync_sync(db)
         self._run_open_orders_sync_sync(db)
 
-    async def run_open_orders_sync(self):
-        """Run one open-orders refresh cycle."""
+    async def run_open_orders_sync(self) -> bool:
+        """Run one open-orders refresh cycle (background executor; skip if prior cycle active)."""
         if SessionLocal is None:
             logger.warning("Database not available (SessionLocal is None), skipping open orders sync")
-            return
+            return False
         db = SessionLocal()
         try:
-            await asyncio.to_thread(self._run_open_orders_sync_sync, db)
-            self.last_open_orders_sync = datetime.now(timezone.utc)
+            ran = await self._open_orders_guard.run_if_idle(self._run_open_orders_sync_sync, db)
+            if ran:
+                self.last_open_orders_sync = datetime.now(timezone.utc)
+            return ran
         finally:
             db.close()
 
@@ -6391,13 +6396,16 @@ class ExchangeSyncService:
             logger.warning("Database not available (SessionLocal is None), skipping background sync")
             return
         db = SessionLocal()
-        try:
-            await asyncio.to_thread(self.sync_balances, db)
+
+        async def _cycle() -> None:
+            await run_background_blocking(self.sync_balances, db)
             history_started = time.monotonic()
             logger.info("sync_order_history start")
             try:
                 await asyncio.wait_for(
-                    asyncio.to_thread(self.sync_order_history, db, page_size=200, max_pages=10),
+                    run_background_blocking(
+                        self.sync_order_history, db, page_size=200, max_pages=10
+                    ),
                     timeout=self.order_history_timeout,
                 )
                 logger.info(
@@ -6417,7 +6425,10 @@ class ExchangeSyncService:
                     e,
                     exc_info=True,
                 )
-            self.last_sync = datetime.now(timezone.utc)
+
+        try:
+            if await self._background_guard.run_if_idle_coro(_cycle):
+                self.last_sync = datetime.now(timezone.utc)
         finally:
             db.close()
 
