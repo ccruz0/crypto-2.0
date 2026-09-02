@@ -79,25 +79,27 @@ jobs:
           # /repo is ro — install ML deps + write dataset under /tmp only.
           # Single-quote bash -lc so host set -u does not expand \$DATABASE_URL;
           # container env provides DATABASE_URL. DAYS/PROMOTE_ENV expand on GH Actions.
-          docker exec "\$CONTAINER" bash -lc 'set -euo pipefail; cd /repo; pip install -q -r scripts/requirements-auto-ml.txt; python3 scripts/build_trade_outcomes.py --database-url "\$DATABASE_URL" --days ${DAYS} --out /tmp/trade-outcomes.json --write-db || true; ${PROMOTE_ENV} python3 scripts/retrain_and_promote_auto_entry.py --database-url "\$DATABASE_URL" --days ${DAYS} --label-source hybrid --out-dir /data/auto_ml --dataset-out /tmp/auto-ml-dataset-hybrid.json --no-telegram ${EXTRA_FLAGS}; python3 -c "import json;from pathlib import Path;p=Path(\"/tmp/auto-ml-dataset-hybrid.json\");m=json.loads(p.read_text()).get(\"meta\",{}) if p.exists() else {};print(\"DATASET_META\",{k:m.get(k) for k in (\"label_source\",\"phase\",\"n_dataset_rows\",\"n_from_trade_outcome\",\"n_from_alert\",\"n_trade_outcome_long\",\"n_trade_outcome_short\",\"n_positive\",\"n_negative\")});man=Path(\"/data/auto_ml/manifest.json\");print(\"MANIFEST_VERSION\", json.loads(man.read_text()).get(\"version\") if man.exists() else None);pending=Path(\"/data/auto_ml/pending_promote.json\");print(\"PENDING_PROMOTE\", json.loads(pending.read_text()) if pending.exists() else None)"'
+          docker exec "\$CONTAINER" bash -lc 'set -euo pipefail; cd /repo; pip install -q -r scripts/requirements-auto-ml.txt; echo "=== STEP: build_trade_outcomes (skip if fresh <=26h; daily job at 04:30 UTC) ==="; python3 scripts/build_trade_outcomes.py --database-url "\$DATABASE_URL" --days ${DAYS} --out /tmp/trade-outcomes.json --write-db --skip-if-fresh-hours 26 || true; echo "=== STEP: retrain_and_promote_auto_entry (hybrid dataset + train) ==="; ${PROMOTE_ENV} python3 scripts/retrain_and_promote_auto_entry.py --database-url "\$DATABASE_URL" --days ${DAYS} --label-source hybrid --out-dir /data/auto_ml --dataset-out /tmp/auto-ml-dataset-hybrid.json --no-telegram ${EXTRA_FLAGS}; python3 -c "import json;from pathlib import Path;p=Path(\"/tmp/auto-ml-dataset-hybrid.json\");m=json.loads(p.read_text()).get(\"meta\",{}) if p.exists() else {};print(\"DATASET_META\",{k:m.get(k) for k in (\"label_source\",\"phase\",\"n_dataset_rows\",\"n_from_trade_outcome\",\"n_from_alert\",\"n_trade_outcome_long\",\"n_trade_outcome_short\",\"n_positive\",\"n_negative\")});man=Path(\"/data/auto_ml/manifest.json\");print(\"MANIFEST_VERSION\", json.loads(man.read_text()).get(\"version\") if man.exists() else None);pending=Path(\"/data/auto_ml/pending_promote.json\");print(\"PENDING_PROMOTE\", json.loads(pending.read_text()) if pending.exists() else None)"'
           EOF
+          SSM_TIMEOUT_SECONDS=3600
+          # Poll must exceed SSM timeout (3600s): 740 * 5s = 3700s
+          SSM_POLL_ITERATIONS=740
           PARAMS=$(jq -n --arg cmd "$REMOTE" '{commands: [$cmd]}')
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Auto ML hybrid retrain dry_run=${DRY_RUN} days=${DAYS} event=${{ github.event_name }}" \
             --parameters "$PARAMS" \
-            --timeout-seconds 1200 \
+            --timeout-seconds "$SSM_TIMEOUT_SECONDS" \
             --output text \
             --query "Command.CommandId")
-          echo "CommandId=$COMMAND_ID"
-          # 1200s SSM timeout → poll up to ~20 min (240 * 5s)
-          for i in $(seq 1 240); do
+          echo "CommandId=$COMMAND_ID (SSM timeout=${SSM_TIMEOUT_SECONDS}s, poll up to $((SSM_POLL_ITERATIONS * 5))s)"
+          for i in $(seq 1 "$SSM_POLL_ITERATIONS"); do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
               --query "Status" --output text 2>/dev/null || echo InProgress)
-            echo "status=$STATUS ($i)"
+            echo "status=$STATUS ($i/$SSM_POLL_ITERATIONS)"
             case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
             sleep 5
           done
@@ -111,4 +113,8 @@ jobs:
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID" \
             --query "StandardErrorContent" --output text || true
+          if [ "$STATUS" = "TimedOut" ]; then
+            echo "ERROR: SSM command TimedOut after ${SSM_TIMEOUT_SECONDS}s — check STDOUT for last AUTO_ML_*_HEARTBEAT line to see which step hung"
+            exit 1
+          fi
           test "$STATUS" = "Success"
