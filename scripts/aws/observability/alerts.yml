@@ -3,11 +3,11 @@ groups:
     rules:
       - alert: InstanceDown
         expr: up == 0
-        for: 2m
+        for: 15m
         labels: { severity: "critical" }
         annotations:
           summary: "Target down: {{ $labels.job }} {{ $labels.instance }}"
-          description: "Scrape target {{ $labels.job }} {{ $labels.instance }} has been down for more than 2m."
+          description: "Scrape target {{ $labels.job }} {{ $labels.instance }} has been down for more than 15m."
 
       - alert: HostDiskFillingUp
         expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.15

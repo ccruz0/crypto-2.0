@@ -90,6 +90,27 @@ def _epoch_minutes_ago(epoch_now: float, ts_str: str) -> float:
     return max(0.0, (epoch_now - t) / 60.0)
 
 
+def minutes_since_first_fail(first_fail_ts: str, now_epoch: float) -> float:
+    """Minutes since first_fail_ts; large value when timestamp missing/invalid."""
+    t = parse_iso_utc(first_fail_ts)
+    if t is None:
+        return 999999.0
+    return max(0.0, (now_epoch - t) / 60.0)
+
+
+def should_send_action_required_alert(
+    first_fail_ts: str,
+    now_epoch: float,
+    *,
+    min_fail_minutes: float = 10.0,
+) -> Tuple[bool, str]:
+    """Suppress action-required when failure just started (likely transient flap)."""
+    mins = minutes_since_first_fail(first_fail_ts, now_epoch)
+    if mins < min_fail_minutes:
+        return False, f"failure_too_short_{mins:.0f}min"
+    return True, ""
+
+
 def evaluate_after_snapshot(
     state: Dict[str, Any],
     *,

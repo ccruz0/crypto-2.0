@@ -423,6 +423,15 @@ verify_label: PASS (was ${last_verify:-n/a})"
   fi
   [ -z "$mins_since_fail" ] && mins_since_fail="n/a"
 
+  # --- Throttle: skip action-required for very fresh failures (transient flap) ---
+  local min_fail_mins="${ATP_HEALTH_MIN_FAIL_MINUTES:-10}"
+  if [ -n "$first_fail_ts" ] && [ "$mins_since_fail" != "n/a" ]; then
+    if [ "${mins_since_fail:-0}" -lt "$min_fail_mins" ] 2>/dev/null; then
+      log_heal "event=action_required_skipped failing_since=${mins_since_fail}min min=${min_fail_mins} (transient flap)"
+      exit 0
+    fi
+  fi
+
   # --- Root cause and single "action required" message (include severity) ---
   local root_cause=""
   if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
