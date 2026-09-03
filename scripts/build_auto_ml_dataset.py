@@ -278,11 +278,30 @@ def load_complete_fill_alert_ids(
         return {r[0] for r in conn.execute(q, {"ids": ids})}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _build_alert_dataset(
     alerts: list[dict[str, Any]], *, fixture: bool, delta: float
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     _heartbeat("alert_labeling_start", n_alerts=len(alerts), fixture=fixture)
-    labeled, summary = evaluate_alerts(alerts, fixture_candles=fixture, delta=delta)
+
+    def _on_progress(stats: dict[str, Any]) -> None:
+        _heartbeat("alert_labeling_progress", **stats)
+
+    labeled, summary = evaluate_alerts(
+        alerts,
+        fixture_candles=fixture,
+        delta=delta,
+        on_progress=_on_progress,
+    )
     _heartbeat(
         "alert_labeling_done",
         n_labeled=summary.get("n_labeled"),
@@ -311,6 +330,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     src.add_argument("--alerts-json", type=Path)
     src.add_argument("--demo", action="store_true", help="Built-in rich demo + fixture candles")
     p.add_argument("--days", type=int, default=30)
+    p.add_argument(
+        "--alert-limit",
+        type=int,
+        default=_env_int("AUTO_ML_ALERT_LABEL_LIMIT", 2000),
+        help=(
+            "Max SIGNAL alerts loaded from DB/API for alert-path labeling "
+            "(env AUTO_ML_ALERT_LABEL_LIMIT; default 2000)"
+        ),
+    )
     p.add_argument("--delta", type=float, default=DEFAULT_DELTA)
     p.add_argument("--fixture-candles", action="store_true")
     p.add_argument(
@@ -374,13 +402,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             return 2
         alerts = load_alerts_from_api(args.api_url, days=args.days, token=args.api_token)
+        if args.alert_limit and len(alerts) > args.alert_limit:
+            alerts = alerts[: args.alert_limit]
         source = f"api:{args.api_url}"
     elif args.database_url:
         # Always load SIGNAL alerts when a DB is available — hybrid uses them for
         # Phase-0 labels; trade_outcomes/hybrid use them to enrich fill context.
-        _heartbeat("load_alerts_from_db_start", days=args.days)
-        alerts = load_alerts_from_db(args.database_url, days=args.days)
-        _heartbeat("load_alerts_from_db_done", n_alerts=len(alerts))
+        _heartbeat("load_alerts_from_db_start", days=args.days, alert_limit=args.alert_limit)
+        alerts = load_alerts_from_db(
+            args.database_url, days=args.days, limit=args.alert_limit
+        )
+        _heartbeat("load_alerts_from_db_done", n_alerts=len(alerts), alert_limit=args.alert_limit)
         source = "database"
     else:
         print(
@@ -525,6 +557,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "label_def": label_def,
             "phase": phase,
             "n_input_alerts": len(alerts),
+            "alert_label_limit": args.alert_limit if not args.demo else None,
             "n_labeled_metrics": summary.get("n_labeled"),
             "n_trade_outcome_rows": len(trade_dataset),
             "n_alert_path_rows": len(alert_dataset),

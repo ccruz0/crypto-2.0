@@ -22,6 +22,9 @@
 | `AUTO_ML_HUMAN_PROMOTE` | **false** (backend reads process env) | Shell/workflow merit promote; **not** required for dashboard/API promote |
 | `AUTO_ML_PROMOTE_MIN_ROWS` | 20 | Min labels to promote |
 | `AUTO_ML_PROMOTE_MIN_DELTA` | 0.0 | Min metric gain vs current |
+| `AUTO_ML_ALERT_LABEL_LIMIT` | 2000 | Max SIGNAL alerts loaded for alert-path / hybrid fallback labeling (`build_auto_ml_dataset.py --alert-limit`) |
+| `AUTO_ML_ALERT_HEARTBEAT_EVERY_N` | 25 | Progress line every N alerts during OHLCV labeling |
+| `AUTO_ML_ALERT_HEARTBEAT_EVERY_S` | 30 | Progress line at least every N seconds during labeling |
 
 `AUTO_ML_HUMAN_PROMOTE` is **not** wired in `docker-compose.yml` (path-guard).
 Override only via process env on retrain shells, GitHub `workflow_dispatch`
@@ -301,6 +304,10 @@ GitHub Actions workflow **Ops — Auto ML hybrid retrain**:
   runs skip the heavy rebuild when the daily job already refreshed the table (30 min earlier).
 - SSM remote timeout is **3600s** with CI poll up to ~3700s; last `AUTO_ML_DATASET_HEARTBEAT`
   or `AUTO_ML_RETRAIN_HEARTBEAT` line in workflow stdout shows where a hang occurred.
+  During alert-path labeling, `alert_labeling_progress` heartbeats emit every ~25 alerts
+  or ~30s (`AUTO_ML_ALERT_HEARTBEAT_EVERY_N` / `AUTO_ML_ALERT_HEARTBEAT_EVERY_S`) so long
+  Binance OHLCV fetches are not silent. Cap alert volume with `AUTO_ML_ALERT_LABEL_LIMIT`
+  (default 2000) if dry-runs approach the SSM window.
 - **Concurrency:** workflow uses GitHub Actions group `auto-ml-hybrid-retrain-prod` with
   `cancel-in-progress: false`. A second dispatch (cron + manual, or two manual runs) **queues**
   until the in-flight SSM retrain finishes — do not rely on parallel runs on the prod host.

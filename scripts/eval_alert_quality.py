@@ -28,7 +28,7 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Repo imports: metrics live beside this script; backend optional for DB.
 _SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -334,21 +334,70 @@ def normalize_alert(raw: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
+def _alert_label_heartbeat_intervals() -> tuple[int, float]:
+    """Progress cadence for long SSM/CI runs (env overrides)."""
+    every_n = 25
+    every_s = 30.0
+    raw_n = (os.environ.get("AUTO_ML_ALERT_HEARTBEAT_EVERY_N") or "").strip()
+    raw_s = (os.environ.get("AUTO_ML_ALERT_HEARTBEAT_EVERY_S") or "").strip()
+    if raw_n:
+        try:
+            every_n = max(1, int(raw_n))
+        except ValueError:
+            pass
+    if raw_s:
+        try:
+            every_s = max(1.0, float(raw_s))
+        except ValueError:
+            pass
+    return every_n, every_s
+
+
 def evaluate_alerts(
     alerts: list[dict[str, Any]],
     *,
     fixture_candles: bool = False,
     delta: float = DEFAULT_DELTA,
     candle_cache: Optional[dict[str, list[Candle]]] = None,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    heartbeat_every_n: Optional[int] = None,
+    heartbeat_every_s: Optional[float] = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     cache = candle_cache if candle_cache is not None else {}
     labeled: list[dict[str, Any]] = []
     skipped = 0
+    default_n, default_s = _alert_label_heartbeat_intervals()
+    hb_every_n = default_n if heartbeat_every_n is None else max(1, heartbeat_every_n)
+    hb_every_s = default_s if heartbeat_every_s is None else max(1.0, heartbeat_every_s)
+    n_total = len(alerts)
+    processed = 0
+    last_hb = time.monotonic()
+
+    def _maybe_progress(*, force: bool = False) -> None:
+        nonlocal last_hb
+        if on_progress is None:
+            return
+        now = time.monotonic()
+        if not force and processed % hb_every_n != 0 and (now - last_hb) < hb_every_s:
+            return
+        on_progress(
+            {
+                "processed": processed,
+                "n_total": n_total,
+                "n_labeled": sum(1 for r in labeled if not r.get("error")),
+                "n_errors": sum(1 for r in labeled if r.get("error")),
+                "n_skipped": skipped,
+                "fixture": fixture_candles,
+            }
+        )
+        last_hb = now
 
     for raw in alerts:
         norm = normalize_alert(raw)
         if norm is None:
             skipped += 1
+            processed += 1
+            _maybe_progress()
             continue
 
         params = _preset_sl_tp_params(norm.get("strategy_type"), norm.get("risk_approach"))
@@ -383,6 +432,8 @@ def evaluate_alerts(
                             "composite_score": None,
                         }
                     )
+                    processed += 1
+                    _maybe_progress()
                     continue
             candles = cache[cache_key]
             source = "binance"
@@ -400,6 +451,10 @@ def evaluate_alerts(
             mfe_horizon_min=mfe_h,
         )
         labeled.append({**norm, **metrics, "candle_source": source, "n_candles": len(candles)})
+        processed += 1
+        _maybe_progress()
+
+    _maybe_progress(force=True)
 
     # Segment rollups
     segments: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
