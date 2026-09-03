@@ -113,4 +113,5 @@ def test_build_auto_ml_dataset_demo_emits_heartbeats(tmp_path, capsys):
     assert rc == 0
     err = capsys.readouterr().err
     assert "AUTO_ML_DATASET_HEARTBEAT" in err
+    assert "alert_labeling_progress" in err
     assert "done" in err
