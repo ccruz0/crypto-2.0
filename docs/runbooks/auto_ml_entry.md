@@ -301,6 +301,9 @@ GitHub Actions workflow **Ops — Auto ML hybrid retrain**:
   runs skip the heavy rebuild when the daily job already refreshed the table (30 min earlier).
 - SSM remote timeout is **3600s** with CI poll up to ~3700s; last `AUTO_ML_DATASET_HEARTBEAT`
   or `AUTO_ML_RETRAIN_HEARTBEAT` line in workflow stdout shows where a hang occurred.
+- **Concurrency:** workflow uses GitHub Actions group `auto-ml-hybrid-retrain-prod` with
+  `cancel-in-progress: false`. A second dispatch (cron + manual, or two manual runs) **queues**
+  until the in-flight SSM retrain finishes — do not rely on parallel runs on the prod host.
 
 Also useful: **Ops — Auto ML fill feature diag** (read-only fill/context diagnostics).
 

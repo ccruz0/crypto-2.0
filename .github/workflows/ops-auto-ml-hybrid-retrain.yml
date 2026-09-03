@@ -28,6 +28,12 @@ permissions:
   id-token: write
   contents: read
 
+# One SSM session per prod host — overlapping runs collide on the same instance
+# (i-087953603011543c5). Queue; do not cancel a long retrain mid-flight.
+concurrency:
+  group: auto-ml-hybrid-retrain-prod
+  cancel-in-progress: false
+
 jobs:
   auto-ml-hybrid-retrain:
     runs-on: ubuntu-latest
