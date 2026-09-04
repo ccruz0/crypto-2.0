@@ -175,7 +175,7 @@ def _estimate_filled_open_positions(
                 net_quantity,
                 min_position_threshold,
             )
-        logger.info(
+        logger.debug(
             "[POSITION_ESTIMATION] %s %s: net_qty=%.4f, avg_size=%.4f, estimated=%s, threshold=%.4f",
             side_label,
             symbol,
@@ -293,7 +293,7 @@ def count_open_positions_for_symbol(
         min_position_usd=min_position_usd,
         last_price=dust_price,
     ):
-        logger.info(
+        logger.debug(
             "[OPEN_POSITION_COUNT] symbol=%s long_net_qty=%.8f treated as dust "
             "(min_qty=%s min_usd=%s price=%s)",
             symbol,
@@ -356,7 +356,7 @@ def count_open_positions_for_symbol(
         min_position_usd=min_position_usd,
         last_price=short_dust_price,
     ):
-        logger.info(
+        logger.debug(
             "[OPEN_POSITION_COUNT] symbol=%s short_net_qty=%.8f treated as dust "
             "(min_qty=%s min_usd=%s price=%s)",
             symbol,
@@ -387,7 +387,7 @@ def count_open_positions_for_symbol(
         avg_position_size = filled_buy_qty / len(filled_buy_orders)
 
     try:
-        logger.info(
+        logger.debug(
             "[OPEN_POSITION_DEBUG] base=%s pending_long=%s pending_short=%s "
             "sample_buy=%s sample_sell_entry=%s sample_long_close=%s sample_short_close=%s",
             symbol,
@@ -401,7 +401,7 @@ def count_open_positions_for_symbol(
     except Exception:
         pass
 
-    logger.info(
+    logger.debug(
         "[OPEN_POSITION_COUNT] symbol=%s pending_long=%s pending_short=%s "
         "filled_buy=%s long_close_sell=%s long_net=%s long_pos=%s "
         "filled_sell_entry=%s short_close_buy=%s short_net=%s short_pos=%s "
