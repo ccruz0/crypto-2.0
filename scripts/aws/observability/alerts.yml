@@ -52,7 +52,10 @@ groups:
       - alert: HostCPUSaturated
         expr: (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.85
         for: 10m
-        labels: { severity: "warning" }
+        # critical: severity=warning se enruta al receptor `null` (alertmanager.yml,
+        # PR #148), asi que esta alerta no llegaba a nadie. El 3-sep estuvo 32 h
+        # al 99,99 % sin avisar mientras el backend se reiniciaba solo.
+        labels: { severity: "critical" }
         annotations:
           summary: "Host CPU saturated on {{ $labels.instance }} (>85% non-idle)"
           description: "Non-idle CPU has averaged above 85% for 10m, indicating sustained CPU saturation."
@@ -83,7 +86,9 @@ groups:
       - alert: MarketUpdaterStalled
         expr: max(market_updater_heartbeat_age_seconds{job="market_updater"}) > 900
         for: 5m
-        labels: { severity: "warning" }
+        # critical: un market updater parado deja al bot operando con precios
+        # viejos. Es de las pocas condiciones que exigen mirar el sistema ya.
+        labels: { severity: "critical" }
         annotations:
           summary: "Market updater heartbeat age > 15m"
           description: "Market updater has not sent a heartbeat in over 15 minutes."
