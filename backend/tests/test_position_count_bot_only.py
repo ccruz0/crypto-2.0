@@ -11,6 +11,7 @@ from app.database import Base
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.order_position_service import (
     count_open_positions_for_symbol,
+    count_open_short_positions_for_symbol,
     count_total_open_positions,
 )
 
@@ -160,6 +161,84 @@ def test_total_ignores_orphan_pending_take_profits(db_session):
     db_session.commit()
 
     assert count_total_open_positions(db_session) == 0
+
+
+def _twin_close_pair(symbol, parent_id, side, qty, role="STOP_LOSS"):
+    """Two rows for ONE economic TP/SL fill: OCO trigger + spot remap.
+
+    Reproduces the Crypto.com dual-ID behaviour recorded in #523 (ALGO stop
+    persisted as 73817490102095276 and 5755600493106121990, same quantity,
+    same second).
+    """
+    now = datetime.now(timezone.utc)
+    trigger = _bot_order(
+        exchange_order_id=f"73817490{parent_id}",
+        symbol=symbol,
+        side=side,
+        order_role=role,
+        trade_signal_id=None,
+        parent_order_id=parent_id,
+        quantity=qty,
+        cumulative_quantity=qty,
+    )
+    trigger.oco_group_id = f"oco_{parent_id}_1"
+    trigger.cumulative_value = Decimal("500")
+    trigger.exchange_create_time = now
+    trigger.exchange_update_time = now
+
+    spot_remap = _bot_order(
+        exchange_order_id=f"57556004{parent_id}",
+        symbol=symbol,
+        side=side,
+        order_role=role,
+        trade_signal_id=None,
+        parent_order_id=parent_id,
+        quantity=qty,
+        cumulative_quantity=qty,
+    )
+    spot_remap.oco_group_id = None
+    spot_remap.cumulative_value = Decimal("0")
+    spot_remap.exchange_create_time = now
+    spot_remap.exchange_update_time = now
+    return trigger, spot_remap
+
+
+def test_twin_fill_close_not_double_counted_long(db_session):
+    """#523: dual-ID close rows must collapse, or a live long reads as 0."""
+    entry = _bot_order(
+        exchange_order_id="algo_buy_1",
+        symbol="ALGO_USD",
+        side=OrderSideEnum.BUY,
+        quantity=Decimal("2000"),
+        cumulative_quantity=Decimal("2000"),
+    )
+    trigger, spot_remap = _twin_close_pair(
+        "ALGO_USD", "algo_buy_1", OrderSideEnum.SELL, Decimal("1149")
+    )
+    db_session.add_all([entry, trigger, spot_remap])
+    db_session.commit()
+
+    # Real close is 1149 of 2000 -> 851 still open (1 position). Counting both
+    # twin rows sums 2298 > 2000, floors the net to 0 and hides a live position.
+    assert count_open_positions_for_symbol(db_session, "ALGO_USD") == 1
+
+
+def test_twin_fill_close_not_double_counted_short(db_session):
+    """Same collapse on count_open_short_positions_for_symbol (its own query)."""
+    short_entry = _bot_order(
+        exchange_order_id="bonk_sell_1",
+        symbol="BONK_USD",
+        side=OrderSideEnum.SELL,
+        quantity=Decimal("2000"),
+        cumulative_quantity=Decimal("2000"),
+    )
+    trigger, spot_remap = _twin_close_pair(
+        "BONK_USD", "bonk_sell_1", OrderSideEnum.BUY, Decimal("1149"), role="TAKE_PROFIT"
+    )
+    db_session.add_all([short_entry, trigger, spot_remap])
+    db_session.commit()
+
+    assert count_open_short_positions_for_symbol(db_session, "BONK_USD") == 1
 
 
 def test_total_sums_bot_positions_across_symbols(db_session):

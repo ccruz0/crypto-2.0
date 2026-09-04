@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, not_
 
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
+from app.utils.economic_twin_orders import dedupe_protection_close_twins
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,11 @@ def count_open_positions_for_symbol(
         .order_by(*order_time)
         .all()
     )
+    # #523: Crypto.com persists dual-ID TP/SL fills (advanced/trigger id +
+    # spot remap id) for one economic close. Summing both double-counts the
+    # close and can floor the net to 0 while the position is still open.
+    # Same collapse rebuild_open_lots already applies before FIFO.
+    filled_long_close_sells = dedupe_protection_close_twins(filled_long_close_sells)
     filled_long_close_sell_qty = sum(_order_filled_quantity(o) for o in filled_long_close_sells)
     long_net_qty = max(filled_buy_qty - filled_long_close_sell_qty, 0.0)
 
@@ -344,6 +350,8 @@ def count_open_positions_for_symbol(
         .order_by(*order_time)
         .all()
     )
+    # Same twin-fill collapse as the long side (#523).
+    filled_short_close_buys = dedupe_protection_close_twins(filled_short_close_buys)
     filled_short_close_buy_qty = sum(_order_filled_quantity(o) for o in filled_short_close_buys)
     short_net_qty = max(filled_sell_entry_qty - filled_short_close_buy_qty, 0.0)
 
@@ -496,6 +504,8 @@ def count_open_short_positions_for_symbol(
         .order_by(*order_time)
         .all()
     )
+    # Same twin-fill collapse as the long side (#523).
+    filled_short_close_buys = dedupe_protection_close_twins(filled_short_close_buys)
     filled_short_close_buy_qty = sum(_order_filled_quantity(o) for o in filled_short_close_buys)
     short_net_qty = max(filled_sell_entry_qty - filled_short_close_buy_qty, 0.0)
 
