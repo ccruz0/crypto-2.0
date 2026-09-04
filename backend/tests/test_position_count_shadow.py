@@ -77,6 +77,29 @@ class TestShadowIsDisableable:
             pcs.record_shadow_count(mock_db, "ALGO", 0)
         counted.assert_not_called()
 
+    def test_canary_does_no_work(self, mock_db, monkeypatch):
+        """Both backends share one database, so the canary would only duplicate
+        production's measurement — at 413 counter calls/min (measured
+        2026-09-04). The primary keeps measuring; the standby stays out."""
+        monkeypatch.delenv("POSITION_COUNT_SHADOW_ENABLED", raising=False)
+        monkeypatch.setenv("RUN_TELEGRAM_POLLER", "false")
+        with patch.object(pcs, "count_open_lots_for_symbol") as counted:
+            pcs.record_shadow_count(mock_db, "ALGO", 0)
+        counted.assert_not_called()
+
+    def test_primary_still_measures(self, mock_db, monkeypatch):
+        """The gate must not silence the primary — that would kill PASO B1."""
+        monkeypatch.delenv("POSITION_COUNT_SHADOW_ENABLED", raising=False)
+        monkeypatch.delenv("RUN_TELEGRAM_POLLER", raising=False)
+        with patch.object(pcs, "count_open_lots_for_symbol") as counted:
+            counted.return_value = {
+                "count": 0, "long_qty": 0.0, "short_qty": 0.0,
+                "lots_pre": 0, "lots_post": 0, "ghosts_dropped": 0,
+                "wallet_ok": True,
+            }
+            pcs.record_shadow_count(mock_db, "ALGO", 0)
+        counted.assert_called_once()
+
 
 class TestWalletHandling:
     def test_wallet_failure_is_reported_not_hidden(self, mock_db, caplog):
