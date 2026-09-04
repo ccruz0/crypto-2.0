@@ -842,7 +842,7 @@ def _dedupe_economic_twin_entry_orders(
                 continue
             if any(_times_within_economic_twin_gap(shadow, kept) for kept in protected):
                 drop_ids.add(shadow_id)
-                logger.info(
+                logger.debug(
                     "dedupe_economic_twin: dropping shadow entry %s (keeping protected twin(s) %s)",
                     shadow_id,
                     [str(p.exchange_order_id) for p in protected],
@@ -960,7 +960,7 @@ def _rebuild_open_lots_uncached(db: Session, symbol: str) -> List[OpenLot]:
 
     open_lots: List[OpenLot] = []
 
-    logger.info(
+    logger.debug(
         f"rebuild_open_lots: Processing {len(buys)} buy orders and {len(sells)} sell orders for {symbol}"
     )
 
@@ -1101,7 +1101,7 @@ def _rebuild_open_lots_uncached(db: Session, symbol: str) -> List[OpenLot]:
                 sell.exchange_order_id[:15],
             )
     
-    logger.info(f"rebuild_open_lots: Found {len(open_lots)} open lots for {symbol}")
+    logger.debug(f"rebuild_open_lots: Found {len(open_lots)} open lots for {symbol}")
     return open_lots
 
 
