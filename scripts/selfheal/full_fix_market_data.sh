@@ -13,6 +13,24 @@ REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 BASE="${ATP_HEALTH_BASE:-http://127.0.0.1:8002}"
 SKIP_VERIFY_RESTORE="${ATP_FULL_FIX_SKIP_VERIFY_RESTORE:-0}"
 
+# Serializa con heal.sh y con cualquier otro llamador. health_snapshot_telegram_alert.sh
+# invoca este script DIRECTAMENTE, sin pasar por heal.sh, asi que hasta ahora el
+# flock de heal.sh no lo cubria: dos reinicios del mismo contenedor a la vez eran
+# posibles. Ya estaba avisado por escrito en
+# docs/HEALTH_MONITOR_FIRST_CONSOLIDATION_REVIEW.md:73.
+#
+# Si el padre YA tiene el lock (heal.sh lo exporta antes de llamarnos), no se
+# reintenta: volver a pedirlo sobre el mismo fichero fallaria y dejaria a heal.sh
+# sin remediacion.
+if [ "${ATP_SELFHEAL_LOCK_HELD:-0}" != "1" ]; then
+  exec 9>"${ATP_SELFHEAL_LOCK:-/var/lock/atp-selfheal.lock}"
+  if ! flock -n 9; then
+    echo "Otra remediacion de self-heal esta en curso; saliendo sin actuar."
+    exit 0
+  fi
+  export ATP_SELFHEAL_LOCK_HELD=1
+fi
+
 log() { echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] full_fix_market_data $*"; }
 
 cd "$REPO_DIR" || { log "error=repo_missing path=$REPO_DIR"; exit 1; }

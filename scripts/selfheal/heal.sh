@@ -42,6 +42,10 @@ with_lock() {
     echo "Another self-heal is running. Exiting."
     exit 0
   fi
+  # Los scripts de remediacion que llamamos mas abajo toman este mismo lock
+  # cuando les invoca otro (health_snapshot_telegram_alert.sh). Este centinela
+  # les dice que ya lo tenemos, para que no se bloqueen a si mismos.
+  export ATP_SELFHEAL_LOCK_HELD=1
 }
 
 disk_pct() {
