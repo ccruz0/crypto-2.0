@@ -27,6 +27,31 @@ def _is_primary_report_sender() -> bool:
     )
 
 
+def _dashboard_snapshot_interval_sec() -> int:
+    """Cadence for the dashboard snapshot cache.
+
+    The snapshot walks every portfolio asset and calls the open-position
+    counter for each, which in turn rebuilds FIFO lots. On the canary nobody
+    reads that dashboard (the container is deploy-only), so refreshing it every
+    minute only burns CPU and floods the log: measured 2026-09-04, the canary
+    wrote 1.15 MB/min of logs and ran 413 counter calls per minute against
+    production's 161, while dockerd sat at ~1.25 of the host's 2 cores.
+
+    Primary keeps the original 60s. Standby/canary backs off to 10 minutes.
+    Override with DASHBOARD_SNAPSHOT_INTERVAL_SEC (floor 60).
+    """
+    raw = (os.getenv("DASHBOARD_SNAPSHOT_INTERVAL_SEC") or "").strip()
+    if raw:
+        try:
+            return max(60, int(raw))
+        except ValueError:
+            logger.warning(
+                "[SCHEDULER] DASHBOARD_SNAPSHOT_INTERVAL_SEC=%r is not an int; using default",
+                raw,
+            )
+    return 60 if _is_primary_report_sender() else 600
+
+
 def _sl_tp_check_dashboard_url() -> str:
     """Operator dashboard URL for the same rows the hourly Telegram audit lists."""
     base = (os.getenv("FRONTEND_URL") or os.getenv("PUBLIC_BASE_URL") or "").strip()
@@ -949,7 +974,8 @@ class TradingScheduler:
                 self._last_snapshot_update = 0
             
             now = time.time()
-            if now - self._last_snapshot_update >= 60:  # Update every 60 seconds
+            interval = _dashboard_snapshot_interval_sec()
+            if now - self._last_snapshot_update >= interval:
                 logger.info("[SCHEDULER] 📸 Updating dashboard snapshot...")
                 # update_dashboard_snapshot is now async, so we await it directly
                 # Database operations will run in thread pool executor if needed
