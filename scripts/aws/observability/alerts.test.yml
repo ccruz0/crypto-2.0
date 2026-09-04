@@ -126,3 +126,48 @@ tests:
             exp_annotations:
               summary: "Host CPU saturated on host:9100 (>85% non-idle)"
               description: "Non-idle CPU has averaged above 85% for 10m, indicating sustained CPU saturation."
+
+  # ContainerRestartsHigh: no tenia test, y por eso sobrevivio con increase()
+  # sobre un gauge de marca temporal. Estos dos casos fijan el contrato.
+  #
+  # Caso 1: cuatro arranques al principio de la ventana => dispara.
+  # La marca cambia en t=1,2,3,4 (cuatro cambios, > 2) y luego queda estable,
+  # asi que a t=12m la condicion lleva 8 min cumplida, holgada sobre el for: 5m,
+  # y los cuatro cambios siguen dentro de la ventana de 15m.
+  - interval: 1m
+    input_series:
+      - series: 'container_start_time_seconds{name="backend-aws-1",id="/docker/abc"}'
+        values: "100 200 300 400 500 500 500 500 500 500 500 500 500 500 500 500"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ContainerRestartsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              name: "backend-aws-1"
+              id: "/docker/abc"
+            exp_annotations:
+              summary: "Container restarts detected (cadvisor)"
+              description: "One or more containers restarted more than twice in the last 15m."
+
+  # Caso 2: un contenedor estable no dispara, por muy grande que sea la marca
+  # de arranque. Con increase() esto disparaba en falso: era el defecto.
+  - interval: 1m
+    input_series:
+      - series: 'container_start_time_seconds{name="backend-aws-1",id="/docker/abc"}'
+        values: "1784684499x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ContainerRestartsHigh
+        exp_alerts: []
+
+  # Caso 3: los cgroups del sistema (sin etiqueta name) quedan fuera. Eran los
+  # que producian el falso positivo permanente.
+  - interval: 1m
+    input_series:
+      - series: 'container_start_time_seconds{id="/system.slice/atp-selfheal.service"}'
+        values: "100 200 300 400 500 600 700 800 900 1000 1100 1200 1300 1400 1500 1600 1700 1800 1900 2000"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ContainerRestartsHigh
+        exp_alerts: []

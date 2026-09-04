@@ -18,7 +18,13 @@ groups:
           description: "Filesystem {{ $labels.mountpoint }} has less than 15% space available for 10m."
 
       - alert: ContainerRestartsHigh
-        expr: increase(container_start_time_seconds[15m]) > 2
+        # changes(), no increase(): container_start_time_seconds es un gauge que
+        # guarda la marca Unix de arranque. increase() sobre una marca temporal
+        # suma segundos, no reinicios — disparaba con ~899,97 (los 900 s de la
+        # ventana) sobre unidades de systemd. changes() cuenta cuantas veces
+        # cambio el valor, que es exactamente un reinicio.
+        # name!="": excluye los cgroups del sistema, deja solo contenedores.
+        expr: changes(container_start_time_seconds{name!=""}[15m]) > 2
         for: 5m
         labels: { severity: "warning" }
         annotations:
