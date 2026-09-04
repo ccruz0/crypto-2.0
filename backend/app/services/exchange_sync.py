@@ -129,6 +129,22 @@ RECENT_FILL_WINDOW_SECONDS = 3600
 # OCO sibling cancel Telegram: never re-announce the same sibling within this TTL
 OCO_CANCEL_TELEGRAM_TTL_MINUTES = 7 * 24 * 60
 
+# Tope de intentos de cancelacion OCO por orden antes de rendirse.
+# Sin esto el barrido reintenta cada ciclo (5 s) para siempre: el 4-sep-2026 una
+# orden fantasma de BONK acumulo 196 intentos en 20 min, con una alerta de
+# Telegram por vuelta. El detector de "ya no existe"
+# (_cancel_result_indicates_already_gone) no puede resolverlo porque el broker
+# descarta el cuerpo del 400 antes de leerlo, y esa ruta esta en un fichero
+# protegido por el Path Guard. Este tope acota el dano sin depender de ella.
+OCO_CANCEL_MAX_FAILURES = int(os.getenv("OCO_CANCEL_MAX_FAILURES", "5") or 5)
+
+# TTL del aviso de FALLO de cancelacion. El camino de exito ya deduplicaba con
+# OCO_CANCEL_TELEGRAM_TTL_MINUTES; el de fallo llamaba a send_message directo,
+# sin dedup — justo el unico que puede repetirse indefinidamente.
+OCO_CANCEL_FAILURE_TELEGRAM_TTL_MINUTES = int(
+    os.getenv("OCO_CANCEL_FAILURE_TELEGRAM_TTL_MINUTES", "60") or 60
+)
+
 _PROTECTIVE_ORDER_TYPES = (
     "STOP_LIMIT",
     "STOP_LOSS",
@@ -2810,6 +2826,17 @@ class ExchangeSyncService:
             )
             return False
 
+    def _oco_cancel_failures(self) -> dict:
+        """Intentos de cancelacion OCO fallidos por exchange_order_id.
+
+        Vive en memoria del proceso a proposito: al reiniciar se reintenta, que
+        es lo deseable si el fallo era transitorio. Lo que NO puede pasar es
+        reintentar sin fin dentro del mismo proceso.
+        """
+        if not hasattr(self, "_oco_cancel_failure_counts"):
+            self._oco_cancel_failure_counts = {}
+        return self._oco_cancel_failure_counts
+
     def _sweep_orphaned_oco_siblings(
         self,
         db: Session,
@@ -2877,6 +2904,22 @@ class ExchangeSyncService:
                 continue
             if orphan.status == OrderStatusEnum.FILLED:
                 continue
+            orphan_key = str(orphan.exchange_order_id)
+            failures = self._oco_cancel_failures()
+            if failures.get(orphan_key, 0) >= OCO_CANCEL_MAX_FAILURES:
+                # Ya se intento OCO_CANCEL_MAX_FAILURES veces sin exito. Seguir
+                # reintentando cada ciclo no la cancela y si inunda Telegram y la
+                # API. Se deja constancia una sola vez y se abandona la orden.
+                if failures.get(orphan_key) == OCO_CANCEL_MAX_FAILURES:
+                    logger.error(
+                        "OCO sweep: se abandona la orden %s tras %s intentos fallidos. "
+                        "Requiere revision manual: la fila sigue ACTIVE en la DB y el "
+                        "exchange rechaza la cancelacion.",
+                        orphan_key,
+                        OCO_CANCEL_MAX_FAILURES,
+                    )
+                    failures[orphan_key] = OCO_CANCEL_MAX_FAILURES + 1
+                continue
             logger.info(
                 "OCO sweep: orphan %s (%s) still open; sibling %s is FILLED — cancelling",
                 orphan.exchange_order_id,
@@ -2888,6 +2931,9 @@ class ExchangeSyncService:
                     db, filled_sib, force_live_cancel=True
                 ):
                     swept += 1
+                    failures.pop(orphan_key, None)
+                else:
+                    failures[orphan_key] = failures.get(orphan_key, 0) + 1
             except Exception as err:
                 logger.warning(
                     "OCO sweep cancel failed for filled=%s orphan=%s: %s",
@@ -3170,6 +3216,25 @@ class ExchangeSyncService:
             if send_telegram:
                 try:
                     from app.services.telegram_notifier import telegram_notifier
+                    from app.services.telegram_event_dedup import claim_telegram_event
+
+                    # Dedup, igual que el camino de exito. Sin esto cada vuelta
+                    # del barrido manda un mensaje: 196 en 20 min el 4-sep.
+                    failure_dedup_key = (
+                        f"oco_sibling_cancel_failed:"
+                        f"{filled_order.exchange_order_id}:{sibling.exchange_order_id}"
+                    )
+                    if not claim_telegram_event(
+                        db,
+                        failure_dedup_key,
+                        symbol=getattr(sibling, "symbol", None),
+                        ttl_minutes=OCO_CANCEL_FAILURE_TELEGRAM_TTL_MINUTES,
+                    ):
+                        logger.info(
+                            "OCO: aviso de fallo ya enviado para %s (dedup activo)",
+                            sibling.exchange_order_id,
+                        )
+                        return False
 
                     telegram_notifier.send_message(
                         f"⚠️ <b>OCO: Cancellation Failed</b>\n\n"
