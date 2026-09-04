@@ -119,7 +119,10 @@ inspect_backend_logs() {
   local logs patterns exchange_patterns
 
   echo "  -- $service (last ${LOG_TAIL} lines) --"
-  logs="$(docker compose --profile aws logs "$service" --tail="$LOG_TAIL" 2>/dev/null || true)"
+  # timeout: sin el, un `compose logs` colgado deja el script vivo para
+  # siempre y el cron horario acumula huerfanos (habia 6, el mas viejo de
+  # 28 dias, cada uno reteniendo un socket de dockerd).
+  logs="$(timeout "${LOG_FETCH_TIMEOUT:-30}" docker compose --profile aws logs "$service" --tail="$LOG_TAIL" 2>/dev/null || true)"
   if [[ -z "$logs" ]]; then
     echo "    (no logs)"
     return 0
