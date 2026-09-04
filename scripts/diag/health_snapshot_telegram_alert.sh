@@ -20,7 +20,14 @@ STATE_FILE="${ATP_HEALTH_ALERT_STATE_FILE:-/var/lib/atp/health_alert_state.json}
 DRY_RUN="${ATP_ALERT_DRY_RUN:-0}"
 BASE="${ATP_HEALTH_BASE:-http://127.0.0.1:8002}"
 # Remediation / dedupe (align with backend/app/services/health_alert_incident.py)
-REMEDIATION_ENABLED="${ATP_HEALTH_REMEDIATION_ENABLED:-1}"
+# Consolidacion de sanadores (4-sep-2026): este script NOTIFICA; quien cura es
+# heal.sh (atp-selfheal.timer, cada 2 min) para incidentes concretos y
+# health_watchdog.sh (cron, cada 2 min) para el reinicio del backend por salud.
+# Curaba lo mismo que heal.sh pero cada 5 min en vez de cada 2, sin aportar
+# cobertura y permitiendo remediaciones concurrentes sobre el mismo contenedor.
+# Poner ATP_HEALTH_REMEDIATION_ENABLED=1 restaura el comportamiento anterior sin
+# desplegar. El boton manual de Telegram NO depende de esta bandera.
+REMEDIATION_ENABLED="${ATP_HEALTH_REMEDIATION_ENABLED:-0}"
 REMEDIATION_GRACE_SEC="${ATP_HEALTH_REMEDIATION_GRACE_SECONDS:-300}"
 MAX_REMEDIATION_ATTEMPTS="${ATP_HEALTH_REMEDIATION_MAX_ATTEMPTS:-3}"
 # Severity: only send "action required" when severity == critical (e.g. market_data stale > N min)
@@ -389,7 +396,7 @@ verify_label: PASS (was ${last_verify:-n/a})"
   # --- Do not resend: one alert per incident (action_alert_sent) ---
   if [ "$action_alert_sent" = "true" ]; then
     log_heal "event=action_alert_already_sent fingerprint=$fp (no resend)"
-    if [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ] && is_market_incident "$last_verify" "$last_md" "$last_mu" && [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
+    if [ "$REMEDIATION_ENABLED" = "1" ] && [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ] && is_market_incident "$last_verify" "$last_md" "$last_mu" && [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
       ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="${BASE}" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     fi
     exit 0
@@ -511,7 +518,7 @@ Action: Check backend and runbook ATP_HEALTH_ALERT_STREAK_FAIL.md. Log: /var/log
   log_heal "event=action_required_alert_sent reason=$reason attempts=${attempts:-0} fingerprint=$fp"
 
   # Run full fix in background (no separate Telegram)
-  if [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
+  if [ "$REMEDIATION_ENABLED" = "1" ] && [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
     if is_market_incident "$last_verify" "$last_md" "$last_mu" && [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
       ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="${BASE}" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     elif is_signal_monitor_incident "$last_verify" && [ -x "$REPO_ROOT/scripts/selfheal/remediate_signal_monitor.sh" ]; then
