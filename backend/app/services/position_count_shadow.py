@@ -59,6 +59,27 @@ SHADOW_ENABLED = lambda: (  # noqa: E731
     os.getenv("POSITION_COUNT_SHADOW_ENABLED", "true") or "true"
 ).strip().lower() in ("1", "true", "yes")
 
+
+def _is_primary_instance() -> bool:
+    """Whether this container is the primary, not the canary/standby.
+
+    Same flag the scheduler already uses to keep the canary from duplicating
+    operator reports (docker-compose sets RUN_TELEGRAM_POLLER=false there).
+
+    Both backends point at the SAME database (verified in production
+    2026-09-04: both DATABASE_URL resolve to db:5432/atp), so the canary's
+    shadow numbers are a byte-for-byte duplicate of production's, measured
+    against identical rows. The duplicate is not free: the canary ran 413
+    counter calls per minute against production's 161 and wrote 1.15 MB/min of
+    logs, while dockerd sat at ~1.25 of the host's 2 cores.
+    """
+    return (os.getenv("RUN_TELEGRAM_POLLER") or "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
 # The wallet snapshot is one exchange round-trip. The guard runs per entry
 # attempt per symbol, so re-fetching per call would dominate the measurement.
 # Shadow numbers tolerate a slightly stale wallet; the decision path in B2
@@ -221,6 +242,11 @@ def record_shadow_count(db: Session, symbol: str, legacy_count: int) -> None:
     decision out of this, by construction.
     """
     if not SHADOW_ENABLED():
+        return
+
+    # The canary measures the same database as production; running it there
+    # doubles the cost and teaches nothing new.
+    if not _is_primary_instance():
         return
 
     started = time.perf_counter()
