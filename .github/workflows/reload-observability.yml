@@ -57,7 +57,15 @@ jobs:
           # secrets/ queda FUERA a proposito: no bloquea (su contenido coincide con
           # HEAD, git no lo toca) y cambiarle la propiedad no es cosa de un script
           # de observabilidad.
-          sudo chown -R ubuntu:ubuntu docs/agents/generated-notes models/auto_entry 2>/dev/null || true
+          # El directorio, para que git pueda crear y reemplazar entradas dentro.
+          sudo chown ubuntu:ubuntu docs/agents/generated-notes models/auto_entry 2>/dev/null || true
+          # Y SOLO los ficheros rastreados. Nada de chown -R: los artefactos
+          # ignorados (models/auto_entry/*.joblib) conservan su propietario, que
+          # es lo que senalo Cursor Bugbot en la PR #669. Hoy los contenedores
+          # corren como root y les daria igual -- verificado con una escritura
+          # real en /data/auto_ml -- pero eso puede cambiar y el reset no
+          # necesita tocarlos.
+          sudo -u ubuntu git -C "\${COMPOSE_DIR}" ls-files -z -- docs/agents/generated-notes models/auto_entry 2>/dev/null | sudo xargs -0 -r chown ubuntu:ubuntu 2>/dev/null || true
           sudo -u ubuntu git -C "\${COMPOSE_DIR}" fetch origin main
           sudo -u ubuntu git -C "\${COMPOSE_DIR}" reset --hard origin/main
           echo "GIT_HEAD=\$(sudo -u ubuntu git -C "\${COMPOSE_DIR}" rev-parse --short HEAD)"
