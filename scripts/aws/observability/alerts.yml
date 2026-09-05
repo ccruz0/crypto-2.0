@@ -114,3 +114,37 @@ groups:
         annotations:
           summary: "Jarvis Approval Center has stale waiting tasks"
           description: "One or more ACW tasks (jarvis_task_runs in waiting_for_approval / waiting_for_pr_approval) are older than the configured stale threshold (default 24h). Review /jarvis/approval and approve, reject, or cancel them."
+
+      # Exposicion que el contador legacy no ve. Medido el 5-sep-2026: 12 de 22
+      # simbolos dan cuenta 0 con lotes reales detras, porque el numerador exige
+      # trade_signal_id y trade_signals dejo de escribirse en julio. Eran $111,41
+      # sobre $48.412 de equity, de los cuales $97,90 en un solo simbolo (DOGE),
+      # y no crecia (+$0,18/dia). El polvo (<$5) queda excluido por politica.
+      # Los umbrales salen de esa medicion, no de una regla general.
+      - alert: BlindExposureHigh
+        expr: blind_exposure_usd_total > 484
+        for: 30m
+        # warning y no critical: la cifra medida no crecia y no hay accion
+        # automatica que tomar. Exige mirar, no despertarse.
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Exposicion invisible al contador de posiciones > $484 (1% del equity)"
+          description: "blind_exposure_usd_total lleva 30m por encima de $484. Son posiciones abiertas que el contador legacy reporta como cero, asi que maxOpenOrdersPerCoin y maxOpenOrdersTotal no las estan limitando. Ver docs/project-history/contador-medicion-2026-09-05.md."
+
+      - alert: BlindExposureSymbolHigh
+        expr: blind_exposure_max_symbol_usd > 100
+        for: 30m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Una sola posicion invisible al contador supera los $100"
+          description: "blind_exposure_max_symbol_usd lleva 30m por encima de $100. En la medicion del 5-sep DOGE estaba en $97,90, al 98% de este gatillo: si salta, esa posicion ha crecido. Los cortos tienen freno de wallet (wallet_has_material_short); los largos no."
+
+      - alert: BlindExposureWatchdogBlind
+        expr: blind_exposure_errors_total > 0
+        for: 1h
+        # Sin esta, un vigilante roto se lee como "no hay exposicion", que es
+        # justo el fallo que el vigilante existe para impedir.
+        labels: { severity: "warning" }
+        annotations:
+          summary: "El vigilante de exposicion ciega no pudo evaluar algun simbolo"
+          description: "blind_exposure_errors_total > 0 durante 1h: el vigilante corre pero deja simbolos sin medir, asi que blind_exposure_usd_total esta subestimado. Revisar los logs [BLIND_EXPOSURE] del backend."

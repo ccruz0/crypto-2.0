@@ -154,6 +154,7 @@ class TradingScheduler:
         self.last_hourly_sl_tp_check = None  # Track last hourly SL/TP check (datetime)
         self.last_orphan_order_check = None  # Track last orphan-order alert (datetime)
         self.last_approval_queue_check = None  # Track last approval queue maintenance (datetime)
+        self.last_blind_exposure_check = None  # Track last blind-exposure watchdog run (datetime)
         self._scheduler_task = None  # Track the running task to prevent duplicates
         # Locks for atomic check-and-set operations on date tracking variables
         self._daily_summary_lock = asyncio.Lock()
@@ -166,6 +167,7 @@ class TradingScheduler:
         self._hourly_sl_tp_check_lock = asyncio.Lock()
         self._orphan_order_check_lock = asyncio.Lock()
         self._approval_queue_check_lock = asyncio.Lock()
+        self._blind_exposure_check_lock = asyncio.Lock()
     
     def check_daily_summary_sync(self):
         """Check if it's time to send daily summary - synchronous worker
@@ -906,6 +908,43 @@ class TradingScheduler:
                 await run_in_background(self.check_approval_queue_sync)
                 await asyncio.sleep(2)
 
+    def check_blind_exposure_sync(self):
+        """Measure exposure the legacy position counter cannot see."""
+        try:
+            db = SessionLocal()
+            try:
+                from app.services.blind_exposure_monitor import (
+                    refresh_blind_exposure_metrics,
+                )
+
+                stats = refresh_blind_exposure_metrics(db)
+                if stats.get("errors", 0) > 0:
+                    logger.warning(
+                        "[BLIND_EXPOSURE] %s symbol(s) could not be evaluated",
+                        stats.get("errors"),
+                    )
+            finally:
+                db.close()
+        except Exception as e:
+            # A watchdog must never take the scheduler down with it.
+            logger.error("Error in blind exposure watchdog: %s", e, exc_info=True)
+
+    async def check_blind_exposure(self):
+        """Run the blind-exposure watchdog hourly."""
+        now = datetime.now(timezone.utc)
+        should_check = (
+            now.minute <= 1
+            and (
+                self.last_blind_exposure_check is None
+                or (now - self.last_blind_exposure_check).total_seconds() >= 3600
+            )
+        )
+        async with self._blind_exposure_check_lock:
+            if should_check:
+                self.last_blind_exposure_check = now
+                await run_in_background(self.check_blind_exposure_sync)
+                await asyncio.sleep(2)
+
     def check_orphan_orders_sync(self):
         """Detect orphaned/stale SL/TP orders and send Telegram alert."""
         logger.info("Checking for orphaned/stale SL/TP orders...")
@@ -1178,6 +1217,7 @@ class TradingScheduler:
                     # Canary was duplicating "HOURLY SL/TP CHECK" (2026-08-02).
                     await self.check_hourly_sl_tp_missed()
                 await self.check_approval_queue()
+                await self.check_blind_exposure()
                 # Update dashboard snapshot periodically (every 60 seconds)
                 await self.update_dashboard_snapshot()
                 # Check Telegram commands continuously (long polling handles timing)

@@ -171,3 +171,79 @@ tests:
       - eval_time: 16m
         alertname: ContainerRestartsHigh
         exp_alerts: []
+
+  # Exposicion ciega bajo el umbral: no dispara nada.
+  - interval: 1m
+    input_series:
+      - series: 'blind_exposure_usd_total'
+        values: "111.41x45"
+      - series: 'blind_exposure_max_symbol_usd'
+        values: "97.90x45"
+      - series: 'blind_exposure_errors_total'
+        values: "0x45"
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: BlindExposureHigh
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: BlindExposureSymbolHigh
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: BlindExposureWatchdogBlind
+        exp_alerts: []
+
+  # Un solo simbolo pasa de $100: salta el de simbolo, no el total.
+  - interval: 1m
+    input_series:
+      - series: 'blind_exposure_usd_total'
+        values: "150x45"
+      - series: 'blind_exposure_max_symbol_usd'
+        values: "140x45"
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: BlindExposureSymbolHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Una sola posicion invisible al contador supera los $100"
+              description: "blind_exposure_max_symbol_usd lleva 30m por encima de $100. En la medicion del 5-sep DOGE estaba en $97,90, al 98% de este gatillo: si salta, esa posicion ha crecido. Los cortos tienen freno de wallet (wallet_has_material_short); los largos no."
+      - eval_time: 40m
+        alertname: BlindExposureHigh
+        exp_alerts: []
+
+  # El total supera el 1% del equity: salta BlindExposureHigh.
+  - interval: 1m
+    input_series:
+      - series: 'blind_exposure_usd_total'
+        values: "600x45"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BlindExposureHigh
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: BlindExposureHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Exposicion invisible al contador de posiciones > $484 (1% del equity)"
+              description: "blind_exposure_usd_total lleva 30m por encima de $484. Son posiciones abiertas que el contador legacy reporta como cero, asi que maxOpenOrdersPerCoin y maxOpenOrdersTotal no las estan limitando. Ver docs/project-history/contador-medicion-2026-09-05.md."
+
+  # Vigilante que deja simbolos sin medir durante una hora.
+  - interval: 1m
+    input_series:
+      - series: 'blind_exposure_errors_total'
+        values: "3x80"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: BlindExposureWatchdogBlind
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: BlindExposureWatchdogBlind
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "El vigilante de exposicion ciega no pudo evaluar algun simbolo"
+              description: "blind_exposure_errors_total > 0 durante 1h: el vigilante corre pero deja simbolos sin medir, asi que blind_exposure_usd_total esta subestimado. Revisar los logs [BLIND_EXPOSURE] del backend."
