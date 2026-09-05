@@ -39,13 +39,31 @@ sleep 3
 docker inspect -f 'telegram={{.State.Status}} running={{.State.Running}} started={{.State.StartedAt}}' atp-telegram-alerts
 
 echo "=== prometheus reload / remount ==="
-# Prefer admin reload first; if container still shows stale for: (bind-mount inode
-# after git checkout), force-recreate ONLY prometheus --no-deps.
+# alerts.yml entra por bind-mount DE FICHERO, que fija el inodo. git reset --hard
+# reemplaza el fichero en vez de editarlo, asi que el contenedor se queda con el
+# viejo para siempre y ni /-/reload ni SIGHUP lo arreglan: hay que recrearlo.
+#
+# La deteccion de obsolescencia era 'grep -q "for: 15m"' dentro del contenedor.
+# El fichero VIEJO ya tiene for: 15m (es InstanceDown), asi que la condicion no
+# se cumplia nunca y la rama de recreacion no saltaba. El 5-sep-2026 el workflow
+# termino en verde DOS VECES sin desplegar tres alertas nuevas. Ese detector solo
+# podia funcionar para la migracion concreta para la que se escribio.
+#
+# Ahora se compara el contenido real, host contra contenedor, que detecta
+# cualquier cambio y no caduca. El hash se calcula en el host (docker exec cat)
+# para no depender de que la imagen de Prometheus traiga md5sum.
+host_alerts_md5() { md5sum scripts/aws/observability/alerts.yml | awk '{print $1}'; }
+# El '|| true' no es decorativo: con set -euo pipefail, un docker exec fallido
+# (contenedor caido o reiniciandose) mataria el script en la asignacion en vez de
+# dejarlo llegar a la rama que lo recrea. Verificado que sin el aborta.
+container_alerts_md5() { docker exec atp-prometheus cat /etc/prometheus/alerts.yml 2>/dev/null | md5sum | awk '{print $1}' || true; }
+
 curl -sS -o /dev/null -w 'http=%{http_code}\n' -X POST http://127.0.0.1:9090/-/reload || docker kill -s HUP atp-prometheus || true
 sleep 2
-CONTAINER_FOR=$(docker exec atp-prometheus sh -c 'grep -E "for:" /etc/prometheus/alerts.yml | head -1' || true)
-echo "container_alerts_first_for=${CONTAINER_FOR}"
-if ! docker exec atp-prometheus sh -c 'grep -qE "for:[[:space:]]*15m" /etc/prometheus/alerts.yml'; then
+HOST_MD5="$(host_alerts_md5)"
+CONTAINER_MD5="$(container_alerts_md5)"
+echo "alerts_md5 host=${HOST_MD5} container=${CONTAINER_MD5}"
+if [ "$HOST_MD5" != "$CONTAINER_MD5" ]; then
   echo "stale bind mount detected; force-recreate prometheus only"
   docker compose --profile aws up -d --no-deps --force-recreate prometheus
   sleep 5
@@ -80,4 +98,14 @@ rm -f "$tmp"
 echo "=== alerts.yml inside prometheus container ==="
 docker exec atp-prometheus sh -c 'grep -nE "InstanceDown|for:" /etc/prometheus/alerts.yml | head -10'
 docker exec atp-prometheus sh -c 'grep -qE "for:[[:space:]]*15m" /etc/prometheus/alerts.yml'
+
+# Puerta dura: sin esto el workflow puede volver a decir "success" habiendo
+# dejado a Prometheus con el fichero viejo. Un despliegue de alertas que miente
+# es peor que uno que falla, porque nadie va a mirar.
+CONTAINER_MD5="$(container_alerts_md5)"
+echo "alerts_md5_final host=${HOST_MD5} container=${CONTAINER_MD5}"
+if [ "$HOST_MD5" != "$CONTAINER_MD5" ]; then
+  echo "FAIL: prometheus sigue sirviendo un alerts.yml distinto al del host"
+  exit 1
+fi
 echo DONE_OBS_VERIFY
