@@ -930,14 +930,22 @@ class TradingScheduler:
             logger.error("Error in blind exposure watchdog: %s", e, exc_info=True)
 
     async def check_blind_exposure(self):
-        """Run the blind-exposure watchdog hourly."""
+        """Run the blind-exposure watchdog hourly.
+
+        Deliberately NOT gated on `now.minute <= 1`, unlike the neighbouring
+        checks. That gate needs the main loop to iterate inside a two-minute
+        window, and on 2026-09-05 the 06:00 window went by with no run at all:
+        the queue monitor looked healthy only because it also has a startup
+        call, which this one lacked. A watchdog whose metrics never get
+        published is worse than none -- an alert on an absent series never
+        fires, so the silence reads as "no exposure". Dropping the gate also
+        makes the first iteration after boot publish the gauges, since
+        `last_blind_exposure_check` is None then.
+        """
         now = datetime.now(timezone.utc)
         should_check = (
-            now.minute <= 1
-            and (
-                self.last_blind_exposure_check is None
-                or (now - self.last_blind_exposure_check).total_seconds() >= 3600
-            )
+            self.last_blind_exposure_check is None
+            or (now - self.last_blind_exposure_check).total_seconds() >= 3600
         )
         async with self._blind_exposure_check_lock:
             if should_check:
