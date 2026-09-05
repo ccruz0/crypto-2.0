@@ -43,7 +43,7 @@ pydantic==2.9.2
 pydantic-settings==2.15.0
 
 # Data analysis
-numpy==2.1.1
+numpy==2.5.2
 # pandas nunca estuvo declarado: lo arrastraba alpaca-trade-api, que exigia
 # pandas>=0.18.1 y era su UNICO proveedor. Al eliminar alpaca el 27-ago-2026
 # (ef8b3a41, #576) pandas desaparecio de la imagen y signal_monitor se quedo
