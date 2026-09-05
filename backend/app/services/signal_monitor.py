@@ -2111,6 +2111,7 @@ class SignalMonitorService:
         evaluation_id: str,
         current_price: float,
         now_utc: datetime,
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Dashboard/DB only — no live Telegram SELL SIGNAL or ORDEN BLOQUEADA (#624).
 
@@ -2134,6 +2135,7 @@ class SignalMonitorService:
                 decision_type="SKIPPED",
                 reason_code=ReasonCode.REGIME_FILTER_BLOCKED.value,
                 reason_message=reason,
+                context_json=context or None,
                 db=db,
                 correlation_id=evaluation_id,
             )
@@ -6339,6 +6341,29 @@ class SignalMonitorService:
                     ma200=ma200,
                 )
             if regime_blocked and regime_reason:
+                # Contexto para analisis posterior del bloqueo dominante (44% de
+                # los bloqueos reales). Envuelto en try/except: un fallo aqui no
+                # puede alterar la decision de bloquear, que ya esta tomada.
+                regime_context: Optional[Dict[str, Any]] = None
+                try:
+                    regime_context = {
+                        "symbol": symbol,
+                        "side": "SELL",
+                        "price": float(current_price),
+                        "regime_reason": regime_reason,
+                        "strategy_key": strategy_key,
+                        "rsi": float(rsi) if rsi is not None else None,
+                        "ma50": float(ma50) if ma50 is not None else None,
+                        "ma200": float(ma200) if ma200 is not None else None,
+                        "ema10": float(ema10) if ema10 is not None else None,
+                        "ma10w": float(ma10w) if ma10w is not None else None,
+                        "atr": float(atr) if atr is not None else None,
+                        "volume_24h": float(volume_24h) if volume_24h is not None else None,
+                    }
+                except Exception as ctx_err:  # pragma: no cover - defensivo
+                    logger.warning(
+                        "regime context build failed for %s: %s", symbol, ctx_err
+                    )
                 self._persist_regime_filter_blocked_sell(
                     db,
                     symbol=symbol,
@@ -6347,6 +6372,7 @@ class SignalMonitorService:
                     evaluation_id=evaluation_id,
                     current_price=current_price,
                     now_utc=now_utc,
+                    context=regime_context,
                 )
                 should_emit_telegram_sell = False
             
