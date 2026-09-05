@@ -16,6 +16,13 @@ measures and exports.
 Dust is excluded on purpose. Eleven of the twelve divergences are sub-$5
 remainders left by deliberate policy (`SYSTEM_CORE_MIN_POSITION_USD`), so
 counting them would drown the one symbol that matters -- DOGE, at $97.90.
+
+Everything is keyed by BASE asset, not by pair. `count_open_lots_for_symbol`
+rebuilds lots for the base ("Open positions for a base asset"), and the trade
+guards also count with the base, so walking the watchlist pair by pair would
+value the same lots once per sibling -- the watchlist holds BTC_USD and
+BTC_USDT, ETH_USD and ETH_USDT, CRO, SUI and GRAM likewise. That would inflate
+the gauge and fire the alerts on a book the guards treat as one coin.
 """
 
 from __future__ import annotations
@@ -35,6 +42,25 @@ def _dust_usd() -> float:
         return float(os.getenv("SYSTEM_CORE_MIN_POSITION_USD", "5") or 5.0)
     except Exception:
         return 5.0
+
+
+def _bases_from_symbols(symbols: List[str]) -> Dict[str, List[str]]:
+    """Group pairs by base asset: {"BTC": ["BTC_USD", "BTC_USDT"], ...}.
+
+    Pure on purpose so the sibling-collapse can be tested without a database.
+    """
+    bases: Dict[str, List[str]] = {}
+    for raw in symbols:
+        sym = (raw or "").strip().upper()
+        if not sym:
+            continue
+        base = sym.split("_")[0] if "_" in sym else sym
+        if not base:
+            continue
+        bases.setdefault(base, [])
+        if sym not in bases[base]:
+            bases[base].append(sym)
+    return bases
 
 
 def _price_for(db: Session, symbol: str) -> float:
@@ -84,10 +110,15 @@ def collect_blind_exposure(db: Session) -> Dict[str, Any]:
     dust = _dust_usd()
 
     try:
+        # Soft-deleted rows are not part of the book; counting them would value
+        # lots for coins nobody trades any more.
         symbols = [
-            s[0]
-            for s in db.query(WatchlistItem.symbol).distinct().all()
-            if s and s[0]
+            row[0]
+            for row in db.query(WatchlistItem.symbol)
+            .filter(WatchlistItem.is_deleted.is_(False))
+            .distinct()
+            .all()
+            if row and row[0]
         ]
     except Exception as e:
         logger.warning("[BLIND_EXPOSURE] watchlist read failed: %s", e)
@@ -95,20 +126,28 @@ def collect_blind_exposure(db: Session) -> Dict[str, Any]:
         return stats
 
     details: List[Dict[str, Any]] = []
+    bases = _bases_from_symbols(symbols)
 
-    for symbol in symbols:
+    for base, pairs in bases.items():
         try:
-            price = _price_for(db, symbol)
+            # One price per base: the first sibling that has one. They track the
+            # same asset, so either quote is a fair valuation.
+            price = 0.0
+            for pair in pairs:
+                price = _price_for(db, pair)
+                if price:
+                    break
+
             legacy = int(
                 count_open_positions_for_symbol(
-                    db, symbol, **_position_dust_kwargs(price or None)
+                    db, base, **_position_dust_kwargs(price or None)
                 )
             )
             if legacy > 0:
                 stats["checked"] += 1
                 continue
 
-            shadow = count_open_lots_for_symbol(db, symbol)
+            shadow = count_open_lots_for_symbol(db, base)
             qty = float(shadow.get("long_qty") or 0.0) + float(
                 shadow.get("short_qty") or 0.0
             )
@@ -120,7 +159,8 @@ def collect_blind_exposure(db: Session) -> Dict[str, Any]:
 
             details.append(
                 {
-                    "symbol": symbol,
+                    "symbol": base,
+                    "pairs": pairs,
                     "usd": round(usd, 2),
                     "qty": qty,
                     "price": price,
@@ -131,10 +171,10 @@ def collect_blind_exposure(db: Session) -> Dict[str, Any]:
             stats["symbols_total"] += 1
             if usd > stats["max_symbol_usd"]:
                 stats["max_symbol_usd"] = usd
-                stats["max_symbol"] = symbol
+                stats["max_symbol"] = base
         except Exception as e:
             stats["errors"] += 1
-            logger.debug("[BLIND_EXPOSURE] symbol %s failed: %s", symbol, e)
+            logger.debug("[BLIND_EXPOSURE] base %s failed: %s", base, e)
 
     stats["total_usd"] = round(stats["total_usd"], 2)
     stats["max_symbol_usd"] = round(stats["max_symbol_usd"], 2)
