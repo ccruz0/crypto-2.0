@@ -9,6 +9,17 @@ if [ -d .git ]; then
   sudo chown -R ubuntu:ubuntu .git || true
 fi
 
+# Mismo motivo que en reload-observability.yml: los contenedores dejan ficheros
+# rastreados con UID 10001 en estas dos carpetas y el reset de abajo aborta.
+# Aqui tambien, porque este script puede invocarse a mano sin el workflow.
+# El directorio, para que git pueda crear y reemplazar entradas dentro; y solo
+# los ficheros RASTREADOS, nunca -R. Los artefactos ignorados (*.joblib)
+# conservan su propietario: el reset no los toca y un chown recursivo podria
+# quitarle la escritura al proceso que los genera si algun dia deja de correr
+# como root (hoy si corre; verificado con una escritura real en /data/auto_ml).
+sudo chown ubuntu:ubuntu docs/agents/generated-notes models/auto_entry 2>/dev/null || true
+sudo -u ubuntu git -C "$REPO" ls-files -z -- docs/agents/generated-notes models/auto_entry 2>/dev/null | sudo xargs -0 -r chown ubuntu:ubuntu 2>/dev/null || true
+
 sudo -u ubuntu git -C "$REPO" fetch origin main
 sudo -u ubuntu git -C "$REPO" reset --hard origin/main
 echo "GIT_HEAD=$(sudo -u ubuntu git -C "$REPO" rev-parse --short HEAD)"
