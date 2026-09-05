@@ -48,6 +48,16 @@ jobs:
           COMPOSE_DIR="${COMPOSE_DIR}"
           cd "\${COMPOSE_DIR}" || { echo "COMPOSE_DIR missing: \${COMPOSE_DIR}"; exit 1; }
           if [ -d .git ]; then sudo chown -R ubuntu:ubuntu .git || true; fi
+          # Los contenedores escriben en estas dos carpetas como UID 10001 y dejan
+          # ficheros RASTREADOS que ubuntu no puede reescribir, asi que el reset de
+          # abajo aborta con Permission denied. Medido el 5-sep-2026: de 37 ficheros
+          # que no son de ubuntu, solo 5 estan rastreados y todos viven aqui.
+          # Se regenera solo -- reaparecieron 90 min despues de un chown manual --
+          # asi que hay que rehacerlo en cada pasada, no una vez.
+          # secrets/ queda FUERA a proposito: no bloquea (su contenido coincide con
+          # HEAD, git no lo toca) y cambiarle la propiedad no es cosa de un script
+          # de observabilidad.
+          sudo chown -R ubuntu:ubuntu docs/agents/generated-notes models/auto_entry 2>/dev/null || true
           sudo -u ubuntu git -C "\${COMPOSE_DIR}" fetch origin main
           sudo -u ubuntu git -C "\${COMPOSE_DIR}" reset --hard origin/main
           echo "GIT_HEAD=\$(sudo -u ubuntu git -C "\${COMPOSE_DIR}" rev-parse --short HEAD)"
